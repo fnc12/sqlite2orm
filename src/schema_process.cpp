@@ -57,14 +57,12 @@ namespace sqlite2orm {
             if(row.sql.empty()) {
                 continue;
             }
-            SchemaStatementMeta meta;
-            meta.type = row.type;
-            meta.name = row.name;
-            meta.tableName = row.tableName;
-            meta.sql = row.sql;
             SchemaStatementResult one;
-            one.meta = std::move(meta);
-            one.pipeline = processSql(row.sql);
+            one.meta.type = row.type;
+            one.meta.name = row.name;
+            one.meta.tableName = row.tableName;
+            one.meta.sql = row.sql;
+            one.pipeline = processSql(one.meta.sql);
             out.statements.push_back(std::move(one));
         }
         return out;

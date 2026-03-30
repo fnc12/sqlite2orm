@@ -622,7 +622,8 @@ TEST_CASE("parser: keyword as function - replace") {
 TEST_CASE("parser: keyword as function - case insensitive", "[function]") {
     auto funcName = GENERATE("ABS", "Abs", "abs");
     CAPTURE(funcName);
-    auto parseResult = parse(std::string(funcName) + "(x)");
+    std::string sql = std::string(funcName) + "(x)";
+    auto parseResult = parse(sql);
     REQUIRE(require_node<FunctionCallNode>(parseResult) ==
             *make_func(funcName, false, false, make_node<ColumnRefNode>("x")));
 }

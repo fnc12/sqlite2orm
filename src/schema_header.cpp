@@ -2,6 +2,7 @@
 
 #include <sqlite2orm/ast.h>
 
+#include <algorithm>
 #include <cctype>
 #include <queue>
 #include <sstream>

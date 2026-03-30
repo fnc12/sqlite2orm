@@ -1,0 +1,17 @@
+option(SQLITE2ORM_BUILD_EXAMPLES "Build examples" OFF)
+
+if(SQLITE2ORM_BUILD_EXAMPLES)
+    add_subdirectory(01_basic_select)
+    add_subdirectory(02_create_table)
+    add_subdirectory(03_programmatic_api)
+    add_subdirectory(04_custom_policy)
+    add_subdirectory(05_sqlite_file_import)
+    add_subdirectory(06_json_output)
+
+    enable_testing()
+    add_test(NAME example_basic_select COMMAND example_basic_select)
+    add_test(NAME example_create_table COMMAND example_create_table)
+    add_test(NAME example_programmatic_api COMMAND example_programmatic_api)
+    add_test(NAME example_custom_policy COMMAND example_custom_policy)
+    add_test(NAME example_json_output COMMAND example_json_output)
+endif()

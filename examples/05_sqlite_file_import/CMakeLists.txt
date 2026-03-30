@@ -1,0 +1,2 @@
+add_executable(example_sqlite_file_import main.cpp)
+target_link_libraries(example_sqlite_file_import PRIVATE sqlite2orm_lib fmt::fmt)

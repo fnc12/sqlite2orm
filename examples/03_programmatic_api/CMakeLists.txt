@@ -1,0 +1,2 @@
+add_executable(example_programmatic_api main.cpp)
+target_link_libraries(example_programmatic_api PRIVATE sqlite2orm_lib fmt::fmt)

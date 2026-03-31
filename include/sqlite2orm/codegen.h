@@ -72,6 +72,16 @@ namespace sqlite2orm {
         std::optional<std::string> implicitSingleSourceCteTypedef;
         /** During SELECT codegen: SQL column alias name → C++ alias type name (e.g. `colalias_i`, `GradeAlias`). */
         std::map<std::string, std::string> activeSelectColumnAliases;
+        /** Normalized SQL alias → C++ variable name for `constexpr orm_column_alias auto … = "…"_col`. */
+        std::map<std::string, std::string> activeSelectColumnAliasCpp20Vars;
+        /**
+         * When set, forces column alias codegen style for this generator (used to build decision-point alternate).
+         * Otherwise `CodeGenPolicy::column_alias_style` applies (`alias_tag` default, `cpp20_literal` for C++20 `_col`).
+         */
+        std::optional<std::string> columnAliasStyleOverride;
+
+        bool useCpp20ColumnAliasStyle() const;
+        bool columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const;
 
         CodeGenResult generateNode(const AstNode& astNode);
 

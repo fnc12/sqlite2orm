@@ -363,3 +363,56 @@ TEST_CASE("codegen: SELECT alias referenced in ORDER BY with custom struct") {
         "auto rows = storage.select(as<User_nameAlias>(&Users::name), "
         "order_by(get<User_nameAlias>()));");
 }
+
+TEST_CASE("codegen: column_alias_style decision point offers C++20 alternative") {
+    auto result = generate_full("SELECT name AS i FROM users");
+    bool found = false;
+    for(const auto& dp : result.decisionPoints) {
+        if(dp.category != "column_alias_style") {
+            continue;
+        }
+        found = true;
+        REQUIRE(dp.chosenValue == "alias_tag");
+        REQUIRE(dp.chosenCode == result.code);
+        REQUIRE(dp.alternatives.size() == 1u);
+        REQUIRE(dp.alternatives[0].value == "cpp20_literal");
+        REQUIRE(dp.alternatives[0].code.find("#ifdef SQLITE_ORM_WITH_CPP20_ALIASES") != std::string::npos);
+        REQUIRE(dp.alternatives[0].code.find("constexpr orm_column_alias auto i") != std::string::npos);
+        REQUIRE(dp.alternatives[0].code.find("as<i>(") != std::string::npos);
+        break;
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["column_alias_style"] = "cpp20_literal";
+    const char* sql =
+        "SELECT name, instr(abilities, 'o') i "
+        "FROM marvel "
+        "WHERE i > 0 "
+        "ORDER BY i";
+    auto result = generate_with_policy(sql, policy);
+    REQUIRE(result.code.find("#ifdef SQLITE_ORM_WITH_CPP20_ALIASES") != std::string::npos);
+    REQUIRE(result.code.find("constexpr orm_column_alias auto i") != std::string::npos);
+    REQUIRE(result.code.find("as<i>(instr(&Marvel::abilities, \"o\"))") != std::string::npos);
+    REQUIRE(result.code.find("where(i > 0)") != std::string::npos);
+    REQUIRE(result.code.find("order_by(i)") != std::string::npos);
+    bool hasCpp20Warning = false;
+    for(const auto& w : result.warnings) {
+        if(w.find("SQLITE_ORM_WITH_CPP20_ALIASES") != std::string::npos) {
+            hasCpp20Warning = true;
+        }
+    }
+    REQUIRE(hasCpp20Warning);
+    bool hasAliasTagAlt = false;
+    for(const auto& dp : result.decisionPoints) {
+        if(dp.category == "column_alias_style" && dp.chosenValue == "cpp20_literal") {
+            hasAliasTagAlt = true;
+            REQUIRE(dp.alternatives.size() == 1u);
+            REQUIRE(dp.alternatives[0].value == "alias_tag");
+            REQUIRE(dp.alternatives[0].code.find("colalias_i") != std::string::npos);
+        }
+    }
+    REQUIRE(hasAliasTagAlt);
+}

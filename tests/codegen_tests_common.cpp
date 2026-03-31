@@ -25,6 +25,17 @@ namespace codegen_test_helpers {
         return codeGenerator.generate(*parseResult.astNodePointer);
     }
 
+    CodeGenResult generate_with_policy(std::string_view sql, const CodeGenPolicy& policy) {
+        Tokenizer tokenizer;
+        auto tokens = tokenizer.tokenize(sql);
+        Parser parser;
+        auto parseResult = parser.parse(std::move(tokens));
+        REQUIRE(parseResult);
+        CodeGenerator codeGenerator;
+        codeGenerator.codeGenPolicy = &policy;
+        return codeGenerator.generate(*parseResult.astNodePointer);
+    }
+
     std::string prefix_for(std::string_view sql) {
         Tokenizer tokenizer;
         auto tokens = tokenizer.tokenize(sql);

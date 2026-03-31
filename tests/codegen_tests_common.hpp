@@ -14,6 +14,7 @@ namespace codegen_test_helpers {
 
     std::string generate(std::string_view sql);
     CodeGenResult generate_full(std::string_view sql);
+    CodeGenResult generate_with_policy(std::string_view sql, const CodeGenPolicy& policy);
     std::string prefix_for(std::string_view sql);
 
     bool looks_like_member_pointer(std::string_view code);

@@ -4,35 +4,24 @@
 
 namespace sqlite2orm {
 
-    namespace {
+    void to_json(nlohmann::json& out, const Alternative& alternative) {
+        out = nlohmann::json{{"value", alternative.value},
+                            {"code", alternative.code},
+                            {"description", alternative.description},
+                            {"hidden", alternative.hidden},
+                            {"comments", alternative.comments}};
+    }
 
-        nlohmann::json alternativeToJson(const Alternative& alternative) {
-            return {{"value", alternative.value},
-                    {"code", alternative.code},
-                    {"description", alternative.description},
-                    {"hidden", alternative.hidden}};
-        }
-
-        nlohmann::json decisionPointToJson(const DecisionPoint& decisionPoint) {
-            nlohmann::json alternatives = nlohmann::json::array();
-            for(const Alternative& alternative : decisionPoint.alternatives) {
-                alternatives.push_back(alternativeToJson(alternative));
-            }
-            return {{"id", decisionPoint.id},
-                    {"category", decisionPoint.category},
-                    {"chosenValue", decisionPoint.chosenValue},
-                    {"chosenCode", decisionPoint.chosenCode},
-                    {"alternatives", std::move(alternatives)}};
-        }
-
-    }  // namespace
+    void to_json(nlohmann::json& out, const DecisionPoint& decisionPoint) {
+        out = nlohmann::json{{"id", decisionPoint.id},
+                            {"category", decisionPoint.category},
+                            {"chosenValue", decisionPoint.chosenValue},
+                            {"chosenCode", decisionPoint.chosenCode},
+                            {"alternatives", decisionPoint.alternatives}};
+    }
 
     std::string decisionPointsToJson(const std::vector<DecisionPoint>& decisionPoints) {
-        nlohmann::json array = nlohmann::json::array();
-        for(const DecisionPoint& decisionPoint : decisionPoints) {
-            array.push_back(decisionPointToJson(decisionPoint));
-        }
-        return array.dump();
+        return nlohmann::json(decisionPoints).dump();
     }
 
     std::string sqliteSchemaResultToJson(const ProcessSqliteSchemaResult& schema) {
@@ -43,11 +32,8 @@ namespace sqlite2orm {
                                  {"tableName", statement.meta.tableName},
                                  {"ok", statement.pipeline.ok()}};
             if(statement.pipeline.ok()) {
-                nlohmann::json decisionPointsJson = nlohmann::json::array();
-                for(const DecisionPoint& decisionPoint : statement.pipeline.codegen.decisionPoints) {
-                    decisionPointsJson.push_back(decisionPointToJson(decisionPoint));
-                }
-                row["decisionPoints"] = std::move(decisionPointsJson);
+                row["decisionPoints"] = statement.pipeline.codegen.decisionPoints;
+                row["comments"] = statement.pipeline.codegen.comments;
             } else {
                 row["decisionPoints"] = nlohmann::json::array();
             }

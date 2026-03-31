@@ -173,6 +173,35 @@ namespace sqlite2orm {
             return to_cpp_identifier(strip_column_alias_quotes(rawAlias));
         }
 
+        /** Same text wherever this requirement applies (deduplicated across merges). */
+        const std::string kCommentCpp20ColumnAliases =
+            "C++20 literal column aliases (`orm_column_alias`, string literal `_col`) require sqlite_orm to be "
+            "built with the preprocessor macro SQLITE_ORM_WITH_CPP20_ALIASES defined. Your project may enable "
+            "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
+            "mechanism.";
+
+        void append_unique_strings(std::vector<std::string>& destination, const std::vector<std::string>& source) {
+            for(const auto& s : source) {
+                bool dupe = false;
+                for(const auto& d : destination) {
+                    if(d == s) {
+                        dupe = true;
+                        break;
+                    }
+                }
+                if(!dupe) {
+                    destination.push_back(s);
+                }
+            }
+        }
+
+        void append_unique_string(std::vector<std::string>& destination, const std::string& s) {
+            for(const auto& d : destination) {
+                if(d == s) return;
+            }
+            destination.push_back(s);
+        }
+
         std::string generate_cpp20_column_alias_preamble(const std::vector<SelectColumn>& columns) {
             std::string body;
             std::vector<std::string> emittedVars;
@@ -191,8 +220,7 @@ namespace sqlite2orm {
                 std::string lit = identifier_to_cpp_string_literal(strip_column_alias_quotes(column.alias));
                 body += "constexpr orm_column_alias auto " + var + " = " + lit + "_col;\n";
             }
-            if(body.empty()) return "";
-            return "#ifdef SQLITE_ORM_WITH_CPP20_ALIASES\n" + body + "#endif\n";
+            return body;
         }
 
         std::string wrap_with_column_alias(const std::string& exprCode, const std::string& rawAlias, bool cpp20Style) {
@@ -439,7 +467,7 @@ namespace sqlite2orm {
         accumulatedErrors.clear();
         auto result = generateNode(astNode);
         if(!accumulatedErrors.empty()) {
-            return CodeGenResult{{}, {}, {}, std::move(accumulatedErrors)};
+            return CodeGenResult{{}, {}, {}, std::move(accumulatedErrors), {}};
         }
         return result;
     }
@@ -674,13 +702,18 @@ namespace sqlite2orm {
                                       "— return type may differ from sqlite");
             }
 
-            return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings)};
+            std::vector<std::string> binComments;
+            append_unique_strings(binComments, leftResult.comments);
+            append_unique_strings(binComments, rightResult.comments);
+            return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings), {},
+                                 std::move(binComments)};
         } else if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
             auto operandResult = generateNode(*unaryOp->operand);
             auto decisionPoints = std::move(operandResult.decisionPoints);
 
             if(unaryOp->unaryOperator == UnaryOperator::plus) {
-                return CodeGenResult{operandResult.code, std::move(decisionPoints)};
+                return CodeGenResult{operandResult.code, std::move(decisionPoints), {}, {},
+                                     std::move(operandResult.comments)};
             }
 
             bool operandLeaf = is_leaf_node(*unaryOp->operand);
@@ -737,13 +770,16 @@ namespace sqlite2orm {
                 std::move(alternatives)
             });
 
-            return CodeGenResult{std::move(emittedUnary), std::move(decisionPoints)};
+            return CodeGenResult{std::move(emittedUnary), std::move(decisionPoints), {}, {},
+                                 std::move(operandResult.comments)};
         } else if(auto* isNullNode = dynamic_cast<const IsNullNode*>(&astNode)) {
             auto operandResult = generateNode(*isNullNode->operand);
-            return CodeGenResult{"is_null(" + operandResult.code + ")", std::move(operandResult.decisionPoints)};
+            return CodeGenResult{"is_null(" + operandResult.code + ")", std::move(operandResult.decisionPoints), {},
+                                 {}, std::move(operandResult.comments)};
         } else if(auto* isNotNullNode = dynamic_cast<const IsNotNullNode*>(&astNode)) {
             auto operandResult = generateNode(*isNotNullNode->operand);
-            return CodeGenResult{"is_not_null(" + operandResult.code + ")", std::move(operandResult.decisionPoints)};
+            return CodeGenResult{"is_not_null(" + operandResult.code + ")", std::move(operandResult.decisionPoints), {},
+                                 {}, std::move(operandResult.comments)};
         } else if(auto* betweenNode = dynamic_cast<const BetweenNode*>(&astNode)) {
             auto operandResult = generateNode(*betweenNode->operand);
             auto lowResult = generateNode(*betweenNode->low);
@@ -1630,19 +1666,21 @@ namespace sqlite2orm {
                                         "compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
                                         "codegen");
                 return CodeGenResult{"/* compound SELECT */", std::move(inner.decisionPoints),
-                                     std::move(compoundWarnings)};
+                                     std::move(compoundWarnings), {}, std::move(inner.comments)};
             }
             return CodeGenResult{"auto rows = storage.select(" + inner.code + ");",
-                                 std::move(inner.decisionPoints), std::move(compoundWarnings)};
+                                 std::move(inner.decisionPoints), std::move(compoundWarnings), {},
+                                 std::move(inner.comments)};
         }
         if(auto* selectNode = dynamic_cast<const SelectNode*>(&astNode)) {
             std::vector<std::string> selectWarnings;
             std::vector<DecisionPoint> selectDecisionPoints;
+            std::vector<std::string> selectComments;
             for(const auto& fromItem : selectNode->fromClause) {
                 if(fromItem.table.derivedSelect) {
                     selectWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
                     return CodeGenResult{"/* SELECT with derived FROM */", std::move(selectDecisionPoints),
-                                         std::move(selectWarnings)};
+                                         std::move(selectWarnings), {}, std::move(selectComments)};
                 }
             }
             this->fromTableAliasToStructName.clear();
@@ -1699,6 +1737,7 @@ namespace sqlite2orm {
                 selectDecisionPoints.insert(selectDecisionPoints.end(),
                                             std::make_move_iterator(result.decisionPoints.begin()),
                                             std::make_move_iterator(result.decisionPoints.end()));
+                append_unique_strings(selectComments, result.comments);
                 return result.code;
             };
 
@@ -1937,9 +1976,7 @@ namespace sqlite2orm {
                     if(!aliasPreamble.empty()) {
                         code = aliasPreamble + code;
                     }
-                    selectWarnings.push_back(
-                        "SELECT column alias (C++20 `orm_column_alias` / `_col`): define SQLITE_ORM_WITH_CPP20_ALIASES "
-                        "when building sqlite_orm; requires C++20");
+                    append_unique_string(selectComments, kCommentCpp20ColumnAliases);
                 } else {
                     bool hasBuiltin = false;
                     bool hasCustom = false;
@@ -1964,15 +2001,14 @@ namespace sqlite2orm {
                         CodeGenerator altGen = selectAltBaseline;
                         altGen.columnAliasStyleOverride = "cpp20_literal";
                         auto altRes = altGen.generateNode(*selectNode);
-                        selectDecisionPoints.push_back(DecisionPoint{
-                            this->nextDecisionPointId++,
-                            "column_alias_style",
-                            "alias_tag",
-                            code,
-                            {Alternative{"cpp20_literal",
-                                         altRes.code,
-                                         "C++20 literal aliases (`orm_column_alias`, `_col`); "
-                                         "SQLITE_ORM_WITH_CPP20_ALIASES"}}});
+                        Alternative cpp20Alt{"cpp20_literal", altRes.code,
+                                             "C++20 literal aliases (`orm_column_alias`, `_col`)"};
+                        cpp20Alt.comments = std::move(altRes.comments);
+                        selectDecisionPoints.push_back(DecisionPoint{this->nextDecisionPointId++,
+                                                                     "column_alias_style",
+                                                                     "alias_tag",
+                                                                     code,
+                                                                     {std::move(cpp20Alt)}});
                     }
                 }
             }
@@ -1992,7 +2028,8 @@ namespace sqlite2orm {
             }
             this->activeSelectColumnAliases.clear();
             this->activeSelectColumnAliasCpp20Vars.clear();
-            return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
+            return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings), {},
+                                 std::move(selectComments)};
         }
         if(auto* pragmaNode = dynamic_cast<const PragmaNode*>(&astNode)) {
             return codegenPragmaStatement(*pragmaNode);

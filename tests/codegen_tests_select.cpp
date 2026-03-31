@@ -1,8 +1,21 @@
 #include "codegen_tests_common.hpp"
 
+namespace {
+
+    /** Must match `kCommentCpp20ColumnAliases` in codegen.cpp (C++20 `_col` aliases). */
+    const char* const kExpectedCpp20ColumnAliasComment =
+        "C++20 literal column aliases (`orm_column_alias`, string literal `_col`) require sqlite_orm to be "
+        "built with the preprocessor macro SQLITE_ORM_WITH_CPP20_ALIASES defined. Your project may enable "
+        "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
+        "mechanism.";
+
+}  // namespace
+
 TEST_CASE("codegen: SELECT * FROM table") {
-    auto result = generate("SELECT * FROM users");
-    REQUIRE(result == "auto rows = storage.get_all<Users>();");
+    REQUIRE(generate_full("SELECT * FROM users") ==
+            CodeGenResult{"auto rows = storage.get_all<Users>();",
+                          {api_level_star_select_dp(1, "Users", "")},
+                          {}});
 }
 
 TEST_CASE("codegen: SELECT table.* FROM table") {
@@ -365,23 +378,25 @@ TEST_CASE("codegen: SELECT alias referenced in ORDER BY with custom struct") {
 }
 
 TEST_CASE("codegen: column_alias_style decision point offers C++20 alternative") {
-    auto result = generate_full("SELECT name AS i FROM users");
-    bool found = false;
-    for(const auto& dp : result.decisionPoints) {
-        if(dp.category != "column_alias_style") {
-            continue;
-        }
-        found = true;
-        REQUIRE(dp.chosenValue == "alias_tag");
-        REQUIRE(dp.chosenCode == result.code);
-        REQUIRE(dp.alternatives.size() == 1u);
-        REQUIRE(dp.alternatives[0].value == "cpp20_literal");
-        REQUIRE(dp.alternatives[0].code.find("#ifdef SQLITE_ORM_WITH_CPP20_ALIASES") != std::string::npos);
-        REQUIRE(dp.alternatives[0].code.find("constexpr orm_column_alias auto i") != std::string::npos);
-        REQUIRE(dp.alternatives[0].code.find("as<i>(") != std::string::npos);
-        break;
-    }
-    REQUIRE(found);
+    const std::string chosenCode = "auto rows = storage.select(as<colalias_i>(&Users::name));";
+    const std::string cpp20AltCode = "constexpr orm_column_alias auto i = \"i\"_col;\n"
+                                     "auto rows = storage.select(as<i>(&Users::name));";
+    REQUIRE(generate_full("SELECT name AS i FROM users") ==
+            CodeGenResult{
+                chosenCode,
+                {column_ref_style_dp(1, "&Users::name"),
+                 DecisionPoint{2,
+                               "column_alias_style",
+                               "alias_tag",
+                               chosenCode,
+                               {Alternative{"cpp20_literal",
+                                           cpp20AltCode,
+                                           "C++20 literal aliases (`orm_column_alias`, `_col`)",
+                                           false,
+                                           {std::string(kExpectedCpp20ColumnAliasComment)}}}}},
+                {"SELECT column alias uses sqlite_orm built-in colalias_* types; requires `using namespace sqlite_orm`"},
+                {},
+                {}});
 }
 
 TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
@@ -393,18 +408,12 @@ TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
         "WHERE i > 0 "
         "ORDER BY i";
     auto result = generate_with_policy(sql, policy);
-    REQUIRE(result.code.find("#ifdef SQLITE_ORM_WITH_CPP20_ALIASES") != std::string::npos);
+    REQUIRE(result.code.find("#ifdef") == std::string::npos);
     REQUIRE(result.code.find("constexpr orm_column_alias auto i") != std::string::npos);
     REQUIRE(result.code.find("as<i>(instr(&Marvel::abilities, \"o\"))") != std::string::npos);
     REQUIRE(result.code.find("where(i > 0)") != std::string::npos);
     REQUIRE(result.code.find("order_by(i)") != std::string::npos);
-    bool hasCpp20Warning = false;
-    for(const auto& w : result.warnings) {
-        if(w.find("SQLITE_ORM_WITH_CPP20_ALIASES") != std::string::npos) {
-            hasCpp20Warning = true;
-        }
-    }
-    REQUIRE(hasCpp20Warning);
+    REQUIRE(result.comments == std::vector<std::string>{kExpectedCpp20ColumnAliasComment});
     bool hasAliasTagAlt = false;
     for(const auto& dp : result.decisionPoints) {
         if(dp.category == "column_alias_style" && dp.chosenValue == "cpp20_literal") {

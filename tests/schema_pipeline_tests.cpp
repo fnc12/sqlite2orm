@@ -121,7 +121,7 @@ TEST_CASE("sqliteSchemaResultToJson: shape") {
     SqliteSchemaReader reader(file.path.string());
     const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
     REQUIRE(sqliteSchemaResultToJson(schema) ==
-            R"({"statements":[{"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})");
+            R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})");
 }
 
 TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {

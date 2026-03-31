@@ -15,6 +15,8 @@ namespace sqlite2orm {
         std::string code;
         std::string description;
         bool hidden = false;
+        /** Optional notes when this alternative is shown or chosen (e.g. build requirements); any consumer may show them. */
+        std::vector<std::string> comments;
 
         bool operator==(const Alternative&) const = default;
     };
@@ -34,6 +36,8 @@ namespace sqlite2orm {
         std::vector<DecisionPoint> decisionPoints;
         std::vector<std::string> warnings;
         std::vector<std::string> errors;
+        /** Optional hints for the generated snippet (deduplicated when merging fragments). */
+        std::vector<std::string> comments;
 
         bool operator==(const CodeGenResult&) const = default;
     };

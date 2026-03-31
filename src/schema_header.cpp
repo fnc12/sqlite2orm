@@ -8,6 +8,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace sqlite2orm {
 
@@ -125,6 +126,14 @@ namespace sqlite2orm {
             return ordered;
         }
 
+        void append_unique_strings(std::vector<std::string>& dst, const std::vector<std::string>& src) {
+            for(const std::string& s : src) {
+                if(std::find(dst.begin(), dst.end(), s) == dst.end()) {
+                    dst.push_back(s);
+                }
+            }
+        }
+
         void trimTrailingSemicolon(std::string& line) {
             while(!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
                 line.pop_back();
@@ -167,6 +176,7 @@ namespace sqlite2orm {
         std::vector<std::string> storageArgs;
         std::vector<DecisionPoint> allDecisionPoints;
         std::vector<std::string> allWarnings;
+        std::vector<std::string> allComments;
 
         for(const CreateTableNode* createTableNode : sortedTables) {
             const CreateTableParts parts = gen.createTableParts(*createTableNode);
@@ -192,6 +202,7 @@ namespace sqlite2orm {
             if(dynamic_cast<const CreateIndexNode*>(root) || dynamic_cast<const CreateTriggerNode*>(root)) {
                 CodeGenResult fragment = gen.generate(*root);
                 allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());
+                append_unique_strings(allComments, fragment.comments);
                 allDecisionPoints.insert(allDecisionPoints.end(), fragment.decisionPoints.begin(),
                                          fragment.decisionPoints.end());
                 std::string storageArgLine = fragment.code;
@@ -208,7 +219,8 @@ namespace sqlite2orm {
         }
         oss << ");\n}\n";
 
-        return CodeGenResult{oss.str(), std::move(allDecisionPoints), std::move(allWarnings)};
+        return CodeGenResult{oss.str(), std::move(allDecisionPoints), std::move(allWarnings), {},
+                             std::move(allComments)};
     }
 
 }  // namespace sqlite2orm

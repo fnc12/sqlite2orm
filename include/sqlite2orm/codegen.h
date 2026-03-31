@@ -70,6 +70,8 @@ namespace sqlite2orm {
          * emit `column<cte_N>("col")`.
          */
         std::optional<std::string> implicitSingleSourceCteTypedef;
+        /** During SELECT codegen: SQL column alias name → C++ alias type name (e.g. `colalias_i`, `GradeAlias`). */
+        std::map<std::string, std::string> activeSelectColumnAliases;
 
         CodeGenResult generateNode(const AstNode& astNode);
 

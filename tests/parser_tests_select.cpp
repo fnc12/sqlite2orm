@@ -188,6 +188,29 @@ TEST_CASE("parser: SELECT with column alias") {
     REQUIRE(require_node<SelectNode>(parseResult) == expected);
 }
 
+TEST_CASE("parser: SELECT with implicit column alias") {
+    auto parseResult = parse("SELECT name user_name FROM users");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), "user_name"}};
+    expected.fromClause = from_one("users");
+    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: SELECT function with implicit alias") {
+    auto parseResult = parse("SELECT instr(abilities, 'o') i FROM marvel");
+    REQUIRE(parseResult);
+    std::vector<AstNodePointer> instrArgs;
+    instrArgs.push_back(make_node<ColumnRefNode>("abilities"));
+    instrArgs.push_back(make_node<StringLiteralNode>("'o'"));
+    auto instrCall =
+        std::make_shared<FunctionCallNode>("instr", std::move(instrArgs), false, false, SourceLocation{});
+    SelectNode expected({});
+    expected.columns = {SelectColumn{std::move(instrCall), "i"}};
+    expected.fromClause = from_one("marvel");
+    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+}
+
 TEST_CASE("parser: SELECT expression") {
     auto parseResult = parse("SELECT id + 1 FROM users");
     REQUIRE(parseResult);

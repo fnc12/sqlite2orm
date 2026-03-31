@@ -1783,6 +1783,9 @@ namespace sqlite2orm {
                 alias = std::string(current().value);
                 advanceToken();
             }
+        } else if(!atEnd() && check(TokenType::identifier)) {
+            alias = std::string(current().value);
+            advanceToken();
         }
         return SelectColumn{std::shared_ptr<AstNode>(std::move(expr)), std::move(alias)};
     }

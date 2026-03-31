@@ -314,3 +314,52 @@ TEST_CASE("codegen: SELECT without alias is unchanged") {
     auto result = generate("SELECT id, name FROM users");
     REQUIRE(result == "auto rows = storage.select(columns(&Users::id, &Users::name));");
 }
+
+TEST_CASE("codegen: SELECT implicit column alias (without AS)") {
+    auto result = generate_full("SELECT name user_name FROM users");
+    REQUIRE(result.code ==
+        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"user_name\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "auto rows = storage.select(as<User_nameAlias>(&Users::name));");
+}
+
+TEST_CASE("codegen: SELECT builtin colalias for single-letter alias") {
+    auto result = generate_full("SELECT name AS i FROM users");
+    REQUIRE(result.code == "auto rows = storage.select(as<colalias_i>(&Users::name));");
+    bool hasBuiltinWarning = false;
+    for(const auto& w : result.warnings) {
+        if(w.find("colalias_") != std::string::npos) hasBuiltinWarning = true;
+    }
+    REQUIRE(hasBuiltinWarning);
+}
+
+TEST_CASE("codegen: SELECT alias referenced in WHERE and ORDER BY") {
+    auto result = generate(
+        "SELECT name, instr(abilities, 'o') i "
+        "FROM marvel "
+        "WHERE i > 0 "
+        "ORDER BY i");
+    REQUIRE(result ==
+        "auto rows = storage.select("
+        "columns(&Marvel::name, as<colalias_i>(instr(&Marvel::abilities, \"o\"))), "
+        "where(c(get<colalias_i>()) > 0), "
+        "order_by(get<colalias_i>()));");
+}
+
+TEST_CASE("codegen: SELECT alias referenced in ORDER BY with custom struct") {
+    auto result = generate(
+        "SELECT name AS user_name FROM users ORDER BY user_name");
+    REQUIRE(result ==
+        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"user_name\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "auto rows = storage.select(as<User_nameAlias>(&Users::name), "
+        "order_by(get<User_nameAlias>()));");
+}

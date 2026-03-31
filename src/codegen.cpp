@@ -109,8 +109,15 @@ namespace sqlite2orm {
             return std::string(alias);
         }
 
-        std::string column_alias_struct_name(std::string_view rawAlias) {
+        bool is_builtin_colalias(std::string_view stripped) {
+            return stripped.size() == 1 && stripped[0] >= 'a' && stripped[0] <= 'i';
+        }
+
+        std::string column_alias_type_name(std::string_view rawAlias) {
             std::string stripped = strip_column_alias_quotes(rawAlias);
+            if(is_builtin_colalias(stripped)) {
+                return "colalias_" + stripped;
+            }
             std::string name = to_cpp_identifier(stripped);
             if(!name.empty() && std::islower(static_cast<unsigned char>(name[0]))) {
                 name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
@@ -118,21 +125,27 @@ namespace sqlite2orm {
             return name + "Alias";
         }
 
+        bool needs_custom_alias_struct(std::string_view rawAlias) {
+            std::string stripped = strip_column_alias_quotes(rawAlias);
+            return !is_builtin_colalias(stripped);
+        }
+
         std::string generate_column_alias_preamble(const std::vector<SelectColumn>& columns) {
             std::string preamble;
             std::vector<std::string> emitted;
             for(const auto& col : columns) {
                 if(col.alias.empty()) continue;
-                std::string structName = column_alias_struct_name(col.alias);
+                if(!needs_custom_alias_struct(col.alias)) continue;
+                std::string typeName = column_alias_type_name(col.alias);
                 bool alreadyEmitted = false;
                 for(const auto& e : emitted) {
-                    if(e == structName) {
+                    if(e == typeName) {
                         alreadyEmitted = true;
                         break;
                     }
                 }
                 if(alreadyEmitted) continue;
-                emitted.push_back(structName);
+                emitted.push_back(typeName);
                 std::string displayName = strip_column_alias_quotes(col.alias);
                 std::string escaped;
                 for(char c : displayName) {
@@ -143,7 +156,7 @@ namespace sqlite2orm {
                     else
                         escaped += c;
                 }
-                preamble += "struct " + structName +
+                preamble += "struct " + typeName +
                             " : sqlite_orm::alias_tag {\n"
                             "    static const std::string& get() {\n"
                             "        static const std::string res = \"" +
@@ -158,7 +171,7 @@ namespace sqlite2orm {
 
         std::string wrap_with_column_alias(const std::string& exprCode, const std::string& rawAlias) {
             if(rawAlias.empty()) return exprCode;
-            return "as<" + column_alias_struct_name(rawAlias) + ">(" + exprCode + ")";
+            return "as<" + column_alias_type_name(rawAlias) + ">(" + exprCode + ")";
         }
 
         bool has_any_column_alias(const std::vector<SelectColumn>& columns) {
@@ -433,6 +446,13 @@ namespace sqlite2orm {
             }
             return CodeGenResult{"current_timestamp()", {}};
         } else if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&astNode)) {
+            {
+                std::string normalized = toLowerAscii(strip_identifier_quotes(columnRef->columnName));
+                auto aliasIt = this->activeSelectColumnAliases.find(normalized);
+                if(aliasIt != this->activeSelectColumnAliases.end()) {
+                    return CodeGenResult{"get<" + aliasIt->second + ">()", {}};
+                }
+            }
             auto cppName = to_cpp_identifier(columnRef->columnName);
             registerColumn(cppName, "int");
             if(this->implicitSingleSourceCteTypedef) {
@@ -1651,6 +1671,14 @@ namespace sqlite2orm {
                 }
             }
 
+            this->activeSelectColumnAliases.clear();
+            for(const auto& column : selectNode->columns) {
+                if(!column.alias.empty()) {
+                    std::string key = toLowerAscii(strip_column_alias_quotes(column.alias));
+                    this->activeSelectColumnAliases[key] = column_alias_type_name(column.alias);
+                }
+            }
+
             std::vector<std::string> selectTrailingClauses;
             auto appendClause = [&](const std::string& clause) { selectTrailingClauses.push_back(clause); };
 
@@ -1825,11 +1853,28 @@ namespace sqlite2orm {
                 }
                 code += ");";
             }
-            if(!aliasPreamble.empty()) {
-                code = aliasPreamble + code;
-                selectWarnings.push_back(
-                    "SELECT column alias uses as<AliasTag>() with a generated sqlite_orm::alias_tag struct");
+            if(has_any_column_alias(selectNode->columns)) {
+                bool hasBuiltin = false;
+                bool hasCustom = false;
+                for(const auto& column : selectNode->columns) {
+                    if(column.alias.empty()) continue;
+                    if(needs_custom_alias_struct(column.alias))
+                        hasCustom = true;
+                    else
+                        hasBuiltin = true;
+                }
+                if(hasCustom) {
+                    code = aliasPreamble + code;
+                    selectWarnings.push_back(
+                        "SELECT column alias uses as<AliasTag>() with a generated sqlite_orm::alias_tag struct");
+                }
+                if(hasBuiltin) {
+                    selectWarnings.push_back(
+                        "SELECT column alias uses sqlite_orm built-in colalias_* types; "
+                        "requires `using namespace sqlite_orm`");
+                }
             }
+            this->activeSelectColumnAliases.clear();
             return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
         }
         if(auto* pragmaNode = dynamic_cast<const PragmaNode*>(&astNode)) {
@@ -2029,15 +2074,18 @@ namespace sqlite2orm {
         struct SubselectAliasRestore {
             CodeGenerator* generator;
             std::map<std::string, std::string> savedAliases;
+            std::map<std::string, std::string> savedColumnAliases;
             std::string savedStructName;
             std::optional<std::string> savedImplicitCte;
 
             SubselectAliasRestore(CodeGenerator* gen)
-                : generator(gen), savedAliases(gen->fromTableAliasToStructName), savedStructName(gen->structName),
+                : generator(gen), savedAliases(gen->fromTableAliasToStructName),
+                  savedColumnAliases(gen->activeSelectColumnAliases), savedStructName(gen->structName),
                   savedImplicitCte(std::move(gen->implicitSingleSourceCteTypedef)) {}
 
             ~SubselectAliasRestore() {
                 generator->fromTableAliasToStructName = std::move(savedAliases);
+                generator->activeSelectColumnAliases = std::move(savedColumnAliases);
                 generator->structName = std::move(savedStructName);
                 generator->implicitSingleSourceCteTypedef = std::move(savedImplicitCte);
             }
@@ -2290,15 +2338,19 @@ namespace sqlite2orm {
             CodeGenerator* gen;
             std::string savedStruct;
             std::map<std::string, std::string> savedAliases;
+            std::map<std::string, std::string> savedColumnAliases;
 
             TriggerStepScope(CodeGenerator* g, const std::string& subject)
-                : gen(g), savedStruct(g->structName), savedAliases(g->fromTableAliasToStructName) {
+                : gen(g), savedStruct(g->structName), savedAliases(g->fromTableAliasToStructName),
+                  savedColumnAliases(g->activeSelectColumnAliases) {
                 gen->structName = subject;
                 gen->fromTableAliasToStructName.clear();
+                gen->activeSelectColumnAliases.clear();
             }
             ~TriggerStepScope() {
                 gen->structName = std::move(savedStruct);
                 gen->fromTableAliasToStructName = std::move(savedAliases);
+                gen->activeSelectColumnAliases = std::move(savedColumnAliases);
             }
         } scope{this, subjectTableStruct};
 

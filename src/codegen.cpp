@@ -97,6 +97,77 @@ namespace sqlite2orm {
             return result;
         }
 
+        std::string strip_column_alias_quotes(std::string_view alias) {
+            if(alias.size() >= 2) {
+                char first = alias.front();
+                char last = alias.back();
+                if((first == '\'' && last == '\'') || (first == '"' && last == '"') || (first == '`' && last == '`') ||
+                   (first == '[' && last == ']')) {
+                    return std::string(alias.substr(1, alias.size() - 2));
+                }
+            }
+            return std::string(alias);
+        }
+
+        std::string column_alias_struct_name(std::string_view rawAlias) {
+            std::string stripped = strip_column_alias_quotes(rawAlias);
+            std::string name = to_cpp_identifier(stripped);
+            if(!name.empty() && std::islower(static_cast<unsigned char>(name[0]))) {
+                name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
+            }
+            return name + "Alias";
+        }
+
+        std::string generate_column_alias_preamble(const std::vector<SelectColumn>& columns) {
+            std::string preamble;
+            std::vector<std::string> emitted;
+            for(const auto& col : columns) {
+                if(col.alias.empty()) continue;
+                std::string structName = column_alias_struct_name(col.alias);
+                bool alreadyEmitted = false;
+                for(const auto& e : emitted) {
+                    if(e == structName) {
+                        alreadyEmitted = true;
+                        break;
+                    }
+                }
+                if(alreadyEmitted) continue;
+                emitted.push_back(structName);
+                std::string displayName = strip_column_alias_quotes(col.alias);
+                std::string escaped;
+                for(char c : displayName) {
+                    if(c == '\\')
+                        escaped += "\\\\";
+                    else if(c == '"')
+                        escaped += "\\\"";
+                    else
+                        escaped += c;
+                }
+                preamble += "struct " + structName +
+                            " : sqlite_orm::alias_tag {\n"
+                            "    static const std::string& get() {\n"
+                            "        static const std::string res = \"" +
+                            escaped +
+                            "\";\n"
+                            "        return res;\n"
+                            "    }\n"
+                            "};\n";
+            }
+            return preamble;
+        }
+
+        std::string wrap_with_column_alias(const std::string& exprCode, const std::string& rawAlias) {
+            if(rawAlias.empty()) return exprCode;
+            return "as<" + column_alias_struct_name(rawAlias) + ">(" + exprCode + ")";
+        }
+
+        bool has_any_column_alias(const std::vector<SelectColumn>& columns) {
+            for(const auto& col : columns) {
+                if(!col.alias.empty()) return true;
+            }
+            return false;
+        }
+
         std::string_view binary_operator_string(BinaryOperator binaryOperator) {
             switch(binaryOperator) {
                 case BinaryOperator::logicalOr:             return " or ";
@@ -1547,27 +1618,34 @@ namespace sqlite2orm {
                 apiLevelDecisionId = this->nextDecisionPointId++;
             }
             std::string code;
+            std::string aliasPreamble;
             if(!isStar) {
+                if(has_any_column_alias(selectNode->columns)) {
+                    aliasPreamble = generate_column_alias_preamble(selectNode->columns);
+                }
                 code = "auto rows = storage.select(";
                 if(selectNode->distinct) {
                     if(selectNode->columns.size() == 1) {
                         auto colCode = expressionCode(*selectNode->columns.at(0).expression);
-                        code += "distinct(" + colCode + ")";
+                        code += "distinct(" + wrap_with_column_alias(colCode, selectNode->columns.at(0).alias) + ")";
                     } else {
                         code += "distinct(columns(";
                         for(size_t i = 0; i < selectNode->columns.size(); ++i) {
                             if(i > 0) code += ", ";
-                            code += expressionCode(*selectNode->columns.at(i).expression);
+                            auto colCode = expressionCode(*selectNode->columns.at(i).expression);
+                            code += wrap_with_column_alias(colCode, selectNode->columns.at(i).alias);
                         }
                         code += "))";
                     }
                 } else if(selectNode->columns.size() == 1) {
-                    code += expressionCode(*selectNode->columns.at(0).expression);
+                    auto colCode = expressionCode(*selectNode->columns.at(0).expression);
+                    code += wrap_with_column_alias(colCode, selectNode->columns.at(0).alias);
                 } else {
                     code += "columns(";
                     for(size_t i = 0; i < selectNode->columns.size(); ++i) {
                         if(i > 0) code += ", ";
-                        code += expressionCode(*selectNode->columns.at(i).expression);
+                        auto colCode = expressionCode(*selectNode->columns.at(i).expression);
+                        code += wrap_with_column_alias(colCode, selectNode->columns.at(i).alias);
                     }
                     code += ")";
                 }
@@ -1746,6 +1824,11 @@ namespace sqlite2orm {
                     code += trailingJoined;
                 }
                 code += ");";
+            }
+            if(!aliasPreamble.empty()) {
+                code = aliasPreamble + code;
+                selectWarnings.push_back(
+                    "SELECT column alias uses as<AliasTag>() with a generated sqlite_orm::alias_tag struct");
             }
             return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
         }

@@ -242,3 +242,75 @@ TEST_CASE("codegen: VALUES standalone") {
     REQUIRE(generate("VALUES (1, 'a'), (2, 'b');") ==
         "auto rows = storage.select(columns(1, \"a\"));");
 }
+
+TEST_CASE("codegen: SELECT single column with alias") {
+    auto result = generate_full("SELECT name AS user_name FROM users");
+    REQUIRE(result.code ==
+        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"user_name\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "auto rows = storage.select(as<User_nameAlias>(&Users::name));");
+    REQUIRE(!result.warnings.empty());
+}
+
+TEST_CASE("codegen: SELECT multiple columns with one alias") {
+    auto result = generate("SELECT id, name AS user_name FROM users");
+    REQUIRE(result ==
+        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"user_name\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "auto rows = storage.select(columns(&Users::id, as<User_nameAlias>(&Users::name)));");
+}
+
+TEST_CASE("codegen: SELECT column with string literal alias") {
+    auto result = generate("SELECT name AS 'UserName' FROM users");
+    REQUIRE(result ==
+        "struct UserNameAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"UserName\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "auto rows = storage.select(as<UserNameAlias>(&Users::name));");
+}
+
+TEST_CASE("codegen: SELECT DISTINCT column with alias") {
+    auto result = generate("SELECT DISTINCT name AS user_name FROM users");
+    REQUIRE(result ==
+        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"user_name\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "auto rows = storage.select(distinct(as<User_nameAlias>(&Users::name)));");
+}
+
+TEST_CASE("codegen: SELECT DISTINCT multiple columns with aliases") {
+    auto result = generate("SELECT DISTINCT id AS ID, name AS user_name FROM users");
+    REQUIRE(result ==
+        "struct IDAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"ID\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+        "    static const std::string& get() {\n"
+        "        static const std::string res = \"user_name\";\n"
+        "        return res;\n"
+        "    }\n"
+        "};\n"
+        "auto rows = storage.select(distinct(columns(as<IDAlias>(&Users::id), as<User_nameAlias>(&Users::name))));");
+}
+
+TEST_CASE("codegen: SELECT without alias is unchanged") {
+    auto result = generate("SELECT id, name FROM users");
+    REQUIRE(result == "auto rows = storage.select(columns(&Users::id, &Users::name));");
+}

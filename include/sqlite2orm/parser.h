@@ -84,6 +84,8 @@ namespace sqlite2orm {
         AstNodePointer parseSelect();
         /** `parseSelectCore` plus UNION/INTERSECT/EXCEPT arms (no leading WITH). */
         AstNodePointer parseSelectCompoundBody();
+        /** One compound arm: `SELECT …` or `VALUES …` (SQLite table-valued select). */
+        AstNodePointer parseCompoundSelectCore();
         AstNodePointer parseSelectCore();
         SelectColumn parseSelectResultColumn();
         /** Parse a complete FROM clause (first table + comma/join items), handling (join-clause). */

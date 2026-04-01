@@ -52,6 +52,30 @@ namespace {
         return d;
     }
 
+    /** `VALUES(1) UNION ALL SELECT x + 1 FROM cnt WHERE x < 3` — same shape as parsed recursive CTE body. */
+    AstNodePointer cntRecursiveCteCompoundBody() {
+        std::vector<AstNodePointer> arms;
+        arms.push_back(selectIntegerOne());
+        auto second = std::make_unique<SelectNode>(SourceLocation{});
+        second->columns = {SelectColumn{
+            make_shared_node<BinaryOperatorNode>(BinaryOperator::add, make_node<ColumnRefNode>("x"),
+                                                 make_node<IntegerLiteralNode>("1")),
+            ""}};
+        second->fromClause = from_one("cnt");
+        second->whereClause = make_shared_node<BinaryOperatorNode>(
+            BinaryOperator::lessThan, make_node<ColumnRefNode>("x"), make_node<IntegerLiteralNode>("3"));
+        arms.push_back(std::move(second));
+        return std::make_unique<CompoundSelectNode>(
+            std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll}, SourceLocation{});
+    }
+
+    AstNodePointer selectXFromCnt() {
+        auto s = std::make_unique<SelectNode>(SourceLocation{});
+        s->columns = {SelectColumn{make_shared_node<ColumnRefNode>("x"), ""}};
+        s->fromClause = from_one("cnt");
+        return s;
+    }
+
 }  // namespace
 
 TEST_CASE("parser: WITH … SELECT (single CTE)") {
@@ -181,4 +205,32 @@ TEST_CASE("parser: WITH CTE AS MATERIALIZED / NOT MATERIALIZED") {
         WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
         REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
     }
+}
+
+TEST_CASE("parser: WITH … CTE body allows VALUES") {
+    auto parseResult = parse("WITH c AS (VALUES (1)) SELECT 1;");
+    REQUIRE(parseResult);
+    WithClause withClause;
+    CommonTableExpression cte;
+    cte.cteName = "c";
+    cte.query = selectIntegerOne();
+    withClause.tables.push_back(std::move(cte));
+    WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
+    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: WITH RECURSIVE CTE compound starting with VALUES") {
+    const char* sql =
+        "WITH RECURSIVE cnt(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM cnt WHERE x < 3) SELECT x FROM cnt;";
+    auto parseResult = parse(sql);
+    REQUIRE(parseResult);
+    WithClause withClause;
+    withClause.recursive = true;
+    CommonTableExpression cte;
+    cte.cteName = "cnt";
+    cte.columnNames = {"x"};
+    cte.query = cntRecursiveCteCompoundBody();
+    withClause.tables.push_back(std::move(cte));
+    WithQueryNode expected(std::move(withClause), selectXFromCnt(), SourceLocation{});
+    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
 }

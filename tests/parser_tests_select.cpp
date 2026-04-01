@@ -421,6 +421,38 @@ TEST_CASE("parser: VALUES standalone") {
     REQUIRE(require_node<SelectNode>(parseResult) == expected);
 }
 
+namespace {
+
+    AstNodePointer select_literal_int(std::string_view v) {
+        auto selectNode = std::make_unique<SelectNode>(SourceLocation{});
+        selectNode->columns = {SelectColumn{make_shared_node<IntegerLiteralNode>(v), ""}};
+        return selectNode;
+    }
+
+}  // namespace
+
+TEST_CASE("parser: VALUES UNION ALL SELECT compound") {
+    auto parseResult = parse("VALUES (1) UNION ALL SELECT 2;");
+    REQUIRE(parseResult);
+    std::vector<AstNodePointer> arms;
+    arms.push_back(select_literal_int("1"));
+    arms.push_back(select_literal_int("2"));
+    CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll},
+                                SourceLocation{});
+    REQUIRE(require_node<CompoundSelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: SELECT UNION ALL VALUES compound") {
+    auto parseResult = parse("SELECT 1 UNION ALL VALUES (2);");
+    REQUIRE(parseResult);
+    std::vector<AstNodePointer> arms;
+    arms.push_back(select_literal_int("1"));
+    arms.push_back(select_literal_int("2"));
+    CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll},
+                                SourceLocation{});
+    REQUIRE(require_node<CompoundSelectNode>(parseResult) == expected);
+}
+
 TEST_CASE("parser: table-function in FROM") {
     auto parseResult = parse("SELECT * FROM generate_series(1, 10)");
     SelectNode expected({});

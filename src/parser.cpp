@@ -1623,8 +1623,18 @@ namespace sqlite2orm {
         return node;
     }
 
+    AstNodePointer Parser::parseCompoundSelectCore() {
+        if(check(TokenType::kwSelect)) {
+            return parseSelectCore();
+        }
+        if(check(TokenType::kwValues)) {
+            return parseValuesStatement();
+        }
+        return nullptr;
+    }
+
     AstNodePointer Parser::parseSelectCompoundBody() {
-        AstNodePointer firstCore = parseSelectCore();
+        AstNodePointer firstCore = parseCompoundSelectCore();
         if(!firstCore) {
             return nullptr;
         }
@@ -1650,7 +1660,7 @@ namespace sqlite2orm {
                 break;
             }
             compoundOperators.push_back(*compoundOperator);
-            AstNodePointer nextCore = parseSelectCore();
+            AstNodePointer nextCore = parseCompoundSelectCore();
             if(!nextCore) {
                 return nullptr;
             }
@@ -2515,7 +2525,7 @@ namespace sqlite2orm {
         } else if(check(TokenType::kwReplace) && peekToken(1).type == TokenType::kwInto) {
             astNodePointer = parseInsertStatement(true);
         } else if(check(TokenType::kwValues)) {
-            astNodePointer = parseValuesStatement();
+            astNodePointer = parseSelectCompoundBody();
         } else if(check(TokenType::kwUpdate)) {
             astNodePointer = parseUpdateStatement();
         } else if(check(TokenType::kwDelete)) {

@@ -407,21 +407,36 @@ TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
         "FROM marvel "
         "WHERE i > 0 "
         "ORDER BY i";
-    auto result = generate_with_policy(sql, policy);
-    REQUIRE(result.code.find("#ifdef") == std::string::npos);
-    REQUIRE(result.code.find("constexpr orm_column_alias auto i") != std::string::npos);
-    REQUIRE(result.code.find("as<i>(instr(&Marvel::abilities, \"o\"))") != std::string::npos);
-    REQUIRE(result.code.find("where(i > 0)") != std::string::npos);
-    REQUIRE(result.code.find("order_by(i)") != std::string::npos);
-    REQUIRE(result.comments == std::vector<std::string>{kExpectedCpp20ColumnAliasComment});
-    bool hasAliasTagAlt = false;
-    for(const auto& dp : result.decisionPoints) {
-        if(dp.category == "column_alias_style" && dp.chosenValue == "cpp20_literal") {
-            hasAliasTagAlt = true;
-            REQUIRE(dp.alternatives.size() == 1u);
-            REQUIRE(dp.alternatives[0].value == "alias_tag");
-            REQUIRE(dp.alternatives[0].code.find("colalias_i") != std::string::npos);
-        }
-    }
-    REQUIRE(hasAliasTagAlt);
+
+    const std::string mainCode =
+        "constexpr orm_column_alias auto i = \"i\"_col;\n"
+        "auto rows = storage.select(columns(&Marvel::name, as<i>(instr(&Marvel::abilities, \"o\"))), "
+        "where(i > 0), order_by(i));";
+    const std::string aliasTagAltCode =
+        "auto rows = storage.select(columns(&Marvel::name, as<colalias_i>(instr(&Marvel::abilities, \"o\"))), "
+        "where(c(get<colalias_i>()) > 0), order_by(get<colalias_i>()));";
+
+    REQUIRE(generate_with_policy(sql, policy) ==
+            CodeGenResult{
+                mainCode,
+                {column_ref_style_dp(1, "&Marvel::name"),
+                 column_ref_style_dp(2, "&Marvel::abilities"),
+                 DecisionPoint{3,
+                               "expr_style",
+                               "operator_wrap_left",
+                               "i > 0",
+                               {Alternative{"operator_wrap_right", "i > c(0)", "wrap right operand"},
+                                Alternative{"functional", "greater_than(i, 0)", "functional style"},
+                                Alternative{"operator_wrap_both", "i > c(0)", "wrap both operands", true}}},
+                 DecisionPoint{4,
+                               "column_alias_style",
+                               "cpp20_literal",
+                               mainCode,
+                               {Alternative{"alias_tag",
+                                           aliasTagAltCode,
+                                           "alias_tag / colalias_* / generated struct (default; wider compiler "
+                                           "support)"}}}},
+                {},
+                {},
+                {std::string(kExpectedCpp20ColumnAliasComment)}});
 }

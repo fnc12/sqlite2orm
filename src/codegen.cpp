@@ -2,6 +2,7 @@
 
 #include <sqlite2orm/utils.h>
 
+#include <array>
 #include <cctype>
 #include <optional>
 #include <string>
@@ -178,6 +179,31 @@ namespace sqlite2orm {
             return funcLower == "instr" || funcLower == "substr" || funcLower == "substring" ||
                    funcLower == "lower" || funcLower == "upper" || funcLower == "ltrim" || funcLower == "rtrim" ||
                    funcLower == "trim" || funcLower == "replace" || funcLower == "unicode" || funcLower == "soundex";
+        }
+
+        /**
+         * Default C++ type for a mapped column when there is no CREATE TABLE (synthetic struct).
+         * Heuristic: common human/text field names → std::string; everything else → int until a stronger hint
+         * (comparison literal, LIKE, instr, …) upgrades via registerColumn.
+         */
+        std::string default_cpp_type_for_synthetic_column(std::string_view cppIdentifier) {
+            const std::string lower = toLowerAscii(cppIdentifier);
+            static constexpr std::array<std::string_view, 44> kLikelyText{{
+                "address",    "author",     "body",       "caption",   "city",        "comment",
+                "comments",   "company",    "country",    "currency",    "department",  "description",
+                "domain",     "email",      "firstname",  "headline",    "hostname",    "iban",
+                "label",      "language",   "lastname",   "locale",      "login",       "message",
+                "name",       "nickname",   "notes",      "path",        "phone",       "referrer",
+                "region",     "signature",  "slug",       "street",      "subtitle",    "surname",
+                "swift",      "timezone",   "title",      "uri",         "url",         "user_agent",
+                "uuid",       "zip",
+            }};
+            for(std::string_view hint : kLikelyText) {
+                if(lower == hint) {
+                    return "std::string";
+                }
+            }
+            return "int";
         }
 
         /** Same text wherever this requirement applies (deduplicated across merges). */
@@ -539,7 +565,7 @@ namespace sqlite2orm {
                 }
             }
             auto cppName = to_cpp_identifier(columnRef->columnName);
-            registerColumn(cppName, "int");
+            registerColumn(cppName, default_cpp_type_for_synthetic_column(cppName));
             if(this->implicitSingleSourceCteTypedef) {
                 std::string colLit = identifier_to_cpp_string_literal(strip_identifier_quotes(columnRef->columnName));
                 std::string cteCol = "column<" + *this->implicitSingleSourceCteTypedef + ">(" + colLit + ")";
@@ -608,11 +634,11 @@ namespace sqlite2orm {
                                  std::move(qualifiedAsteriskWarnings)};
         } else if(auto* newRef = dynamic_cast<const NewRefNode*>(&astNode)) {
             auto cppName = to_cpp_identifier(newRef->columnName);
-            registerColumn(cppName, "int");
+            registerColumn(cppName, default_cpp_type_for_synthetic_column(cppName));
             return CodeGenResult{"new_(&" + this->structName + "::" + cppName + ")", {}};
         } else if(auto* oldRef = dynamic_cast<const OldRefNode*>(&astNode)) {
             auto cppName = to_cpp_identifier(oldRef->columnName);
-            registerColumn(cppName, "int");
+            registerColumn(cppName, default_cpp_type_for_synthetic_column(cppName));
             return CodeGenResult{"old(&" + this->structName + "::" + cppName + ")", {}};
         } else if(auto* excludedRef = dynamic_cast<const ExcludedRefNode*>(&astNode)) {
             auto cppName = to_cpp_identifier(excludedRef->columnName);

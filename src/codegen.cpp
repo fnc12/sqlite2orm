@@ -607,6 +607,10 @@ namespace sqlite2orm {
             if(aliasIt != this->fromTableAliasToStructName.end()) {
                 structForColumn = aliasIt->second;
             }
+            {
+                const std::string colCpp = to_cpp_identifier(qualifiedRef->columnName);
+                registerColumn(colCpp, default_cpp_type_for_synthetic_column(colCpp));
+            }
             std::string memberPointer = "&" + structForColumn + "::" + to_cpp_identifier(qualifiedRef->columnName);
             std::string columnPointer = "column<" + structForColumn + ">(" + memberPointer + ")";
             const bool useQColPtr = policyEquals(this->codeGenPolicy, "column_ref_style", "column_pointer");

@@ -444,6 +444,11 @@ TEST_CASE("codegen: prefix - synthetic column name heuristic for text") {
     REQUIRE(prefix_for("SELECT id FROM books") == "struct Books {\n    int id = 0;\n};");
 }
 
+TEST_CASE("codegen: prefix - qualified quoted columns populate synthetic struct") {
+    REQUIRE(prefix_for(R"(SELECT "last_result"."id", "last_result"."stamp" FROM "last_result")") ==
+            "struct LastResult {\n    int id = 0;\n    int stamp = 0;\n};");
+}
+
 TEST_CASE("codegen: prefix - multiple columns sorted") {
     auto result = prefix_for("a > 5 AND b = 'hello'");
     REQUIRE(result == "struct User {\n    int a = 0;\n    std::string b;\n};");

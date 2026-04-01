@@ -434,6 +434,11 @@ TEST_CASE("codegen: prefix - LIKE infers string") {
     REQUIRE(prefix_for("name LIKE '%foo%'") == "struct User {\n    std::string name;\n};");
 }
 
+TEST_CASE("codegen: prefix - instr first argument infers string column") {
+    REQUIRE(prefix_for("SELECT name, instr(abilities, 'o') FROM marvel ORDER BY 2") ==
+            "struct Marvel {\n    std::string abilities;\n    int name = 0;\n};");
+}
+
 TEST_CASE("codegen: prefix - multiple columns sorted") {
     auto result = prefix_for("a > 5 AND b = 'hello'");
     REQUIRE(result == "struct User {\n    int a = 0;\n    std::string b;\n};");

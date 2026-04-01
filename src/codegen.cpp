@@ -173,6 +173,13 @@ namespace sqlite2orm {
             return to_cpp_identifier(strip_column_alias_quotes(rawAlias));
         }
 
+        /** SQLite scalar functions whose first argument is a string/text context in typical use. */
+        bool sqlite_scalar_first_arg_text_context(std::string_view funcLower) {
+            return funcLower == "instr" || funcLower == "substr" || funcLower == "substring" ||
+                   funcLower == "lower" || funcLower == "upper" || funcLower == "ltrim" || funcLower == "rtrim" ||
+                   funcLower == "trim" || funcLower == "replace" || funcLower == "unicode" || funcLower == "soundex";
+        }
+
         /** Same text wherever this requirement applies (deduplicated across merges). */
         const std::string kCommentCpp20ColumnAliases =
             "C++20 literal column aliases (`orm_column_alias`, string literal `_col`) require sqlite_orm to be "
@@ -1008,6 +1015,12 @@ namespace sqlite2orm {
                         std::make_move_iterator(argResult.warnings.end()));
                     if(i > 0) argList += ", ";
                     argList += argResult.code;
+                }
+                if(!funcCall->star && !funcCall->arguments.empty() &&
+                   sqlite_scalar_first_arg_text_context(funcName)) {
+                    if(auto* col = dynamic_cast<const ColumnRefNode*>(funcCall->arguments.at(0).get())) {
+                        registerColumn(to_cpp_identifier(col->columnName), "std::string");
+                    }
                 }
                 if(funcCall->distinct && !argList.empty()) {
                     baseCode = funcName + "(distinct(" + argList + "))";

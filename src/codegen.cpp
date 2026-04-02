@@ -2303,10 +2303,14 @@ namespace sqlite2orm {
         std::vector<std::string> subWarnings;
         std::vector<DecisionPoint> subDecisionPoints;
 
-        if(selectNode.groupBy || !selectNode.orderBy.empty() || selectNode.limitValue >= 0 ||
-           selectNode.offsetValue >= 0) {
+        if(selectNode.groupBy || !selectNode.orderBy.empty()) {
             subWarnings.push_back(
-                "GROUP BY / ORDER BY / LIMIT / OFFSET in subquery are not yet mapped to sqlite_orm select(...)");
+                "GROUP BY / ORDER BY in subquery are not yet mapped to sqlite_orm select(...)");
+            return CodeGenResult{{}, {}, std::move(subWarnings)};
+        }
+        if(selectNode.offsetValue >= 0 && selectNode.limitValue < 0) {
+            subWarnings.push_back(
+                "OFFSET without LIMIT in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
         }
 
@@ -2466,6 +2470,13 @@ namespace sqlite2orm {
         for(const auto& part : tailParts) {
             code += ", ";
             code += part;
+        }
+        if(selectNode.limitValue >= 0) {
+            code += ", limit(" + std::to_string(selectNode.limitValue);
+            if(selectNode.offsetValue >= 0) {
+                code += ", offset(" + std::to_string(selectNode.offsetValue) + ")";
+            }
+            code += ")";
         }
         code += ")";
         return CodeGenResult{code, std::move(subDecisionPoints), std::move(subWarnings)};

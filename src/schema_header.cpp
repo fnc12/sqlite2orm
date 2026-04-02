@@ -219,6 +219,34 @@ namespace sqlite2orm {
         }
         oss << ");\n}\n";
 
+        std::vector<std::string> dmlStatements;
+        for(const SchemaStatementResult& statementResult : schema.statements) {
+            if(!statementResult.pipeline.ok()) {
+                continue;
+            }
+            const AstNode* root = statementResult.pipeline.parseResult.astNodePointer.get();
+            if(dynamic_cast<const CreateTableNode*>(root) || dynamic_cast<const CreateIndexNode*>(root) ||
+               dynamic_cast<const CreateTriggerNode*>(root) || dynamic_cast<const CreateVirtualTableNode*>(root) ||
+               dynamic_cast<const CreateViewNode*>(root)) {
+                continue;
+            }
+            CodeGenResult fragment = gen.generate(*root);
+            allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());
+            appendUniqueStrings(allComments, fragment.comments);
+            allDecisionPoints.insert(allDecisionPoints.end(), fragment.decisionPoints.begin(),
+                                     fragment.decisionPoints.end());
+            if(!fragment.code.empty()) {
+                dmlStatements.push_back(fragment.code);
+            }
+        }
+        if(!dmlStatements.empty()) {
+            oss << "\ninline void seed_data(decltype(make_sqlite_schema_storage(\"\"))& storage) {\n";
+            for(const std::string& dml : dmlStatements) {
+                oss << "    " << dml << "\n";
+            }
+            oss << "}\n";
+        }
+
         return CodeGenResult{oss.str(), std::move(allDecisionPoints), std::move(allWarnings), {},
                              std::move(allComments)};
     }

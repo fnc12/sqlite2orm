@@ -2575,4 +2575,48 @@ namespace sqlite2orm {
         return ParseResult{std::move(astNodePointer), {}};
     }
 
+    std::vector<ParseResult> Parser::parseAll(std::vector<Token> tokensInput) {
+        this->tokens = std::move(tokensInput);
+        this->position = 0;
+
+        std::vector<ParseResult> results;
+        while(!atEnd()) {
+            while(!atEnd() && current().type == TokenType::semicolon) {
+                advanceToken();
+            }
+            if(atEnd()) {
+                break;
+            }
+
+            size_t saved = this->position;
+            std::vector<Token> slice;
+            int parenDepth = 0;
+            while(!atEnd()) {
+                const Token& tok = current();
+                if(tok.type == TokenType::leftParen) {
+                    ++parenDepth;
+                } else if(tok.type == TokenType::rightParen) {
+                    --parenDepth;
+                } else if(tok.type == TokenType::semicolon && parenDepth <= 0) {
+                    break;
+                }
+                slice.push_back(tok);
+                advanceToken();
+            }
+            if(!atEnd() && current().type == TokenType::semicolon) {
+                slice.push_back(current());
+                advanceToken();
+            }
+
+            if(slice.empty() || slice.back().type == TokenType::eof) {
+                continue;
+            }
+            slice.push_back(Token{TokenType::eof, "", slice.back().location});
+
+            Parser inner;
+            results.push_back(inner.parse(std::move(slice)));
+        }
+        return results;
+    }
+
 }  // namespace sqlite2orm

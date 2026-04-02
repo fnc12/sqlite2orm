@@ -28,10 +28,14 @@ namespace sqlite2orm {
     /**
      *  Tokenize → parse → validate (if parse succeeded) → codegen (if validation passed).
      *  Tokenizer errors are reported as `parseResult.errors` with a null AST.
+     *  Processes only the **first** statement; use `processMultiSql` for multi-statement input.
      */
     ProcessSqlResult processSql(std::string_view sql);
 
     /** Same as `processSql(sql)` when `policy` is null; otherwise steers codegen decision points. */
     ProcessSqlResult processSql(std::string_view sql, const CodeGenPolicy* policy);
+
+    /** Tokenize → parse all semicolon-separated statements → validate + codegen each one. */
+    std::vector<ProcessSqlResult> processMultiSql(std::string_view sql, const CodeGenPolicy* policy = nullptr);
 
 }  // namespace sqlite2orm

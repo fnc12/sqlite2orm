@@ -28,6 +28,8 @@ namespace sqlite2orm {
     class Parser {
       public:
         ParseResult parse(std::vector<Token> tokens);
+        /** Parse all semicolon-separated statements from `tokens`. */
+        std::vector<ParseResult> parseAll(std::vector<Token> tokens);
 
       private:
         std::vector<Token> tokens;

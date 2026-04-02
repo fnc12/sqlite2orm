@@ -87,6 +87,29 @@ TEST_CASE("processSql: WITH … INSERT pipeline") {
     REQUIRE(processSql("WITH c AS (SELECT 1) INSERT INTO t (x) VALUES (1);") == expected);
 }
 
+TEST_CASE("processMultiSql: multiple statements") {
+    std::vector<ProcessSqlResult> expected;
+    expected.push_back(processSql("SELECT 1;"));
+    expected.push_back(processSql("SELECT 2;"));
+    REQUIRE(processMultiSql("SELECT 1; SELECT 2;") == expected);
+}
+
+TEST_CASE("processMultiSql: CREATE TABLE + INSERT") {
+    std::vector<ProcessSqlResult> expected;
+    expected.push_back(processSql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"));
+    expected.push_back(processSql("INSERT INTO t (id, name) VALUES (1, 'Alice');"));
+    REQUIRE(processMultiSql(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"
+        "INSERT INTO t (id, name) VALUES (1, 'Alice');") == expected);
+}
+
+TEST_CASE("processMultiSql: validation error does not block other statements") {
+    std::vector<ProcessSqlResult> expected;
+    expected.push_back(processSql("INSERT INTO t VALUES (1);"));
+    expected.push_back(processSql("SELECT 42;"));
+    REQUIRE(processMultiSql("INSERT INTO t VALUES (1); SELECT 42;") == expected);
+}
+
 TEST_CASE("processSql: BEGIN TRANSACTION") {
     const ProcessSqlResult expected = expectedFromPipeline("BEGIN TRANSACTION;");
     REQUIRE(processSql("BEGIN TRANSACTION;") == expected);

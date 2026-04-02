@@ -169,3 +169,40 @@ TEST_CASE("parser: DELETE with RETURNING") {
     expectedAst->returning.push_back(ReturningColumn{makeNode<ColumnRefNode>("id"), ""});
     REQUIRE(result == ParseResult{std::move(expectedAst), {}});
 }
+
+TEST_CASE("parser: parseAll splits multiple statements on semicolons") {
+    Tokenizer tokenizer;
+    Parser parser;
+    auto results = parser.parseAll(tokenizer.tokenize("SELECT 1; SELECT 2;"));
+    std::vector<ParseResult> expected;
+    expected.push_back(parse("SELECT 1;"));
+    expected.push_back(parse("SELECT 2;"));
+    REQUIRE(results == expected);
+}
+
+TEST_CASE("parser: parseAll handles CREATE TABLE + INSERT") {
+    Tokenizer tokenizer;
+    Parser parser;
+    auto results = parser.parseAll(tokenizer.tokenize(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t (id) VALUES (1);"));
+    std::vector<ParseResult> expected;
+    expected.push_back(parse("CREATE TABLE t (id INTEGER PRIMARY KEY);"));
+    expected.push_back(parse("INSERT INTO t (id) VALUES (1);"));
+    REQUIRE(results == expected);
+}
+
+TEST_CASE("parser: parseAll empty input returns no results") {
+    Tokenizer tokenizer;
+    Parser parser;
+    auto results = parser.parseAll(tokenizer.tokenize(";;;"));
+    REQUIRE(results == std::vector<ParseResult>{});
+}
+
+TEST_CASE("parser: parseAll single statement without trailing semicolon") {
+    Tokenizer tokenizer;
+    Parser parser;
+    auto results = parser.parseAll(tokenizer.tokenize("SELECT 42"));
+    std::vector<ParseResult> expected;
+    expected.push_back(parse("SELECT 42"));
+    REQUIRE(results == expected);
+}

@@ -150,29 +150,32 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    const ProcessSqlResult result = processSql(sql);
-
-    for(const auto& warning : result.codegen.warnings) {
-        fmt::print(stderr, "warning: {}\n", warning);
-    }
-
-    if(!result.parseResult.errors.empty()) {
-        for(const auto& err : result.parseResult.errors) {
-            fmt::print(stderr, "parse error: {} at {}:{}\n", err.message, err.location.line, err.location.column);
+    const auto results = processMultiSql(sql);
+    int exitCode = EXIT_SUCCESS;
+    for(const ProcessSqlResult& result : results) {
+        for(const auto& warning : result.codegen.warnings) {
+            fmt::print(stderr, "warning: {}\n", warning);
         }
-        return 1;
-    }
-
-    if(!result.validationErrors.empty()) {
-        for(const auto& err : result.validationErrors) {
-            fmt::print(stderr, "validation: {} ({})\n", err.message, err.nodeType);
+        if(!result.parseResult.errors.empty()) {
+            for(const auto& err : result.parseResult.errors) {
+                fmt::print(stderr, "parse error: {} at {}:{}\n", err.message, err.location.line, err.location.column);
+            }
+            exitCode = 1;
+            continue;
         }
-        return 1;
+        if(!result.validationErrors.empty()) {
+            for(const auto& err : result.validationErrors) {
+                fmt::print(stderr, "validation: {} ({})\n", err.message, err.nodeType);
+            }
+            exitCode = 1;
+            continue;
+        }
+        if(!result.codegen.code.empty()) {
+            fmt::print("{}", result.codegen.code);
+            if(result.codegen.code.back() != '\n') {
+                fmt::print("\n");
+            }
+        }
     }
-
-    fmt::print("{}", result.codegen.code);
-    if(!result.codegen.code.empty() && result.codegen.code.back() != '\n') {
-        fmt::print("\n");
-    }
-    return EXIT_SUCCESS;
+    return exitCode;
 }

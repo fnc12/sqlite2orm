@@ -115,6 +115,54 @@ TEST_CASE("generateSqliteSchemaHeader: merged storage") {
     REQUIRE(header == expected);
 }
 
+TEST_CASE("generateSqliteSchemaHeader: DML after DDL emits seed_data()") {
+    auto pipelines = processMultiSql(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"
+        "INSERT INTO t (id, name) VALUES (1, 'Alice');");
+    REQUIRE(pipelines.size() == 2);
+    REQUIRE(pipelines[0].ok());
+    REQUIRE(pipelines[1].ok());
+
+    ProcessSqliteSchemaResult schema;
+    for(auto& p : pipelines) {
+        SchemaStatementResult s;
+        s.meta.type = "table";
+        s.pipeline = std::move(p);
+        schema.statements.push_back(std::move(s));
+    }
+
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    const CodeGenResult expected{
+        .code = R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct T {
+    int64_t id = 0;
+    std::optional<std::string> name;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("t",
+        make_column("id", &T::id, primary_key()),
+        make_column("name", &T::name)));
+}
+
+inline void seed_data(decltype(make_sqlite_schema_storage(""))& storage) {
+    storage.insert(into<T>(), columns(&T::id, &T::name), values(std::make_tuple(1, "Alice")));
+}
+)",
+    };
+    REQUIRE(header == expected);
+}
+
 TEST_CASE("sqliteSchemaResultToJson: shape") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");

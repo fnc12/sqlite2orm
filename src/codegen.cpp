@@ -1735,6 +1735,14 @@ namespace sqlite2orm {
                 }
                 return to_struct_name(tableSqlName);
             };
+            /** `struct` in prefix: SQL table name → `Cnt`; CTE rows use `cte_N` typedef and must not reuse that name. */
+            auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
+                const auto k = normalize_table_key(tableSqlName);
+                if(this->activeCteTypedefByTableKey.find(k) != this->activeCteTypedefByTableKey.end()) {
+                    return to_struct_name(tableSqlName);
+                }
+                return structForFromTable(tableSqlName);
+            };
             if(!selectNode->fromClause.empty()) {
                 for(const auto& fromItem : selectNode->fromClause) {
                     const auto& ft = fromItem.table;
@@ -1749,7 +1757,8 @@ namespace sqlite2orm {
                         this->fromTableAliasToStructName[*ft.alias] = mappedStructName;
                     }
                 }
-                this->structName = structForFromTable(selectNode->fromClause.at(0).table.tableName);
+                const auto& firstFromTable = selectNode->fromClause.at(0).table;
+                this->structName = prefixStructNameForFromTable(firstFromTable.tableName);
             }
 
             std::optional<std::string> implicitCte;
@@ -2317,6 +2326,13 @@ namespace sqlite2orm {
             }
             return to_struct_name(tableSqlName);
         };
+        auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
+            const auto k = normalize_table_key(tableSqlName);
+            if(this->activeCteTypedefByTableKey.find(k) != this->activeCteTypedefByTableKey.end()) {
+                return to_struct_name(tableSqlName);
+            }
+            return structForFromTable(tableSqlName);
+        };
         if(!selectNode.fromClause.empty()) {
             for(const auto& fromItem : selectNode.fromClause) {
                 const auto& ft = fromItem.table;
@@ -2331,7 +2347,7 @@ namespace sqlite2orm {
                     this->fromTableAliasToStructName[*ft.alias] = mappedStructName;
                 }
             }
-            this->structName = structForFromTable(selectNode.fromClause.at(0).table.tableName);
+            this->structName = prefixStructNameForFromTable(selectNode.fromClause.at(0).table.tableName);
         }
         if(selectNode.fromClause.size() == 1u) {
             auto k = normalize_table_key(selectNode.fromClause.at(0).table.tableName);
@@ -2934,6 +2950,12 @@ namespace sqlite2orm {
         this->activeCteTypedefByTableKey.clear();
 
         const auto& ctes = withQueryNode.clause.tables;
+        /** Map every CTE name before codegen so bodies resolve `FROM cte_name` (recursive or forward refs). */
+        for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+            this->activeCteTypedefByTableKey[normalize_table_key(ctes[cteIndex].cteName)] =
+                "cte_" + std::to_string(cteIndex);
+        }
+
         std::vector<std::string> innerCodes;
         innerCodes.reserve(ctes.size());
         for(const auto& cte : ctes) {
@@ -2961,44 +2983,43 @@ namespace sqlite2orm {
 
         std::vector<std::string> typedefNames;
         typedefNames.reserve(ctes.size());
-        for(size_t ci = 0; ci < ctes.size(); ++ci) {
-            std::string alias = "cte_" + std::to_string(ci);
-            typedefNames.push_back(alias);
-            this->activeCteTypedefByTableKey[normalize_table_key(ctes[ci].cteName)] = alias;
+        for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+            typedefNames.push_back("cte_" + std::to_string(cteIndex));
         }
 
         std::string prelude = "using namespace sqlite_orm::literals;\n";
-        for(size_t ci = 0; ci < ctes.size(); ++ci) {
-            prelude += "using " + typedefNames[ci] + " = decltype(" + std::to_string(ci + 1) + "_ctealias);\n";
+        for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+            prelude += "using " + typedefNames[cteIndex] + " = decltype(" + std::to_string(cteIndex + 1) +
+                       "_ctealias);\n";
         }
 
-        auto buildCteExpression = [&](size_t ci) -> std::string {
-            std::string b = "cte<" + typedefNames[ci] + ">";
-            if(!ctes[ci].columnNames.empty()) {
+        auto buildCteExpression = [&](size_t cteIndex) -> std::string {
+            std::string b = "cte<" + typedefNames[cteIndex] + ">";
+            if(!ctes[cteIndex].columnNames.empty()) {
                 b += "(";
-                for(size_t cn = 0; cn < ctes[ci].columnNames.size(); ++cn) {
+                for(size_t cn = 0; cn < ctes[cteIndex].columnNames.size(); ++cn) {
                     if(cn > 0) {
                         b += ", ";
                     }
-                    b += identifier_to_cpp_string_literal(ctes[ci].columnNames[cn]);
+                    b += identifier_to_cpp_string_literal(ctes[cteIndex].columnNames[cn]);
                 }
                 b += ")";
             } else {
                 b += "()";
             }
             std::string asMethod = ".as(";
-            if(ctes[ci].materialization == CteMaterialization::materialized) {
+            if(ctes[cteIndex].materialization == CteMaterialization::materialized) {
                 asMethod = ".as<sqlite_orm::materialized()>(";
                 warnings.push_back(
                     "WITH: AS MATERIALIZED uses sqlite_orm::materialized() — requires C++20 and "
                     "SQLITE_ORM_WITH_CPP20_ALIASES in the consuming project");
-            } else if(ctes[ci].materialization == CteMaterialization::notMaterialized) {
+            } else if(ctes[cteIndex].materialization == CteMaterialization::notMaterialized) {
                 asMethod = ".as<sqlite_orm::not_materialized()>(";
                 warnings.push_back(
                     "WITH: AS NOT MATERIALIZED uses sqlite_orm::not_materialized() — requires C++20 and "
                     "SQLITE_ORM_WITH_CPP20_ALIASES in the consuming project");
             }
-            b += asMethod + innerCodes[ci] + ")";
+            b += asMethod + innerCodes[cteIndex] + ")";
             return b;
         };
 
@@ -3007,11 +3028,11 @@ namespace sqlite2orm {
             cteArgument = buildCteExpression(0);
         } else {
             cteArgument = "std::make_tuple(";
-            for(size_t ci = 0; ci < ctes.size(); ++ci) {
-                if(ci > 0) {
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                if(cteIndex > 0) {
                     cteArgument += ", ";
                 }
-                cteArgument += buildCteExpression(ci);
+                cteArgument += buildCteExpression(cteIndex);
             }
             cteArgument += ")";
         }

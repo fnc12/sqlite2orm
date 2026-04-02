@@ -243,12 +243,12 @@ TEST_CASE("codegen: CREATE TABLE - all constraints combined") {
 }
 
 TEST_CASE("codegen: CREATE TABLE - UNIQUE has no warnings") {
-    auto result = generate_full("CREATE TABLE t (email TEXT UNIQUE)");
+    auto result = generateFull("CREATE TABLE t (email TEXT UNIQUE)");
     REQUIRE(result.warnings.empty());
 }
 
 TEST_CASE("codegen: CREATE TABLE - UNIQUE ON CONFLICT generates warning") {
-    auto result = generate_full("CREATE TABLE t (email TEXT UNIQUE ON CONFLICT IGNORE)");
+    auto result = generateFull("CREATE TABLE t (email TEXT UNIQUE ON CONFLICT IGNORE)");
     REQUIRE(result.warnings == std::vector<std::string>{
         "UNIQUE ON CONFLICT clause on column 'email' is not supported by sqlite_orm::unique()"
     });
@@ -303,7 +303,7 @@ TEST_CASE("codegen: CREATE TABLE - COLLATE RTRIM") {
 }
 
 TEST_CASE("codegen: CREATE TABLE - custom COLLATE generates warning") {
-    auto result = generate_full("CREATE TABLE t (name TEXT COLLATE UNICODE)");
+    auto result = generateFull("CREATE TABLE t (name TEXT COLLATE UNICODE)");
     REQUIRE(result.warnings == std::vector<std::string>{
         "COLLATE UNICODE on column 'name' is not a built-in collation in sqlite_orm"
     });
@@ -540,7 +540,7 @@ TEST_CASE("codegen: CREATE TABLE - WITHOUT ROWID") {
 }
 
 TEST_CASE("codegen: STRICT table warning") {
-    const auto result = generate_full("CREATE TABLE t (a TEXT) STRICT;");
+    const auto result = generateFull("CREATE TABLE t (a TEXT) STRICT;");
     REQUIRE_FALSE(result.warnings.empty());
     bool found = false;
     for(const auto& w: result.warnings) {
@@ -553,7 +553,7 @@ TEST_CASE("codegen: STRICT table warning") {
 }
 
 TEST_CASE("codegen: FK DEFERRABLE parsed") {
-    auto result = generate_full(
+    auto result = generateFull(
         "CREATE TABLE t (id INT REFERENCES p(id) DEFERRABLE INITIALLY DEFERRED);");
     REQUIRE(result.code ==
         "struct T {\n"

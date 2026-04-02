@@ -5,13 +5,13 @@ namespace {
 
     AstNodePointer selectIntegerOne() {
         auto s = std::make_unique<SelectNode>(SourceLocation{});
-        s->columns = {SelectColumn{make_shared_node<IntegerLiteralNode>("1"), ""}};
+        s->columns = {SelectColumn{makeSharedNode<IntegerLiteralNode>("1"), ""}};
         return s;
     }
 
     AstNodePointer selectIntegerTwo() {
         auto s = std::make_unique<SelectNode>(SourceLocation{});
-        s->columns = {SelectColumn{make_shared_node<IntegerLiteralNode>("2"), ""}};
+        s->columns = {SelectColumn{makeSharedNode<IntegerLiteralNode>("2"), ""}};
         return s;
     }
 
@@ -21,7 +21,7 @@ namespace {
         ins->columnNames = {"x"};
         ins->dataKind = InsertDataKind::values;
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
         ins->valueRows.push_back(std::move(row));
         return ins;
     }
@@ -33,7 +33,7 @@ namespace {
         ins->columnNames = {"x"};
         ins->dataKind = InsertDataKind::values;
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
         ins->valueRows.push_back(std::move(row));
         return ins;
     }
@@ -41,14 +41,14 @@ namespace {
     AstNodePointer updateUSetX1() {
         auto u = std::make_unique<UpdateNode>(SourceLocation{});
         u->tableName = "u";
-        u->assignments.push_back(UpdateAssignment{"x", make_node<IntegerLiteralNode>("1")});
+        u->assignments.push_back(UpdateAssignment{"x", makeNode<IntegerLiteralNode>("1")});
         return u;
     }
 
     AstNodePointer deleteFromDWhere1() {
         auto d = std::make_unique<DeleteNode>(SourceLocation{});
         d->tableName = "d";
-        d->whereClause = make_node<IntegerLiteralNode>("1");
+        d->whereClause = makeNode<IntegerLiteralNode>("1");
         return d;
     }
 
@@ -58,12 +58,12 @@ namespace {
         arms.push_back(selectIntegerOne());
         auto second = std::make_unique<SelectNode>(SourceLocation{});
         second->columns = {SelectColumn{
-            make_shared_node<BinaryOperatorNode>(BinaryOperator::add, make_node<ColumnRefNode>("x"),
-                                                 make_node<IntegerLiteralNode>("1")),
+            makeSharedNode<BinaryOperatorNode>(BinaryOperator::add, makeNode<ColumnRefNode>("x"),
+                                                 makeNode<IntegerLiteralNode>("1")),
             ""}};
-        second->fromClause = from_one("cnt");
-        second->whereClause = make_shared_node<BinaryOperatorNode>(
-            BinaryOperator::lessThan, make_node<ColumnRefNode>("x"), make_node<IntegerLiteralNode>("3"));
+        second->fromClause = fromOne("cnt");
+        second->whereClause = makeSharedNode<BinaryOperatorNode>(
+            BinaryOperator::lessThan, makeNode<ColumnRefNode>("x"), makeNode<IntegerLiteralNode>("3"));
         arms.push_back(std::move(second));
         return std::make_unique<CompoundSelectNode>(
             std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll}, SourceLocation{});
@@ -71,8 +71,8 @@ namespace {
 
     AstNodePointer selectXFromCnt() {
         auto s = std::make_unique<SelectNode>(SourceLocation{});
-        s->columns = {SelectColumn{make_shared_node<ColumnRefNode>("x"), ""}};
-        s->fromClause = from_one("cnt");
+        s->columns = {SelectColumn{makeSharedNode<ColumnRefNode>("x"), ""}};
+        s->fromClause = fromOne("cnt");
         return s;
     }
 
@@ -87,7 +87,7 @@ TEST_CASE("parser: WITH … SELECT (single CTE)") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH RECURSIVE … SELECT") {
@@ -100,7 +100,7 @@ TEST_CASE("parser: WITH RECURSIVE … SELECT") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH column list on CTE") {
@@ -113,7 +113,7 @@ TEST_CASE("parser: WITH column list on CTE") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: multiple CTEs") {
@@ -129,7 +129,7 @@ TEST_CASE("parser: multiple CTEs") {
     c2.query = selectIntegerTwo();
     withClause.tables.push_back(std::move(c2));
     WithQueryNode expected(std::move(withClause), selectIntegerTwo(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH … INSERT") {
@@ -141,7 +141,7 @@ TEST_CASE("parser: WITH … INSERT") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), insertIntoTValues1(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH … REPLACE INTO") {
@@ -153,7 +153,7 @@ TEST_CASE("parser: WITH … REPLACE INTO") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), replaceIntoTValues1(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH … UPDATE") {
@@ -165,7 +165,7 @@ TEST_CASE("parser: WITH … UPDATE") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), updateUSetX1(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH … DELETE") {
@@ -177,7 +177,7 @@ TEST_CASE("parser: WITH … DELETE") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), deleteFromDWhere1(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH CTE AS MATERIALIZED / NOT MATERIALIZED") {
@@ -191,7 +191,7 @@ TEST_CASE("parser: WITH CTE AS MATERIALIZED / NOT MATERIALIZED") {
         cte.query = selectIntegerOne();
         withClause.tables.push_back(std::move(cte));
         WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
-        REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+        REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
     }
     {
         auto parseResult = parse("WITH c AS NOT MATERIALIZED (SELECT 1) SELECT 1;");
@@ -203,7 +203,7 @@ TEST_CASE("parser: WITH CTE AS MATERIALIZED / NOT MATERIALIZED") {
         cte.query = selectIntegerOne();
         withClause.tables.push_back(std::move(cte));
         WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
-        REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+        REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
     }
 }
 
@@ -216,7 +216,7 @@ TEST_CASE("parser: WITH … CTE body allows VALUES") {
     cte.query = selectIntegerOne();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), selectIntegerOne(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: WITH RECURSIVE CTE compound starting with VALUES") {
@@ -232,5 +232,5 @@ TEST_CASE("parser: WITH RECURSIVE CTE compound starting with VALUES") {
     cte.query = cntRecursiveCteCompoundBody();
     withClause.tables.push_back(std::move(cte));
     WithQueryNode expected(std::move(withClause), selectXFromCnt(), SourceLocation{});
-    REQUIRE(require_node<WithQueryNode>(parseResult) == expected);
+    REQUIRE(requireNode<WithQueryNode>(parseResult) == expected);
 }

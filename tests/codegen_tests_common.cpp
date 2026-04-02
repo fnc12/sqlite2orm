@@ -19,7 +19,7 @@ namespace codegen_test_helpers {
         return codeGenerator.generate(*parseResult.astNodePointer).code;
     }
 
-    CodeGenResult generate_full(std::string_view sql) {
+    CodeGenResult generateFull(std::string_view sql) {
         Tokenizer tokenizer;
         auto tokens = tokenizer.tokenize(sql);
         Parser parser;
@@ -29,7 +29,7 @@ namespace codegen_test_helpers {
         return codeGenerator.generate(*parseResult.astNodePointer);
     }
 
-    CodeGenResult generate_with_policy(std::string_view sql, const CodeGenPolicy& policy) {
+    CodeGenResult generateWithPolicy(std::string_view sql, const CodeGenPolicy& policy) {
         Tokenizer tokenizer;
         auto tokens = tokenizer.tokenize(sql);
         Parser parser;
@@ -40,7 +40,7 @@ namespace codegen_test_helpers {
         return codeGenerator.generate(*parseResult.astNodePointer);
     }
 
-    CodeGenResult generate_with_policy_suppress_with_cte_dp(std::string_view sql, const CodeGenPolicy& policy) {
+    CodeGenResult generateWithPolicySuppressWithCteDp(std::string_view sql, const CodeGenPolicy& policy) {
         Tokenizer tokenizer;
         auto tokens = tokenizer.tokenize(sql);
         Parser parser;
@@ -52,7 +52,7 @@ namespace codegen_test_helpers {
         return codeGenerator.generate(*parseResult.astNodePointer);
     }
 
-    std::string prefix_for(std::string_view sql) {
+    std::string prefixFor(std::string_view sql) {
         Tokenizer tokenizer;
         auto tokens = tokenizer.tokenize(sql);
         Parser parser;
@@ -63,11 +63,11 @@ namespace codegen_test_helpers {
         return codeGenerator.generatePrefix();
     }
 
-    bool looks_like_member_pointer(std::string_view code) {
+    bool looksLikeMemberPointer(std::string_view code) {
         return code.size() >= 5 && code[0] == '&' && code.find("::") != std::string_view::npos;
     }
 
-    DecisionPoint column_ref_style_dp(int id, std::string_view memberPointer) {
+    DecisionPoint columnRefStyleDp(int id, std::string_view memberPointer) {
         std::string mp(memberPointer);
         auto colons = mp.find("::");
         std::string structName = mp.substr(1, colons - 1);
@@ -80,13 +80,13 @@ namespace codegen_test_helpers {
             {Alternative{"column_pointer", columnPointer, "explicit mapped type (inheritance / ambiguity)"}}};
     }
 
-    void append_column_ref_dps(std::vector<DecisionPoint>& out, int& nextId, std::string_view codeStr) {
-        if(looks_like_member_pointer(codeStr)) {
-            out.push_back(column_ref_style_dp(nextId++, codeStr));
+    void appendColumnRefDps(std::vector<DecisionPoint>& out, int& nextId, std::string_view codeStr) {
+        if(looksLikeMemberPointer(codeStr)) {
+            out.push_back(columnRefStyleDp(nextId++, codeStr));
         }
     }
 
-    DecisionPoint api_level_star_select_dp(int id, const std::string& structName,
+    DecisionPoint apiLevelStarSelectDp(int id, const std::string& structName,
                                            const std::string& trailingArgs) {
         std::string code = "auto rows = storage.get_all<" + structName + ">(" + trailingArgs + ");";
         std::string tail = trailingArgs.empty() ? "" : (", " + trailingArgs);
@@ -105,7 +105,7 @@ namespace codegen_test_helpers {
                          "select(asterisk<T>(), ...) returns full row objects"}}};
     }
 
-    CodeGenResult expected_binary_leaf(std::string_view leftCode, std::string_view rightCode,
+    CodeGenResult expectedBinaryLeaf(std::string_view leftCode, std::string_view rightCode,
                                        std::string_view op, std::string_view funcName, int firstId) {
         std::string l(leftCode);
         std::string r(rightCode);
@@ -118,8 +118,8 @@ namespace codegen_test_helpers {
         std::string functional = std::string(funcName) + "(" + l + ", " + r + ")";
         int nextId = firstId;
         std::vector<DecisionPoint> dps;
-        append_column_ref_dps(dps, nextId, leftCode);
-        append_column_ref_dps(dps, nextId, rightCode);
+        appendColumnRefDps(dps, nextId, leftCode);
+        appendColumnRefDps(dps, nextId, rightCode);
         dps.push_back(DecisionPoint{nextId, "expr_style", "operator_wrap_left", wrapLeft,
                                     {
                                         Alternative{"operator_wrap_right", wrapRight, "wrap right operand"},

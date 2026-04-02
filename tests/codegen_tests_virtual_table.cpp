@@ -12,10 +12,10 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE without IF NOT EXISTS warns") {
     const CodeGenResult expected{
         "struct X {\n    std::string a;\n};\n\nauto vtab = make_virtual_table<X>(\"x\", using_fts5(make_column(\"a\", "
         "&X::a)));\n",
-        {column_ref_style_dp(1, "&X::a")},
+        {columnRefStyleDp(1, "&X::a")},
         {"sqlite_orm serializes virtual tables as CREATE VIRTUAL TABLE IF NOT EXISTS; SQL without IF NOT EXISTS differs "
          "from serialized output"}};
-    REQUIRE(generate_full("CREATE VIRTUAL TABLE x USING fts5(a)") == expected);
+    REQUIRE(generateFull("CREATE VIRTUAL TABLE x USING fts5(a)") == expected);
 }
 
 TEST_CASE("codegen: CREATE VIRTUAL TABLE generate_series") {
@@ -51,12 +51,12 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE schema and temp warn") {
     const CodeGenResult expected{
         "struct PostsFts {\n    std::string body;\n};\n\nauto vtab = make_virtual_table<PostsFts>(\"posts_fts\", "
         "using_fts5(make_column(\"body\", &PostsFts::body)));\n",
-        {column_ref_style_dp(1, "&PostsFts::body")},
+        {columnRefStyleDp(1, "&PostsFts::body")},
         {"schema-qualified VIRTUAL TABLE name is not represented in sqlite_orm; generated code uses unqualified table "
          "name only",
          "TEMP/TEMPORARY VIRTUAL TABLE is not represented in sqlite_orm virtual table mapping; generated code does "
          "not mark the table as temporary"}};
-    REQUIRE(generate_full(
+    REQUIRE(generateFull(
                 "CREATE TEMP VIRTUAL TABLE IF NOT EXISTS main.posts_fts USING fts5(body)") == expected);
 }
 
@@ -65,7 +65,7 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 non-column args stub") {
         "/* CREATE VIRTUAL TABLE: fts5 (unmapped arguments) */",
         {},
         {"FTS5 module arguments that are not plain column names cannot be mapped to sqlite_orm::using_fts5()"}};
-    REQUIRE(generate_full("CREATE VIRTUAL TABLE IF NOT EXISTS f USING fts5(lower(title))") == expected);
+    REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS f USING fts5(lower(title))") == expected);
 }
 
 TEST_CASE("codegen: unknown virtual table module") {
@@ -73,5 +73,5 @@ TEST_CASE("codegen: unknown virtual table module") {
         "/* CREATE VIRTUAL TABLE: unknown module */",
         {},
         {"virtual table module \"noop\" has no sqlite_orm mapping in sqlite2orm codegen"}};
-    REQUIRE(generate_full("CREATE VIRTUAL TABLE IF NOT EXISTS z USING noop") == expected);
+    REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS z USING noop") == expected);
 }

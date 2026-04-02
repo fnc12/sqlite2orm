@@ -16,7 +16,7 @@ TEST_CASE("parser: CREATE TRIGGER after insert, body DELETE") {
 
     auto parseResult = parse("CREATE TRIGGER tr AFTER INSERT ON tbl BEGIN DELETE FROM tbl; END");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateTriggerNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateTriggerNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE TRIGGER before delete") {
@@ -32,7 +32,7 @@ TEST_CASE("parser: CREATE TRIGGER before delete") {
 
     auto parseResult = parse("CREATE TRIGGER t1 BEFORE DELETE ON u BEGIN DELETE FROM u; END");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateTriggerNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateTriggerNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE TRIGGER instead of update of columns") {
@@ -49,7 +49,7 @@ TEST_CASE("parser: CREATE TRIGGER instead of update of columns") {
 
     auto parseResult = parse("CREATE TRIGGER iv INSTEAD OF UPDATE OF a, b ON v BEGIN DELETE FROM v; END");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateTriggerNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateTriggerNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE TRIGGER when and for each row") {
@@ -62,12 +62,12 @@ TEST_CASE("parser: CREATE TRIGGER when and for each row") {
     expected.eventKind = TriggerEventKind::update_;
     expected.tableName = "t";
     expected.forEachRow = true;
-    expected.whenClause = make_node<IntegerLiteralNode>("1");
+    expected.whenClause = makeNode<IntegerLiteralNode>("1");
     expected.bodyStatements.push_back(std::move(del));
 
     auto parseResult = parse("CREATE TRIGGER w AFTER UPDATE ON t FOR EACH ROW WHEN 1 BEGIN DELETE FROM t; END");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateTriggerNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateTriggerNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE TRIGGER if not exists and temp") {
@@ -85,7 +85,7 @@ TEST_CASE("parser: CREATE TRIGGER if not exists and temp") {
 
     auto parseResult = parse("CREATE TEMP TRIGGER IF NOT EXISTS tx BEFORE INSERT ON x BEGIN DELETE FROM x; END");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateTriggerNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateTriggerNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE TRIGGER qualified names") {
@@ -103,7 +103,7 @@ TEST_CASE("parser: CREATE TRIGGER qualified names") {
 
     auto parseResult = parse("CREATE TRIGGER main.tr AFTER INSERT ON main.tbl BEGIN DELETE FROM tbl; END");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateTriggerNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateTriggerNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE TRIGGER two statements") {
@@ -122,7 +122,7 @@ TEST_CASE("parser: CREATE TRIGGER two statements") {
 
     auto parseResult = parse("CREATE TRIGGER multi AFTER INSERT ON t BEGIN DELETE FROM t; DELETE FROM t; END");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateTriggerNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateTriggerNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE TRIGGER empty body fails") {
@@ -134,6 +134,6 @@ TEST_CASE("parser: RAISE(IGNORE) expression in SELECT result column") {
     auto parseResult = parse("SELECT RAISE(IGNORE);");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<RaiseNode>(RaiseKind::ignore, nullptr), ""}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.columns = {SelectColumn{makeSharedNode<RaiseNode>(RaiseKind::ignore, nullptr), ""}};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }

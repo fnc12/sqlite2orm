@@ -8,17 +8,17 @@ TEST_CASE("parser: SELECT * FROM table") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT table.* FROM table") {
     auto parseResult = parse("SELECT users.* FROM users");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<QualifiedAsteriskNode>("users"), ""}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.columns = {SelectColumn{makeSharedNode<QualifiedAsteriskNode>("users"), ""}};
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT schema.table.*") {
@@ -26,8 +26,8 @@ TEST_CASE("parser: SELECT schema.table.*") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{std::make_shared<QualifiedAsteriskNode>("main", "users", SourceLocation{}), ""}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT table.* with column list") {
@@ -35,35 +35,35 @@ TEST_CASE("parser: SELECT table.* with column list") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {
-        SelectColumn{make_shared_node<ColumnRefNode>("id"), ""},
-        SelectColumn{make_shared_node<QualifiedAsteriskNode>("users"), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("id"), ""},
+        SelectColumn{makeSharedNode<QualifiedAsteriskNode>("users"), ""},
     };
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: FROM table AS alias") {
     auto parseResult = parse("SELECT name FROM users AS u");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), ""}};
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""}};
     expected.fromClause = {FromClauseItem{JoinKind::none,
                                           FromTableClause{std::nullopt, std::string("users"), std::string("u")},
                                           nullptr,
                                           {}}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: FROM table implicit alias") {
     auto parseResult = parse("SELECT id FROM users u");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("id"), ""}};
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("id"), ""}};
     expected.fromClause = {FromClauseItem{JoinKind::none,
                                           FromTableClause{std::nullopt, std::string("users"), std::string("u")},
                                           nullptr,
                                           {}}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: FROM schema.table") {
@@ -76,7 +76,7 @@ TEST_CASE("parser: FROM schema.table") {
         FromTableClause{std::optional<std::string>(std::string("main")), std::string("users"), std::nullopt},
         nullptr,
         {}}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: FROM two tables comma") {
@@ -89,13 +89,13 @@ TEST_CASE("parser: FROM two tables comma") {
         FromClauseItem{JoinKind::crossJoin, FromTableClause{std::nullopt, std::string("posts"), std::nullopt},
                        nullptr, {}},
     };
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INNER JOIN ON") {
     auto parseResult = parse("SELECT * FROM users INNER JOIN posts ON users.id = posts.user_id");
     REQUIRE(parseResult);
-    const auto& sel = require_node<SelectNode>(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
     REQUIRE(sel.fromClause.size() == 2);
     REQUIRE(sel.fromClause.at(0).leadingJoin == JoinKind::none);
     REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::innerJoin);
@@ -107,7 +107,7 @@ TEST_CASE("parser: INNER JOIN ON") {
 TEST_CASE("parser: LEFT OUTER JOIN USING") {
     auto parseResult = parse("SELECT * FROM users LEFT OUTER JOIN posts USING (user_id)");
     REQUIRE(parseResult);
-    const auto& sel = require_node<SelectNode>(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
     REQUIRE(sel.fromClause.size() == 2);
     REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::leftOuterJoin);
     REQUIRE(sel.fromClause.at(1).usingColumnNames == std::vector<std::string>{"user_id"});
@@ -117,7 +117,7 @@ TEST_CASE("parser: LEFT OUTER JOIN USING") {
 TEST_CASE("parser: comma then INNER JOIN") {
     auto parseResult = parse("SELECT * FROM users, posts INNER JOIN comments ON posts.id = comments.post_id");
     REQUIRE(parseResult);
-    const auto& sel = require_node<SelectNode>(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
     REQUIRE(sel.fromClause.size() == 3);
     REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
     REQUIRE(sel.fromClause.at(2).leadingJoin == JoinKind::innerJoin);
@@ -127,9 +127,9 @@ TEST_CASE("parser: SELECT column FROM table") {
     auto parseResult = parse("SELECT name FROM users");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), ""}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""}};
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT multiple columns FROM table") {
@@ -137,12 +137,12 @@ TEST_CASE("parser: SELECT multiple columns FROM table") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {
-        SelectColumn{make_shared_node<ColumnRefNode>("id"), ""},
-        SelectColumn{make_shared_node<ColumnRefNode>("name"), ""},
-        SelectColumn{make_shared_node<ColumnRefNode>("age"), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("id"), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("age"), ""},
     };
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with WHERE") {
@@ -150,23 +150,23 @@ TEST_CASE("parser: SELECT with WHERE") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
-    expected.whereClause = make_shared_node<BinaryOperatorNode>(
-        BinaryOperator::greaterThan, make_node<ColumnRefNode>("age"), make_node<IntegerLiteralNode>("18"));
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    expected.whereClause = makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::greaterThan, makeNode<ColumnRefNode>("age"), makeNode<IntegerLiteralNode>("18"));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with complex WHERE") {
     auto parseResult = parse("SELECT name FROM users WHERE age >= 18 AND active = 1");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), ""}};
-    expected.fromClause = from_one("users");
-    expected.whereClause = make_shared_node<BinaryOperatorNode>(
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""}};
+    expected.fromClause = fromOne("users");
+    expected.whereClause = makeSharedNode<BinaryOperatorNode>(
         BinaryOperator::logicalAnd,
-        make_node<BinaryOperatorNode>(BinaryOperator::greaterOrEqual, make_node<ColumnRefNode>("age"), make_node<IntegerLiteralNode>("18")),
-        make_node<BinaryOperatorNode>(BinaryOperator::equals, make_node<ColumnRefNode>("active"), make_node<IntegerLiteralNode>("1")));
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+        makeNode<BinaryOperatorNode>(BinaryOperator::greaterOrEqual, makeNode<ColumnRefNode>("age"), makeNode<IntegerLiteralNode>("18")),
+        makeNode<BinaryOperatorNode>(BinaryOperator::equals, makeNode<ColumnRefNode>("active"), makeNode<IntegerLiteralNode>("1")));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT DISTINCT") {
@@ -174,41 +174,41 @@ TEST_CASE("parser: SELECT DISTINCT") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.distinct = true;
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), ""}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""}};
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with column alias") {
     auto parseResult = parse("SELECT name AS user_name FROM users");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), "user_name"}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("name"), "user_name"}};
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with implicit column alias") {
     auto parseResult = parse("SELECT name user_name FROM users");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), "user_name"}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("name"), "user_name"}};
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT function with implicit alias") {
     auto parseResult = parse("SELECT instr(abilities, 'o') i FROM marvel");
     REQUIRE(parseResult);
     std::vector<AstNodePointer> instrArgs;
-    instrArgs.push_back(make_node<ColumnRefNode>("abilities"));
-    instrArgs.push_back(make_node<StringLiteralNode>("'o'"));
+    instrArgs.push_back(makeNode<ColumnRefNode>("abilities"));
+    instrArgs.push_back(makeNode<StringLiteralNode>("'o'"));
     auto instrCall =
         std::make_shared<FunctionCallNode>("instr", std::move(instrArgs), false, false, SourceLocation{});
     SelectNode expected({});
     expected.columns = {SelectColumn{std::move(instrCall), "i"}};
-    expected.fromClause = from_one("marvel");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("marvel");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT expression") {
@@ -216,17 +216,17 @@ TEST_CASE("parser: SELECT expression") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{
-        make_shared_node<BinaryOperatorNode>(BinaryOperator::add, make_node<ColumnRefNode>("id"), make_node<IntegerLiteralNode>("1")), ""}};
-    expected.fromClause = from_one("users");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+        makeSharedNode<BinaryOperatorNode>(BinaryOperator::add, makeNode<ColumnRefNode>("id"), makeNode<IntegerLiteralNode>("1")), ""}};
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT without FROM") {
     auto parseResult = parse("SELECT 1");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<IntegerLiteralNode>("1"), ""}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.columns = {SelectColumn{makeSharedNode<IntegerLiteralNode>("1"), ""}};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 // --- ORDER BY ---
@@ -236,9 +236,9 @@ TEST_CASE("parser: SELECT with ORDER BY") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
-    expected.orderBy = {OrderByTerm{make_shared_node<ColumnRefNode>("name"), SortDirection::none}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::none}};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with ORDER BY ASC") {
@@ -246,9 +246,9 @@ TEST_CASE("parser: SELECT with ORDER BY ASC") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
-    expected.orderBy = {OrderByTerm{make_shared_node<ColumnRefNode>("name"), SortDirection::asc}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::asc}};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with ORDER BY DESC") {
@@ -256,9 +256,9 @@ TEST_CASE("parser: SELECT with ORDER BY DESC") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
-    expected.orderBy = {OrderByTerm{make_shared_node<ColumnRefNode>("age"), SortDirection::desc}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("age"), SortDirection::desc}};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with multiple ORDER BY") {
@@ -266,12 +266,12 @@ TEST_CASE("parser: SELECT with multiple ORDER BY") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
+    expected.fromClause = fromOne("users");
     expected.orderBy = {
-        OrderByTerm{make_shared_node<ColumnRefNode>("name"), SortDirection::asc},
-        OrderByTerm{make_shared_node<ColumnRefNode>("age"), SortDirection::desc},
+        OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::asc},
+        OrderByTerm{makeSharedNode<ColumnRefNode>("age"), SortDirection::desc},
     };
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 // --- LIMIT / OFFSET ---
@@ -281,9 +281,9 @@ TEST_CASE("parser: SELECT with LIMIT") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
+    expected.fromClause = fromOne("users");
     expected.limitValue = 10;
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with LIMIT OFFSET") {
@@ -291,10 +291,10 @@ TEST_CASE("parser: SELECT with LIMIT OFFSET") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("users");
+    expected.fromClause = fromOne("users");
     expected.limitValue = 10;
     expected.offsetValue = 20;
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 // --- GROUP BY ---
@@ -304,12 +304,12 @@ TEST_CASE("parser: SELECT with GROUP BY") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {
-        SelectColumn{make_shared_node<ColumnRefNode>("name"), ""},
-        SelectColumn{std::shared_ptr<AstNode>(make_func("count", false, true)), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""},
+        SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""},
     };
-    expected.fromClause = from_one("users");
-    expected.groupBy = GroupByClause{{make_shared_node<ColumnRefNode>("name")}, nullptr};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("users");
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}, nullptr};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with GROUP BY HAVING") {
@@ -317,17 +317,17 @@ TEST_CASE("parser: SELECT with GROUP BY HAVING") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {
-        SelectColumn{make_shared_node<ColumnRefNode>("name"), ""},
-        SelectColumn{std::shared_ptr<AstNode>(make_func("count", false, true)), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""},
+        SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""},
     };
-    expected.fromClause = from_one("users");
+    expected.fromClause = fromOne("users");
     expected.groupBy = GroupByClause{
-        {make_shared_node<ColumnRefNode>("name")},
-        make_shared_node<BinaryOperatorNode>(
+        {makeSharedNode<ColumnRefNode>("name")},
+        makeSharedNode<BinaryOperatorNode>(
             BinaryOperator::greaterThan,
-            make_func("count", false, true),
-            make_node<IntegerLiteralNode>("1"))};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+            makeFunc("count", false, true),
+            makeNode<IntegerLiteralNode>("1"))};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT with GROUP BY multiple columns") {
@@ -335,13 +335,13 @@ TEST_CASE("parser: SELECT with GROUP BY multiple columns") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {
-        SelectColumn{make_shared_node<ColumnRefNode>("department"), ""},
-        SelectColumn{make_shared_node<ColumnRefNode>("role"), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("department"), ""},
+        SelectColumn{makeSharedNode<ColumnRefNode>("role"), ""},
     };
-    expected.fromClause = from_one("users");
+    expected.fromClause = fromOne("users");
     expected.groupBy = GroupByClause{
-        {make_shared_node<ColumnRefNode>("department"), make_shared_node<ColumnRefNode>("role")}, nullptr};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+        {makeSharedNode<ColumnRefNode>("department"), makeSharedNode<ColumnRefNode>("role")}, nullptr};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT WINDOW clause") {
@@ -354,14 +354,14 @@ TEST_CASE("parser: SELECT WINDOW clause") {
     rowNumberCall->over = std::make_unique<OverClause>();
     rowNumberCall->over->namedWindow = "w";
     expected.columns = {SelectColumn{rowNumberCall, ""}};
-    expected.fromClause = from_one("t");
+    expected.fromClause = fromOne("t");
     NamedWindowDefinition namedWindow;
     namedWindow.name = "w";
     namedWindow.definition = std::make_unique<OverClause>();
     namedWindow.definition->orderBy.push_back(
-        OrderByTerm{make_shared_node<ColumnRefNode>("id"), SortDirection::none});
+        OrderByTerm{makeSharedNode<ColumnRefNode>("id"), SortDirection::none});
     expected.namedWindows.push_back(std::move(namedWindow));
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 // --- Full SELECT ---
@@ -370,15 +370,15 @@ TEST_CASE("parser: SELECT with all clauses") {
     auto parseResult = parse("SELECT name FROM users WHERE age > 18 GROUP BY name ORDER BY name ASC LIMIT 10 OFFSET 5");
     REQUIRE(parseResult);
     SelectNode expected({});
-    expected.columns = {SelectColumn{make_shared_node<ColumnRefNode>("name"), ""}};
-    expected.fromClause = from_one("users");
-    expected.whereClause = make_shared_node<BinaryOperatorNode>(
-        BinaryOperator::greaterThan, make_node<ColumnRefNode>("age"), make_node<IntegerLiteralNode>("18"));
-    expected.groupBy = GroupByClause{{make_shared_node<ColumnRefNode>("name")}, nullptr};
-    expected.orderBy = {OrderByTerm{make_shared_node<ColumnRefNode>("name"), SortDirection::asc}};
+    expected.columns = {SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""}};
+    expected.fromClause = fromOne("users");
+    expected.whereClause = makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::greaterThan, makeNode<ColumnRefNode>("age"), makeNode<IntegerLiteralNode>("18"));
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}, nullptr};
+    expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::asc}};
     expected.limitValue = 10;
     expected.offsetValue = 5;
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 // --- ORDER BY COLLATE ---
@@ -388,9 +388,9 @@ TEST_CASE("parser: ORDER BY COLLATE") {
     REQUIRE(parseResult);
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
-    expected.fromClause = from_one("t");
-    expected.orderBy = {OrderByTerm{make_shared_node<ColumnRefNode>("name"), SortDirection::none, "NOCASE"}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("t");
+    expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::none, "NOCASE"}};
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 // --- Window frame EXCLUDE ---
@@ -398,7 +398,7 @@ TEST_CASE("parser: ORDER BY COLLATE") {
 TEST_CASE("parser: EXCLUDE NO OTHERS in window frame") {
     auto parseResult = parse("SELECT sum(x) OVER (ROWS UNBOUNDED PRECEDING EXCLUDE NO OTHERS) FROM t");
     std::vector<AstNodePointer> args;
-    args.push_back(make_node<ColumnRefNode>("x"));
+    args.push_back(makeNode<ColumnRefNode>("x"));
     auto funcNode = std::make_shared<FunctionCallNode>("sum", std::move(args), false, false, SourceLocation{});
     funcNode->over = std::make_unique<OverClause>();
     funcNode->over->frame = std::make_unique<WindowFrameSpec>();
@@ -407,25 +407,25 @@ TEST_CASE("parser: EXCLUDE NO OTHERS in window frame") {
     funcNode->over->frame->exclude = WindowFrameExcludeKind::none;
     SelectNode expected({});
     expected.columns = {SelectColumn{funcNode, ""}};
-    expected.fromClause = from_one("t");
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    expected.fromClause = fromOne("t");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: VALUES standalone") {
     auto parseResult = parse("VALUES (1, 'a'), (2, 'b')");
     SelectNode expected({});
     expected.columns = {
-        SelectColumn{make_shared_node<IntegerLiteralNode>("1"), ""},
-        SelectColumn{make_shared_node<StringLiteralNode>("'a'"), ""},
+        SelectColumn{makeSharedNode<IntegerLiteralNode>("1"), ""},
+        SelectColumn{makeSharedNode<StringLiteralNode>("'a'"), ""},
     };
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 namespace {
 
-    AstNodePointer select_literal_int(std::string_view v) {
+    AstNodePointer selectLiteralInt(std::string_view v) {
         auto selectNode = std::make_unique<SelectNode>(SourceLocation{});
-        selectNode->columns = {SelectColumn{make_shared_node<IntegerLiteralNode>(v), ""}};
+        selectNode->columns = {SelectColumn{makeSharedNode<IntegerLiteralNode>(v), ""}};
         return selectNode;
     }
 
@@ -435,22 +435,22 @@ TEST_CASE("parser: VALUES UNION ALL SELECT compound") {
     auto parseResult = parse("VALUES (1) UNION ALL SELECT 2;");
     REQUIRE(parseResult);
     std::vector<AstNodePointer> arms;
-    arms.push_back(select_literal_int("1"));
-    arms.push_back(select_literal_int("2"));
+    arms.push_back(selectLiteralInt("1"));
+    arms.push_back(selectLiteralInt("2"));
     CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll},
                                 SourceLocation{});
-    REQUIRE(require_node<CompoundSelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<CompoundSelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: SELECT UNION ALL VALUES compound") {
     auto parseResult = parse("SELECT 1 UNION ALL VALUES (2);");
     REQUIRE(parseResult);
     std::vector<AstNodePointer> arms;
-    arms.push_back(select_literal_int("1"));
-    arms.push_back(select_literal_int("2"));
+    arms.push_back(selectLiteralInt("1"));
+    arms.push_back(selectLiteralInt("2"));
     CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll},
                                 SourceLocation{});
-    REQUIRE(require_node<CompoundSelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<CompoundSelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: table-function in FROM") {
@@ -459,10 +459,10 @@ TEST_CASE("parser: table-function in FROM") {
     expected.columns = {SelectColumn{nullptr, ""}};
     FromTableClause tableFunc;
     tableFunc.tableName = "generate_series";
-    tableFunc.tableFunctionArgs.push_back(make_shared_node<IntegerLiteralNode>("1"));
-    tableFunc.tableFunctionArgs.push_back(make_shared_node<IntegerLiteralNode>("10"));
+    tableFunc.tableFunctionArgs.push_back(makeSharedNode<IntegerLiteralNode>("1"));
+    tableFunc.tableFunctionArgs.push_back(makeSharedNode<IntegerLiteralNode>("10"));
     expected.fromClause = {FromClauseItem{JoinKind::none, std::move(tableFunc), nullptr, {}}};
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: parenthesized join in FROM") {
@@ -474,13 +474,13 @@ TEST_CASE("parser: parenthesized join in FROM") {
             FromTableClause{std::nullopt, std::string("t1"), std::nullopt}, nullptr, {}},
         FromClauseItem{JoinKind::innerJoin,
             FromTableClause{std::nullopt, std::string("t2"), std::nullopt},
-            make_shared_node<BinaryOperatorNode>(
+            makeSharedNode<BinaryOperatorNode>(
                 BinaryOperator::equals,
-                make_node<QualifiedColumnRefNode>("t1", "id"),
-                make_node<QualifiedColumnRefNode>("t2", "t1_id")),
+                makeNode<QualifiedColumnRefNode>("t1", "id"),
+                makeNode<QualifiedColumnRefNode>("t2", "t1_id")),
             {}},
     };
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: parenthesized join combined with outer join") {
@@ -492,18 +492,18 @@ TEST_CASE("parser: parenthesized join combined with outer join") {
             FromTableClause{std::nullopt, std::string("t0"), std::nullopt}, nullptr, {}},
         FromClauseItem{JoinKind::leftJoin,
             FromTableClause{std::nullopt, std::string("t1"), std::nullopt},
-            make_shared_node<BinaryOperatorNode>(
+            makeSharedNode<BinaryOperatorNode>(
                 BinaryOperator::equals,
-                make_node<QualifiedColumnRefNode>("t0", "id"),
-                make_node<QualifiedColumnRefNode>("t1", "id")),
+                makeNode<QualifiedColumnRefNode>("t0", "id"),
+                makeNode<QualifiedColumnRefNode>("t1", "id")),
             {}},
         FromClauseItem{JoinKind::innerJoin,
             FromTableClause{std::nullopt, std::string("t2"), std::nullopt},
-            make_shared_node<BinaryOperatorNode>(
+            makeSharedNode<BinaryOperatorNode>(
                 BinaryOperator::equals,
-                make_node<QualifiedColumnRefNode>("t1", "id"),
-                make_node<QualifiedColumnRefNode>("t2", "t1_id")),
+                makeNode<QualifiedColumnRefNode>("t1", "id"),
+                makeNode<QualifiedColumnRefNode>("t2", "t1_id")),
             {}},
     };
-    REQUIRE(require_node<SelectNode>(parseResult) == expected);
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }

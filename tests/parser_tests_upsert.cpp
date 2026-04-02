@@ -10,12 +10,12 @@ TEST_CASE("parser: INSERT ON CONFLICT DO NOTHING") {
     expected.dataKind = InsertDataKind::values;
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
         expected.valueRows.push_back(std::move(row));
     }
     expected.hasUpsertClause = true;
     expected.upsertAction = InsertUpsertAction::doNothing;
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INSERT ON CONFLICT (id) DO NOTHING") {
@@ -27,14 +27,14 @@ TEST_CASE("parser: INSERT ON CONFLICT (id) DO NOTHING") {
     expected.dataKind = InsertDataKind::values;
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
-        row.push_back(make_node<StringLiteralNode>("'a'"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<StringLiteralNode>("'a'"));
         expected.valueRows.push_back(std::move(row));
     }
     expected.hasUpsertClause = true;
     expected.upsertConflictColumns = {"id"};
     expected.upsertAction = InsertUpsertAction::doNothing;
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INSERT ON CONFLICT DO UPDATE SET excluded") {
@@ -47,16 +47,16 @@ TEST_CASE("parser: INSERT ON CONFLICT DO UPDATE SET excluded") {
     expected.dataKind = InsertDataKind::values;
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
-        row.push_back(make_node<StringLiteralNode>("'b'"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<StringLiteralNode>("'b'"));
         expected.valueRows.push_back(std::move(row));
     }
     expected.hasUpsertClause = true;
     expected.upsertConflictColumns = {"id"};
     expected.upsertAction = InsertUpsertAction::doUpdate;
     expected.upsertUpdateAssignments.push_back(
-        UpdateAssignment{"name", make_node<ExcludedRefNode>("name")});
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+        UpdateAssignment{"name", makeNode<ExcludedRefNode>("name")});
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INSERT ON CONFLICT two columns DO UPDATE") {
@@ -69,8 +69,8 @@ TEST_CASE("parser: INSERT ON CONFLICT two columns DO UPDATE") {
     expected.dataKind = InsertDataKind::values;
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
-        row.push_back(make_node<IntegerLiteralNode>("2"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<IntegerLiteralNode>("2"));
         expected.valueRows.push_back(std::move(row));
     }
     expected.hasUpsertClause = true;
@@ -78,9 +78,9 @@ TEST_CASE("parser: INSERT ON CONFLICT two columns DO UPDATE") {
     expected.upsertAction = InsertUpsertAction::doUpdate;
     expected.upsertUpdateAssignments.push_back(UpdateAssignment{
         "a",
-        make_node<BinaryOperatorNode>(BinaryOperator::add, make_node<ColumnRefNode>("a"),
-                                      make_node<IntegerLiteralNode>("1"))});
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+        makeNode<BinaryOperatorNode>(BinaryOperator::add, makeNode<ColumnRefNode>("a"),
+                                      makeNode<IntegerLiteralNode>("1"))});
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INSERT ON CONFLICT target WHERE and DO UPDATE WHERE") {
@@ -94,22 +94,22 @@ TEST_CASE("parser: INSERT ON CONFLICT target WHERE and DO UPDATE WHERE") {
     expected.dataKind = InsertDataKind::values;
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
-        row.push_back(make_node<IntegerLiteralNode>("10"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<IntegerLiteralNode>("10"));
         expected.valueRows.push_back(std::move(row));
     }
     expected.hasUpsertClause = true;
     expected.upsertConflictColumns = {"id"};
     expected.upsertConflictWhere =
-        make_node<BinaryOperatorNode>(BinaryOperator::greaterThan, make_node<ColumnRefNode>("score"),
-                                      make_node<IntegerLiteralNode>("0"));
+        makeNode<BinaryOperatorNode>(BinaryOperator::greaterThan, makeNode<ColumnRefNode>("score"),
+                                      makeNode<IntegerLiteralNode>("0"));
     expected.upsertAction = InsertUpsertAction::doUpdate;
     expected.upsertUpdateAssignments.push_back(UpdateAssignment{
         "score",
-        make_node<BinaryOperatorNode>(BinaryOperator::add, make_node<ColumnRefNode>("score"),
-                                      make_node<IntegerLiteralNode>("1"))});
+        makeNode<BinaryOperatorNode>(BinaryOperator::add, makeNode<ColumnRefNode>("score"),
+                                      makeNode<IntegerLiteralNode>("1"))});
     expected.upsertUpdateWhere =
-        make_node<BinaryOperatorNode>(BinaryOperator::lessThan, make_node<ColumnRefNode>("score"),
-                                      make_node<IntegerLiteralNode>("100"));
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+        makeNode<BinaryOperatorNode>(BinaryOperator::lessThan, makeNode<ColumnRefNode>("score"),
+                                      makeNode<IntegerLiteralNode>("100"));
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }

@@ -53,8 +53,8 @@ TEST_CASE("tokenizer: carriage return and CRLF between tokens") {
 }
 
 TEST_CASE("tokenizer: UTF-8 BOM skipped at start") {
-    const std::string with_bom = std::string("\xEF\xBB\xBF") + "SELECT 1";
-    REQUIRE(tokenize(with_bom) == std::vector<Token>{
+    const std::string withBom = std::string("\xEF\xBB\xBF") + "SELECT 1";
+    REQUIRE(tokenize(withBom) == std::vector<Token>{
         {TokenType::kwSelect, "SELECT"},
         {TokenType::integerLiteral, "1"},
         {TokenType::eof},

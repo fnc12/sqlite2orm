@@ -7,11 +7,11 @@ TEST_CASE("parser: CREATE INDEX one column") {
     CreateIndexNode expected(SourceLocation{});
     expected.indexName = "idx_users_id";
     expected.tableName = "users";
-    expected.indexedColumns.push_back(IndexColumnSpec{make_node<ColumnRefNode>("id"), SortDirection::none, ""});
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("id"), SortDirection::none, ""});
 
     auto parseResult = parse("CREATE INDEX idx_users_id ON users (id)");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE UNIQUE INDEX two columns") {
@@ -19,12 +19,12 @@ TEST_CASE("parser: CREATE UNIQUE INDEX two columns") {
     expected.unique = true;
     expected.indexName = "u_ab";
     expected.tableName = "t";
-    expected.indexedColumns.push_back(IndexColumnSpec{make_node<ColumnRefNode>("a"), SortDirection::none, ""});
-    expected.indexedColumns.push_back(IndexColumnSpec{make_node<ColumnRefNode>("b"), SortDirection::none, ""});
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("a"), SortDirection::none, ""});
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("b"), SortDirection::none, ""});
 
     auto parseResult = parse("CREATE UNIQUE INDEX u_ab ON t (a, b)");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE INDEX IF NOT EXISTS") {
@@ -32,11 +32,11 @@ TEST_CASE("parser: CREATE INDEX IF NOT EXISTS") {
     expected.ifNotExists = true;
     expected.indexName = "i";
     expected.tableName = "x";
-    expected.indexedColumns.push_back(IndexColumnSpec{make_node<ColumnRefNode>("z"), SortDirection::none, ""});
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("z"), SortDirection::none, ""});
 
     auto parseResult = parse("CREATE INDEX IF NOT EXISTS i ON x (z)");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE INDEX COLLATE ASC DESC order flexible") {
@@ -44,11 +44,11 @@ TEST_CASE("parser: CREATE INDEX COLLATE ASC DESC order flexible") {
     expected.indexName = "i1";
     expected.tableName = "t";
     expected.indexedColumns.push_back(
-        IndexColumnSpec{make_node<ColumnRefNode>("n"), SortDirection::asc, "NOCASE"});
+        IndexColumnSpec{makeNode<ColumnRefNode>("n"), SortDirection::asc, "NOCASE"});
 
     auto parseResult = parse("CREATE INDEX i1 ON t (n COLLATE NOCASE ASC)");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE INDEX DESC then COLLATE") {
@@ -56,23 +56,23 @@ TEST_CASE("parser: CREATE INDEX DESC then COLLATE") {
     expected.indexName = "i2";
     expected.tableName = "t";
     expected.indexedColumns.push_back(
-        IndexColumnSpec{make_node<ColumnRefNode>("v"), SortDirection::desc, "binary"});
+        IndexColumnSpec{makeNode<ColumnRefNode>("v"), SortDirection::desc, "binary"});
 
     auto parseResult = parse("CREATE INDEX i2 ON t (v DESC COLLATE binary)");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE INDEX partial WHERE") {
     CreateIndexNode expected(SourceLocation{});
     expected.indexName = "p";
     expected.tableName = "posts";
-    expected.indexedColumns.push_back(IndexColumnSpec{make_node<ColumnRefNode>("user_id"), SortDirection::none, ""});
-    expected.whereClause = make_node<ColumnRefNode>("active");
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("user_id"), SortDirection::none, ""});
+    expected.whereClause = makeNode<ColumnRefNode>("active");
 
     auto parseResult = parse("CREATE INDEX p ON posts (user_id) WHERE active");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE INDEX expression column") {
@@ -80,11 +80,11 @@ TEST_CASE("parser: CREATE INDEX expression column") {
     expected.indexName = "i_lower";
     expected.tableName = "users";
     expected.indexedColumns.push_back(
-        IndexColumnSpec{make_func("lower", false, false, make_node<ColumnRefNode>("name")), SortDirection::none, ""});
+        IndexColumnSpec{makeFunc("lower", false, false, makeNode<ColumnRefNode>("name")), SortDirection::none, ""});
 
     auto parseResult = parse("CREATE INDEX i_lower ON users (lower(name))");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: CREATE INDEX qualified names") {
@@ -93,9 +93,9 @@ TEST_CASE("parser: CREATE INDEX qualified names") {
     expected.indexName = "ix";
     expected.tableSchemaName = "main";
     expected.tableName = "users";
-    expected.indexedColumns.push_back(IndexColumnSpec{make_node<ColumnRefNode>("id"), SortDirection::none, ""});
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("id"), SortDirection::none, ""});
 
     auto parseResult = parse("CREATE INDEX main.ix ON main.users (id)");
     REQUIRE(parseResult);
-    REQUIRE(require_node<CreateIndexNode>(parseResult) == expected);
+    REQUIRE(requireNode<CreateIndexNode>(parseResult) == expected);
 }

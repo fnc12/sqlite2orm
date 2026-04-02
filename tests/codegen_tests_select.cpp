@@ -12,9 +12,9 @@ namespace {
 }  // namespace
 
 TEST_CASE("codegen: SELECT * FROM table") {
-    REQUIRE(generate_full("SELECT * FROM users") ==
+    REQUIRE(generateFull("SELECT * FROM users") ==
             CodeGenResult{"auto rows = storage.get_all<Users>();",
-                          {api_level_star_select_dp(1, "Users", "")},
+                          {apiLevelStarSelectDp(1, "Users", "")},
                           {}});
 }
 
@@ -39,7 +39,7 @@ TEST_CASE("codegen: SELECT DISTINCT table.*") {
 }
 
 TEST_CASE("codegen: SELECT schema.table.* generates asterisk with warning") {
-    auto result = generate_full("SELECT main.users.* FROM users");
+    auto result = generateFull("SELECT main.users.* FROM users");
     REQUIRE(result.code == "auto rows = storage.select(asterisk<Users>());");
     REQUIRE(result.warnings ==
         std::vector<std::string>{
@@ -53,18 +53,18 @@ TEST_CASE("codegen: SELECT column via FROM table alias") {
 }
 
 TEST_CASE("codegen: SELECT with FROM schema qualifier warns") {
-    REQUIRE(generate_full("SELECT name FROM main.users") ==
+    REQUIRE(generateFull("SELECT name FROM main.users") ==
         CodeGenResult{"auto rows = storage.select(&Users::name);",
-                      {column_ref_style_dp(1, "&Users::name")},
+                      {columnRefStyleDp(1, "&Users::name")},
                       std::vector<std::string>{
                           "FROM clause schema qualifier 'main' for table 'users' is not represented in sqlite_orm "
                           "mapping"}});
 }
 
 TEST_CASE("codegen: comma-separated FROM is cross join") {
-    REQUIRE(generate_full("SELECT * FROM users, posts") ==
+    REQUIRE(generateFull("SELECT * FROM users, posts") ==
         CodeGenResult{"auto rows = storage.get_all<Users>(cross_join<Posts>());",
-                      {api_level_star_select_dp(1, "Users", "cross_join<Posts>()")},
+                      {apiLevelStarSelectDp(1, "Users", "cross_join<Posts>()")},
                       {}});
 }
 
@@ -82,11 +82,11 @@ TEST_CASE("codegen: LEFT JOIN and JOIN plain") {
 
 TEST_CASE("codegen: JOIN ON merges expr_style decision point with is_equal alternative") {
     std::vector<DecisionPoint> joinDps;
-    joinDps.push_back(api_level_star_select_dp(
+    joinDps.push_back(apiLevelStarSelectDp(
         1, "Users", "left_join<Posts>(on(c(&Users::id) == &Posts::user_id))"));
-    auto onExpr = expected_binary_leaf("&Users::id", "&Posts::user_id", " == ", "is_equal", 2);
+    auto onExpr = expectedBinaryLeaf("&Users::id", "&Posts::user_id", " == ", "is_equal", 2);
     joinDps.insert(joinDps.end(), onExpr.decisionPoints.begin(), onExpr.decisionPoints.end());
-    REQUIRE(generate_full("SELECT * FROM users LEFT JOIN posts ON users.id = posts.user_id") ==
+    REQUIRE(generateFull("SELECT * FROM users LEFT JOIN posts ON users.id = posts.user_id") ==
         CodeGenResult{
             "auto rows = storage.get_all<Users>(left_join<Posts>(on(c(&Users::id) == &Posts::user_id)));",
             std::move(joinDps),
@@ -217,7 +217,7 @@ TEST_CASE("codegen: IN with subquery") {
 }
 
 TEST_CASE("codegen: comparison to scalar MAX subquery") {
-    auto result = generate_full("id > (SELECT MAX(x) FROM t)");
+    auto result = generateFull("id > (SELECT MAX(x) FROM t)");
     REQUIRE(result.code == "c(&User::id) > select(max(&T::x))");
 }
 
@@ -240,7 +240,7 @@ TEST_CASE("codegen: EXCEPT") {
 }
 
 TEST_CASE("codegen: derived FROM emits stub and warning") {
-    REQUIRE(generate_full("SELECT n FROM (SELECT 1 AS n) t") ==
+    REQUIRE(generateFull("SELECT n FROM (SELECT 1 AS n) t") ==
             CodeGenResult{"/* SELECT with derived FROM */",
                           {},
                           {"subselect in FROM is not supported in sqlite_orm codegen"}});
@@ -257,7 +257,7 @@ TEST_CASE("codegen: VALUES standalone") {
 }
 
 TEST_CASE("codegen: SELECT single column with alias") {
-    auto result = generate_full("SELECT name AS user_name FROM users");
+    auto result = generateFull("SELECT name AS user_name FROM users");
     REQUIRE(result.code ==
         "struct User_nameAlias : sqlite_orm::alias_tag {\n"
         "    static const std::string& get() {\n"
@@ -329,7 +329,7 @@ TEST_CASE("codegen: SELECT without alias is unchanged") {
 }
 
 TEST_CASE("codegen: SELECT implicit column alias (without AS)") {
-    auto result = generate_full("SELECT name user_name FROM users");
+    auto result = generateFull("SELECT name user_name FROM users");
     REQUIRE(result.code ==
         "struct User_nameAlias : sqlite_orm::alias_tag {\n"
         "    static const std::string& get() {\n"
@@ -341,7 +341,7 @@ TEST_CASE("codegen: SELECT implicit column alias (without AS)") {
 }
 
 TEST_CASE("codegen: SELECT builtin colalias for single-letter alias") {
-    auto result = generate_full("SELECT name AS i FROM users");
+    auto result = generateFull("SELECT name AS i FROM users");
     REQUIRE(result.code == "auto rows = storage.select(as<colalias_i>(&Users::name));");
     bool hasBuiltinWarning = false;
     for(const auto& w : result.warnings) {
@@ -381,10 +381,10 @@ TEST_CASE("codegen: column_alias_style decision point offers C++20 alternative")
     const std::string chosenCode = "auto rows = storage.select(as<colalias_i>(&Users::name));";
     const std::string cpp20AltCode = "constexpr orm_column_alias auto i = \"i\"_col;\n"
                                      "auto rows = storage.select(as<i>(&Users::name));";
-    REQUIRE(generate_full("SELECT name AS i FROM users") ==
+    REQUIRE(generateFull("SELECT name AS i FROM users") ==
             CodeGenResult{
                 chosenCode,
-                {column_ref_style_dp(1, "&Users::name"),
+                {columnRefStyleDp(1, "&Users::name"),
                  DecisionPoint{2,
                                "column_alias_style",
                                "alias_tag",
@@ -416,11 +416,11 @@ TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
         "auto rows = storage.select(columns(&Marvel::name, as<colalias_i>(instr(&Marvel::abilities, \"o\"))), "
         "where(c(get<colalias_i>()) > 0), order_by(get<colalias_i>()));";
 
-    REQUIRE(generate_with_policy(sql, policy) ==
+    REQUIRE(generateWithPolicy(sql, policy) ==
             CodeGenResult{
                 mainCode,
-                {column_ref_style_dp(1, "&Marvel::name"),
-                 column_ref_style_dp(2, "&Marvel::abilities"),
+                {columnRefStyleDp(1, "&Marvel::name"),
+                 columnRefStyleDp(2, "&Marvel::abilities"),
                  DecisionPoint{3,
                                "expr_style",
                                "operator_wrap_left",

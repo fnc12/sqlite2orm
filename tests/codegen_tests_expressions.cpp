@@ -53,44 +53,44 @@ TEST_CASE("codegen: OLD ref") {
 }
 
 TEST_CASE("codegen: comparison operators") {
-    REQUIRE(generate_full("42 = 5") == expected_binary_leaf("42", "5", " == ", "is_equal"));
-    REQUIRE(generate_full("a == b") == expected_binary_leaf("&User::a", "&User::b", " == ", "is_equal"));
-    REQUIRE(generate_full("a != 5") == expected_binary_leaf("&User::a", "5", " != ", "is_not_equal"));
-    REQUIRE(generate_full("a <> 5") == expected_binary_leaf("&User::a", "5", " != ", "is_not_equal"));
-    REQUIRE(generate_full("a < 5") == expected_binary_leaf("&User::a", "5", " < ", "lesser_than"));
-    REQUIRE(generate_full("a <= 5") == expected_binary_leaf("&User::a", "5", " <= ", "lesser_or_equal"));
-    REQUIRE(generate_full("a > 3.14") == expected_binary_leaf("&User::a", "3.14", " > ", "greater_than"));
-    REQUIRE(generate_full("a >= 0") == expected_binary_leaf("&User::a", "0", " >= ", "greater_or_equal"));
-    REQUIRE(generate_full("name = 'hello'") == expected_binary_leaf("&User::name", R"("hello")", " == ", "is_equal"));
-    REQUIRE(generate_full("users.id = 42") == expected_binary_leaf("&Users::id", "42", " == ", "is_equal"));
+    REQUIRE(generateFull("42 = 5") == expectedBinaryLeaf("42", "5", " == ", "is_equal"));
+    REQUIRE(generateFull("a == b") == expectedBinaryLeaf("&User::a", "&User::b", " == ", "is_equal"));
+    REQUIRE(generateFull("a != 5") == expectedBinaryLeaf("&User::a", "5", " != ", "is_not_equal"));
+    REQUIRE(generateFull("a <> 5") == expectedBinaryLeaf("&User::a", "5", " != ", "is_not_equal"));
+    REQUIRE(generateFull("a < 5") == expectedBinaryLeaf("&User::a", "5", " < ", "lesser_than"));
+    REQUIRE(generateFull("a <= 5") == expectedBinaryLeaf("&User::a", "5", " <= ", "lesser_or_equal"));
+    REQUIRE(generateFull("a > 3.14") == expectedBinaryLeaf("&User::a", "3.14", " > ", "greater_than"));
+    REQUIRE(generateFull("a >= 0") == expectedBinaryLeaf("&User::a", "0", " >= ", "greater_or_equal"));
+    REQUIRE(generateFull("name = 'hello'") == expectedBinaryLeaf("&User::name", R"("hello")", " == ", "is_equal"));
+    REQUIRE(generateFull("users.id = 42") == expectedBinaryLeaf("&Users::id", "42", " == ", "is_equal"));
 }
 
 TEST_CASE("codegen: arithmetic operators") {
-    REQUIRE(generate_full("a + 5") == expected_binary_leaf("&User::a", "5", " + ", "add"));
-    REQUIRE(generate_full("a - 5") == expected_binary_leaf("&User::a", "5", " - ", "sub"));
-    REQUIRE(generate_full("a * 5") == expected_binary_leaf("&User::a", "5", " * ", "mul"));
-    REQUIRE(generate_full("a / 5") == expected_binary_leaf("&User::a", "5", " / ", "div"));
-    REQUIRE(generate_full("a % 5") == expected_binary_leaf("&User::a", "5", " % ", "mod"));
+    REQUIRE(generateFull("a + 5") == expectedBinaryLeaf("&User::a", "5", " + ", "add"));
+    REQUIRE(generateFull("a - 5") == expectedBinaryLeaf("&User::a", "5", " - ", "sub"));
+    REQUIRE(generateFull("a * 5") == expectedBinaryLeaf("&User::a", "5", " * ", "mul"));
+    REQUIRE(generateFull("a / 5") == expectedBinaryLeaf("&User::a", "5", " / ", "div"));
+    REQUIRE(generateFull("a % 5") == expectedBinaryLeaf("&User::a", "5", " % ", "mod"));
 }
 
 TEST_CASE("codegen: concatenation") {
     SECTION("simple") {
-        REQUIRE(generate_full("a || b") == expected_binary_leaf("&User::a", "&User::b", " || ", "conc"));
+        REQUIRE(generateFull("a || b") == expectedBinaryLeaf("&User::a", "&User::b", " || ", "conc"));
     }
     SECTION("chained: (a || b) || c") {
-        auto result = generate_full("a || b || c");
+        auto result = generateFull("a || b || c");
         REQUIRE(result == CodeGenResult{
             "c(&User::a) || &User::b || &User::c",
             {
-                column_ref_style_dp(1, "&User::a"),
-                column_ref_style_dp(2, "&User::b"),
+                columnRefStyleDp(1, "&User::a"),
+                columnRefStyleDp(2, "&User::b"),
                 DecisionPoint{3, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b",
                     {
                         Alternative{"operator_wrap_right", "&User::a || c(&User::b)", "wrap right operand"},
                         Alternative{"functional", "conc(&User::a, &User::b)", "functional style"},
                         Alternative{"operator_wrap_both", "c(&User::a) || c(&User::b)", "wrap both operands", true},
                     }},
-                column_ref_style_dp(4, "&User::c"),
+                columnRefStyleDp(4, "&User::c"),
                 DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b || &User::c",
                     {
                         Alternative{"operator_wrap_right", "c(&User::a) || &User::b || c(&User::c)", "wrap right operand"},
@@ -103,24 +103,24 @@ TEST_CASE("codegen: concatenation") {
 }
 
 TEST_CASE("codegen: bitwise operators") {
-    REQUIRE(generate_full("a & 5") == expected_binary_leaf("&User::a", "5", " & ", "bitwise_and"));
-    REQUIRE(generate_full("a | 5") == expected_binary_leaf("&User::a", "5", " | ", "bitwise_or"));
-    REQUIRE(generate_full("a << 2") == expected_binary_leaf("&User::a", "2", " << ", "bitwise_shift_left"));
-    REQUIRE(generate_full("a >> 2") == expected_binary_leaf("&User::a", "2", " >> ", "bitwise_shift_right"));
+    REQUIRE(generateFull("a & 5") == expectedBinaryLeaf("&User::a", "5", " & ", "bitwise_and"));
+    REQUIRE(generateFull("a | 5") == expectedBinaryLeaf("&User::a", "5", " | ", "bitwise_or"));
+    REQUIRE(generateFull("a << 2") == expectedBinaryLeaf("&User::a", "2", " << ", "bitwise_shift_left"));
+    REQUIRE(generateFull("a >> 2") == expectedBinaryLeaf("&User::a", "2", " >> ", "bitwise_shift_right"));
 }
 
 TEST_CASE("codegen: unary minus") {
     SECTION("-5") {
-        auto result = generate_full("-5");
+        auto result = generateFull("-5");
         REQUIRE(result == CodeGenResult{"-c(5)", {DecisionPoint{1, "expr_style", "operator", "-c(5)",
             {Alternative{"functional", "minus(5)", "functional style"}}
         }}});
     }
     SECTION("-a") {
-        auto result = generate_full("-a");
+        auto result = generateFull("-a");
         REQUIRE(result == CodeGenResult{"-c(&User::a)",
             {
-                column_ref_style_dp(1, "&User::a"),
+                columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
                               {Alternative{"functional", "minus(&User::a)", "functional style"}}},
             }});
@@ -128,24 +128,24 @@ TEST_CASE("codegen: unary minus") {
 }
 
 TEST_CASE("codegen: unary plus is no-op") {
-    auto result5 = generate_full("+5");
+    auto result5 = generateFull("+5");
     REQUIRE(result5 == CodeGenResult{"5", {}});
-    auto resultA = generate_full("+a");
-    REQUIRE(resultA == CodeGenResult{"&User::a", {column_ref_style_dp(1, "&User::a")}});
+    auto resultA = generateFull("+a");
+    REQUIRE(resultA == CodeGenResult{"&User::a", {columnRefStyleDp(1, "&User::a")}});
 }
 
 TEST_CASE("codegen: bitwise not") {
     SECTION("~5") {
-        auto result = generate_full("~5");
+        auto result = generateFull("~5");
         REQUIRE(result == CodeGenResult{"~c(5)", {DecisionPoint{1, "expr_style", "operator", "~c(5)",
             {Alternative{"functional", "bitwise_not(5)", "functional style"}}
         }}});
     }
     SECTION("~a") {
-        auto result = generate_full("~a");
+        auto result = generateFull("~a");
         REQUIRE(result == CodeGenResult{"~c(&User::a)",
             {
-                column_ref_style_dp(1, "&User::a"),
+                columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "~c(&User::a)",
                               {Alternative{"functional", "bitwise_not(&User::a)", "functional style"}}},
             }});
@@ -154,12 +154,12 @@ TEST_CASE("codegen: bitwise not") {
 
 TEST_CASE("codegen: logical AND") {
     SECTION("leaf operands") {
-        REQUIRE(generate_full("a AND b") == expected_binary_leaf("&User::a", "&User::b", " and ", "and_"));
+        REQUIRE(generateFull("a AND b") == expectedBinaryLeaf("&User::a", "&User::b", " and ", "and_"));
     }
     SECTION("compound operands: a = 1 AND b = 2") {
-        auto result = generate_full("a = 1 AND b = 2");
-        auto leftEq = expected_binary_leaf("&User::a", "1", " == ", "is_equal", 1);
-        auto rightEq = expected_binary_leaf("&User::b", "2", " == ", "is_equal", 3);
+        auto result = generateFull("a = 1 AND b = 2");
+        auto leftEq = expectedBinaryLeaf("&User::a", "1", " == ", "is_equal", 1);
+        auto rightEq = expectedBinaryLeaf("&User::b", "2", " == ", "is_equal", 3);
         std::vector<DecisionPoint> expectedDps;
         expectedDps.insert(expectedDps.end(), leftEq.decisionPoints.begin(), leftEq.decisionPoints.end());
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
@@ -175,12 +175,12 @@ TEST_CASE("codegen: logical AND") {
 
 TEST_CASE("codegen: logical OR") {
     SECTION("leaf operands") {
-        REQUIRE(generate_full("a OR b") == expected_binary_leaf("&User::a", "&User::b", " or ", "or_"));
+        REQUIRE(generateFull("a OR b") == expectedBinaryLeaf("&User::a", "&User::b", " or ", "or_"));
     }
     SECTION("compound operands: a = 1 OR b = 2") {
-        auto result = generate_full("a = 1 OR b = 2");
-        auto leftEq = expected_binary_leaf("&User::a", "1", " == ", "is_equal", 1);
-        auto rightEq = expected_binary_leaf("&User::b", "2", " == ", "is_equal", 3);
+        auto result = generateFull("a = 1 OR b = 2");
+        auto leftEq = expectedBinaryLeaf("&User::a", "1", " == ", "is_equal", 1);
+        auto rightEq = expectedBinaryLeaf("&User::b", "2", " == ", "is_equal", 3);
         std::vector<DecisionPoint> expectedDps;
         expectedDps.insert(expectedDps.end(), leftEq.decisionPoints.begin(), leftEq.decisionPoints.end());
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
@@ -196,10 +196,10 @@ TEST_CASE("codegen: logical OR") {
 
 TEST_CASE("codegen: logical NOT") {
     SECTION("leaf operand") {
-        auto result = generate_full("NOT a");
+        auto result = generateFull("NOT a");
         REQUIRE(result == CodeGenResult{"not c(&User::a)",
             {
-                column_ref_style_dp(1, "&User::a"),
+                columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "not c(&User::a)",
                               {
                                   Alternative{"operator_excl", "!c(&User::a)", "use ! instead of not"},
@@ -208,11 +208,11 @@ TEST_CASE("codegen: logical NOT") {
             }});
     }
     SECTION("compound operand: NOT -a") {
-        auto result = generate_full("NOT -a");
+        auto result = generateFull("NOT -a");
         REQUIRE(result == CodeGenResult{
             "not (-c(&User::a))",
             {
-                column_ref_style_dp(1, "&User::a"),
+                columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
                               {Alternative{"functional", "minus(&User::a)", "functional style"}}},
                 DecisionPoint{3, "expr_style", "operator", "not (-c(&User::a))",
@@ -226,11 +226,11 @@ TEST_CASE("codegen: logical NOT") {
 }
 
 TEST_CASE("codegen: double unary minus parenthesized") {
-    auto result = generate_full("- -a");
+    auto result = generateFull("- -a");
     REQUIRE(result == CodeGenResult{
         "-(-c(&User::a))",
         {
-            column_ref_style_dp(1, "&User::a"),
+            columnRefStyleDp(1, "&User::a"),
             DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
                           {Alternative{"functional", "minus(&User::a)", "functional style"}}},
             DecisionPoint{3, "expr_style", "operator", "-(-c(&User::a))",
@@ -259,16 +259,16 @@ TEST_CASE("codegen: NOT BETWEEN") {
 }
 
 TEST_CASE("codegen: IN") {
-    REQUIRE(generate_full("a IN (1, 2, 3)") ==
-            CodeGenResult{"in(&User::a, {1, 2, 3})", {column_ref_style_dp(1, "&User::a")}, {}});
+    REQUIRE(generateFull("a IN (1, 2, 3)") ==
+            CodeGenResult{"in(&User::a, {1, 2, 3})", {columnRefStyleDp(1, "&User::a")}, {}});
 }
 
 TEST_CASE("codegen: NOT IN") {
-    REQUIRE(generate_full("a NOT IN (1, 2)") ==
+    REQUIRE(generateFull("a NOT IN (1, 2)") ==
             CodeGenResult{
                 "not_in(&User::a, {1, 2})",
                 {
-                    column_ref_style_dp(1, "&User::a"),
+                    columnRefStyleDp(1, "&User::a"),
                     DecisionPoint{2,
                                   "negation_style",
                                   "not_in",
@@ -303,7 +303,7 @@ TEST_CASE("codegen: NOT GLOB") {
 }
 
 TEST_CASE("codegen: IS NULL in compound expression") {
-    auto result = generate_full("a IS NULL AND b = 1");
+    auto result = generateFull("a IS NULL AND b = 1");
     REQUIRE(result.code == "is_null(&User::a) and c(&User::b) == 1");
 }
 
@@ -343,7 +343,7 @@ TEST_CASE("codegen: function - nested") {
 }
 
 TEST_CASE("codegen: function in expression") {
-    auto result = generate_full("abs(a) + length(b)");
+    auto result = generateFull("abs(a) + length(b)");
     REQUIRE(result.code == "abs(&User::a) + length(&User::b)");
 }
 
@@ -357,8 +357,8 @@ TEST_CASE("codegen: parenthesized expression") {
 }
 
 TEST_CASE("codegen: parenthesized changes precedence") {
-    auto result = generate_full("(a + b) * c");
-    auto plain = generate_full("a + b * c");
+    auto result = generateFull("(a + b) * c");
+    auto plain = generateFull("a + b * c");
     REQUIRE(result.code != plain.code);
 }
 
@@ -414,43 +414,43 @@ TEST_CASE("codegen: blob literal") {
 }
 
 TEST_CASE("codegen: prefix - empty for literals") {
-    REQUIRE(prefix_for("42") == "");
-    REQUIRE(prefix_for("'hello'") == "");
+    REQUIRE(prefixFor("42") == "");
+    REQUIRE(prefixFor("'hello'") == "");
 }
 
 TEST_CASE("codegen: prefix - single column defaults to int") {
-    REQUIRE(prefix_for("a > 5") == "struct User {\n    int a = 0;\n};");
+    REQUIRE(prefixFor("a > 5") == "struct User {\n    int a = 0;\n};");
 }
 
 TEST_CASE("codegen: prefix - inferred string from comparison") {
-    REQUIRE(prefix_for("name = 'hello'") == "struct User {\n    std::string name;\n};");
+    REQUIRE(prefixFor("name = 'hello'") == "struct User {\n    std::string name;\n};");
 }
 
 TEST_CASE("codegen: prefix - inferred double from real") {
-    REQUIRE(prefix_for("x > 3.14") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > 3.14") == "struct User {\n    double x = 0.0;\n};");
 }
 
 TEST_CASE("codegen: prefix - LIKE infers string") {
-    REQUIRE(prefix_for("name LIKE '%foo%'") == "struct User {\n    std::string name;\n};");
+    REQUIRE(prefixFor("name LIKE '%foo%'") == "struct User {\n    std::string name;\n};");
 }
 
 TEST_CASE("codegen: prefix - instr first argument infers string column") {
-    REQUIRE(prefix_for("SELECT name, instr(abilities, 'o') FROM marvel ORDER BY 2") ==
+    REQUIRE(prefixFor("SELECT name, instr(abilities, 'o') FROM marvel ORDER BY 2") ==
             "struct Marvel {\n    std::string abilities;\n    std::string name;\n};");
 }
 
 TEST_CASE("codegen: prefix - synthetic column name heuristic for text") {
-    REQUIRE(prefix_for("SELECT title FROM books") == "struct Books {\n    std::string title;\n};");
-    REQUIRE(prefix_for("SELECT id FROM books") == "struct Books {\n    int id = 0;\n};");
+    REQUIRE(prefixFor("SELECT title FROM books") == "struct Books {\n    std::string title;\n};");
+    REQUIRE(prefixFor("SELECT id FROM books") == "struct Books {\n    int id = 0;\n};");
 }
 
 TEST_CASE("codegen: prefix - qualified quoted columns populate synthetic struct") {
-    REQUIRE(prefix_for(R"(SELECT "last_result"."id", "last_result"."stamp" FROM "last_result")") ==
+    REQUIRE(prefixFor(R"(SELECT "last_result"."id", "last_result"."stamp" FROM "last_result")") ==
             "struct LastResult {\n    int id = 0;\n    int stamp = 0;\n};");
 }
 
 TEST_CASE("codegen: prefix - multiple columns sorted") {
-    auto result = prefix_for("a > 5 AND b = 'hello'");
+    auto result = prefixFor("a > 5 AND b = 'hello'");
     REQUIRE(result == "struct User {\n    int a = 0;\n    std::string b;\n};");
 }
 
@@ -460,37 +460,37 @@ TEST_CASE("codegen: prefix - CASE with int return type") {
 }
 
 TEST_CASE("codegen: IS expr returns error") {
-    REQUIRE(generate_full("SELECT 1 IS 2 FROM users;") ==
+    REQUIRE(generateFull("SELECT 1 IS 2 FROM users;") ==
         CodeGenResult{{}, {}, {},
             {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
              "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS NOT expr returns error") {
-    REQUIRE(generate_full("SELECT 1 IS NOT 2 FROM users;") ==
+    REQUIRE(generateFull("SELECT 1 IS NOT 2 FROM users;") ==
         CodeGenResult{{}, {}, {},
             {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
              "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS DISTINCT FROM returns error") {
-    REQUIRE(generate_full("SELECT a IS DISTINCT FROM b FROM t;") ==
+    REQUIRE(generateFull("SELECT a IS DISTINCT FROM b FROM t;") ==
         CodeGenResult{{}, {}, {},
             {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
              "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS NOT DISTINCT FROM returns error") {
-    REQUIRE(generate_full("SELECT a IS NOT DISTINCT FROM b FROM t;") ==
+    REQUIRE(generateFull("SELECT a IS NOT DISTINCT FROM b FROM t;") ==
         CodeGenResult{{}, {}, {},
             {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
              "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: JSON -> operator") {
-    REQUIRE(generate_full("SELECT data -> '$.name' FROM users;") ==
+    REQUIRE(generateFull("SELECT data -> '$.name' FROM users;") ==
         CodeGenResult{"auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                      {column_ref_style_dp(1, "&Users::data"),
+                      {columnRefStyleDp(1, "&Users::data"),
                        DecisionPoint{2, "expr_style", "functional",
                           "json_extract(&Users::data, \"$.name\")",
                           {Alternative{"operator_wrap_right",
@@ -504,9 +504,9 @@ TEST_CASE("codegen: JSON -> operator") {
 }
 
 TEST_CASE("codegen: JSON ->> operator") {
-    REQUIRE(generate_full("SELECT data ->> '$.name' FROM users;") ==
+    REQUIRE(generateFull("SELECT data ->> '$.name' FROM users;") ==
         CodeGenResult{"auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                      {column_ref_style_dp(1, "&Users::data"),
+                      {columnRefStyleDp(1, "&Users::data"),
                        DecisionPoint{2, "expr_style", "functional",
                           "json_extract(&Users::data, \"$.name\")",
                           {Alternative{"operator_wrap_right",
@@ -520,7 +520,7 @@ TEST_CASE("codegen: JSON ->> operator") {
 }
 
 TEST_CASE("codegen: bind parameter anonymous") {
-    REQUIRE(generate_full("SELECT ? FROM users;") ==
+    REQUIRE(generateFull("SELECT ? FROM users;") ==
         CodeGenResult{"auto rows = storage.select(bindParam1);",
                       {},
                       {"bind parameter ? -> C++ variable 'bindParam1'; "
@@ -528,7 +528,7 @@ TEST_CASE("codegen: bind parameter anonymous") {
 }
 
 TEST_CASE("codegen: bind parameter named") {
-    REQUIRE(generate_full("SELECT :userId FROM users;") ==
+    REQUIRE(generateFull("SELECT :userId FROM users;") ==
         CodeGenResult{"auto rows = storage.select(userId);",
                       {},
                       {"bind parameter :userId -> C++ variable 'userId'; "
@@ -536,8 +536,8 @@ TEST_CASE("codegen: bind parameter named") {
 }
 
 TEST_CASE("codegen: expr COLLATE warning") {
-    REQUIRE(generate_full("SELECT name COLLATE NOCASE FROM users;") ==
+    REQUIRE(generateFull("SELECT name COLLATE NOCASE FROM users;") ==
         CodeGenResult{"auto rows = storage.select(&Users::name);",
-                      {column_ref_style_dp(1, "&Users::name")},
+                      {columnRefStyleDp(1, "&Users::name")},
                       {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
 }

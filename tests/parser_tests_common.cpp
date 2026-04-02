@@ -9,7 +9,7 @@ namespace sqlite2orm::parser_test_helpers {
         return parser.parse(std::move(tokens));
     }
 
-    ColumnDef column_with_default(std::string name, std::string typeName, std::shared_ptr<AstNode> defaultValue) {
+    ColumnDef columnWithDefault(std::string name, std::string typeName, std::shared_ptr<AstNode> defaultValue) {
         ColumnDef def;
         def.name = std::move(name);
         def.typeName = std::move(typeName);
@@ -17,7 +17,7 @@ namespace sqlite2orm::parser_test_helpers {
         return def;
     }
 
-    std::vector<FromClauseItem> from_one(std::string_view tableName) {
+    std::vector<FromClauseItem> fromOne(std::string_view tableName) {
         return {FromClauseItem{JoinKind::none,
                               FromTableClause{std::nullopt, std::string(tableName), std::nullopt},
                               nullptr,

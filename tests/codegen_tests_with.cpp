@@ -26,7 +26,7 @@ TEST_CASE("codegen: WITH RECURSIVE … UNION ALL arm with LIMIT still uses with_
 }
 
 TEST_CASE("codegen: WITH single-CTE SELECT does not emit synthetic struct Cnt in prefix") {
-    REQUIRE(prefix_for("WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt LIMIT 1000000) SELECT x "
+    REQUIRE(prefixFor("WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt LIMIT 1000000) SELECT x "
                        "FROM cnt;") == "");
 }
 
@@ -40,9 +40,9 @@ TEST_CASE("codegen: WITH single CTE exposes with_cte_style decision point") {
     CodeGenPolicy polCpp20;
     polCpp20.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
 
-    const std::string codeIndexed = generate_with_policy_suppress_with_cte_dp(sql, polIndexed).code;
-    const std::string codeLegacy = generate_with_policy_suppress_with_cte_dp(sql, polLegacy).code;
-    const std::string codeCpp20 = generate_with_policy_suppress_with_cte_dp(sql, polCpp20).code;
+    const std::string codeIndexed = generateWithPolicySuppressWithCteDp(sql, polIndexed).code;
+    const std::string codeLegacy = generateWithPolicySuppressWithCteDp(sql, polLegacy).code;
+    const std::string codeCpp20 = generateWithPolicySuppressWithCteDp(sql, polCpp20).code;
 
     const CodeGenResult expected{
         codeIndexed,
@@ -62,13 +62,13 @@ TEST_CASE("codegen: WITH single CTE exposes with_cte_style decision point") {
         {},
         {}};
 
-    REQUIRE(generate_full(sql) == expected);
+    REQUIRE(generateFull(sql) == expected);
 }
 
 TEST_CASE("codegen: with_cte_style legacy_colalias") {
     CodeGenPolicy pol;
     pol.chosenAlternativeValueByCategory["with_cte_style"] = "legacy_colalias";
-    CodeGenResult codeGenResult = generate_with_policy(
+    CodeGenResult codeGenResult = generateWithPolicy(
         "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt LIMIT 999) SELECT x FROM cnt;", pol);
     const std::string expected =
         "using namespace sqlite_orm::literals;\n"
@@ -82,7 +82,7 @@ TEST_CASE("codegen: with_cte_style legacy_colalias") {
 TEST_CASE("codegen: with_cte_style cpp20_monikers") {
     CodeGenPolicy pol;
     pol.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
-    CodeGenResult codeGenResult = generate_with_policy(
+    CodeGenResult codeGenResult = generateWithPolicy(
         "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt LIMIT 999) SELECT x FROM cnt;", pol);
     const std::string expected =
         "using namespace sqlite_orm::literals;\n"

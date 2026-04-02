@@ -10,11 +10,11 @@ TEST_CASE("parser: INSERT INTO columns VALUES single row") {
     expected.dataKind = InsertDataKind::values;
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
-        row.push_back(make_node<StringLiteralNode>("'a'"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<StringLiteralNode>("'a'"));
         expected.valueRows.push_back(std::move(row));
     }
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INSERT OR IGNORE multiple VALUES rows") {
@@ -26,13 +26,13 @@ TEST_CASE("parser: INSERT OR IGNORE multiple VALUES rows") {
     expected.columnNames = {"x"};
     {
         std::vector<AstNodePointer> r1;
-        r1.push_back(make_node<IntegerLiteralNode>("1"));
+        r1.push_back(makeNode<IntegerLiteralNode>("1"));
         expected.valueRows.push_back(std::move(r1));
         std::vector<AstNodePointer> r2;
-        r2.push_back(make_node<IntegerLiteralNode>("2"));
+        r2.push_back(makeNode<IntegerLiteralNode>("2"));
         expected.valueRows.push_back(std::move(r2));
     }
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: REPLACE INTO") {
@@ -44,10 +44,10 @@ TEST_CASE("parser: REPLACE INTO") {
     expected.columnNames = {"user_id"};
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("5"));
+        row.push_back(makeNode<IntegerLiteralNode>("5"));
         expected.valueRows.push_back(std::move(row));
     }
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INSERT DEFAULT VALUES") {
@@ -56,15 +56,15 @@ TEST_CASE("parser: INSERT DEFAULT VALUES") {
     InsertNode expected({});
     expected.tableName = "users";
     expected.dataKind = InsertDataKind::defaultValues;
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: INSERT INTO SELECT") {
     auto parseResult = parse("INSERT INTO archive (id) SELECT id FROM users WHERE active = 0");
     REQUIRE(parseResult);
     auto selectAst = std::make_unique<SelectNode>(SourceLocation{});
-    selectAst->columns.push_back({make_shared_node<ColumnRefNode>("id"), ""});
-    selectAst->fromClause = from_one("users");
+    selectAst->columns.push_back({makeSharedNode<ColumnRefNode>("id"), ""});
+    selectAst->fromClause = fromOne("users");
     selectAst->whereClause = std::make_shared<BinaryOperatorNode>(
         BinaryOperator::equals, std::make_unique<ColumnRefNode>("active", SourceLocation{}),
         std::make_unique<IntegerLiteralNode>("0", SourceLocation{}), SourceLocation{});
@@ -73,7 +73,7 @@ TEST_CASE("parser: INSERT INTO SELECT") {
     expected.columnNames = {"id"};
     expected.dataKind = InsertDataKind::selectQuery;
     expected.selectStatement = std::move(selectAst);
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: UPDATE SET WHERE") {
@@ -81,11 +81,11 @@ TEST_CASE("parser: UPDATE SET WHERE") {
     REQUIRE(parseResult);
     UpdateNode expected({});
     expected.tableName = "users";
-    expected.assignments.push_back(UpdateAssignment{"name", make_node<StringLiteralNode>("'x'")});
+    expected.assignments.push_back(UpdateAssignment{"name", makeNode<StringLiteralNode>("'x'")});
     expected.whereClause =
-        make_node<BinaryOperatorNode>(BinaryOperator::equals, make_node<ColumnRefNode>("id"),
-                                      make_node<IntegerLiteralNode>("1"));
-    REQUIRE(require_node<UpdateNode>(parseResult) == expected);
+        makeNode<BinaryOperatorNode>(BinaryOperator::equals, makeNode<ColumnRefNode>("id"),
+                                      makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<UpdateNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: UPDATE multiple SET") {
@@ -93,9 +93,9 @@ TEST_CASE("parser: UPDATE multiple SET") {
     REQUIRE(parseResult);
     UpdateNode expected({});
     expected.tableName = "users";
-    expected.assignments.push_back(UpdateAssignment{"a", make_node<IntegerLiteralNode>("1")});
-    expected.assignments.push_back(UpdateAssignment{"b", make_node<IntegerLiteralNode>("2")});
-    REQUIRE(require_node<UpdateNode>(parseResult) == expected);
+    expected.assignments.push_back(UpdateAssignment{"a", makeNode<IntegerLiteralNode>("1")});
+    expected.assignments.push_back(UpdateAssignment{"b", makeNode<IntegerLiteralNode>("2")});
+    REQUIRE(requireNode<UpdateNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: DELETE FROM WHERE") {
@@ -104,9 +104,9 @@ TEST_CASE("parser: DELETE FROM WHERE") {
     DeleteNode expected({});
     expected.tableName = "users";
     expected.whereClause =
-        make_node<BinaryOperatorNode>(BinaryOperator::equals, make_node<ColumnRefNode>("id"),
-                                      make_node<IntegerLiteralNode>("1"));
-    REQUIRE(require_node<DeleteNode>(parseResult) == expected);
+        makeNode<BinaryOperatorNode>(BinaryOperator::equals, makeNode<ColumnRefNode>("id"),
+                                      makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<DeleteNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: DELETE FROM without WHERE") {
@@ -114,7 +114,7 @@ TEST_CASE("parser: DELETE FROM without WHERE") {
     REQUIRE(parseResult);
     DeleteNode expected({});
     expected.tableName = "users";
-    REQUIRE(require_node<DeleteNode>(parseResult) == expected);
+    REQUIRE(requireNode<DeleteNode>(parseResult) == expected);
 }
 
 TEST_CASE("parser: schema-qualified DML table") {
@@ -126,10 +126,10 @@ TEST_CASE("parser: schema-qualified DML table") {
     expected.columnNames = {"id"};
     {
         std::vector<AstNodePointer> row;
-        row.push_back(make_node<IntegerLiteralNode>("1"));
+        row.push_back(makeNode<IntegerLiteralNode>("1"));
         expected.valueRows.push_back(std::move(row));
     }
-    REQUIRE(require_node<InsertNode>(parseResult) == expected);
+    REQUIRE(requireNode<InsertNode>(parseResult) == expected);
 }
 
 // --- UPDATE FROM ---
@@ -138,12 +138,12 @@ TEST_CASE("parser: UPDATE FROM") {
     auto parseResult = parse("UPDATE t SET a = b.a FROM b WHERE t.id = b.id");
     UpdateNode expected({});
     expected.tableName = "t";
-    expected.assignments.push_back(UpdateAssignment{"a", make_node<QualifiedColumnRefNode>("b", "a")});
+    expected.assignments.push_back(UpdateAssignment{"a", makeNode<QualifiedColumnRefNode>("b", "a")});
     expected.fromClause = {FromClauseItem{JoinKind::none,
         FromTableClause{std::nullopt, std::string("b"), std::nullopt}, nullptr, {}}};
-    expected.whereClause = make_node<BinaryOperatorNode>(
+    expected.whereClause = makeNode<BinaryOperatorNode>(
         BinaryOperator::equals,
-        make_node<QualifiedColumnRefNode>("t", "id"),
-        make_node<QualifiedColumnRefNode>("b", "id"));
-    REQUIRE(require_node<UpdateNode>(parseResult) == expected);
+        makeNode<QualifiedColumnRefNode>("t", "id"),
+        makeNode<QualifiedColumnRefNode>("b", "id"));
+    REQUIRE(requireNode<UpdateNode>(parseResult) == expected);
 }

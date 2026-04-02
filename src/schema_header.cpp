@@ -126,7 +126,7 @@ namespace sqlite2orm {
             return ordered;
         }
 
-        void append_unique_strings(std::vector<std::string>& dst, const std::vector<std::string>& src) {
+        void appendUniqueStrings(std::vector<std::string>& dst, const std::vector<std::string>& src) {
             for(const std::string& s : src) {
                 if(std::find(dst.begin(), dst.end(), s) == dst.end()) {
                     dst.push_back(s);
@@ -202,7 +202,7 @@ namespace sqlite2orm {
             if(dynamic_cast<const CreateIndexNode*>(root) || dynamic_cast<const CreateTriggerNode*>(root)) {
                 CodeGenResult fragment = gen.generate(*root);
                 allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());
-                append_unique_strings(allComments, fragment.comments);
+                appendUniqueStrings(allComments, fragment.comments);
                 allDecisionPoints.insert(allDecisionPoints.end(), fragment.decisionPoints.begin(),
                                          fragment.decisionPoints.end());
                 std::string storageArgLine = fragment.code;

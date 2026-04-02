@@ -11,7 +11,7 @@ TEST_CASE("codegen: INSERT OR IGNORE") {
 }
 
 TEST_CASE("codegen: REPLACE INTO") {
-    REQUIRE(generate_full("REPLACE INTO posts (user_id) VALUES (5)") ==
+    REQUIRE(generateFull("REPLACE INTO posts (user_id) VALUES (5)") ==
             CodeGenResult{
                 "storage.replace(into<Posts>(), columns(&Posts::user_id), values(std::make_tuple(5)));",
                 {DecisionPoint{
@@ -55,7 +55,7 @@ TEST_CASE("codegen: INSERT ON CONFLICT DO UPDATE SET WHERE") {
 
 TEST_CASE("codegen: INSERT ON CONFLICT target WHERE warns") {
     REQUIRE(
-        generate_full("INSERT INTO users (id, score) VALUES (1, 2) ON CONFLICT (id) WHERE score > 0 DO NOTHING") ==
+        generateFull("INSERT INTO users (id, score) VALUES (1, 2) ON CONFLICT (id) WHERE score > 0 DO NOTHING") ==
         CodeGenResult{
             "storage.insert(into<Users>(), columns(&Users::id, &Users::score), values(std::make_tuple(1, 2)), "
             "on_conflict(&Users::id).do_nothing());",
@@ -95,7 +95,7 @@ TEST_CASE("codegen: DELETE WHERE") {
 }
 
 TEST_CASE("codegen: UPDATE OR IGNORE warns") {
-    REQUIRE(generate_full("UPDATE OR IGNORE users SET a = 1") ==
+    REQUIRE(generateFull("UPDATE OR IGNORE users SET a = 1") ==
             CodeGenResult{
                 "storage.update_all(set(c(&Users::a) = 1));",
                 {},
@@ -126,7 +126,7 @@ TEST_CASE("codegen: CREATE TRIGGER update_of when for_each_row") {
 
 TEST_CASE("codegen: CREATE TRIGGER temp and if not exists warn") {
     REQUIRE(
-        generate_full(
+        generateFull(
             "CREATE TEMP TRIGGER IF NOT EXISTS tx BEFORE INSERT ON users BEGIN DELETE FROM users; END") ==
         CodeGenResult{
             "make_trigger(\"tx\", before().insert().on<Users>().begin(remove_all<Users>()));",
@@ -139,7 +139,7 @@ TEST_CASE("codegen: CREATE TRIGGER temp and if not exists warn") {
 
 TEST_CASE("codegen: CREATE TRIGGER schema-qualified names warn") {
     REQUIRE(
-        generate_full(
+        generateFull(
             "CREATE TRIGGER main.trig AFTER INSERT ON main.users BEGIN DELETE FROM users; END") ==
         CodeGenResult{
             "make_trigger(\"trig\", after().insert().on<Users>().begin(remove_all<Users>()));",
@@ -177,23 +177,23 @@ TEST_CASE("codegen: CREATE INDEX expression column") {
 TEST_CASE("codegen: CREATE INDEX without IF NOT EXISTS warns") {
     const CodeGenResult expected{
         "make_index(\"j\", indexed_column(&Users::name));",
-        {column_ref_style_dp(1, "&Users::name")},
+        {columnRefStyleDp(1, "&Users::name")},
         {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs from "
          "serialized output"}};
-    const CodeGenResult codeGenResult = generate_full("CREATE INDEX j ON users (name)");
+    const CodeGenResult codeGenResult = generateFull("CREATE INDEX j ON users (name)");
     REQUIRE(codeGenResult == expected);
 }
 
 TEST_CASE("codegen: CREATE INDEX IF NOT EXISTS no warning") {
     const CodeGenResult expected{"make_index(\"k\", indexed_column(&Users::id));",
-                                 {column_ref_style_dp(1, "&Users::id")},
+                                 {columnRefStyleDp(1, "&Users::id")},
                                  {}};
-    const CodeGenResult codeGenResult = generate_full("CREATE INDEX IF NOT EXISTS k ON users (id)");
+    const CodeGenResult codeGenResult = generateFull("CREATE INDEX IF NOT EXISTS k ON users (id)");
     REQUIRE(codeGenResult == expected);
 }
 
 TEST_CASE("codegen: UPDATE FROM warning") {
-    const auto result = generate_full("UPDATE t SET a = 1 FROM b WHERE t.id = b.id;");
+    const auto result = generateFull("UPDATE t SET a = 1 FROM b WHERE t.id = b.id;");
     REQUIRE_FALSE(result.warnings.empty());
     bool found = false;
     for(const auto& w: result.warnings) {

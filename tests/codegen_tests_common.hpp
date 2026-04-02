@@ -15,6 +15,8 @@ namespace codegen_test_helpers {
     std::string generate(std::string_view sql);
     CodeGenResult generate_full(std::string_view sql);
     CodeGenResult generate_with_policy(std::string_view sql, const CodeGenPolicy& policy);
+    /** Same as `generate_with_policy`, but omits the `with_cte_style` decision point (matches alternative regeneration). */
+    CodeGenResult generate_with_policy_suppress_with_cte_dp(std::string_view sql, const CodeGenPolicy& policy);
     std::string prefix_for(std::string_view sql);
 
     bool looks_like_member_pointer(std::string_view code);

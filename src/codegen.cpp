@@ -12,6 +12,7 @@ namespace sqlite2orm {
 
     namespace {
 
+        /** True if `policy` pins `category` to exactly `value` (codegen branch selector). */
         bool policyEquals(const CodeGenPolicy* policy, std::string_view category, std::string_view value) {
             if(!policy) {
                 return false;
@@ -20,7 +21,29 @@ namespace sqlite2orm {
             return it != policy->chosenAlternativeValueByCategory.end() && it->second == value;
         }
 
-        std::string strip_identifier_quotes(std::string_view identifier) {
+        /** Copy of `base` policy (or empty) with one category forced to `value` — used for WITH alternative codegen. */
+        CodeGenPolicy policyWithOverride(const CodeGenPolicy* base, std::string_view category,
+                                         std::string_view value) {
+            CodeGenPolicy result;
+            if(base) {
+                result = *base;
+            }
+            result.chosenAlternativeValueByCategory[std::string(category)] = std::string(value);
+            return result;
+        }
+
+        std::string colaliasBuiltinSlot(size_t slotIndex) {
+            static constexpr std::array<std::string_view, 10> kColaliasSlots = {
+                "colalias_i{}", "colalias_j{}", "colalias_k{}", "colalias_l{}", "colalias_m{}",
+                "colalias_n{}", "colalias_o{}", "colalias_p{}", "colalias_q{}", "colalias_r{}",
+            };
+            if(slotIndex < kColaliasSlots.size()) {
+                return std::string(kColaliasSlots[slotIndex]);
+            }
+            return "colalias_i{}";
+        }
+
+        std::string stripIdentifierQuotes(std::string_view identifier) {
             if(identifier.size() >= 2) {
                 char first = identifier.front();
                 char last = identifier.back();
@@ -33,8 +56,8 @@ namespace sqlite2orm {
             return std::string(identifier);
         }
 
-        std::string to_cpp_identifier(std::string_view sqlName) {
-            auto stripped = strip_identifier_quotes(sqlName);
+        std::string toCppIdentifier(std::string_view sqlName) {
+            auto stripped = stripIdentifierQuotes(sqlName);
             std::string result;
             result.reserve(stripped.size());
             for(char c : stripped) {
@@ -50,8 +73,8 @@ namespace sqlite2orm {
             return result;
         }
 
-        std::string identifier_to_cpp_string_literal(std::string_view sqlIdentifier) {
-            auto body = strip_identifier_quotes(sqlIdentifier);
+        std::string identifierToCppStringLiteral(std::string_view sqlIdentifier) {
+            auto body = stripIdentifierQuotes(sqlIdentifier);
             std::string result = "\"";
             for(char c : body) {
                 if(c == '\\') {
@@ -72,7 +95,7 @@ namespace sqlite2orm {
             return result;
         }
 
-        std::string sql_string_to_cpp(std::string_view sqlString) {
+        std::string sqlStringToCpp(std::string_view sqlString) {
             auto content = sqlString.substr(1, sqlString.size() - 2);
             std::string result = "\"";
             for(size_t i = 0; i < content.size(); ++i) {
@@ -98,7 +121,7 @@ namespace sqlite2orm {
             return result;
         }
 
-        std::string strip_column_alias_quotes(std::string_view alias) {
+        std::string stripColumnAliasQuotes(std::string_view alias) {
             if(alias.size() >= 2) {
                 char first = alias.front();
                 char last = alias.back();
@@ -110,34 +133,34 @@ namespace sqlite2orm {
             return std::string(alias);
         }
 
-        bool is_builtin_colalias(std::string_view stripped) {
+        bool isBuiltinColalias(std::string_view stripped) {
             return stripped.size() == 1 && stripped[0] >= 'a' && stripped[0] <= 'i';
         }
 
-        std::string column_alias_type_name(std::string_view rawAlias) {
-            std::string stripped = strip_column_alias_quotes(rawAlias);
-            if(is_builtin_colalias(stripped)) {
+        std::string columnAliasTypeName(std::string_view rawAlias) {
+            std::string stripped = stripColumnAliasQuotes(rawAlias);
+            if(isBuiltinColalias(stripped)) {
                 return "colalias_" + stripped;
             }
-            std::string name = to_cpp_identifier(stripped);
+            std::string name = toCppIdentifier(stripped);
             if(!name.empty() && std::islower(static_cast<unsigned char>(name[0]))) {
                 name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
             }
             return name + "Alias";
         }
 
-        bool needs_custom_alias_struct(std::string_view rawAlias) {
-            std::string stripped = strip_column_alias_quotes(rawAlias);
-            return !is_builtin_colalias(stripped);
+        bool needsCustomAliasStruct(std::string_view rawAlias) {
+            std::string stripped = stripColumnAliasQuotes(rawAlias);
+            return !isBuiltinColalias(stripped);
         }
 
-        std::string generate_column_alias_preamble(const std::vector<SelectColumn>& columns) {
+        std::string generateColumnAliasPreamble(const std::vector<SelectColumn>& columns) {
             std::string preamble;
             std::vector<std::string> emitted;
             for(const auto& col : columns) {
                 if(col.alias.empty()) continue;
-                if(!needs_custom_alias_struct(col.alias)) continue;
-                std::string typeName = column_alias_type_name(col.alias);
+                if(!needsCustomAliasStruct(col.alias)) continue;
+                std::string typeName = columnAliasTypeName(col.alias);
                 bool alreadyEmitted = false;
                 for(const auto& e : emitted) {
                     if(e == typeName) {
@@ -147,7 +170,7 @@ namespace sqlite2orm {
                 }
                 if(alreadyEmitted) continue;
                 emitted.push_back(typeName);
-                std::string displayName = strip_column_alias_quotes(col.alias);
+                std::string displayName = stripColumnAliasQuotes(col.alias);
                 std::string escaped;
                 for(char c : displayName) {
                     if(c == '\\')
@@ -170,12 +193,12 @@ namespace sqlite2orm {
             return preamble;
         }
 
-        std::string column_alias_cpp20_var_name(std::string_view rawAlias) {
-            return to_cpp_identifier(strip_column_alias_quotes(rawAlias));
+        std::string columnAliasCpp20VarName(std::string_view rawAlias) {
+            return toCppIdentifier(stripColumnAliasQuotes(rawAlias));
         }
 
         /** SQLite scalar functions whose first argument is a string/text context in typical use. */
-        bool sqlite_scalar_first_arg_text_context(std::string_view funcLower) {
+        bool sqliteScalarFirstArgTextContext(std::string_view funcLower) {
             return funcLower == "instr" || funcLower == "substr" || funcLower == "substring" ||
                    funcLower == "lower" || funcLower == "upper" || funcLower == "ltrim" || funcLower == "rtrim" ||
                    funcLower == "trim" || funcLower == "replace" || funcLower == "unicode" || funcLower == "soundex";
@@ -186,7 +209,7 @@ namespace sqlite2orm {
          * Heuristic: common human/text field names → std::string; everything else → int until a stronger hint
          * (comparison literal, LIKE, instr, …) upgrades via registerColumn.
          */
-        std::string default_cpp_type_for_synthetic_column(std::string_view cppIdentifier) {
+        std::string defaultCppTypeForSyntheticColumn(std::string_view cppIdentifier) {
             const std::string lower = toLowerAscii(cppIdentifier);
             static constexpr std::array<std::string_view, 44> kLikelyText{{
                 "address",    "author",     "body",       "caption",   "city",        "comment",
@@ -213,7 +236,7 @@ namespace sqlite2orm {
             "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
             "mechanism.";
 
-        void append_unique_strings(std::vector<std::string>& destination, const std::vector<std::string>& source) {
+        void appendUniqueStrings(std::vector<std::string>& destination, const std::vector<std::string>& source) {
             for(const auto& s : source) {
                 bool dupe = false;
                 for(const auto& d : destination) {
@@ -228,19 +251,19 @@ namespace sqlite2orm {
             }
         }
 
-        void append_unique_string(std::vector<std::string>& destination, const std::string& s) {
+        void appendUniqueString(std::vector<std::string>& destination, const std::string& s) {
             for(const auto& d : destination) {
                 if(d == s) return;
             }
             destination.push_back(s);
         }
 
-        std::string generate_cpp20_column_alias_preamble(const std::vector<SelectColumn>& columns) {
+        std::string generateCpp20ColumnAliasPreamble(const std::vector<SelectColumn>& columns) {
             std::string body;
             std::vector<std::string> emittedVars;
             for(const auto& column : columns) {
                 if(column.alias.empty()) continue;
-                std::string var = column_alias_cpp20_var_name(column.alias);
+                std::string var = columnAliasCpp20VarName(column.alias);
                 bool already = false;
                 for(const auto& e : emittedVars) {
                     if(e == var) {
@@ -250,28 +273,28 @@ namespace sqlite2orm {
                 }
                 if(already) continue;
                 emittedVars.push_back(var);
-                std::string lit = identifier_to_cpp_string_literal(strip_column_alias_quotes(column.alias));
+                std::string lit = identifierToCppStringLiteral(stripColumnAliasQuotes(column.alias));
                 body += "constexpr orm_column_alias auto " + var + " = " + lit + "_col;\n";
             }
             return body;
         }
 
-        std::string wrap_with_column_alias(const std::string& exprCode, const std::string& rawAlias, bool cpp20Style) {
+        std::string wrapWithColumnAlias(const std::string& exprCode, const std::string& rawAlias, bool cpp20Style) {
             if(rawAlias.empty()) return exprCode;
             if(cpp20Style) {
-                return "as<" + column_alias_cpp20_var_name(rawAlias) + ">(" + exprCode + ")";
+                return "as<" + columnAliasCpp20VarName(rawAlias) + ">(" + exprCode + ")";
             }
-            return "as<" + column_alias_type_name(rawAlias) + ">(" + exprCode + ")";
+            return "as<" + columnAliasTypeName(rawAlias) + ">(" + exprCode + ")";
         }
 
-        bool has_any_column_alias(const std::vector<SelectColumn>& columns) {
+        bool hasAnyColumnAlias(const std::vector<SelectColumn>& columns) {
             for(const auto& col : columns) {
                 if(!col.alias.empty()) return true;
             }
             return false;
         }
 
-        std::string_view binary_operator_string(BinaryOperator binaryOperator) {
+        std::string_view binaryOperatorString(BinaryOperator binaryOperator) {
             switch(binaryOperator) {
                 case BinaryOperator::logicalOr:             return " or ";
                 case BinaryOperator::logicalAnd:            return " and ";
@@ -301,7 +324,7 @@ namespace sqlite2orm {
             return {};
         }
 
-        std::string_view binary_functional_name(BinaryOperator binaryOperator) {
+        std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {
             switch(binaryOperator) {
                 case BinaryOperator::logicalOr:             return "or_";
                 case BinaryOperator::logicalAnd:            return "and_";
@@ -331,24 +354,24 @@ namespace sqlite2orm {
             return {};
         }
 
-        std::string normalize_table_key(std::string_view sqlIdentifier) {
-            return toLowerAscii(strip_identifier_quotes(sqlIdentifier));
+        std::string normalizeSqlIdentifier(std::string_view sqlIdentifier) {
+            return toLowerAscii(stripIdentifierQuotes(sqlIdentifier));
         }
 
-        bool ends_with(std::string_view string, std::string_view suffix) {
+        bool endsWith(std::string_view string, std::string_view suffix) {
             return string.size() >= suffix.size() &&
                    string.compare(string.size() - suffix.size(), suffix.size(), suffix) == 0;
         }
 
-        std::optional<std::string> extract_storage_select_argument(std::string_view generated) {
+        std::optional<std::string> extractStorageSelectArgument(std::string_view generated) {
             constexpr std::string_view prefix = "auto rows = storage.select(";
-            if(generated.size() <= prefix.size() + 2 || !generated.starts_with(prefix) || !ends_with(generated, ");")) {
+            if(generated.size() <= prefix.size() + 2 || !generated.starts_with(prefix) || !endsWith(generated, ");")) {
                 return std::nullopt;
             }
             return std::string(generated.substr(prefix.size(), generated.size() - prefix.size() - 2));
         }
 
-        std::string strip_storage_prefix_and_trailing_semicolon(std::string c) {
+        std::string stripStoragePrefixAndTrailingSemicolon(std::string c) {
             static constexpr std::string_view kStoragePrefix = "storage.";
             if(c.size() >= kStoragePrefix.size() && c.compare(0, kStoragePrefix.size(), kStoragePrefix) == 0) {
                 c.erase(0, kStoragePrefix.size());
@@ -365,7 +388,7 @@ namespace sqlite2orm {
             return c;
         }
 
-        std::string blob_to_cpp(std::string_view blobLiteral) {
+        std::string blobToCpp(std::string_view blobLiteral) {
             auto hex = blobLiteral.substr(2, blobLiteral.size() - 3);
             if(hex.empty()) {
                 return "std::vector<char>{}";
@@ -382,7 +405,7 @@ namespace sqlite2orm {
             return result;
         }
 
-        bool is_leaf_node(const AstNode& astNode) {
+        bool isLeafNode(const AstNode& astNode) {
             return dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
                    dynamic_cast<const RealLiteralNode*>(&astNode) ||
                    dynamic_cast<const StringLiteralNode*>(&astNode) ||
@@ -402,7 +425,7 @@ namespace sqlite2orm {
             return "c(" + std::string(code) + ")";
         }
 
-        std::string sqlite_type_to_cpp(std::string_view typeName) {
+        std::string sqliteTypeToCpp(std::string_view typeName) {
             std::string lower = toLowerAscii(typeName);
             if(lower.find("bool") != std::string::npos) return "bool";
             if(lower.find("int") != std::string::npos) return "int64_t";
@@ -416,15 +439,15 @@ namespace sqlite2orm {
             return "double";
         }
 
-        std::string default_initializer(std::string_view cppType) {
+        std::string defaultInitializer(std::string_view cppType) {
             if(cppType == "int" || cppType == "int64_t") return " = 0";
             if(cppType == "double") return " = 0.0";
             if(cppType == "bool") return " = false";
             return "";
         }
 
-        std::string to_struct_name(std::string_view sqlName) {
-            auto base = to_cpp_identifier(sqlName);
+        std::string toStructName(std::string_view sqlName) {
+            auto base = toCppIdentifier(sqlName);
             std::string result;
             result.reserve(base.size());
             bool atWordStart = true;
@@ -446,7 +469,7 @@ namespace sqlite2orm {
             return result;
         }
 
-        std::string_view join_sqlite_orm_api_name(JoinKind joinKind) {
+        std::string_view joinSqliteOrmApiName(JoinKind joinKind) {
             switch(joinKind) {
             case JoinKind::crossJoin: return "cross_join";
             case JoinKind::innerJoin: return "inner_join";
@@ -458,7 +481,7 @@ namespace sqlite2orm {
             }
         }
 
-        std::string_view compound_select_api(CompoundSelectOperator compoundOperator) {
+        std::string_view compoundSelectApi(CompoundSelectOperator compoundOperator) {
             switch(compoundOperator) {
             case CompoundSelectOperator::unionDistinct: return "union_";
             case CompoundSelectOperator::unionAll: return "union_all";
@@ -468,7 +491,7 @@ namespace sqlite2orm {
             return "union_";
         }
 
-        std::string dml_insert_or_prefix(ConflictClause c) {
+        std::string dmlInsertOrPrefix(ConflictClause c) {
             switch(c) {
             case ConflictClause::rollback: return "or_rollback(), ";
             case ConflictClause::abort: return "or_abort(), ";
@@ -488,11 +511,19 @@ namespace sqlite2orm {
         return policyEquals(this->codeGenPolicy, "column_alias_style", "cpp20_literal");
     }
 
+    bool CodeGenerator::withCteLegacyColalias() const {
+        return this->activeWithCteStyle == "legacy_colalias";
+    }
+
+    bool CodeGenerator::withCteCpp20Monikers() const {
+        return this->activeWithCteStyle == "cpp20_monikers";
+    }
+
     bool CodeGenerator::columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const {
         if(!useCpp20ColumnAliasStyle()) {
             return false;
         }
-        std::string normalized = toLowerAscii(strip_identifier_quotes(ref.columnName));
+        std::string normalized = toLowerAscii(stripIdentifierQuotes(ref.columnName));
         return this->activeSelectColumnAliasCpp20Vars.find(normalized) != this->activeSelectColumnAliasCpp20Vars.end();
     }
 
@@ -511,7 +542,7 @@ namespace sqlite2orm {
         } else if(auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&astNode)) {
             return CodeGenResult{std::string(realLiteral->value), {}};
         } else if(auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&astNode)) {
-            return CodeGenResult{sql_string_to_cpp(stringLiteral->value), {}};
+            return CodeGenResult{sqlStringToCpp(stringLiteral->value), {}};
         } else if(dynamic_cast<const NullLiteralNode*>(&astNode)) {
             return CodeGenResult{"nullptr", {}};
         } else if(auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&astNode)) {
@@ -533,13 +564,13 @@ namespace sqlite2orm {
                 api = "raise_fail";
             }
             if(auto* strLit = dynamic_cast<const StringLiteralNode*>(raiseNode->message.get())) {
-                return CodeGenResult{std::string(api) + "(" + sql_string_to_cpp(strLit->value) + ")", {}};
+                return CodeGenResult{std::string(api) + "(" + sqlStringToCpp(strLit->value) + ")", {}};
             }
             raiseWarnings.push_back(
                 "RAISE(ROLLBACK|ABORT|FAIL, ...) message should be a SQL string literal for sqlite_orm raise_*()");
             return CodeGenResult{std::string(api) + "(\"\")", {}, std::move(raiseWarnings)};
         } else if(auto* blobLiteral = dynamic_cast<const BlobLiteralNode*>(&astNode)) {
-            return CodeGenResult{blob_to_cpp(blobLiteral->value), {}};
+            return CodeGenResult{blobToCpp(blobLiteral->value), {}};
         } else if(auto* currentDt = dynamic_cast<const CurrentDatetimeLiteralNode*>(&astNode)) {
             switch(currentDt->kind) {
             case CurrentDatetimeKind::time:
@@ -552,7 +583,7 @@ namespace sqlite2orm {
             return CodeGenResult{"current_timestamp()", {}};
         } else if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&astNode)) {
             {
-                std::string normalized = toLowerAscii(strip_identifier_quotes(columnRef->columnName));
+                std::string normalized = toLowerAscii(stripIdentifierQuotes(columnRef->columnName));
                 auto aliasIt = this->activeSelectColumnAliases.find(normalized);
                 if(aliasIt != this->activeSelectColumnAliases.end()) {
                     if(useCpp20ColumnAliasStyle()) {
@@ -564,10 +595,30 @@ namespace sqlite2orm {
                     return CodeGenResult{"get<" + aliasIt->second + ">()", {}};
                 }
             }
-            auto cppName = to_cpp_identifier(columnRef->columnName);
-            registerColumn(cppName, default_cpp_type_for_synthetic_column(cppName));
+            auto cppName = toCppIdentifier(columnRef->columnName);
+            registerPrefixColumn(cppName, syntheticColumnCppType(cppName));
+            if(this->implicitSingleSourceCteTypedef && this->implicitCteFromTableKeyNorm) {
+                const std::string colKey = normalizeSqlIdentifier(columnRef->columnName);
+                const std::string pipe = *this->implicitCteFromTableKeyNorm + "|" + colKey;
+                if(this->withCteCpp20Monikers()) {
+                    auto monIt = this->withCteCpp20MonikerVarByCteKey.find(*this->implicitCteFromTableKeyNorm);
+                    auto colIt = this->withCteCpp20ColVarByPipeKey.find(pipe);
+                    if(monIt != this->withCteCpp20MonikerVarByCteKey.end() &&
+                       colIt != this->withCteCpp20ColVarByPipeKey.end()) {
+                        return CodeGenResult{monIt->second + "->*" + colIt->second, {}};
+                    }
+                }
+                if(this->withCteLegacyColalias()) {
+                    auto colIt = this->withCteLegacyColVarByPipeKey.find(pipe);
+                    if(colIt != this->withCteLegacyColVarByPipeKey.end()) {
+                        std::string cteCol =
+                            "column<" + *this->implicitSingleSourceCteTypedef + ">(" + colIt->second + ")";
+                        return CodeGenResult{std::move(cteCol), {}};
+                    }
+                }
+            }
             if(this->implicitSingleSourceCteTypedef) {
-                std::string colLit = identifier_to_cpp_string_literal(strip_identifier_quotes(columnRef->columnName));
+                std::string colLit = identifierToCppStringLiteral(stripIdentifierQuotes(columnRef->columnName));
                 std::string cteCol = "column<" + *this->implicitSingleSourceCteTypedef + ">(" + colLit + ")";
                 return CodeGenResult{std::move(cteCol), {}};
             }
@@ -593,25 +644,40 @@ namespace sqlite2orm {
                     " is not represented in sqlite_orm mapping; generated column reference uses table `" +
                     std::string(qualifiedRef->tableName) + "` only");
             }
-            std::string tableKeyNorm = normalize_table_key(qualifiedRef->tableName);
+            std::string tableKeyNorm = normalizeSqlIdentifier(qualifiedRef->tableName);
             auto cteIt = this->activeCteTypedefByTableKey.find(tableKeyNorm);
             if(cteIt != this->activeCteTypedefByTableKey.end()) {
+                const std::string colKey = normalizeSqlIdentifier(qualifiedRef->columnName);
+                const std::string pipe = tableKeyNorm + "|" + colKey;
+                if(this->withCteCpp20Monikers()) {
+                    auto monIt = this->withCteCpp20MonikerVarByCteKey.find(tableKeyNorm);
+                    auto colIt = this->withCteCpp20ColVarByPipeKey.find(pipe);
+                    if(monIt != this->withCteCpp20MonikerVarByCteKey.end() &&
+                       colIt != this->withCteCpp20ColVarByPipeKey.end()) {
+                        return CodeGenResult{monIt->second + "->*" + colIt->second, {}, std::move(qualWarnings)};
+                    }
+                }
+                if(this->withCteLegacyColalias()) {
+                    auto colIt = this->withCteLegacyColVarByPipeKey.find(pipe);
+                    if(colIt != this->withCteLegacyColVarByPipeKey.end()) {
+                        return CodeGenResult{"column<" + cteIt->second + ">(" + colIt->second + ")", {},
+                                             std::move(qualWarnings)};
+                    }
+                }
                 std::string colLit =
-                    identifier_to_cpp_string_literal(strip_identifier_quotes(qualifiedRef->columnName));
+                    identifierToCppStringLiteral(stripIdentifierQuotes(qualifiedRef->columnName));
                 return CodeGenResult{"column<" + cteIt->second + ">(" + colLit + ")", {},
                                      std::move(qualWarnings)};
             }
             std::string tableKey = std::string(qualifiedRef->tableName);
-            std::string structForColumn = to_struct_name(qualifiedRef->tableName);
+            std::string structForColumn = toStructName(qualifiedRef->tableName);
             auto aliasIt = this->fromTableAliasToStructName.find(tableKey);
             if(aliasIt != this->fromTableAliasToStructName.end()) {
                 structForColumn = aliasIt->second;
             }
-            {
-                const std::string colCpp = to_cpp_identifier(qualifiedRef->columnName);
-                registerColumn(colCpp, default_cpp_type_for_synthetic_column(colCpp));
-            }
-            std::string memberPointer = "&" + structForColumn + "::" + to_cpp_identifier(qualifiedRef->columnName);
+            const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+            registerPrefixColumn(colCpp, syntheticColumnCppType(colCpp));
+            std::string memberPointer = "&" + structForColumn + "::" + toCppIdentifier(qualifiedRef->columnName);
             std::string columnPointer = "column<" + structForColumn + ">(" + memberPointer + ")";
             const bool useQColPtr = policyEquals(this->codeGenPolicy, "column_ref_style", "column_pointer");
             const std::string& emittedQ = useQColPtr ? columnPointer : memberPointer;
@@ -632,20 +698,20 @@ namespace sqlite2orm {
                     "schema-qualified SELECT result column " + *qualifiedAsterisk->schemaName + "." +
                     qualifiedAsterisk->tableName +
                     ".* is not represented in sqlite_orm; generated code uses asterisk<" +
-                    to_struct_name(qualifiedAsterisk->tableName) + ">() (table type only)");
+                    toStructName(qualifiedAsterisk->tableName) + ">() (table type only)");
             }
-            return CodeGenResult{"asterisk<" + to_struct_name(qualifiedAsterisk->tableName) + ">()", {},
+            return CodeGenResult{"asterisk<" + toStructName(qualifiedAsterisk->tableName) + ">()", {},
                                  std::move(qualifiedAsteriskWarnings)};
         } else if(auto* newRef = dynamic_cast<const NewRefNode*>(&astNode)) {
-            auto cppName = to_cpp_identifier(newRef->columnName);
-            registerColumn(cppName, default_cpp_type_for_synthetic_column(cppName));
+            auto cppName = toCppIdentifier(newRef->columnName);
+            registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
             return CodeGenResult{"new_(&" + this->structName + "::" + cppName + ")", {}};
         } else if(auto* oldRef = dynamic_cast<const OldRefNode*>(&astNode)) {
-            auto cppName = to_cpp_identifier(oldRef->columnName);
-            registerColumn(cppName, default_cpp_type_for_synthetic_column(cppName));
+            auto cppName = toCppIdentifier(oldRef->columnName);
+            registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
             return CodeGenResult{"old(&" + this->structName + "::" + cppName + ")", {}};
         } else if(auto* excludedRef = dynamic_cast<const ExcludedRefNode*>(&astNode)) {
-            auto cppName = to_cpp_identifier(excludedRef->columnName);
+            auto cppName = toCppIdentifier(excludedRef->columnName);
             return CodeGenResult{"excluded(&" + this->structName + "::" + cppName + ")", {}};
         } else if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
             if(binaryOp->binaryOperator == BinaryOperator::isOp ||
@@ -661,10 +727,12 @@ namespace sqlite2orm {
             auto rightResult = generateNode(*binaryOp->rhs);
 
             if(auto* leftCol = dynamic_cast<const ColumnRefNode*>(binaryOp->lhs.get())) {
-                registerColumn(to_cpp_identifier(leftCol->columnName), inferTypeFromNode(*binaryOp->rhs));
+                this->registerPrefixColumn(toCppIdentifier(leftCol->columnName),
+                                           this->inferTypeFromNode(*binaryOp->rhs));
             }
             if(auto* rightCol = dynamic_cast<const ColumnRefNode*>(binaryOp->rhs.get())) {
-                registerColumn(to_cpp_identifier(rightCol->columnName), inferTypeFromNode(*binaryOp->lhs));
+                this->registerPrefixColumn(toCppIdentifier(rightCol->columnName),
+                                           this->inferTypeFromNode(*binaryOp->lhs));
             }
 
             auto decisionPoints = std::move(leftResult.decisionPoints);
@@ -672,8 +740,8 @@ namespace sqlite2orm {
                                   std::make_move_iterator(rightResult.decisionPoints.begin()),
                                   std::make_move_iterator(rightResult.decisionPoints.end()));
 
-            bool leftLeaf = is_leaf_node(*binaryOp->lhs);
-            bool rightLeaf = is_leaf_node(*binaryOp->rhs);
+            bool leftLeaf = isLeafNode(*binaryOp->lhs);
+            bool rightLeaf = isLeafNode(*binaryOp->rhs);
 
             bool leftNoWrap = false;
             if(auto* leftCol = dynamic_cast<const ColumnRefNode*>(binaryOp->lhs.get())) {
@@ -687,10 +755,10 @@ namespace sqlite2orm {
             std::string wrappedLeft = (leftLeaf && !leftNoWrap) ? wrap(leftResult.code) : leftResult.code;
             std::string wrappedRight = (rightLeaf && !rightNoWrap) ? wrap(rightResult.code) : rightResult.code;
 
-            auto funcName = binary_functional_name(binaryOp->binaryOperator);
+            auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
             std::string functionalCode = std::string(funcName) + "(" + leftResult.code + ", " + rightResult.code + ")";
 
-            auto op = binary_operator_string(binaryOp->binaryOperator);
+            auto op = binaryOperatorString(binaryOp->binaryOperator);
             std::string wrapLeftCode = wrappedLeft + std::string(op) + rightResult.code;
             std::string wrapRightCode = leftResult.code + std::string(op) + wrappedRight;
             std::string wrapBothCode = wrappedLeft + std::string(op) + wrappedRight;
@@ -740,8 +808,8 @@ namespace sqlite2orm {
             }
 
             std::vector<std::string> binComments;
-            append_unique_strings(binComments, leftResult.comments);
-            append_unique_strings(binComments, rightResult.comments);
+            appendUniqueStrings(binComments, leftResult.comments);
+            appendUniqueStrings(binComments, rightResult.comments);
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings), {},
                                  std::move(binComments)};
         } else if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
@@ -753,7 +821,7 @@ namespace sqlite2orm {
                                      std::move(operandResult.comments)};
             }
 
-            bool operandLeaf = is_leaf_node(*unaryOp->operand);
+            bool operandLeaf = isLeafNode(*unaryOp->operand);
             bool operandNoWrap = false;
             if(auto* opCol = dynamic_cast<const ColumnRefNode*>(unaryOp->operand.get())) {
                 operandNoWrap = this->columnRefIsSelectAliasNoWrap(*opCol);
@@ -823,7 +891,7 @@ namespace sqlite2orm {
             auto highResult = generateNode(*betweenNode->high);
 
             if(auto* col = dynamic_cast<const ColumnRefNode*>(betweenNode->operand.get())) {
-                registerColumn(to_cpp_identifier(col->columnName), inferTypeFromNode(*betweenNode->low));
+                registerPrefixColumn(toCppIdentifier(col->columnName), inferTypeFromNode(*betweenNode->low));
             }
 
             auto decisionPoints = std::move(operandResult.decisionPoints);
@@ -893,7 +961,7 @@ namespace sqlite2orm {
 
             if(auto* col = dynamic_cast<const ColumnRefNode*>(inNode->operand.get())) {
                 if(!inNode->values.empty()) {
-                    registerColumn(to_cpp_identifier(col->columnName), inferTypeFromNode(*inNode->values.at(0)));
+                    registerPrefixColumn(toCppIdentifier(col->columnName), inferTypeFromNode(*inNode->values.at(0)));
                 }
             }
 
@@ -925,7 +993,7 @@ namespace sqlite2orm {
             auto patternResult = generateNode(*likeNode->pattern);
 
             if(auto* col = dynamic_cast<const ColumnRefNode*>(likeNode->operand.get())) {
-                registerColumn(to_cpp_identifier(col->columnName), "std::string");
+                registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
             }
 
             auto decisionPoints = std::move(operandResult.decisionPoints);
@@ -950,7 +1018,7 @@ namespace sqlite2orm {
             auto patternResult = generateNode(*globNode->pattern);
 
             if(auto* col = dynamic_cast<const ColumnRefNode*>(globNode->operand.get())) {
-                registerColumn(to_cpp_identifier(col->columnName), "std::string");
+                registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
             }
 
             auto decisionPoints = std::move(operandResult.decisionPoints);
@@ -963,7 +1031,7 @@ namespace sqlite2orm {
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if(auto* castNode = dynamic_cast<const CastNode*>(&astNode)) {
             auto operandResult = generateNode(*castNode->operand);
-            std::string cppType = sqlite_type_to_cpp(castNode->typeName);
+            std::string cppType = sqliteTypeToCpp(castNode->typeName);
             return CodeGenResult{"cast<" + cppType + ">(" + operandResult.code + ")",
                                  std::move(operandResult.decisionPoints)};
         } else if(auto* caseNode = dynamic_cast<const CaseNode*>(&astNode)) {
@@ -1005,7 +1073,7 @@ namespace sqlite2orm {
             std::string paramStr(bindParam->value);
             std::string cppVar;
             if(paramStr.size() > 1 && (paramStr[0] == ':' || paramStr[0] == '@' || paramStr[0] == '$')) {
-                cppVar = to_cpp_identifier(paramStr.substr(1));
+                cppVar = toCppIdentifier(paramStr.substr(1));
             } else if(paramStr == "?") {
                 cppVar = "bindParam" + std::to_string(++this->nextBindParamIndex);
             } else if(paramStr.size() > 1 && paramStr[0] == '?') {
@@ -1029,7 +1097,10 @@ namespace sqlite2orm {
 
             if(funcCall->star) {
                 if(funcName == "count" && !this->fromTableAliasToStructName.empty()) {
-                    baseCode = "count<" + this->structName + ">()";
+                    const std::string& countRowType = this->implicitSingleSourceCteTypedef
+                                                          ? *this->implicitSingleSourceCteTypedef
+                                                          : this->structName;
+                    baseCode = "count<" + countRowType + ">()";
                 } else {
                     baseCode = funcName + "()";
                 }
@@ -1047,9 +1118,9 @@ namespace sqlite2orm {
                     argList += argResult.code;
                 }
                 if(!funcCall->star && !funcCall->arguments.empty() &&
-                   sqlite_scalar_first_arg_text_context(funcName)) {
+                   sqliteScalarFirstArgTextContext(funcName)) {
                     if(auto* col = dynamic_cast<const ColumnRefNode*>(funcCall->arguments.at(0).get())) {
-                        registerColumn(to_cpp_identifier(col->columnName), "std::string");
+                        registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
                     }
                 }
                 if(funcCall->distinct && !argList.empty()) {
@@ -1084,12 +1155,12 @@ namespace sqlite2orm {
             if(insertNode->schemaName) {
                 warnings.push_back("schema-qualified table in INSERT is not represented in sqlite_orm mapping");
             }
-            std::string tableStruct = to_struct_name(insertNode->tableName);
+            std::string tableStruct = toStructName(insertNode->tableName);
             std::string savedStruct = this->structName;
             this->structName = tableStruct;
 
             std::string verb = insertNode->replaceInto ? "replace" : "insert";
-            std::string orPrefix = insertNode->replaceInto ? std::string() : dml_insert_or_prefix(insertNode->orConflict);
+            std::string orPrefix = insertNode->replaceInto ? std::string() : dmlInsertOrPrefix(insertNode->orConflict);
 
             std::vector<DecisionPoint> dps;
             std::string middle;
@@ -1101,7 +1172,7 @@ namespace sqlite2orm {
                     if(i > 0) {
                         cols += ", ";
                     }
-                    cols += "&" + tableStruct + "::" + to_cpp_identifier(insertNode->columnNames[i]);
+                    cols += "&" + tableStruct + "::" + toCppIdentifier(insertNode->columnNames[i]);
                 }
                 cols += ")";
                 std::string vals = "values(";
@@ -1147,7 +1218,7 @@ namespace sqlite2orm {
                         if(i > 0) {
                             cols += ", ";
                         }
-                        cols += "&" + tableStruct + "::" + to_cpp_identifier(insertNode->columnNames[i]);
+                        cols += "&" + tableStruct + "::" + toCppIdentifier(insertNode->columnNames[i]);
                     }
                     cols += ")";
                     middle = cols + ", " + sub.code;
@@ -1168,14 +1239,14 @@ namespace sqlite2orm {
                     onTarget = "on_conflict()";
                 } else if(insertNode->upsertConflictColumns.size() == 1u) {
                     onTarget = "on_conflict(&" + tableStruct + "::" +
-                               to_cpp_identifier(insertNode->upsertConflictColumns[0]) + ")";
+                               toCppIdentifier(insertNode->upsertConflictColumns[0]) + ")";
                 } else {
                     onTarget = "on_conflict(columns(";
                     for(size_t ui = 0; ui < insertNode->upsertConflictColumns.size(); ++ui) {
                         if(ui > 0) {
                             onTarget += ", ";
                         }
-                        onTarget += "&" + tableStruct + "::" + to_cpp_identifier(insertNode->upsertConflictColumns[ui]);
+                        onTarget += "&" + tableStruct + "::" + toCppIdentifier(insertNode->upsertConflictColumns[ui]);
                     }
                     onTarget += "))";
                 }
@@ -1194,7 +1265,7 @@ namespace sqlite2orm {
                         warnings.insert(warnings.end(),
                                          std::make_move_iterator(valueResult.warnings.begin()),
                                          std::make_move_iterator(valueResult.warnings.end()));
-                        std::string cppCol = to_cpp_identifier(insertNode->upsertUpdateAssignments[assignmentIndex].columnName);
+                        std::string cppCol = toCppIdentifier(insertNode->upsertUpdateAssignments[assignmentIndex].columnName);
                         setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
                     }
                     upsertSuffix = ", " + onTarget + ".do_update(set(" + setArgs + ")";
@@ -1241,7 +1312,7 @@ namespace sqlite2orm {
                 warnings.push_back("UPDATE ... FROM ... is not supported in sqlite_orm — "
                                    "FROM clause is ignored in codegen");
             }
-            std::string tableStruct = to_struct_name(updateNode->tableName);
+            std::string tableStruct = toStructName(updateNode->tableName);
             std::string savedStruct = this->structName;
             this->structName = tableStruct;
             std::vector<DecisionPoint> dps;
@@ -1257,7 +1328,7 @@ namespace sqlite2orm {
                 warnings.insert(warnings.end(),
                                std::make_move_iterator(valueResult.warnings.begin()),
                                std::make_move_iterator(valueResult.warnings.end()));
-                std::string cppCol = to_cpp_identifier(updateNode->assignments[assignmentIndex].columnName);
+                std::string cppCol = toCppIdentifier(updateNode->assignments[assignmentIndex].columnName);
                 setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
             }
             std::string code = "storage.update_all(set(" + setArgs + ")";
@@ -1279,7 +1350,7 @@ namespace sqlite2orm {
             if(deleteNode->schemaName) {
                 warnings.push_back("schema-qualified table in DELETE is not represented in sqlite_orm mapping");
             }
-            std::string tableStruct = to_struct_name(deleteNode->tableName);
+            std::string tableStruct = toStructName(deleteNode->tableName);
             std::string savedStruct = this->structName;
             this->structName = tableStruct;
             std::vector<DecisionPoint> dps;
@@ -1324,7 +1395,7 @@ namespace sqlite2orm {
                     "schema-qualified ON table in TRIGGER is not represented in sqlite_orm mapping");
             }
 
-            std::string subject = to_struct_name(createTrigger->tableName);
+            std::string subject = toStructName(createTrigger->tableName);
             std::string savedStruct = this->structName;
             this->structName = subject;
 
@@ -1346,7 +1417,7 @@ namespace sqlite2orm {
                     if(ci > 0) {
                         typeChain += ", ";
                     }
-                    typeChain += "&" + subject + "::" + to_cpp_identifier(createTrigger->updateOfColumns[ci]);
+                    typeChain += "&" + subject + "::" + toCppIdentifier(createTrigger->updateOfColumns[ci]);
                 }
                 typeChain += ")";
                 break;
@@ -1381,7 +1452,7 @@ namespace sqlite2orm {
 
             this->structName = savedStruct;
 
-            std::string trigLit = identifier_to_cpp_string_literal(createTrigger->triggerName);
+            std::string trigLit = identifierToCppStringLiteral(createTrigger->triggerName);
             std::string code = "make_trigger(" + trigLit + ", " + base + ".begin(" + stepsJoined + "));";
             return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
         } else if(auto* createIndex = dynamic_cast<const CreateIndexNode*>(&astNode)) {
@@ -1401,12 +1472,12 @@ namespace sqlite2orm {
                     "from serialized output");
             }
 
-            std::string tableStruct = to_struct_name(createIndex->tableName);
+            std::string tableStruct = toStructName(createIndex->tableName);
             std::string savedStruct = this->structName;
             this->structName = tableStruct;
 
             std::string fn = createIndex->unique ? "make_unique_index" : "make_index";
-            std::string idxLit = identifier_to_cpp_string_literal(createIndex->indexName);
+            std::string idxLit = identifierToCppStringLiteral(createIndex->indexName);
             std::vector<DecisionPoint> dps;
             std::string colParts;
             for(const auto& indexedColumn : createIndex->indexedColumns) {
@@ -1431,7 +1502,7 @@ namespace sqlite2orm {
                         warnings.push_back("COLLATE " + indexedColumn.collation +
                                              " is not a built-in collation; generated .collate(...) uses literal "
                                              "name as in SQL");
-                        part += ".collate(" + identifier_to_cpp_string_literal(indexedColumn.collation) + ")";
+                        part += ".collate(" + identifierToCppStringLiteral(indexedColumn.collation) + ")";
                     }
                 }
                 if(indexedColumn.sortDirection == SortDirection::asc) {
@@ -1493,7 +1564,7 @@ namespace sqlite2orm {
                     "schema-qualified name in DROP is not represented in sqlite_orm; generated call uses unqualified "
                     "name only");
             }
-            const std::string lit = identifier_to_cpp_string_literal(dropStatementNode->objectName);
+            const std::string lit = identifierToCppStringLiteral(dropStatementNode->objectName);
             switch(dropStatementNode->objectKind) {
                 case DropObjectKind::table:
                     return CodeGenResult{
@@ -1544,8 +1615,8 @@ namespace sqlite2orm {
             }
 
             std::string mod = toLowerAscii(createVirtualTableNode->moduleName);
-            std::string nameLit = identifier_to_cpp_string_literal(createVirtualTableNode->tableName);
-            std::string sName = to_struct_name(createVirtualTableNode->tableName);
+            std::string nameLit = identifierToCppStringLiteral(createVirtualTableNode->tableName);
+            std::string sName = toStructName(createVirtualTableNode->tableName);
 
             auto all_simple_column_refs = [&]() -> bool {
                 for(const auto& moduleArgument : createVirtualTableNode->moduleArguments) {
@@ -1572,7 +1643,7 @@ namespace sqlite2orm {
                 std::string code = "struct " + sName + " {\n";
                 for(const auto& moduleArgument : createVirtualTableNode->moduleArguments) {
                     auto* columnRef = static_cast<const ColumnRefNode*>(moduleArgument.get());
-                    auto cppName = to_cpp_identifier(columnRef->columnName);
+                    auto cppName = toCppIdentifier(columnRef->columnName);
                     code += "    std::string " + cppName + ";\n";
                 }
                 code += "};\n\n";
@@ -1591,9 +1662,9 @@ namespace sqlite2orm {
                     if(!colParts.empty()) {
                         colParts += ", ";
                     }
-                    std::string rawCol = strip_identifier_quotes(columnRef->columnName);
+                    std::string rawCol = stripIdentifierQuotes(columnRef->columnName);
                     colParts +=
-                        "make_column(" + identifier_to_cpp_string_literal(rawCol) + ", " + moduleArgumentCodegen.code + ")";
+                        "make_column(" + identifierToCppStringLiteral(rawCol) + ", " + moduleArgumentCodegen.code + ")";
                 }
                 this->structName = savedStruct;
                 code += "auto vtab = make_virtual_table<" + sName + ">(" + nameLit + ", using_fts5(" + colParts +
@@ -1622,7 +1693,7 @@ namespace sqlite2orm {
                 for(size_t i = 0; i < moduleArgumentsCount; ++i) {
                     auto* columnRef =
                         static_cast<const ColumnRefNode*>(createVirtualTableNode->moduleArguments[i].get());
-                    auto cppName = to_cpp_identifier(columnRef->columnName);
+                    auto cppName = toCppIdentifier(columnRef->columnName);
                     if(i == 0) {
                         code += "    int64_t " + cppName + " = 0;\n";
                     } else if(i32) {
@@ -1647,9 +1718,9 @@ namespace sqlite2orm {
                     if(!colParts.empty()) {
                         colParts += ", ";
                     }
-                    std::string rawCol = strip_identifier_quotes(columnRef->columnName);
+                    std::string rawCol = stripIdentifierQuotes(columnRef->columnName);
                     colParts +=
-                        "make_column(" + identifier_to_cpp_string_literal(rawCol) + ", " + moduleArgumentCodegen.code + ")";
+                        "make_column(" + identifierToCppStringLiteral(rawCol) + ", " + moduleArgumentCodegen.code + ")";
                 }
                 this->structName = savedStruct;
                 const char* usingFn = i32 ? "using_rtree_i32" : "using_rtree";
@@ -1685,7 +1756,7 @@ namespace sqlite2orm {
                 }
                 if(auto* sl = dynamic_cast<const StringLiteralNode*>(createVirtualTableNode->moduleArguments[0].get())) {
                     std::string code = "auto vtab = make_virtual_table<dbstat>(" + nameLit + ", using_dbstat(" +
-                                       sql_string_to_cpp(sl->value) + "));\n";
+                                       sqlStringToCpp(sl->value) + "));\n";
                     return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
                 }
                 warnings.push_back(
@@ -1728,18 +1799,18 @@ namespace sqlite2orm {
             }
             this->fromTableAliasToStructName.clear();
             auto structForFromTable = [&](std::string_view tableSqlName) -> std::string {
-                auto k = normalize_table_key(tableSqlName);
+                auto k = normalizeSqlIdentifier(tableSqlName);
                 if(auto cteLookup = this->activeCteTypedefByTableKey.find(k);
                    cteLookup != this->activeCteTypedefByTableKey.end()) {
                     return cteLookup->second;
                 }
-                return to_struct_name(tableSqlName);
+                return toStructName(tableSqlName);
             };
             /** `struct` in prefix: SQL table name → `Cnt`; CTE rows use `cte_N` typedef and must not reuse that name. */
             auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
-                const auto k = normalize_table_key(tableSqlName);
+                const auto k = normalizeSqlIdentifier(tableSqlName);
                 if(this->activeCteTypedefByTableKey.find(k) != this->activeCteTypedefByTableKey.end()) {
-                    return to_struct_name(tableSqlName);
+                    return toStructName(tableSqlName);
                 }
                 return structForFromTable(tableSqlName);
             };
@@ -1762,22 +1833,31 @@ namespace sqlite2orm {
             }
 
             std::optional<std::string> implicitCte;
+            std::optional<std::string> implicitCteTableKey;
             if(selectNode->fromClause.size() == 1u) {
-                auto k = normalize_table_key(selectNode->fromClause.at(0).table.tableName);
-                if(auto it = this->activeCteTypedefByTableKey.find(k);
+                const auto key = normalizeSqlIdentifier(selectNode->fromClause.at(0).table.tableName);
+                if(auto it = this->activeCteTypedefByTableKey.find(key);
                    it != this->activeCteTypedefByTableKey.end()) {
                     implicitCte = it->second;
+                    implicitCteTableKey = key;
                 }
             }
             struct ImplicitCteScope {
                 CodeGenerator* gen;
-                std::optional<std::string> saved;
-                ImplicitCteScope(CodeGenerator* g, std::optional<std::string> impl)
-                    : gen(g), saved(std::move(g->implicitSingleSourceCteTypedef)) {
-                    gen->implicitSingleSourceCteTypedef = std::move(impl);
+                std::optional<std::string> savedTypedef;
+                std::optional<std::string> savedTableKey;
+                ImplicitCteScope(CodeGenerator* g, std::optional<std::string> implTypedef,
+                                 std::optional<std::string> implTableKey)
+                    : gen(g), savedTypedef(std::move(g->implicitSingleSourceCteTypedef)),
+                      savedTableKey(std::move(g->implicitCteFromTableKeyNorm)) {
+                    gen->implicitSingleSourceCteTypedef = std::move(implTypedef);
+                    gen->implicitCteFromTableKeyNorm = std::move(implTableKey);
                 }
-                ~ImplicitCteScope() { gen->implicitSingleSourceCteTypedef = std::move(saved); }
-            } implicitScope{this, std::move(implicitCte)};
+                ~ImplicitCteScope() {
+                    gen->implicitSingleSourceCteTypedef = std::move(savedTypedef);
+                    gen->implicitCteFromTableKeyNorm = std::move(savedTableKey);
+                }
+            } implicitScope{this, std::move(implicitCte), std::move(implicitCteTableKey)};
 
             CodeGenerator selectAltBaseline = *this;
 
@@ -1789,7 +1869,7 @@ namespace sqlite2orm {
                 selectDecisionPoints.insert(selectDecisionPoints.end(),
                                             std::make_move_iterator(result.decisionPoints.begin()),
                                             std::make_move_iterator(result.decisionPoints.end()));
-                append_unique_strings(selectComments, result.comments);
+                appendUniqueStrings(selectComments, result.comments);
                 return result.code;
             };
 
@@ -1802,11 +1882,11 @@ namespace sqlite2orm {
             std::string aliasPreamble;
             const bool cpp20ColumnAliases = this->useCpp20ColumnAliasStyle();
             if(!isStar) {
-                if(has_any_column_alias(selectNode->columns)) {
+                if(hasAnyColumnAlias(selectNode->columns)) {
                     if(cpp20ColumnAliases) {
-                        aliasPreamble = generate_cpp20_column_alias_preamble(selectNode->columns);
+                        aliasPreamble = generateCpp20ColumnAliasPreamble(selectNode->columns);
                     } else {
-                        aliasPreamble = generate_column_alias_preamble(selectNode->columns);
+                        aliasPreamble = generateColumnAliasPreamble(selectNode->columns);
                     }
                 }
                 code = "auto rows = storage.select(";
@@ -1814,26 +1894,26 @@ namespace sqlite2orm {
                     if(selectNode->columns.size() == 1) {
                         auto colCode = expressionCode(*selectNode->columns.at(0).expression);
                         code += "distinct(" +
-                                wrap_with_column_alias(colCode, selectNode->columns.at(0).alias, cpp20ColumnAliases) +
+                                wrapWithColumnAlias(colCode, selectNode->columns.at(0).alias, cpp20ColumnAliases) +
                                 ")";
                     } else {
                         code += "distinct(columns(";
                         for(size_t i = 0; i < selectNode->columns.size(); ++i) {
                             if(i > 0) code += ", ";
                             auto colCode = expressionCode(*selectNode->columns.at(i).expression);
-                            code += wrap_with_column_alias(colCode, selectNode->columns.at(i).alias, cpp20ColumnAliases);
+                            code += wrapWithColumnAlias(colCode, selectNode->columns.at(i).alias, cpp20ColumnAliases);
                         }
                         code += "))";
                     }
                 } else if(selectNode->columns.size() == 1) {
                     auto colCode = expressionCode(*selectNode->columns.at(0).expression);
-                    code += wrap_with_column_alias(colCode, selectNode->columns.at(0).alias, cpp20ColumnAliases);
+                    code += wrapWithColumnAlias(colCode, selectNode->columns.at(0).alias, cpp20ColumnAliases);
                 } else {
                     code += "columns(";
                     for(size_t i = 0; i < selectNode->columns.size(); ++i) {
                         if(i > 0) code += ", ";
                         auto colCode = expressionCode(*selectNode->columns.at(i).expression);
-                        code += wrap_with_column_alias(colCode, selectNode->columns.at(i).alias, cpp20ColumnAliases);
+                        code += wrapWithColumnAlias(colCode, selectNode->columns.at(i).alias, cpp20ColumnAliases);
                     }
                     code += ")";
                 }
@@ -1843,9 +1923,9 @@ namespace sqlite2orm {
             this->activeSelectColumnAliasCpp20Vars.clear();
             for(const auto& column : selectNode->columns) {
                 if(!column.alias.empty()) {
-                    std::string key = toLowerAscii(strip_column_alias_quotes(column.alias));
-                    this->activeSelectColumnAliases[key] = column_alias_type_name(column.alias);
-                    this->activeSelectColumnAliasCpp20Vars[key] = column_alias_cpp20_var_name(column.alias);
+                    std::string key = toLowerAscii(stripColumnAliasQuotes(column.alias));
+                    this->activeSelectColumnAliases[key] = columnAliasTypeName(column.alias);
+                    this->activeSelectColumnAliasCpp20Vars[key] = columnAliasCpp20VarName(column.alias);
                 }
             }
 
@@ -1861,7 +1941,7 @@ namespace sqlite2orm {
                 switch(joinItem.leadingJoin) {
                 case JoinKind::crossJoin:
                 case JoinKind::naturalInnerJoin:
-                    joinCode = std::string(join_sqlite_orm_api_name(joinItem.leadingJoin)) + "<" + rightStruct + ">()";
+                    joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightStruct + ">()";
                     break;
                 case JoinKind::naturalLeftJoin:
                     selectWarnings.push_back(
@@ -1870,18 +1950,18 @@ namespace sqlite2orm {
                     joinCode = "natural_join<" + rightStruct + ">()";
                     break;
                 default: {
-                    std::string api(join_sqlite_orm_api_name(joinItem.leadingJoin));
+                    std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
                     if(!joinItem.usingColumnNames.empty()) {
                         if(joinItem.usingColumnNames.size() == 1) {
                             joinCode = std::string(api) + "<" + rightStruct + ">(using_(&" + rightStruct + "::" +
-                                       to_cpp_identifier(joinItem.usingColumnNames.at(0)) + "))";
+                                       toCppIdentifier(joinItem.usingColumnNames.at(0)) + "))";
                         } else {
                             std::string cond;
                             for(size_t ci = 0; ci < joinItem.usingColumnNames.size(); ++ci) {
                                 if(ci > 0) {
                                     cond += " and ";
                                 }
-                                auto col = to_cpp_identifier(joinItem.usingColumnNames.at(ci));
+                                auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
                                 cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col + ")";
                             }
                             joinCode = std::string(api) + "<" + rightStruct + ">(on(" + cond + "))";
@@ -1922,7 +2002,7 @@ namespace sqlite2orm {
                 std::string windowArgs =
                     codegenOverClause(*namedWindow.definition, selectDecisionPoints, selectWarnings);
                 if(!windowArgs.empty()) {
-                    appendClause("window(" + identifier_to_cpp_string_literal(namedWindow.name) + ", " + windowArgs +
+                    appendClause("window(" + identifierToCppStringLiteral(namedWindow.name) + ", " + windowArgs +
                                  ")");
                 } else {
                     selectWarnings.push_back(
@@ -1948,7 +2028,7 @@ namespace sqlite2orm {
                         } else if(collLower == "rtrim") {
                             orderCode += ".collate_rtrim()";
                         } else {
-                            orderCode += ".collate(" + identifier_to_cpp_string_literal(term.collation) + ")";
+                            orderCode += ".collate(" + identifierToCppStringLiteral(term.collation) + ")";
                             selectWarnings.push_back("COLLATE " + term.collation +
                                 " in ORDER BY is not a built-in collation; generated .collate(...) uses literal name");
                         }
@@ -1986,12 +2066,15 @@ namespace sqlite2orm {
             }
 
             if(isStar) {
+                const std::string& starRowType = this->implicitSingleSourceCteTypedef
+                                                       ? *this->implicitSingleSourceCteTypedef
+                                                       : this->structName;
                 std::string tail = selectTrailingClauses.empty() ? "" : (", " + trailingJoined);
-                std::string codeGetAll = "auto rows = storage.get_all<" + this->structName + ">(" + trailingJoined + ");";
+                std::string codeGetAll = "auto rows = storage.get_all<" + starRowType + ">(" + trailingJoined + ");";
                 std::string codeSelectObject =
-                    "auto rows = storage.select(object<" + this->structName + ">()" + tail + ");";
+                    "auto rows = storage.select(object<" + starRowType + ">()" + tail + ");";
                 std::string codeSelectAsterisk =
-                    "auto rows = storage.select(asterisk<" + this->structName + ">()" + tail + ");";
+                    "auto rows = storage.select(asterisk<" + starRowType + ">()" + tail + ");";
                 std::string chosenApi = "get_all";
                 code = codeGetAll;
                 if(policyEquals(this->codeGenPolicy, "api_level", "select_object")) {
@@ -2023,18 +2106,18 @@ namespace sqlite2orm {
                 }
                 code += ");";
             }
-            if(has_any_column_alias(selectNode->columns)) {
+            if(hasAnyColumnAlias(selectNode->columns)) {
                 if(this->useCpp20ColumnAliasStyle()) {
                     if(!aliasPreamble.empty()) {
                         code = aliasPreamble + code;
                     }
-                    append_unique_string(selectComments, kCommentCpp20ColumnAliases);
+                    appendUniqueString(selectComments, kCommentCpp20ColumnAliases);
                 } else {
                     bool hasBuiltin = false;
                     bool hasCustom = false;
                     for(const auto& column : selectNode->columns) {
                         if(column.alias.empty()) continue;
-                        if(needs_custom_alias_struct(column.alias))
+                        if(needsCustomAliasStruct(column.alias))
                             hasCustom = true;
                         else
                             hasBuiltin = true;
@@ -2064,7 +2147,7 @@ namespace sqlite2orm {
                     }
                 }
             }
-            if(has_any_column_alias(selectNode->columns) && this->useCpp20ColumnAliasStyle() &&
+            if(hasAnyColumnAlias(selectNode->columns) && this->useCpp20ColumnAliasStyle() &&
                !this->columnAliasStyleOverride) {
                 CodeGenerator altGen = selectAltBaseline;
                 altGen.columnAliasStyleOverride = "alias_tag";
@@ -2103,7 +2186,7 @@ namespace sqlite2orm {
     namespace {
 
         std::optional<std::string> journalModeSqlTokenToCppEnum(std::string_view token) {
-            const std::string lower = toLowerAscii(strip_identifier_quotes(token));
+            const std::string lower = toLowerAscii(stripIdentifierQuotes(token));
             if(lower == "delete") return std::string{"sqlite_orm::journal_mode::DELETE"};
             if(lower == "truncate") return std::string{"sqlite_orm::journal_mode::TRUNCATE"};
             if(lower == "persist") return std::string{"sqlite_orm::journal_mode::PERSIST"};
@@ -2114,7 +2197,7 @@ namespace sqlite2orm {
         }
 
         std::optional<std::string> lockingModeSqlTokenToCppEnum(std::string_view token) {
-            const std::string lower = toLowerAscii(strip_identifier_quotes(token));
+            const std::string lower = toLowerAscii(stripIdentifierQuotes(token));
             if(lower == "normal") return std::string{"sqlite_orm::locking_mode::NORMAL"};
             if(lower == "exclusive") return std::string{"sqlite_orm::locking_mode::EXCLUSIVE"};
             return std::nullopt;
@@ -2122,10 +2205,10 @@ namespace sqlite2orm {
 
         std::optional<std::string> pragmaTableNameLiteral(const AstNode& valueNode) {
             if(const auto* s = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
-                return sql_string_to_cpp(s->value);
+                return sqlStringToCpp(s->value);
             }
             if(const auto* c = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
-                return identifier_to_cpp_string_literal(c->columnName);
+                return identifierToCppStringLiteral(c->columnName);
             }
             return std::nullopt;
         }
@@ -2284,12 +2367,14 @@ namespace sqlite2orm {
             std::map<std::string, std::string> savedColumnAliasCpp20Vars;
             std::string savedStructName;
             std::optional<std::string> savedImplicitCte;
+            std::optional<std::string> savedImplicitCteTableKey;
 
             SubselectAliasRestore(CodeGenerator* gen)
                 : generator(gen), savedAliases(gen->fromTableAliasToStructName),
                   savedColumnAliases(gen->activeSelectColumnAliases),
                   savedColumnAliasCpp20Vars(gen->activeSelectColumnAliasCpp20Vars), savedStructName(gen->structName),
-                  savedImplicitCte(std::move(gen->implicitSingleSourceCteTypedef)) {}
+                  savedImplicitCte(std::move(gen->implicitSingleSourceCteTypedef)),
+                  savedImplicitCteTableKey(std::move(gen->implicitCteFromTableKeyNorm)) {}
 
             ~SubselectAliasRestore() {
                 generator->fromTableAliasToStructName = std::move(savedAliases);
@@ -2297,6 +2382,7 @@ namespace sqlite2orm {
                 generator->activeSelectColumnAliasCpp20Vars = std::move(savedColumnAliasCpp20Vars);
                 generator->structName = std::move(savedStructName);
                 generator->implicitSingleSourceCteTypedef = std::move(savedImplicitCte);
+                generator->implicitCteFromTableKeyNorm = std::move(savedImplicitCteTableKey);
             }
         } restore{this};
 
@@ -2323,17 +2409,17 @@ namespace sqlite2orm {
 
         this->fromTableAliasToStructName.clear();
         auto structForFromTable = [&](std::string_view tableSqlName) -> std::string {
-            auto k = normalize_table_key(tableSqlName);
+            auto k = normalizeSqlIdentifier(tableSqlName);
             if(auto cteLookup = this->activeCteTypedefByTableKey.find(k);
                cteLookup != this->activeCteTypedefByTableKey.end()) {
                 return cteLookup->second;
             }
-            return to_struct_name(tableSqlName);
+            return toStructName(tableSqlName);
         };
         auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
-            const auto k = normalize_table_key(tableSqlName);
+            const auto k = normalizeSqlIdentifier(tableSqlName);
             if(this->activeCteTypedefByTableKey.find(k) != this->activeCteTypedefByTableKey.end()) {
-                return to_struct_name(tableSqlName);
+                return toStructName(tableSqlName);
             }
             return structForFromTable(tableSqlName);
         };
@@ -2354,10 +2440,11 @@ namespace sqlite2orm {
             this->structName = prefixStructNameForFromTable(selectNode.fromClause.at(0).table.tableName);
         }
         if(selectNode.fromClause.size() == 1u) {
-            auto k = normalize_table_key(selectNode.fromClause.at(0).table.tableName);
-            if(auto it = this->activeCteTypedefByTableKey.find(k);
+            const auto key = normalizeSqlIdentifier(selectNode.fromClause.at(0).table.tableName);
+            if(auto it = this->activeCteTypedefByTableKey.find(key);
                it != this->activeCteTypedefByTableKey.end()) {
                 this->implicitSingleSourceCteTypedef = it->second;
+                this->implicitCteFromTableKeyNorm = key;
             }
         }
 
@@ -2379,7 +2466,9 @@ namespace sqlite2orm {
                 subWarnings.push_back("SELECT * subexpression requires FROM for sqlite_orm asterisk<...>()");
                 return CodeGenResult{{}, std::move(subDecisionPoints), std::move(subWarnings)};
             }
-            columnPart = "asterisk<" + this->structName + ">()";
+            const std::string& subStarRow = this->implicitSingleSourceCteTypedef ? *this->implicitSingleSourceCteTypedef
+                                                                                 : this->structName;
+            columnPart = "asterisk<" + subStarRow + ">()";
         } else {
             if(selectNode.distinct) {
                 if(selectNode.columns.size() == 1) {
@@ -2414,7 +2503,7 @@ namespace sqlite2orm {
             switch(joinItem.leadingJoin) {
             case JoinKind::crossJoin:
             case JoinKind::naturalInnerJoin:
-                joinCode = std::string(join_sqlite_orm_api_name(joinItem.leadingJoin)) + "<" + rightStruct + ">()";
+                joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightStruct + ">()";
                 break;
             case JoinKind::naturalLeftJoin:
                 subWarnings.push_back(
@@ -2423,18 +2512,18 @@ namespace sqlite2orm {
                 joinCode = "natural_join<" + rightStruct + ">()";
                 break;
             default: {
-                std::string api(join_sqlite_orm_api_name(joinItem.leadingJoin));
+                std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
                 if(!joinItem.usingColumnNames.empty()) {
                     if(joinItem.usingColumnNames.size() == 1) {
                         joinCode = std::string(api) + "<" + rightStruct + ">(using_(&" + rightStruct + "::" +
-                                   to_cpp_identifier(joinItem.usingColumnNames.at(0)) + "))";
+                                   toCppIdentifier(joinItem.usingColumnNames.at(0)) + "))";
                     } else {
                         std::string cond;
                         for(size_t ci = 0; ci < joinItem.usingColumnNames.size(); ++ci) {
                             if(ci > 0) {
                                 cond += " and ";
                             }
-                            auto col = to_cpp_identifier(joinItem.usingColumnNames.at(ci));
+                            auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
                             cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col + ")";
                         }
                         joinCode = std::string(api) + "<" + rightStruct + ">(on(" + cond + "))";
@@ -2461,7 +2550,7 @@ namespace sqlite2orm {
             }
             std::string windowArgs = codegenOverClause(*namedWindow.definition, subDecisionPoints, subWarnings);
             if(!windowArgs.empty()) {
-                tailParts.push_back("window(" + identifier_to_cpp_string_literal(namedWindow.name) + ", " +
+                tailParts.push_back("window(" + identifierToCppStringLiteral(namedWindow.name) + ", " +
                                     windowArgs + ")");
             }
         }
@@ -2509,7 +2598,7 @@ namespace sqlite2orm {
             if(nextArm.code.empty()) {
                 return CodeGenResult{{}, std::move(accumulated.decisionPoints), std::move(accumulated.warnings)};
             }
-            accumulated.code = std::string(compound_select_api(compoundNode.operators.at(operatorIndex))) + "(" +
+            accumulated.code = std::string(compoundSelectApi(compoundNode.operators.at(operatorIndex))) + "(" +
                                accumulated.code + ", " + nextArm.code + ")";
         }
         return accumulated;
@@ -2540,6 +2629,17 @@ namespace sqlite2orm {
         }
     }
 
+    void CodeGenerator::registerPrefixColumn(const std::string& cppName, const std::string& cppType) {
+        if(this->implicitSingleSourceCteTypedef) {
+            return;
+        }
+        registerColumn(cppName, cppType);
+    }
+
+    std::string CodeGenerator::syntheticColumnCppType(std::string_view cppIdentifier) const {
+        return defaultCppTypeForSyntheticColumn(cppIdentifier);
+    }
+
     std::string CodeGenerator::inferTypeFromNode(const AstNode& node) const {
         if(dynamic_cast<const StringLiteralNode*>(&node)) return "std::string";
         if(dynamic_cast<const IntegerLiteralNode*>(&node)) return "int";
@@ -2554,7 +2654,7 @@ namespace sqlite2orm {
         }
         std::string result = "struct " + this->structName + " {\n";
         for(const auto& [name, type] : this->columnTypes) {
-            result += "    " + type + " " + name + default_initializer(type) + ";\n";
+            result += "    " + type + " " + name + defaultInitializer(type) + ";\n";
         }
         result += "};";
         return result;
@@ -2610,29 +2710,29 @@ namespace sqlite2orm {
     }
 
     CreateTableParts CodeGenerator::createTableParts(const CreateTableNode& createTable) {
-        const auto sName = to_struct_name(createTable.tableName);
+        const auto sName = toStructName(createTable.tableName);
         this->structName = sName;
-        const auto rawTableName = strip_identifier_quotes(createTable.tableName);
+        const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
         std::vector<std::string> warnings;
 
         std::string structDecl = "struct " + sName + " {\n";
         for(const auto& column : createTable.columns) {
-            const auto cppName = to_cpp_identifier(column.name);
+            const auto cppName = toCppIdentifier(column.name);
             const auto cppType =
-                column.typeName.empty() ? "std::vector<char>" : sqlite_type_to_cpp(column.typeName);
+                column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
             const bool nullable = !column.primaryKey && !column.notNull;
             if(nullable) {
                 structDecl += "    std::optional<" + cppType + "> " + cppName + ";\n";
             } else {
-                structDecl += "    " + cppType + " " + cppName + default_initializer(cppType) + ";\n";
+                structDecl += "    " + cppType + " " + cppName + defaultInitializer(cppType) + ";\n";
             }
         }
         structDecl += "};\n";
 
         std::string makeExpr = "make_table(\"" + rawTableName + "\"";
         for(const auto& column : createTable.columns) {
-            const auto cppName = to_cpp_identifier(column.name);
-            const auto rawColName = strip_identifier_quotes(column.name);
+            const auto cppName = toCppIdentifier(column.name);
+            const auto rawColName = stripIdentifierQuotes(column.name);
             makeExpr += ",\n        make_column(\"" + rawColName + "\", &" + sName + "::" + cppName;
             if(column.primaryKey) {
                 std::string pk = "primary_key()";
@@ -2697,9 +2797,9 @@ namespace sqlite2orm {
                 continue;
             }
             auto& foreignKey = *column.foreignKey;
-            const auto cppName = to_cpp_identifier(column.name);
-            const auto refStructName = to_struct_name(foreignKey.table);
-            const auto refColName = foreignKey.column.empty() ? cppName : to_cpp_identifier(foreignKey.column);
+            const auto cppName = toCppIdentifier(column.name);
+            const auto refStructName = toStructName(foreignKey.table);
+            const auto refColName = foreignKey.column.empty() ? cppName : toCppIdentifier(foreignKey.column);
             makeExpr += ",\n        foreign_key(&" + sName + "::" + cppName + ").references(&" + refStructName +
                         "::" + refColName + ")";
             const auto action_str = [](ForeignKeyAction action) -> std::string {
@@ -2728,10 +2828,10 @@ namespace sqlite2orm {
             }
         }
         for(const auto& tableForeignKey : createTable.foreignKeys) {
-            const auto cppName = to_cpp_identifier(tableForeignKey.column);
-            const auto refStructName = to_struct_name(tableForeignKey.references.table);
+            const auto cppName = toCppIdentifier(tableForeignKey.column);
+            const auto refStructName = toStructName(tableForeignKey.references.table);
             const auto refColName = tableForeignKey.references.column.empty()
-                ? cppName : to_cpp_identifier(tableForeignKey.references.column);
+                ? cppName : toCppIdentifier(tableForeignKey.references.column);
             makeExpr += ",\n        foreign_key(&" + sName + "::" + cppName + ").references(&" + refStructName +
                         "::" + refColName + ")";
             const auto action_str = [](ForeignKeyAction action) -> std::string {
@@ -2766,7 +2866,7 @@ namespace sqlite2orm {
                 if(i > 0) {
                     makeExpr += ", ";
                 }
-                makeExpr += "&" + sName + "::" + to_cpp_identifier(tablePrimaryKey.columns.at(i));
+                makeExpr += "&" + sName + "::" + toCppIdentifier(tablePrimaryKey.columns.at(i));
             }
             makeExpr += ")";
         }
@@ -2776,7 +2876,7 @@ namespace sqlite2orm {
                 if(i > 0) {
                     makeExpr += ", ";
                 }
-                makeExpr += "&" + sName + "::" + to_cpp_identifier(tableUnique.columns.at(i));
+                makeExpr += "&" + sName + "::" + toCppIdentifier(tableUnique.columns.at(i));
             }
             makeExpr += ")";
         }
@@ -2869,7 +2969,7 @@ namespace sqlite2orm {
                                                  std::vector<DecisionPoint>& decisionPoints,
                                                  std::vector<std::string>& warnings) {
         if(overClause.namedWindow) {
-            return "window_ref(" + identifier_to_cpp_string_literal(*overClause.namedWindow) + ")";
+            return "window_ref(" + identifierToCppStringLiteral(*overClause.namedWindow) + ")";
         }
         std::vector<std::string> parts;
         if(!overClause.partitionBy.empty()) {
@@ -2911,7 +3011,7 @@ namespace sqlite2orm {
                     } else if(collLower == "rtrim") {
                         termCode += ".collate_rtrim()";
                     } else {
-                        termCode += ".collate(" + identifier_to_cpp_string_literal(term.collation) + ")";
+                        termCode += ".collate(" + identifierToCppStringLiteral(term.collation) + ")";
                         warnings.push_back("COLLATE " + term.collation +
                             " in window ORDER BY is not a built-in collation; generated .collate(...) uses literal name");
                     }
@@ -2955,16 +3055,108 @@ namespace sqlite2orm {
 
         struct ClearActiveCteMap {
             CodeGenerator* generator;
-            ~ClearActiveCteMap() { generator->activeCteTypedefByTableKey.clear(); }
+            ~ClearActiveCteMap() {
+                generator->activeCteTypedefByTableKey.clear();
+                generator->activeWithCteStyle.reset();
+                generator->withCteLegacyColVarByPipeKey.clear();
+                generator->withCteCpp20MonikerVarByCteKey.clear();
+                generator->withCteCpp20ColVarByPipeKey.clear();
+            }
         } clearGuard{this};
 
         this->activeCteTypedefByTableKey.clear();
 
         const auto& ctes = withQueryNode.clause.tables;
+
+        std::string withStyle = "indexed_typedef";
+        if(policyEquals(this->codeGenPolicy, "with_cte_style", "legacy_colalias")) {
+            withStyle = "legacy_colalias";
+        } else if(policyEquals(this->codeGenPolicy, "with_cte_style", "cpp20_monikers")) {
+            withStyle = "cpp20_monikers";
+        }
+
+        const bool badForStyled =
+            ctes.size() != 1u || ctes.front().columnNames.empty();
+        if(withStyle != "indexed_typedef" && badForStyled) {
+            warnings.push_back(
+                "WITH: with_cte_style other than indexed_typedef needs one CTE with an explicit column list; using "
+                "indexed_typedef");
+            withStyle = "indexed_typedef";
+        }
+
+        this->activeWithCteStyle = withStyle;
+
+        std::vector<std::string> cteTypedefIds(ctes.size());
+        for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+            if(withStyle == "legacy_colalias") {
+                std::string base = toCppIdentifier(ctes[cteIndex].cteName);
+                std::string id = base;
+                for(size_t counter = 2;; ++counter) {
+                    bool clash = false;
+                    for(size_t priorCteIndex = 0; priorCteIndex < cteIndex; ++priorCteIndex) {
+                        if(cteTypedefIds[priorCteIndex] == id) {
+                            clash = true;
+                            break;
+                        }
+                    }
+                    if(!clash) {
+                        break;
+                    }
+                    id = base + "_" + std::to_string(counter);
+                }
+                cteTypedefIds[cteIndex] = id;
+            } else {
+                cteTypedefIds[cteIndex] = "cte_" + std::to_string(cteIndex);
+            }
+        }
+
         /** Map every CTE name before codegen so bodies resolve `FROM cte_name` (recursive or forward refs). */
         for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
-            this->activeCteTypedefByTableKey[normalize_table_key(ctes[cteIndex].cteName)] =
-                "cte_" + std::to_string(cteIndex);
+            this->activeCteTypedefByTableKey[normalizeSqlIdentifier(ctes[cteIndex].cteName)] = cteTypedefIds[cteIndex];
+        }
+
+        this->withCteLegacyColVarByPipeKey.clear();
+        this->withCteCpp20MonikerVarByCteKey.clear();
+        this->withCteCpp20ColVarByPipeKey.clear();
+
+        if(withStyle == "legacy_colalias") {
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string normalizedCteTableKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                for(size_t columnNameIndex = 0; columnNameIndex < ctes[cteIndex].columnNames.size();
+                    ++columnNameIndex) {
+                    const std::string colK = normalizeSqlIdentifier(ctes[cteIndex].columnNames[columnNameIndex]);
+                    const std::string var = toCppIdentifier(ctes[cteIndex].cteName) + "_" +
+                                            toCppIdentifier(ctes[cteIndex].columnNames[columnNameIndex]);
+                    this->withCteLegacyColVarByPipeKey[normalizedCteTableKey + "|" + colK] = var;
+                }
+            }
+        } else if(withStyle == "cpp20_monikers") {
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string normalizedCteTableKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                std::string base = toCppIdentifier(ctes[cteIndex].cteName) + "_cte";
+                std::string mon = base;
+                for(size_t counter = 2;; ++counter) {
+                    bool clash = false;
+                    for(const auto& kv : this->withCteCpp20MonikerVarByCteKey) {
+                        if(kv.second == mon) {
+                            clash = true;
+                            break;
+                        }
+                    }
+                    if(!clash) {
+                        break;
+                    }
+                    mon = base + "_" + std::to_string(counter);
+                }
+                this->withCteCpp20MonikerVarByCteKey[normalizedCteTableKey] = mon;
+                for(size_t columnNameIndex = 0; columnNameIndex < ctes[cteIndex].columnNames.size();
+                    ++columnNameIndex) {
+                    const std::string colK = normalizeSqlIdentifier(ctes[cteIndex].columnNames[columnNameIndex]);
+                    const std::string cvar = toCppIdentifier(ctes[cteIndex].cteName) + "__" +
+                                             toCppIdentifier(ctes[cteIndex].columnNames[columnNameIndex]);
+                    this->withCteCpp20ColVarByPipeKey[normalizedCteTableKey + "|" + colK] = cvar;
+                }
+            }
         }
 
         std::vector<std::string> innerCodes;
@@ -2992,31 +3184,75 @@ namespace sqlite2orm {
             innerCodes.push_back(std::move(part.code));
         }
 
-        std::vector<std::string> typedefNames;
-        typedefNames.reserve(ctes.size());
-        for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
-            typedefNames.push_back("cte_" + std::to_string(cteIndex));
-        }
-
-        std::string prelude = "using namespace sqlite_orm::literals;\n";
-        for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
-            prelude += "using " + typedefNames[cteIndex] + " = decltype(" + std::to_string(cteIndex + 1) +
-                       "_ctealias);\n";
+        std::string prelude;
+        if(withStyle == "cpp20_monikers") {
+            prelude = "using namespace sqlite_orm::literals;\n";
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string normalizedCteTableKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                const std::string& monVar = this->withCteCpp20MonikerVarByCteKey[normalizedCteTableKey];
+                prelude += "constexpr orm_cte_moniker auto " + monVar + " = " +
+                           identifierToCppStringLiteral(stripIdentifierQuotes(ctes[cteIndex].cteName)) +
+                           "_cte;\n";
+            }
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string normalizedCteTableKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                for(size_t columnNameIndex = 0; columnNameIndex < ctes[cteIndex].columnNames.size();
+                    ++columnNameIndex) {
+                    const std::string colK = normalizeSqlIdentifier(ctes[cteIndex].columnNames[columnNameIndex]);
+                    const std::string pipe = normalizedCteTableKey + "|" + colK;
+                    const std::string& cvar = this->withCteCpp20ColVarByPipeKey[pipe];
+                    const std::string columnSqlName =
+                        stripIdentifierQuotes(ctes[cteIndex].columnNames[columnNameIndex]);
+                    prelude += "constexpr orm_column_alias auto " + cvar + " = " +
+                               identifierToCppStringLiteral(columnSqlName) + "_col;\n";
+                }
+            }
+            warnings.push_back(
+                "WITH: cpp20_monikers requires C++20, SQLITE_ORM_WITH_CPP20_ALIASES, and matching sqlite_orm");
+        } else if(withStyle == "legacy_colalias") {
+            prelude = "using namespace sqlite_orm::literals;\n";
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                prelude += "using " + cteTypedefIds[cteIndex] + " = decltype(" + std::to_string(cteIndex + 1) +
+                           "_ctealias);\n";
+            }
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string normalizedCteTableKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                for(size_t columnNameIndex = 0; columnNameIndex < ctes[cteIndex].columnNames.size();
+                    ++columnNameIndex) {
+                    const std::string colK = normalizeSqlIdentifier(ctes[cteIndex].columnNames[columnNameIndex]);
+                    const std::string var = this->withCteLegacyColVarByPipeKey[normalizedCteTableKey + "|" + colK];
+                    prelude += "constexpr auto " + var + " = " + colaliasBuiltinSlot(columnNameIndex) + ";\n";
+                }
+            }
+        } else {
+            prelude = "using namespace sqlite_orm::literals;\n";
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                prelude += "using " + cteTypedefIds[cteIndex] + " = decltype(" + std::to_string(cteIndex + 1) +
+                           "_ctealias);\n";
+            }
         }
 
         auto buildCteExpression = [&](size_t cteIndex) -> std::string {
-            std::string b = "cte<" + typedefNames[cteIndex] + ">";
-            if(!ctes[cteIndex].columnNames.empty()) {
-                b += "(";
-                for(size_t cn = 0; cn < ctes[cteIndex].columnNames.size(); ++cn) {
-                    if(cn > 0) {
-                        b += ", ";
-                    }
-                    b += identifier_to_cpp_string_literal(ctes[cteIndex].columnNames[cn]);
-                }
-                b += ")";
+            std::string b;
+            if(withStyle == "cpp20_monikers") {
+                const std::string normalizedCteTableKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                b = this->withCteCpp20MonikerVarByCteKey[normalizedCteTableKey] + "()";
+            } else if(withStyle == "legacy_colalias") {
+                b = "cte<" + cteTypedefIds[cteIndex] + ">()";
             } else {
-                b += "()";
+                b = "cte<" + cteTypedefIds[cteIndex] + ">";
+                if(!ctes[cteIndex].columnNames.empty()) {
+                    b += "(";
+                    for(size_t cn = 0; cn < ctes[cteIndex].columnNames.size(); ++cn) {
+                        if(cn > 0) {
+                            b += ", ";
+                        }
+                        b += identifierToCppStringLiteral(ctes[cteIndex].columnNames[cn]);
+                    }
+                    b += ")";
+                } else {
+                    b += "()";
+                }
             }
             std::string asMethod = ".as(";
             if(ctes[cteIndex].materialization == CteMaterialization::materialized) {
@@ -3064,7 +3300,7 @@ namespace sqlite2orm {
                 std::make_move_iterator(outerResult.decisionPoints.begin()),
                 std::make_move_iterator(outerResult.decisionPoints.end()));
 
-            auto outerArgOpt = extract_storage_select_argument(outerResult.code);
+            auto outerArgOpt = extractStorageSelectArgument(outerResult.code);
             if(!outerArgOpt) {
                 warnings.push_back(
                     "WITH: outer SELECT is not in the expected `auto rows = storage.select(...);` form; emitted as plain "
@@ -3075,6 +3311,28 @@ namespace sqlite2orm {
 
             std::string code = prelude + "auto rows = storage." + std::string(withApi) + "(" + cteArgument + ", " +
                                *outerArgOpt + ");";
+
+            if(!this->suppressWithCteStyleDecisionPoint && ctes.size() == 1u && !ctes[0].columnNames.empty()) {
+                const int dpId = this->nextDecisionPointId++;
+                auto altCode = [this, &withQueryNode](const char* styleValue) {
+                    CodeGenPolicy pol = policyWithOverride(this->codeGenPolicy, "with_cte_style", styleValue);
+                    CodeGenerator gen;
+                    gen.codeGenPolicy = &pol;
+                    gen.suppressWithCteStyleDecisionPoint = true;
+                    return gen.generate(static_cast<const AstNode&>(withQueryNode)).code;
+                };
+                allDecisionPoints.push_back(DecisionPoint{
+                    dpId,
+                    "with_cte_style",
+                    withStyle,
+                    code,
+                    {Alternative{"indexed_typedef", altCode("indexed_typedef"),
+                                 "using cte_N + column<cte_N>(\"col\") (default sqlite2orm style)"},
+                     Alternative{"legacy_colalias", altCode("legacy_colalias"),
+                                 "using typedef from SQL CTE name + colalias_i… + column<T>(var)"},
+                     Alternative{"cpp20_monikers", altCode("cpp20_monikers"),
+                                 "constexpr orm_cte_moniker / orm_column_alias + operator->* (C++20 sqlite_orm)"}}});
+            }
 
             warnings.push_back(
                 "WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
@@ -3090,7 +3348,7 @@ namespace sqlite2orm {
             allDecisionPoints.insert(allDecisionPoints.end(),
                 std::make_move_iterator(outerResult.decisionPoints.begin()),
                 std::make_move_iterator(outerResult.decisionPoints.end()));
-            std::string stripped = strip_storage_prefix_and_trailing_semicolon(outerResult.code);
+            std::string stripped = stripStoragePrefixAndTrailingSemicolon(outerResult.code);
             if(stripped.empty()) {
                 warnings.push_back(
                     "WITH … DML: outer statement codegen could not be wrapped in storage.with(); emitted plain DML");

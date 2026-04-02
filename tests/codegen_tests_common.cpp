@@ -5,6 +5,10 @@
 
 namespace codegen_test_helpers {
 
+    void setSuppressWithCteStyleDecisionPointForTests(sqlite2orm::CodeGenerator& generator, bool suppress) {
+        generator.suppressWithCteStyleDecisionPoint = suppress;
+    }
+
     std::string generate(std::string_view sql) {
         Tokenizer tokenizer;
         auto tokens = tokenizer.tokenize(sql);
@@ -33,6 +37,18 @@ namespace codegen_test_helpers {
         REQUIRE(parseResult);
         CodeGenerator codeGenerator;
         codeGenerator.codeGenPolicy = &policy;
+        return codeGenerator.generate(*parseResult.astNodePointer);
+    }
+
+    CodeGenResult generate_with_policy_suppress_with_cte_dp(std::string_view sql, const CodeGenPolicy& policy) {
+        Tokenizer tokenizer;
+        auto tokens = tokenizer.tokenize(sql);
+        Parser parser;
+        auto parseResult = parser.parse(std::move(tokens));
+        REQUIRE(parseResult);
+        CodeGenerator codeGenerator;
+        codeGenerator.codeGenPolicy = &policy;
+        setSuppressWithCteStyleDecisionPointForTests(codeGenerator, true);
         return codeGenerator.generate(*parseResult.astNodePointer);
     }
 

@@ -9,6 +9,14 @@
 #include <optional>
 
 namespace sqlite2orm {
+    class CodeGenerator;
+}
+
+namespace codegen_test_helpers {
+    void setSuppressWithCteStyleDecisionPointForTests(sqlite2orm::CodeGenerator& generator, bool suppress);
+}
+
+namespace sqlite2orm {
 
     struct Alternative {
         std::string value;
@@ -62,6 +70,8 @@ namespace sqlite2orm {
         CreateTableParts createTableParts(const CreateTableNode& createTable);
 
       private:
+        friend void codegen_test_helpers::setSuppressWithCteStyleDecisionPointForTests(CodeGenerator&, bool);
+
         int nextDecisionPointId = 1;
         int nextBindParamIndex = 0;
         std::vector<std::string> accumulatedErrors;
@@ -74,6 +84,8 @@ namespace sqlite2orm {
          * emit `column<cte_N>("col")`.
          */
         std::optional<std::string> implicitSingleSourceCteTypedef;
+        /** Normalized SQL name of that single CTE `FROM` source (for `with_cte_style` lookups). */
+        std::optional<std::string> implicitCteFromTableKeyNorm;
         /** During SELECT codegen: SQL column alias name → C++ alias type name (e.g. `colalias_i`, `GradeAlias`). */
         std::map<std::string, std::string> activeSelectColumnAliases;
         /** Normalized SQL alias → C++ variable name for `constexpr orm_column_alias auto … = "…"_col`. */
@@ -84,12 +96,25 @@ namespace sqlite2orm {
          */
         std::optional<std::string> columnAliasStyleOverride;
 
+        /** During `generateWithQuery`: `indexed_typedef` | `legacy_colalias` | `cpp20_monikers`. */
+        std::optional<std::string> activeWithCteStyle;
+        std::map<std::string, std::string> withCteLegacyColVarByPipeKey;
+        std::map<std::string, std::string> withCteCpp20MonikerVarByCteKey;
+        std::map<std::string, std::string> withCteCpp20ColVarByPipeKey;
+        /** When true, `with_cte_style` DecisionPoint is not emitted (used when regenerating for alternatives). */
+        bool suppressWithCteStyleDecisionPoint = false;
+
         bool useCpp20ColumnAliasStyle() const;
+        bool withCteLegacyColalias() const;
+        bool withCteCpp20Monikers() const;
         bool columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const;
 
         CodeGenResult generateNode(const AstNode& astNode);
 
         void registerColumn(const std::string& cppName, const std::string& cppType);
+        /** Registers a column for `generatePrefix()`; skipped for single-source CTE rows (type is `cte_N`). */
+        void registerPrefixColumn(const std::string& cppName, const std::string& cppType);
+        std::string syntheticColumnCppType(std::string_view cppIdentifier) const;
         std::string inferTypeFromNode(const AstNode& node) const;
 
         /** For exists(select(...)) and scalar (SELECT ...); restores alias map after. */

@@ -152,6 +152,8 @@ int main(int argc, char** argv) {
 
     const auto results = processMultiSql(sql);
     int exitCode = EXIT_SUCCESS;
+    bool hadDdl = false;
+    bool dmlSeparatorPrinted = false;
     for(const ProcessSqlResult& result : results) {
         for(const auto& warning : result.codegen.warnings) {
             fmt::print(stderr, "warning: {}\n", warning);
@@ -171,9 +173,17 @@ int main(int argc, char** argv) {
             continue;
         }
         if(!result.codegen.code.empty()) {
+            bool isDml = result.codegen.code.starts_with("storage.");
+            if(isDml && hadDdl && !dmlSeparatorPrinted) {
+                fmt::print("\n");
+                dmlSeparatorPrinted = true;
+            }
             fmt::print("{}", result.codegen.code);
             if(result.codegen.code.back() != '\n') {
                 fmt::print("\n");
+            }
+            if(!isDml) {
+                hadDdl = true;
             }
         }
     }

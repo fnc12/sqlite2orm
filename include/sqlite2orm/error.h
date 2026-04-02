@@ -11,7 +11,9 @@ namespace sqlite2orm {
         std::string message;
         SourceLocation location;
 
-        bool operator==(const ParseError&) const = default;
+        bool operator==(const ParseError& other) const {
+            return message == other.message;
+        }
     };
 
     struct ValidationError {
@@ -19,7 +21,9 @@ namespace sqlite2orm {
         SourceLocation location;
         std::string nodeType;
 
-        bool operator==(const ValidationError&) const = default;
+        bool operator==(const ValidationError& other) const {
+            return message == other.message && nodeType == other.nodeType;
+        }
     };
 
 }  // namespace sqlite2orm

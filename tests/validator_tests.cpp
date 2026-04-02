@@ -142,10 +142,8 @@ TEST_CASE("validator: CREATE TABLE - NOT NULL is valid") {
     REQUIRE(validate("CREATE TABLE t (name TEXT NOT NULL)").empty());
 }
 
-TEST_CASE("validator: INSERT VALUES without column list") {
-    const std::vector<ValidationError> expectedErrors{
-        {"INSERT ... VALUES requires an explicit (column, ...) list for sqlite_orm codegen", {}, "InsertNode"}};
-    REQUIRE(validate("INSERT INTO users VALUES (1, 'a')") == expectedErrors);
+TEST_CASE("validator: INSERT VALUES without column list is valid") {
+    REQUIRE(validate("INSERT INTO users VALUES (1, 'a')").empty());
 }
 
 TEST_CASE("validator: CREATE TRIGGER with body") {

@@ -328,13 +328,6 @@ namespace sqlite2orm {
                 errors.insert(errors.end(), oErrors.begin(), oErrors.end());
             }
         } else if(auto* insertNode = dynamic_cast<const InsertNode*>(&astNode)) {
-            if(insertNode->dataKind == InsertDataKind::values && !insertNode->valueRows.empty() &&
-               insertNode->columnNames.empty()) {
-                errors.push_back(ValidationError{
-                    "INSERT ... VALUES requires an explicit (column, ...) list for sqlite_orm codegen",
-                    insertNode->location,
-                    "InsertNode"});
-            }
             for(const auto& row : insertNode->valueRows) {
                 for(const auto& cell : row) {
                     auto ve = validate(*cell);

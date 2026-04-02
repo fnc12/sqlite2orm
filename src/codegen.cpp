@@ -1166,6 +1166,31 @@ namespace sqlite2orm {
             std::string middle;
             if(insertNode->dataKind == InsertDataKind::defaultValues) {
                 middle = "default_values()";
+            } else if(insertNode->dataKind == InsertDataKind::values && insertNode->columnNames.empty()) {
+                std::string code;
+                for(size_t valueRowIndex = 0; valueRowIndex < insertNode->valueRows.size(); ++valueRowIndex) {
+                    if(valueRowIndex > 0) {
+                        code += "\n";
+                    }
+                    code += "storage." + verb + "(" + tableStruct + "{";
+                    const auto& row = insertNode->valueRows[valueRowIndex];
+                    for(size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
+                        if(columnIndex > 0) {
+                            code += ", ";
+                        }
+                        auto cell = generateNode(*row[columnIndex]);
+                        dps.insert(dps.end(),
+                                   std::make_move_iterator(cell.decisionPoints.begin()),
+                                   std::make_move_iterator(cell.decisionPoints.end()));
+                        warnings.insert(warnings.end(),
+                                         std::make_move_iterator(cell.warnings.begin()),
+                                         std::make_move_iterator(cell.warnings.end()));
+                        code += cell.code;
+                    }
+                    code += "});";
+                }
+                this->structName = savedStruct;
+                return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
             } else if(insertNode->dataKind == InsertDataKind::values) {
                 std::string cols = "columns(";
                 for(size_t i = 0; i < insertNode->columnNames.size(); ++i) {

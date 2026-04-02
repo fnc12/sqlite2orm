@@ -38,4 +38,7 @@ namespace sqlite2orm {
     /** Tokenize → parse all semicolon-separated statements → validate + codegen each one. */
     std::vector<ProcessSqlResult> processMultiSql(std::string_view sql, const CodeGenPolicy* policy = nullptr);
 
+    /** Join `codegen.code` from successful results into a single string, separating DDL and DML groups with a blank line. */
+    std::string joinGeneratedCode(const std::vector<ProcessSqlResult>& results);
+
 }  // namespace sqlite2orm

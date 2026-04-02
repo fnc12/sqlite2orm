@@ -69,4 +69,28 @@ namespace sqlite2orm {
         return results;
     }
 
+    std::string joinGeneratedCode(const std::vector<ProcessSqlResult>& results) {
+        std::string out;
+        bool hadDdl = false;
+        bool dmlSeparatorAdded = false;
+        for(const auto& result : results) {
+            if(result.codegen.code.empty()) {
+                continue;
+            }
+            bool isDml = result.codegen.code.starts_with("storage.");
+            if(isDml && hadDdl && !dmlSeparatorAdded) {
+                out += '\n';
+                dmlSeparatorAdded = true;
+            }
+            out += result.codegen.code;
+            if(out.back() != '\n') {
+                out += '\n';
+            }
+            if(!isDml) {
+                hadDdl = true;
+            }
+        }
+        return out;
+    }
+
 }  // namespace sqlite2orm

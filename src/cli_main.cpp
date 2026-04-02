@@ -152,8 +152,6 @@ int main(int argc, char** argv) {
 
     const auto results = processMultiSql(sql);
     int exitCode = EXIT_SUCCESS;
-    bool hadDdl = false;
-    bool dmlSeparatorPrinted = false;
     for(const ProcessSqlResult& result : results) {
         for(const auto& warning : result.codegen.warnings) {
             fmt::print(stderr, "warning: {}\n", warning);
@@ -163,29 +161,17 @@ int main(int argc, char** argv) {
                 fmt::print(stderr, "parse error: {} at {}:{}\n", err.message, err.location.line, err.location.column);
             }
             exitCode = 1;
-            continue;
         }
         if(!result.validationErrors.empty()) {
             for(const auto& err : result.validationErrors) {
                 fmt::print(stderr, "validation: {} ({})\n", err.message, err.nodeType);
             }
             exitCode = 1;
-            continue;
         }
-        if(!result.codegen.code.empty()) {
-            bool isDml = result.codegen.code.starts_with("storage.");
-            if(isDml && hadDdl && !dmlSeparatorPrinted) {
-                fmt::print("\n");
-                dmlSeparatorPrinted = true;
-            }
-            fmt::print("{}", result.codegen.code);
-            if(result.codegen.code.back() != '\n') {
-                fmt::print("\n");
-            }
-            if(!isDml) {
-                hadDdl = true;
-            }
-        }
+    }
+    const auto code = joinGeneratedCode(results);
+    if(!code.empty()) {
+        fmt::print("{}", code);
     }
     return exitCode;
 }

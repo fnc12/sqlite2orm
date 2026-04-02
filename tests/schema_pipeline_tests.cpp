@@ -155,9 +155,7 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
         make_column("name", &T::name)));
 }
 
-inline void seed_data(decltype(make_sqlite_schema_storage(""))& storage) {
-    storage.insert(into<T>(), columns(&T::id, &T::name), values(std::make_tuple(1, "Alice")));
-}
+storage.insert(into<T>(), columns(&T::id, &T::name), values(std::make_tuple(1, "Alice")));
 )",
     };
     REQUIRE(header == expected);

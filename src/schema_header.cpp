@@ -240,11 +240,10 @@ namespace sqlite2orm {
             }
         }
         if(!dmlStatements.empty()) {
-            oss << "\ninline void seed_data(decltype(make_sqlite_schema_storage(\"\"))& storage) {\n";
+            oss << "\n";
             for(const std::string& dml : dmlStatements) {
-                oss << "    " << dml << "\n";
+                oss << dml << "\n";
             }
-            oss << "}\n";
         }
 
         return CodeGenResult{oss.str(), std::move(allDecisionPoints), std::move(allWarnings), {},

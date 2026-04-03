@@ -1178,14 +1178,18 @@ namespace sqlite2orm {
                         if(columnIndex > 0) {
                             code += ", ";
                         }
-                        auto cell = generateNode(*row[columnIndex]);
-                        dps.insert(dps.end(),
-                                   std::make_move_iterator(cell.decisionPoints.begin()),
-                                   std::make_move_iterator(cell.decisionPoints.end()));
-                        warnings.insert(warnings.end(),
-                                         std::make_move_iterator(cell.warnings.begin()),
-                                         std::make_move_iterator(cell.warnings.end()));
-                        code += cell.code;
+                        if(dynamic_cast<const NullLiteralNode*>(row[columnIndex].get())) {
+                            code += "std::nullopt";
+                        } else {
+                            auto cell = generateNode(*row[columnIndex]);
+                            dps.insert(dps.end(),
+                                       std::make_move_iterator(cell.decisionPoints.begin()),
+                                       std::make_move_iterator(cell.decisionPoints.end()));
+                            warnings.insert(warnings.end(),
+                                             std::make_move_iterator(cell.warnings.begin()),
+                                             std::make_move_iterator(cell.warnings.end()));
+                            code += cell.code;
+                        }
                     }
                     code += "});";
                 }
@@ -2817,6 +2821,19 @@ namespace sqlite2orm {
             }
             makeExpr += ")";
         }
+        auto findPrimaryKeyColumnCpp = [&createTable](std::string_view refTable) -> std::string {
+            if(toLowerAscii(std::string(refTable)) == toLowerAscii(createTable.tableName)) {
+                for(const auto& col : createTable.columns) {
+                    if(col.primaryKey) {
+                        return toCppIdentifier(col.name);
+                    }
+                }
+                if(!createTable.primaryKeys.empty() && !createTable.primaryKeys[0].columns.empty()) {
+                    return toCppIdentifier(createTable.primaryKeys[0].columns[0]);
+                }
+            }
+            return {};
+        };
         for(const auto& column : createTable.columns) {
             if(!column.foreignKey) {
                 continue;
@@ -2824,7 +2841,15 @@ namespace sqlite2orm {
             auto& foreignKey = *column.foreignKey;
             const auto cppName = toCppIdentifier(column.name);
             const auto refStructName = toStructName(foreignKey.table);
-            const auto refColName = foreignKey.column.empty() ? cppName : toCppIdentifier(foreignKey.column);
+            std::string refColName;
+            if(!foreignKey.column.empty()) {
+                refColName = toCppIdentifier(foreignKey.column);
+            } else {
+                refColName = findPrimaryKeyColumnCpp(foreignKey.table);
+                if(refColName.empty()) {
+                    refColName = cppName;
+                }
+            }
             makeExpr += ",\n        foreign_key(&" + sName + "::" + cppName + ").references(&" + refStructName +
                         "::" + refColName + ")";
             const auto action_str = [](ForeignKeyAction action) -> std::string {
@@ -2855,8 +2880,15 @@ namespace sqlite2orm {
         for(const auto& tableForeignKey : createTable.foreignKeys) {
             const auto cppName = toCppIdentifier(tableForeignKey.column);
             const auto refStructName = toStructName(tableForeignKey.references.table);
-            const auto refColName = tableForeignKey.references.column.empty()
-                ? cppName : toCppIdentifier(tableForeignKey.references.column);
+            std::string refColName;
+            if(!tableForeignKey.references.column.empty()) {
+                refColName = toCppIdentifier(tableForeignKey.references.column);
+            } else {
+                refColName = findPrimaryKeyColumnCpp(tableForeignKey.references.table);
+                if(refColName.empty()) {
+                    refColName = cppName;
+                }
+            }
             makeExpr += ",\n        foreign_key(&" + sName + "::" + cppName + ").references(&" + refStructName +
                         "::" + refColName + ")";
             const auto action_str = [](ForeignKeyAction action) -> std::string {

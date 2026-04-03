@@ -160,12 +160,12 @@ TEST_CASE("processMultiSql: CREATE TABLE org + INSERTs without column list") {
                 "    make_table(\"org\",\n"
                 "        make_column(\"name\", &Org::name, primary_key()),\n"
                 "        make_column(\"boss\", &Org::boss),\n"
-                "        foreign_key(&Org::boss).references(&Org::boss)).without_rowid());"};
+                "        foreign_key(&Org::boss).references(&Org::name)).without_rowid());"};
     expected.push_back(std::move(createResult));
 
     struct InsertRow { std::string_view name; bool bossNull; std::string_view boss; std::string_view code; };
     const std::array insertRows{
-        InsertRow{"'Alice'", true, {}, R"(storage.insert(Org{"Alice", nullptr});)"},
+        InsertRow{"'Alice'", true, {}, R"(storage.insert(Org{"Alice", std::nullopt});)"},
         InsertRow{"'Bob'", false, "'Alice'", R"(storage.insert(Org{"Bob", "Alice"});)"},
         InsertRow{"'Cindy'", false, "'Alice'", R"(storage.insert(Org{"Cindy", "Alice"});)"},
         InsertRow{"'Dave'", false, "'Bob'", R"(storage.insert(Org{"Dave", "Bob"});)"},
@@ -245,7 +245,7 @@ TEST_CASE("processMultiSql: CREATE TABLE org + INSERTs with column list") {
                 "    make_table(\"org\",\n"
                 "        make_column(\"name\", &Org::name, primary_key()),\n"
                 "        make_column(\"boss\", &Org::boss),\n"
-                "        foreign_key(&Org::boss).references(&Org::boss)).without_rowid());"};
+                "        foreign_key(&Org::boss).references(&Org::name)).without_rowid());"};
     expected.push_back(std::move(createResult));
 
     struct InsertCase { std::string_view name; bool bossNull; std::string_view boss; std::string_view code; };

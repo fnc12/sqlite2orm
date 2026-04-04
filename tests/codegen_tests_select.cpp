@@ -49,7 +49,18 @@ TEST_CASE("codegen: SELECT schema.table.* generates asterisk with warning") {
 
 TEST_CASE("codegen: SELECT column via FROM table alias") {
     auto result = generate("SELECT u.name FROM users u");
-    REQUIRE(result == "auto rows = storage.select(&Users::name);");
+    REQUIRE(result == "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name));");
+}
+
+TEST_CASE("codegen: SELECT t.* FROM table alias uses asterisk with alias type") {
+    auto result = generate("SELECT t.* FROM users t");
+    REQUIRE(result == "auto rows = storage.select(asterisk<alias_a<Users>>());");
+}
+
+TEST_CASE("codegen: self-join with aliases") {
+    auto result = generate("SELECT a.name, b.name FROM users a, users b");
+    REQUIRE(result == "auto rows = storage.select(columns(alias_column<alias_a<Users>>(&Users::name), "
+                      "alias_column<alias_b<Users>>(&Users::name)), cross_join<alias_b<Users>>());");
 }
 
 TEST_CASE("codegen: SELECT with FROM schema qualifier warns") {

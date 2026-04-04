@@ -93,6 +93,34 @@ TEST_CASE("codegen: with_cte_style cpp20_monikers") {
     REQUIRE(codeGenResult.code == expected);
 }
 
+TEST_CASE("codegen: WITH RECURSIVE comma-join CTE skips cross_join and uses alias + member pointers") {
+    auto result = generate(
+        "WITH RECURSIVE chain AS("
+        "SELECT * FROM org WHERE name = 'Fred' "
+        "UNION ALL "
+        "SELECT parent.* FROM org parent, chain WHERE parent.name = chain.boss"
+        ") SELECT name FROM chain;");
+    REQUIRE(result ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with_recursive("
+            "cte<cte_0>().as(union_all("
+            "select(asterisk<Org>(), where(c(&Org::name) == \"Fred\")), "
+            "select(asterisk<alias_a<Org>>(), where(alias_column<alias_a<Org>>(&Org::name) == column<cte_0>(&Org::boss))))), "
+            "column<cte_0>(&Org::name));");
+}
+
+TEST_CASE("codegen: WITH CTE column refs use member pointers when base struct known") {
+    auto result = generate(
+        "WITH c AS (SELECT name, id FROM users WHERE id > 0) SELECT c.name FROM c;");
+    REQUIRE(result ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with("
+            "cte<cte_0>().as(select(columns(&Users::name, &Users::id), where(c(&Users::id) > 0))), "
+            "column<cte_0>(&Users::name));");
+}
+
 TEST_CASE("codegen: aggregate FILTER (WHERE) without OVER") {
     REQUIRE(generate("SELECT count(*) FILTER (WHERE id > 0) FROM users;") ==
             "auto rows = storage.select(count<Users>().filter(where(c(&Users::id) > 0)));");

@@ -72,13 +72,22 @@ namespace sqlite2orm {
       private:
         friend void codegen_test_helpers::setSuppressWithCteStyleDecisionPointForTests(CodeGenerator&, bool);
 
+        struct TableAliasInfo {
+            std::string ormAliasType;    // e.g. "alias_a<Org>"
+            std::string baseStructName;  // e.g. "Org"
+        };
+
         int nextDecisionPointId = 1;
         int nextBindParamIndex = 0;
         std::vector<std::string> accumulatedErrors;
         std::map<std::string, std::string> columnTypes;
         std::map<std::string, std::string> fromTableAliasToStructName;
+        std::map<std::string, TableAliasInfo> activeTableAliases;
+        int nextAliasLetter = 0;
         /** During WITH codegen: SQL table/alias (normalized) → C++ typedef name (e.g. `cte_0`). */
         std::map<std::string, std::string> activeCteTypedefByTableKey;
+        /** During WITH codegen: CTE key (normalized) → base struct name (e.g. `Org`) for member-pointer column refs. */
+        std::map<std::string, std::string> cteBaseStructByKey;
         /**
          * When the current SELECT has exactly one FROM source that resolves to a CTE, bare `col` references
          * emit `column<cte_N>("col")`.

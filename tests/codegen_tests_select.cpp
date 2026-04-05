@@ -63,6 +63,45 @@ TEST_CASE("codegen: self-join with aliases") {
                       "alias_column<alias_b<Users>>(&Users::name)), cross_join<alias_b<Users>>());");
 }
 
+TEST_CASE("codegen: SELECT column via FROM table alias C++20 style") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT u.name FROM users u", pol);
+    REQUIRE(result.code ==
+            "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+            "auto rows = storage.select(u->*&Users::name);");
+}
+
+TEST_CASE("codegen: SELECT t.* FROM alias C++20 style") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT t.* FROM users t", pol);
+    REQUIRE(result.code ==
+            "constexpr orm_table_alias auto t = \"t\"_alias.for_<Users>();\n"
+            "auto rows = storage.select(asterisk<t>());");
+}
+
+TEST_CASE("codegen: self-join C++20 style") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT a.name, b.name FROM users a, users b", pol);
+    REQUIRE(result.code ==
+            "constexpr orm_table_alias auto a = \"a\"_alias.for_<Users>();\n"
+            "constexpr orm_table_alias auto b = \"b\"_alias.for_<Users>();\n"
+            "auto rows = storage.select(columns(a->*&Users::name, b->*&Users::name), cross_join<b>());");
+}
+
+TEST_CASE("codegen: table_alias_style decision point present when alias used") {
+    auto result = generateFull("SELECT u.name FROM users u");
+    bool hasDp = false;
+    for(const auto& dp : result.decisionPoints) {
+        if(dp.category == "table_alias_style") {
+            hasDp = true;
+        }
+    }
+    REQUIRE(hasDp);
+}
+
 TEST_CASE("codegen: SELECT with FROM schema qualifier warns") {
     REQUIRE(generateFull("SELECT name FROM main.users") ==
         CodeGenResult{"auto rows = storage.select(&Users::name);",

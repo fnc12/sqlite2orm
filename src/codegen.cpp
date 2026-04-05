@@ -515,6 +515,13 @@ namespace sqlite2orm {
         return this->activeWithCteStyle == "legacy_colalias";
     }
 
+    bool CodeGenerator::useCpp20TableAliasStyle() const {
+        if(this->withCteCpp20Monikers()) {
+            return true;
+        }
+        return policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
+    }
+
     bool CodeGenerator::withCteCpp20Monikers() const {
         return this->activeWithCteStyle == "cpp20_monikers";
     }
@@ -607,6 +614,12 @@ namespace sqlite2orm {
                        colIt != this->withCteCpp20ColVarByPipeKey.end()) {
                         return CodeGenResult{monIt->second + "->*" + colIt->second, {}};
                     }
+                    if(monIt != this->withCteCpp20MonikerVarByCteKey.end()) {
+                        auto baseIt = this->cteBaseStructByKey.find(*this->implicitCteFromTableKeyNorm);
+                        if(baseIt != this->cteBaseStructByKey.end()) {
+                            return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + cppName, {}};
+                        }
+                    }
                 }
                 if(this->withCteLegacyColalias()) {
                     auto colIt = this->withCteLegacyColVarByPipeKey.find(pipe);
@@ -664,6 +677,15 @@ namespace sqlite2orm {
                        colIt != this->withCteCpp20ColVarByPipeKey.end()) {
                         return CodeGenResult{monIt->second + "->*" + colIt->second, {}, std::move(qualWarnings)};
                     }
+                    if(monIt != this->withCteCpp20MonikerVarByCteKey.end()) {
+                        auto baseIt = this->cteBaseStructByKey.find(tableKeyNorm);
+                        if(baseIt != this->cteBaseStructByKey.end()) {
+                            std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+                            return CodeGenResult{
+                                monIt->second + "->*&" + baseIt->second + "::" + colCpp, {},
+                                std::move(qualWarnings)};
+                        }
+                    }
                 }
                 if(this->withCteLegacyColalias()) {
                     auto colIt = this->withCteLegacyColVarByPipeKey.find(pipe);
@@ -690,7 +712,12 @@ namespace sqlite2orm {
                 const auto& info = tableAliasIt->second;
                 const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
                 registerPrefixColumn(colCpp, syntheticColumnCppType(colCpp));
-                std::string code = "alias_column<" + info.ormAliasType + ">(&" + info.baseStructName + "::" + colCpp + ")";
+                std::string code;
+                if(this->useCpp20TableAliasStyle()) {
+                    code = info.ormAliasType + "->*&" + info.baseStructName + "::" + colCpp;
+                } else {
+                    code = "alias_column<" + info.ormAliasType + ">(&" + info.baseStructName + "::" + colCpp + ")";
+                }
                 return CodeGenResult{std::move(code), {}, std::move(qualWarnings)};
             }
             std::string structForColumn = toStructName(qualifiedRef->tableName);
@@ -771,23 +798,34 @@ namespace sqlite2orm {
             bool leftLeaf = isLeafNode(*binaryOp->lhs);
             bool rightLeaf = isLeafNode(*binaryOp->rhs);
 
-            auto qualifiedRefIsAliasColumn = [&](const AstNode* node) -> bool {
-                auto* qr = dynamic_cast<const QualifiedColumnRefNode*>(node);
-                if(!qr) return false;
-                return this->activeTableAliases.find(std::string(qr->tableName)) != this->activeTableAliases.end();
+            auto nodeIsNoWrapRef = [&](const AstNode* node) -> bool {
+                if(auto* qr = dynamic_cast<const QualifiedColumnRefNode*>(node)) {
+                    if(this->activeTableAliases.find(std::string(qr->tableName)) != this->activeTableAliases.end())
+                        return true;
+                    if(this->withCteCpp20Monikers()) {
+                        auto k = normalizeSqlIdentifier(qr->tableName);
+                        if(this->activeCteTypedefByTableKey.find(k) != this->activeCteTypedefByTableKey.end())
+                            return true;
+                    }
+                }
+                if(auto* cr = dynamic_cast<const ColumnRefNode*>(node)) {
+                    if(this->withCteCpp20Monikers() && this->implicitSingleSourceCteTypedef)
+                        return true;
+                }
+                return false;
             };
             bool leftNoWrap = false;
             if(auto* leftCol = dynamic_cast<const ColumnRefNode*>(binaryOp->lhs.get())) {
                 leftNoWrap = this->columnRefIsSelectAliasNoWrap(*leftCol);
             }
-            if(qualifiedRefIsAliasColumn(binaryOp->lhs.get())) {
+            if(nodeIsNoWrapRef(binaryOp->lhs.get())) {
                 leftNoWrap = true;
             }
             bool rightNoWrap = false;
             if(auto* rightCol = dynamic_cast<const ColumnRefNode*>(binaryOp->rhs.get())) {
                 rightNoWrap = this->columnRefIsSelectAliasNoWrap(*rightCol);
             }
-            if(qualifiedRefIsAliasColumn(binaryOp->rhs.get())) {
+            if(nodeIsNoWrapRef(binaryOp->rhs.get())) {
                 rightNoWrap = true;
             }
 
@@ -864,10 +902,19 @@ namespace sqlite2orm {
             bool operandNoWrap = false;
             if(auto* opCol = dynamic_cast<const ColumnRefNode*>(unaryOp->operand.get())) {
                 operandNoWrap = this->columnRefIsSelectAliasNoWrap(*opCol);
+                if(this->withCteCpp20Monikers() && this->implicitSingleSourceCteTypedef) {
+                    operandNoWrap = true;
+                }
             }
             if(auto* opQCol = dynamic_cast<const QualifiedColumnRefNode*>(unaryOp->operand.get())) {
                 if(this->activeTableAliases.find(std::string(opQCol->tableName)) != this->activeTableAliases.end()) {
                     operandNoWrap = true;
+                }
+                if(this->withCteCpp20Monikers()) {
+                    auto k = normalizeSqlIdentifier(opQCol->tableName);
+                    if(this->activeCteTypedefByTableKey.find(k) != this->activeCteTypedefByTableKey.end()) {
+                        operandNoWrap = true;
+                    }
                 }
             }
             std::string operandStr;
@@ -1903,11 +1950,20 @@ namespace sqlite2orm {
                     std::string mappedStructName = structForFromTable(ft.tableName);
                     this->fromTableAliasToStructName[ft.tableName] = mappedStructName;
                     if(ft.alias && !isCteKey(ft.tableName)) {
-                        char letter = static_cast<char>('a' + this->nextAliasLetter++);
-                        std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
-                        TableAliasInfo info{ormAlias, mappedStructName};
-                        this->activeTableAliases[*ft.alias] = info;
-                        this->activeTableAliases[ft.tableName] = info;
+                        if(this->useCpp20TableAliasStyle()) {
+                            std::string varName = toCppIdentifier(*ft.alias);
+                            TableAliasInfo info{varName, mappedStructName};
+                            this->activeTableAliases[*ft.alias] = info;
+                            this->activeTableAliases[ft.tableName] = info;
+                            this->cpp20TableAliasDecls.push_back(
+                                Cpp20TableAliasDecl{varName, mappedStructName, stripIdentifierQuotes(*ft.alias)});
+                        } else {
+                            char letter = static_cast<char>('a' + this->nextAliasLetter++);
+                            std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
+                            TableAliasInfo info{ormAlias, mappedStructName};
+                            this->activeTableAliases[*ft.alias] = info;
+                            this->activeTableAliases[ft.tableName] = info;
+                        }
                         this->fromTableAliasToStructName[*ft.alias] = mappedStructName;
                     } else if(ft.alias) {
                         this->fromTableAliasToStructName[*ft.alias] = mappedStructName;
@@ -2262,6 +2318,39 @@ namespace sqlite2orm {
                                  altRes.code,
                                  "alias_tag / colalias_* / generated struct (default; wider compiler support)"}}});
             }
+            bool hasTableAliases = !this->activeTableAliases.empty();
+            if(!this->cpp20TableAliasDecls.empty() && !this->activeWithCteStyle) {
+                std::string prelude;
+                for(const auto& tad : this->cpp20TableAliasDecls) {
+                    prelude += "constexpr orm_table_alias auto " + tad.varName + " = " +
+                               identifierToCppStringLiteral(tad.sqlAlias) + "_alias.for_<" + tad.baseStructName +
+                               ">();\n";
+                }
+                code = prelude + code;
+            }
+            if(hasTableAliases) {
+                if(!this->activeWithCteStyle && !this->suppressTableAliasStyleDecisionPoint) {
+                    const std::string currentStyle =
+                        policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20") ? "cpp20" : "pre_cpp20";
+                    auto makeAlt = [&](const char* styleValue) -> std::string {
+                        CodeGenPolicy pol = policyWithOverride(this->codeGenPolicy, "table_alias_style", styleValue);
+                        CodeGenerator gen;
+                        gen.codeGenPolicy = &pol;
+                        gen.suppressTableAliasStyleDecisionPoint = true;
+                        return gen.generate(static_cast<const AstNode&>(*selectNode)).code;
+                    };
+                    selectDecisionPoints.push_back(DecisionPoint{
+                        this->nextDecisionPointId++,
+                        "table_alias_style",
+                        currentStyle,
+                        code,
+                        {Alternative{"pre_cpp20", makeAlt("pre_cpp20"),
+                                     "alias_a<T> + alias_column<> (wider compiler support)"},
+                         Alternative{"cpp20", makeAlt("cpp20"),
+                                     "\"name\"_alias.for_<T>() + ->* (C++20 sqlite_orm)"}}});
+                }
+            }
+            this->cpp20TableAliasDecls.clear();
             this->activeSelectColumnAliases.clear();
             this->activeSelectColumnAliasCpp20Vars.clear();
             return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings), {},
@@ -2546,11 +2635,20 @@ namespace sqlite2orm {
                 std::string mappedStructName = structForFromTable(ft.tableName);
                 this->fromTableAliasToStructName[ft.tableName] = mappedStructName;
                 if(ft.alias && !isCteKey(ft.tableName)) {
-                    char letter = static_cast<char>('a' + this->nextAliasLetter++);
-                    std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
-                    TableAliasInfo info{ormAlias, mappedStructName};
-                    this->activeTableAliases[*ft.alias] = info;
-                    this->activeTableAliases[ft.tableName] = info;
+                    if(this->useCpp20TableAliasStyle()) {
+                        std::string varName = toCppIdentifier(*ft.alias);
+                        TableAliasInfo info{varName, mappedStructName};
+                        this->activeTableAliases[*ft.alias] = info;
+                        this->activeTableAliases[ft.tableName] = info;
+                        this->cpp20TableAliasDecls.push_back(
+                            Cpp20TableAliasDecl{varName, mappedStructName, stripIdentifierQuotes(*ft.alias)});
+                    } else {
+                        char letter = static_cast<char>('a' + this->nextAliasLetter++);
+                        std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
+                        TableAliasInfo info{ormAlias, mappedStructName};
+                        this->activeTableAliases[*ft.alias] = info;
+                        this->activeTableAliases[ft.tableName] = info;
+                    }
                     this->fromTableAliasToStructName[*ft.alias] = mappedStructName;
                 } else if(ft.alias) {
                     this->fromTableAliasToStructName[*ft.alias] = mappedStructName;
@@ -3225,6 +3323,7 @@ namespace sqlite2orm {
                 generator->withCteLegacyColVarByPipeKey.clear();
                 generator->withCteCpp20MonikerVarByCteKey.clear();
                 generator->withCteCpp20ColVarByPipeKey.clear();
+                generator->cpp20TableAliasDecls.clear();
             }
         } clearGuard{this};
 
@@ -3239,12 +3338,16 @@ namespace sqlite2orm {
             withStyle = "cpp20_monikers";
         }
 
-        const bool badForStyled =
-            ctes.size() != 1u || ctes.front().columnNames.empty();
-        if(withStyle != "indexed_typedef" && badForStyled) {
+        if(withStyle == "legacy_colalias") {
+            const bool badForLegacy = ctes.size() != 1u || ctes.front().columnNames.empty();
+            if(badForLegacy) {
+                warnings.push_back(
+                    "WITH: legacy_colalias needs one CTE with an explicit column list; using indexed_typedef");
+                withStyle = "indexed_typedef";
+            }
+        } else if(withStyle == "cpp20_monikers" && ctes.size() != 1u) {
             warnings.push_back(
-                "WITH: with_cte_style other than indexed_typedef needs one CTE with an explicit column list; using "
-                "indexed_typedef");
+                "WITH: cpp20_monikers currently supports a single CTE; using indexed_typedef");
             withStyle = "indexed_typedef";
         }
 
@@ -3392,6 +3495,11 @@ namespace sqlite2orm {
                                identifierToCppStringLiteral(columnSqlName) + "_col;\n";
                 }
             }
+            for(const auto& tad : this->cpp20TableAliasDecls) {
+                prelude += "constexpr orm_table_alias auto " + tad.varName + " = " +
+                           identifierToCppStringLiteral(tad.sqlAlias) + "_alias.for_<" + tad.baseStructName + ">();\n";
+            }
+            this->cpp20TableAliasDecls.clear();
             warnings.push_back(
                 "WITH: cpp20_monikers requires C++20, SQLITE_ORM_WITH_CPP20_ALIASES, and matching sqlite_orm");
         } else if(withStyle == "legacy_colalias") {
@@ -3497,7 +3605,8 @@ namespace sqlite2orm {
             std::string code = prelude + "auto rows = storage." + std::string(withApi) + "(" + cteArgument + ", " +
                                *outerArgOpt + ");";
 
-            if(!this->suppressWithCteStyleDecisionPoint && ctes.size() == 1u && !ctes[0].columnNames.empty()) {
+            if(!this->suppressWithCteStyleDecisionPoint && ctes.size() == 1u) {
+                const bool hasColumnList = !ctes[0].columnNames.empty();
                 const int dpId = this->nextDecisionPointId++;
                 auto altCode = [this, &withQueryNode](const char* styleValue) {
                     CodeGenPolicy pol = policyWithOverride(this->codeGenPolicy, "with_cte_style", styleValue);
@@ -3506,17 +3615,18 @@ namespace sqlite2orm {
                     gen.suppressWithCteStyleDecisionPoint = true;
                     return gen.generate(static_cast<const AstNode&>(withQueryNode)).code;
                 };
-                allDecisionPoints.push_back(DecisionPoint{
-                    dpId,
-                    "with_cte_style",
-                    withStyle,
-                    code,
-                    {Alternative{"indexed_typedef", altCode("indexed_typedef"),
-                                 "using cte_N + column<cte_N>(\"col\") (default sqlite2orm style)"},
-                     Alternative{"legacy_colalias", altCode("legacy_colalias"),
-                                 "using typedef from SQL CTE name + colalias_i… + column<T>(var)"},
-                     Alternative{"cpp20_monikers", altCode("cpp20_monikers"),
-                                 "constexpr orm_cte_moniker / orm_column_alias + operator->* (C++20 sqlite_orm)"}}});
+                std::vector<Alternative> alts;
+                alts.push_back(Alternative{"indexed_typedef", altCode("indexed_typedef"),
+                                           "using cte_N + column<cte_N>(\"col\") (default sqlite2orm style)"});
+                if(hasColumnList) {
+                    alts.push_back(Alternative{"legacy_colalias", altCode("legacy_colalias"),
+                                               "using typedef from SQL CTE name + colalias_i… + column<T>(var)"});
+                }
+                alts.push_back(Alternative{
+                    "cpp20_monikers", altCode("cpp20_monikers"),
+                    "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"});
+                allDecisionPoints.push_back(
+                    DecisionPoint{dpId, "with_cte_style", withStyle, code, std::move(alts)});
             }
 
             warnings.push_back(

@@ -110,10 +110,21 @@ namespace sqlite2orm {
         std::map<std::string, std::string> withCteLegacyColVarByPipeKey;
         std::map<std::string, std::string> withCteCpp20MonikerVarByCteKey;
         std::map<std::string, std::string> withCteCpp20ColVarByPipeKey;
+
+        struct Cpp20TableAliasDecl {
+            std::string varName;
+            std::string baseStructName;
+            std::string sqlAlias;
+        };
+        std::vector<Cpp20TableAliasDecl> cpp20TableAliasDecls;
+
         /** When true, `with_cte_style` DecisionPoint is not emitted (used when regenerating for alternatives). */
         bool suppressWithCteStyleDecisionPoint = false;
+        /** When true, `table_alias_style` DecisionPoint is not emitted (used when regenerating for alternatives). */
+        bool suppressTableAliasStyleDecisionPoint = false;
 
         bool useCpp20ColumnAliasStyle() const;
+        bool useCpp20TableAliasStyle() const;
         bool withCteLegacyColalias() const;
         bool withCteCpp20Monikers() const;
         bool columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const;

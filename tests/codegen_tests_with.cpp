@@ -56,7 +56,7 @@ TEST_CASE("codegen: WITH single CTE exposes with_cte_style decision point") {
              Alternative{"legacy_colalias", codeLegacy,
                          "using typedef from SQL CTE name + colalias_i… + column<T>(var)"},
              Alternative{"cpp20_monikers", codeCpp20,
-                         "constexpr orm_cte_moniker / orm_column_alias + operator->* (C++20 sqlite_orm)"}}}},
+                         "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"}}}},
         {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
          "sqlite_orm::literals` scope for `_ctealias`"},
         {},
@@ -88,7 +88,7 @@ TEST_CASE("codegen: with_cte_style cpp20_monikers") {
         "using namespace sqlite_orm::literals;\n"
         "constexpr orm_cte_moniker auto cnt_cte = \"cnt\"_cte;\n"
         "constexpr orm_column_alias auto cnt__x = \"x\"_col;\n"
-        "auto rows = storage.with_recursive(cnt_cte().as(union_all(select(1), select(c(cnt_cte->*cnt__x) + 1, "
+        "auto rows = storage.with_recursive(cnt_cte().as(union_all(select(1), select(cnt_cte->*cnt__x + 1, "
         "limit(999)))), cnt_cte->*cnt__x);";
     REQUIRE(codeGenResult.code == expected);
 }
@@ -119,6 +119,48 @@ TEST_CASE("codegen: WITH CTE column refs use member pointers when base struct kn
             "auto rows = storage.with("
             "cte<cte_0>().as(select(columns(&Users::name, &Users::id), where(c(&Users::id) > 0))), "
             "column<cte_0>(&Users::name));");
+}
+
+TEST_CASE("codegen: WITH RECURSIVE cpp20_monikers with table alias and member pointers") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+    CodeGenResult codeGenResult = generateWithPolicy(
+        "WITH RECURSIVE chain AS("
+        "SELECT * FROM org WHERE name = 'Fred' "
+        "UNION ALL "
+        "SELECT parent.* FROM org parent, chain WHERE parent.name = chain.boss"
+        ") SELECT name FROM chain;",
+        pol);
+    REQUIRE(codeGenResult.code ==
+            "using namespace sqlite_orm::literals;\n"
+            "constexpr orm_cte_moniker auto chain_cte = \"chain\"_cte;\n"
+            "constexpr orm_table_alias auto parent = \"parent\"_alias.for_<Org>();\n"
+            "auto rows = storage.with_recursive("
+            "chain_cte().as(union_all("
+            "select(asterisk<Org>(), where(c(&Org::name) == \"Fred\")), "
+            "select(asterisk<parent>(), where(parent->*&Org::name == chain_cte->*&Org::boss)))), "
+            "chain_cte->*&Org::name);");
+}
+
+TEST_CASE("codegen: WITH no column list still offers cpp20_monikers as alternative") {
+    constexpr std::string_view sql =
+        "WITH RECURSIVE chain AS("
+        "SELECT * FROM org WHERE name = 'Fred' "
+        "UNION ALL "
+        "SELECT parent.* FROM org parent, chain WHERE parent.name = chain.boss"
+        ") SELECT name FROM chain;";
+    auto result = generateFull(sql);
+    bool hasCpp20 = false;
+    for(const auto& dp : result.decisionPoints) {
+        if(dp.category == "with_cte_style") {
+            for(const auto& alt : dp.alternatives) {
+                if(alt.value == "cpp20_monikers") {
+                    hasCpp20 = true;
+                }
+            }
+        }
+    }
+    REQUIRE(hasCpp20);
 }
 
 TEST_CASE("codegen: aggregate FILTER (WHERE) without OVER") {

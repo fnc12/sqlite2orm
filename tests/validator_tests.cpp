@@ -253,6 +253,22 @@ TEST_CASE("validator: IN table-name gives validation error") {
             {"IN table-name is not supported in sqlite_orm", {1, 25}, "InNode"}});
 }
 
+TEST_CASE("validator: IN single-quoted table-name gives validation error") {
+    REQUIRE(validate("SELECT * FROM t WHERE x IN 'tbl'") ==
+        std::vector<ValidationError>{
+            {"IN table-name is not supported in sqlite_orm", {1, 25}, "InNode"}});
+}
+
+TEST_CASE("validator: IN CTE table-name is valid") {
+    REQUIRE(validate(
+        "WITH c AS (SELECT 1 AS a) SELECT * FROM t WHERE x IN c").empty());
+}
+
+TEST_CASE("validator: IN single-quoted CTE table-name is valid") {
+    REQUIRE(validate(
+        "WITH c AS (SELECT 1 AS a) SELECT * FROM t WHERE x IN 'c'").empty());
+}
+
 TEST_CASE("validator: IS expr gives validation error") {
     REQUIRE(validate("SELECT a IS b FROM t") ==
         std::vector<ValidationError>{

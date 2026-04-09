@@ -507,3 +507,34 @@ TEST_CASE("parser: parenthesized join combined with outer join") {
     };
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
+
+// --- Single-quoted identifiers (SQLite quirk) ---
+
+TEST_CASE("parser: FROM single-quoted table name") {
+    auto parseResult = parse("SELECT * FROM 'users'");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}};
+    expected.fromClause = fromOne("'users'");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: FROM multiple single-quoted table names") {
+    auto parseResult = parse("SELECT * FROM 'users', 'posts'");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause[0].table.tableName == "'users'");
+    REQUIRE(sel.fromClause[1].table.tableName == "'posts'");
+}
+
+TEST_CASE("parser: single-quoted qualified column ref") {
+    auto parseResult = parse("SELECT 'users'.\"name\" FROM 'users'");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.columns.size() == 1);
+    auto* qualRef = dynamic_cast<const QualifiedColumnRefNode*>(sel.columns[0].expression.get());
+    REQUIRE(qualRef != nullptr);
+    REQUIRE(qualRef->tableName == "'users'");
+    REQUIRE(qualRef->columnName == "\"name\"");
+}

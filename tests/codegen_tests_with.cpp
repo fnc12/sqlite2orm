@@ -163,6 +163,22 @@ TEST_CASE("codegen: WITH no column list still offers cpp20_monikers as alternati
     REQUIRE(hasCpp20);
 }
 
+TEST_CASE("codegen: WITH single-quoted table names in FROM and column refs") {
+    auto result = generate(
+        "WITH cte_1(\"n\") AS(SELECT 'Alice' UNION SELECT 'org'.\"name\" FROM 'cte_1', 'org' "
+        "WHERE('org'.\"boss\" = 'cte_1'.\"n\")) "
+        "SELECT AVG('org'.\"height\") FROM 'org' "
+        "WHERE(\"name\" IN(SELECT 'cte_1'.\"n\" FROM 'cte_1'))");
+    REQUIRE(result.find("storage.with") != std::string::npos);
+    REQUIRE(result.find("column<cte_0>(\"n\")") != std::string::npos);
+}
+
+TEST_CASE("codegen: SELECT from single-quoted table is same as double-quoted") {
+    auto resultSingleQuote = generate("SELECT \"name\" FROM 'users'");
+    auto resultDoubleQuote = generate("SELECT \"name\" FROM \"users\"");
+    REQUIRE(resultSingleQuote == resultDoubleQuote);
+}
+
 TEST_CASE("codegen: aggregate FILTER (WHERE) without OVER") {
     REQUIRE(generate("SELECT count(*) FILTER (WHERE id > 0) FROM users;") ==
             "auto rows = storage.select(count<Users>().filter(where(c(&Users::id) > 0)));");

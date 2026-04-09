@@ -861,3 +861,12 @@ TEST_CASE("parser: IN table-name") {
     REQUIRE(inNode != nullptr);
     REQUIRE(*inNode == InNode(makeNode<ColumnRefNode>("x"), std::string("tbl"), false, {}));
 }
+
+TEST_CASE("parser: IN single-quoted table-name") {
+    auto parseResult = parse("SELECT * FROM t WHERE x IN 'tbl'");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    auto* inNode = dynamic_cast<const InNode*>(sel.whereClause.get());
+    REQUIRE(inNode != nullptr);
+    REQUIRE(*inNode == InNode(makeNode<ColumnRefNode>("x"), std::string("'tbl'"), false, {}));
+}

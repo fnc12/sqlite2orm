@@ -199,7 +199,6 @@ TEST_CASE("codegen: WITH RECURSIVE multi-CTE with JOIN USING between CTEs") {
             "select(column<cte_0>(\"parent\"), where(c(column<cte_0>(\"name\")) == \"Alice\")), "
             "select(column<cte_0>(\"parent\"), join<cte_1>(using_(column<cte_0>(\"name\"))))))), "
             "&Family::name, "
-            "cross_join<Family>(), "
             "where(c(column<cte_1>(\"name\")) == &Family::name and is_null(&Family::died)), "
             "order_by(&Family::born));");
 }
@@ -222,7 +221,6 @@ TEST_CASE("codegen: outer SELECT with CTE+real table resolves bare columns to re
             "auto rows = storage.with("
             "cte<cte_0>(\"val\").as(select(1)), "
             "&Users::name, "
-            "cross_join<Users>(), "
             "where(c(column<cte_0>(\"val\")) == &Users::id));");
 }
 

@@ -240,11 +240,19 @@ namespace sqlite2orm {
             }
             return "&" + structForFromTable(tableName) + "::" + toCppIdentifier(colSql);
         };
+        bool firstFromIsCte =
+            !selectNode.fromClause.empty() && isCteSource(selectNode.fromClause.at(0).table.tableName);
+        bool emittedNonCteJoin = false;
         for(size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
             if(isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
                 continue;
             }
+            if(firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
+                emittedNonCteJoin = true;
+                continue;
+            }
+            emittedNonCteJoin = true;
             const auto& leftTable = selectNode.fromClause.at(joinIndex - 1).table;
             std::string rightType = resolveJoinType(joinItem.table);
             std::string rightStruct = structForFromTable(joinItem.table.tableName);
@@ -724,12 +732,20 @@ namespace sqlite2orm {
             return this->context.activeCteTypedefByTableKey.find(key) !=
                    this->context.activeCteTypedefByTableKey.end();
         };
+        bool firstFromIsCte =
+            !selectNode.fromClause.empty() && isCteSource(selectNode.fromClause.at(0).table.tableName);
+        bool emittedNonCteJoin = false;
         std::vector<std::string> tailParts;
         for(size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
             if(isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
                 continue;
             }
+            if(firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
+                emittedNonCteJoin = true;
+                continue;
+            }
+            emittedNonCteJoin = true;
             const auto& leftTable = selectNode.fromClause.at(joinIndex - 1).table;
             std::string rightType = resolveJoinType(joinItem.table);
             std::string rightStruct = structForFromTable(joinItem.table.tableName);

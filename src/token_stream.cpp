@@ -44,7 +44,7 @@ namespace sqlite2orm {
 
     bool TokenStream::isColumnNameToken() const {
         auto type = current().type;
-        if(type == TokenType::identifier) return true;
+        if(type == TokenType::identifier || type == TokenType::stringLiteral) return true;
         return type >= TokenType::kwAbort && type <= TokenType::kwWithout;
     }
 
@@ -52,7 +52,7 @@ namespace sqlite2orm {
         size_t index = this->position + offsetFromCurrent;
         if(index >= this->tokens.size()) return false;
         auto type = this->tokens.at(index).type;
-        if(type == TokenType::identifier) return true;
+        if(type == TokenType::identifier || type == TokenType::stringLiteral) return true;
         return type >= TokenType::kwAbort && type <= TokenType::kwWithout;
     }
 

@@ -83,7 +83,7 @@ namespace sqlite2orm {
             auto e = validate(*node->operand);
             errors.insert(errors.end(), e.begin(), e.end());
             if(!node->tableName.empty()) {
-                std::string normalizedInTable = toLowerAscii(node->tableName);
+                std::string normalizedInTable = normalizeSqlName(node->tableName);
                 if(this->knownCteTableNames.find(normalizedInTable) == this->knownCteTableNames.end()) {
                     errors.push_back(ValidationError{
                         "IN table-name is not supported in sqlite_orm",
@@ -228,7 +228,7 @@ namespace sqlite2orm {
             }
         } else if(auto* withNode = dynamic_cast<const WithQueryNode*>(&astNode)) {
             for(const auto& cte : withNode->clause.tables) {
-                this->knownCteTableNames.insert(toLowerAscii(cte.cteName));
+                this->knownCteTableNames.insert(normalizeSqlName(cte.cteName));
             }
             for(const auto& cte : withNode->clause.tables) {
                 auto cteErrors = validate(*cte.query);

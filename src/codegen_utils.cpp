@@ -39,7 +39,8 @@ namespace sqlite2orm {
         if(identifier.size() >= 2) {
             char first = identifier.front();
             char last = identifier.back();
-            if((first == '"' && last == '"') || (first == '`' && last == '`') || (first == '[' && last == ']')) {
+            if((first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '`' && last == '`') ||
+               (first == '[' && last == ']')) {
                 return std::string(identifier.substr(1, identifier.size() - 2));
             }
         }

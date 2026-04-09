@@ -31,6 +31,7 @@ endif()
 
 add_library(sqlite2orm_lib
     src/ast.cpp
+    src/utils.cpp
     src/tokenizer.cpp
     src/token_stream.cpp
     src/parser.cpp

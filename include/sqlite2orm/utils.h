@@ -5,14 +5,8 @@
 
 namespace sqlite2orm {
 
-    inline std::string toLowerAscii(std::string_view input) {
-        std::string result(input);
-        for(auto& c : result) {
-            if(c >= 'A' && c <= 'Z') {
-                c = c - 'A' + 'a';
-            }
-        }
-        return result;
-    }
+    std::string toLowerAscii(std::string_view input);
+    std::string stripSqlQuotes(std::string_view identifier);
+    std::string normalizeSqlName(std::string_view identifier);
 
 }  // namespace sqlite2orm

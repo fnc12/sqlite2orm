@@ -345,6 +345,11 @@ namespace sqlite2orm {
             return parseColumnRef();
         }
 
+        if(current().type == TokenType::stringLiteral && peekToken(1).type == TokenType::dot &&
+           isColumnNameTokenAt(2)) {
+            return parseColumnRef();
+        }
+
         if(check(TokenType::bindParameter)) {
             const Token& token = current();
             advanceToken();
@@ -374,7 +379,7 @@ namespace sqlite2orm {
             }
         }
 
-        if(peekToken(1).type == TokenType::dot && peekToken(2).type == TokenType::identifier) {
+        if(peekToken(1).type == TokenType::dot && isColumnNameTokenAt(2)) {
             advanceToken();
             advanceToken();
             const Token& columnToken = advanceToken();

@@ -58,6 +58,7 @@ namespace sqlite2orm {
         bool withCteLegacyColalias() const;
         bool withCteCpp20Monikers() const;
         bool columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const;
+        bool isExplicitCteColumn(std::string_view cteKeyNorm, std::string_view columnName) const;
 
         void registerColumn(const std::string& cppName, const std::string& cppType);
         void registerPrefixColumn(const std::string& cppName, const std::string& cppType);

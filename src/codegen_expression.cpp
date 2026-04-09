@@ -82,10 +82,13 @@ namespace sqlite2orm {
                         return CodeGenResult{monIt->second + "->*" + colIt->second, {}};
                     }
                     if(monIt != this->context.withCteCpp20MonikerVarByCteKey.end()) {
-                        auto baseIt =
-                            this->context.cteBaseStructByKey.find(*this->context.implicitCteFromTableKeyNorm);
-                        if(baseIt != this->context.cteBaseStructByKey.end()) {
-                            return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + cppName, {}};
+                        if(!this->context.isExplicitCteColumn(*this->context.implicitCteFromTableKeyNorm,
+                                                              columnRef->columnName)) {
+                            auto baseIt =
+                                this->context.cteBaseStructByKey.find(*this->context.implicitCteFromTableKeyNorm);
+                            if(baseIt != this->context.cteBaseStructByKey.end()) {
+                                return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + cppName, {}};
+                            }
                         }
                     }
                 }
@@ -100,6 +103,14 @@ namespace sqlite2orm {
             }
             if(this->context.implicitSingleSourceCteTypedef) {
                 if(this->context.implicitCteFromTableKeyNorm) {
+                    if(this->context.isExplicitCteColumn(*this->context.implicitCteFromTableKeyNorm,
+                                                         columnRef->columnName)) {
+                        std::string colLit =
+                            identifierToCppStringLiteral(stripIdentifierQuotes(columnRef->columnName));
+                        std::string cteCol =
+                            "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" + colLit + ")";
+                        return CodeGenResult{std::move(cteCol), {}};
+                    }
                     auto baseIt =
                         this->context.cteBaseStructByKey.find(*this->context.implicitCteFromTableKeyNorm);
                     if(baseIt != this->context.cteBaseStructByKey.end()) {
@@ -149,11 +160,13 @@ namespace sqlite2orm {
                         return CodeGenResult{monIt->second + "->*" + colIt->second, {}, std::move(qualWarnings)};
                     }
                     if(monIt != this->context.withCteCpp20MonikerVarByCteKey.end()) {
-                        auto baseIt = this->context.cteBaseStructByKey.find(tableKeyNorm);
-                        if(baseIt != this->context.cteBaseStructByKey.end()) {
-                            std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
-                            return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + colCpp, {},
-                                                 std::move(qualWarnings)};
+                        if(!this->context.isExplicitCteColumn(tableKeyNorm, qualifiedRef->columnName)) {
+                            auto baseIt = this->context.cteBaseStructByKey.find(tableKeyNorm);
+                            if(baseIt != this->context.cteBaseStructByKey.end()) {
+                                std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+                                return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + colCpp, {},
+                                                     std::move(qualWarnings)};
+                            }
                         }
                     }
                 }
@@ -163,6 +176,12 @@ namespace sqlite2orm {
                         return CodeGenResult{"column<" + cteIt->second + ">(" + colIt->second + ")", {},
                                              std::move(qualWarnings)};
                     }
+                }
+                if(this->context.isExplicitCteColumn(tableKeyNorm, qualifiedRef->columnName)) {
+                    std::string colLit =
+                        identifierToCppStringLiteral(stripIdentifierQuotes(qualifiedRef->columnName));
+                    return CodeGenResult{"column<" + cteIt->second + ">(" + colLit + ")", {},
+                                         std::move(qualWarnings)};
                 }
                 auto baseIt = this->context.cteBaseStructByKey.find(tableKeyNorm);
                 if(baseIt != this->context.cteBaseStructByKey.end()) {

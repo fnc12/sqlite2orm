@@ -173,6 +173,59 @@ TEST_CASE("codegen: WITH single-quoted table names in FROM and column refs") {
     REQUIRE(result.find("column<cte_0>(\"n\")") != std::string::npos);
 }
 
+TEST_CASE("codegen: WITH RECURSIVE multi-CTE with JOIN USING between CTEs") {
+    REQUIRE(generate("WITH RECURSIVE "
+                     "parent_of(name, parent) AS "
+                     "(SELECT name, mom FROM family UNION SELECT name, dad FROM family), "
+                     "ancestor_of_alice(name) AS "
+                     "(SELECT parent FROM parent_of WHERE name = 'Alice' "
+                     "UNION ALL "
+                     "SELECT parent FROM parent_of JOIN ancestor_of_alice USING(name)) "
+                     "SELECT family.name FROM ancestor_of_alice, family "
+                     "WHERE ancestor_of_alice.name = family.name "
+                     "AND died IS NULL "
+                     "ORDER BY born;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "using cte_1 = decltype(2_ctealias);\n"
+            "auto rows = storage.with_recursive("
+            "std::make_tuple("
+            "cte<cte_0>(\"name\", \"parent\").as("
+            "union_("
+            "select(columns(&Family::name, &Family::mom)), "
+            "select(columns(&Family::name, &Family::dad)))), "
+            "cte<cte_1>(\"name\").as("
+            "union_all("
+            "select(column<cte_0>(\"parent\"), where(c(column<cte_0>(\"name\")) == \"Alice\")), "
+            "select(column<cte_0>(\"parent\"), join<cte_1>(using_(column<cte_0>(\"name\"))))))), "
+            "&Family::name, "
+            "cross_join<Family>(), "
+            "where(c(column<cte_1>(\"name\")) == &Family::name and is_null(&Family::died)), "
+            "order_by(&Family::born));");
+}
+
+TEST_CASE("codegen: CTE explicit column resolved as string literal, not member pointer") {
+    REQUIRE(generate("WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt LIMIT 1000000) "
+                     "SELECT x FROM cnt;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with_recursive("
+            "cte<cte_0>(\"x\").as("
+            "union_all(select(1), select(c(column<cte_0>(\"x\")) + 1, limit(1000000)))), "
+            "column<cte_0>(\"x\"));");
+}
+
+TEST_CASE("codegen: outer SELECT with CTE+real table resolves bare columns to real table") {
+    REQUIRE(generate("WITH c(val) AS (SELECT 1) SELECT name FROM c, users WHERE c.val = id;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with("
+            "cte<cte_0>(\"val\").as(select(1)), "
+            "&Users::name, "
+            "cross_join<Users>(), "
+            "where(c(column<cte_0>(\"val\")) == &Users::id));");
+}
+
 TEST_CASE("codegen: SELECT from single-quoted table is same as double-quoted") {
     auto resultSingleQuote = generate("SELECT \"name\" FROM 'users'");
     auto resultDoubleQuote = generate("SELECT \"name\" FROM \"users\"");

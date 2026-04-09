@@ -37,6 +37,20 @@ namespace sqlite2orm {
                this->activeSelectColumnAliasCpp20Vars.end();
     }
 
+    bool CodeGeneratorContext::isExplicitCteColumn(std::string_view cteKeyNorm, std::string_view columnName) const {
+        auto it = this->cteColumnNamesByTableKey.find(std::string(cteKeyNorm));
+        if(it == this->cteColumnNamesByTableKey.end()) {
+            return false;
+        }
+        std::string normalizedCol = normalizeSqlIdentifier(columnName);
+        for(const auto& colName : it->second) {
+            if(normalizeSqlIdentifier(colName) == normalizedCol) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {
         auto [it, inserted] = this->columnTypes.try_emplace(cppName, cppType);
         if(!inserted && it->second == "int" && cppType != "int") {

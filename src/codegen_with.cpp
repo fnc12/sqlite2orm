@@ -18,6 +18,7 @@ namespace sqlite2orm {
             ~ClearActiveCteMap() {
                 context->activeCteTypedefByTableKey.clear();
                 context->cteBaseStructByKey.clear();
+                context->cteColumnNamesByTableKey.clear();
                 context->activeWithCteStyle.reset();
                 context->withCteLegacyColVarByPipeKey.clear();
                 context->withCteCpp20MonikerVarByCteKey.clear();
@@ -126,8 +127,12 @@ namespace sqlite2orm {
         }
 
         this->context.cteBaseStructByKey.clear();
+        this->context.cteColumnNamesByTableKey.clear();
         for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
             const std::string cteKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+            if(!ctes[cteIndex].columnNames.empty()) {
+                this->context.cteColumnNamesByTableKey[cteKey] = ctes[cteIndex].columnNames;
+            }
             const AstNode* bodyAst = ctes[cteIndex].query.get();
             const SelectNode* anchorSelect = dynamic_cast<const SelectNode*>(bodyAst);
             if(!anchorSelect) {

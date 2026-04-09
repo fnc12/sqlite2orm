@@ -489,6 +489,82 @@ namespace sqlite2orm {
         } else if(auto* inNode = dynamic_cast<const InNode*>(&astNode)) {
             if(!inNode->tableName.empty()) {
                 auto operandResult = this->coordinator.generateNode(*inNode->operand);
+                const std::string normalizedTableKey = normalizeSqlIdentifier(inNode->tableName);
+                auto cteIt = this->context.activeCteTypedefByTableKey.find(normalizedTableKey);
+                if(cteIt != this->context.activeCteTypedefByTableKey.end()) {
+                    const std::string& cteTypedef = cteIt->second;
+                    auto colNamesIt = this->context.cteColumnNamesByTableKey.find(normalizedTableKey);
+                    std::string selectColumnCode;
+                    if(colNamesIt != this->context.cteColumnNamesByTableKey.end() &&
+                       !colNamesIt->second.empty()) {
+                        const auto& columnNames = colNamesIt->second;
+                        if(this->context.withCteCpp20Monikers()) {
+                            auto monikerIt =
+                                this->context.withCteCpp20MonikerVarByCteKey.find(normalizedTableKey);
+                            std::string monikerVar =
+                                (monikerIt != this->context.withCteCpp20MonikerVarByCteKey.end())
+                                    ? monikerIt->second
+                                    : cteTypedef;
+                            if(columnNames.size() == 1) {
+                                const std::string colKey =
+                                    normalizedTableKey + "|" + normalizeSqlIdentifier(columnNames[0]);
+                                auto colVarIt = this->context.withCteCpp20ColVarByPipeKey.find(colKey);
+                                if(colVarIt != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                                    selectColumnCode = monikerVar + "->*" + colVarIt->second;
+                                } else {
+                                    auto baseIt = this->context.cteBaseStructByKey.find(normalizedTableKey);
+                                    std::string baseStruct =
+                                        baseIt != this->context.cteBaseStructByKey.end()
+                                            ? baseIt->second
+                                            : this->context.structName;
+                                    selectColumnCode = monikerVar + "->*&" + baseStruct +
+                                                       "::" + toCppIdentifier(columnNames[0]);
+                                }
+                            } else {
+                                std::string cols;
+                                for(size_t columnIndex = 0; columnIndex < columnNames.size(); ++columnIndex) {
+                                    if(columnIndex > 0) cols += ", ";
+                                    const std::string colKey = normalizedTableKey + "|" +
+                                                               normalizeSqlIdentifier(columnNames[columnIndex]);
+                                    auto colVarIt = this->context.withCteCpp20ColVarByPipeKey.find(colKey);
+                                    if(colVarIt != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                                        cols += monikerVar + "->*" + colVarIt->second;
+                                    } else {
+                                        auto baseIt = this->context.cteBaseStructByKey.find(normalizedTableKey);
+                                        std::string baseStruct =
+                                            baseIt != this->context.cteBaseStructByKey.end()
+                                                ? baseIt->second
+                                                : this->context.structName;
+                                        cols += monikerVar + "->*&" + baseStruct +
+                                                "::" + toCppIdentifier(columnNames[columnIndex]);
+                                    }
+                                }
+                                selectColumnCode = "columns(" + cols + ")";
+                            }
+                        } else {
+                            if(columnNames.size() == 1) {
+                                selectColumnCode =
+                                    "column<" + cteTypedef + ">(" +
+                                    identifierToCppStringLiteral(columnNames[0]) + ")";
+                            } else {
+                                std::string cols;
+                                for(size_t columnIndex = 0; columnIndex < columnNames.size(); ++columnIndex) {
+                                    if(columnIndex > 0) cols += ", ";
+                                    cols += "column<" + cteTypedef + ">(" +
+                                            identifierToCppStringLiteral(columnNames[columnIndex]) + ")";
+                                }
+                                selectColumnCode = "columns(" + cols + ")";
+                            }
+                        }
+                    } else {
+                        selectColumnCode = "asterisk<" + cteTypedef + ">()";
+                    }
+                    std::string inFunc = inNode->negated ? "not_in" : "in";
+                    std::string code =
+                        inFunc + "(" + operandResult.code + ", select(" + selectColumnCode + "))";
+                    return CodeGenResult{std::move(code), std::move(operandResult.decisionPoints),
+                                         std::move(operandResult.warnings)};
+                }
                 operandResult.warnings.push_back("IN table-name is not supported in sqlite_orm codegen");
                 return CodeGenResult{"/* " + operandResult.code + " IN " + inNode->tableName + " */",
                                      std::move(operandResult.decisionPoints),

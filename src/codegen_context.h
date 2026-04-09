@@ -36,6 +36,8 @@ namespace sqlite2orm {
         int nextAliasLetter = 0;
         std::map<std::string, std::string> activeCteTypedefByTableKey;
         std::map<std::string, std::string> cteBaseStructByKey;
+        /** CTE key (normalized) → explicit SQL column names from the CTE definition. */
+        std::map<std::string, std::vector<std::string>> cteColumnNamesByTableKey;
         std::optional<std::string> implicitSingleSourceCteTypedef;
         std::optional<std::string> implicitCteFromTableKeyNorm;
         std::map<std::string, std::string> activeSelectColumnAliases;

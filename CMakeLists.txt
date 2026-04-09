@@ -32,9 +32,22 @@ endif()
 add_library(sqlite2orm_lib
     src/ast.cpp
     src/tokenizer.cpp
+    src/token_stream.cpp
     src/parser.cpp
+    src/parser_expression.cpp
+    src/parser_select.cpp
+    src/parser_dml.cpp
+    src/parser_ddl.cpp
     src/validator.cpp
     src/codegen.cpp
+    src/codegen_utils.cpp
+    src/codegen_context.cpp
+    src/codegen_expression.cpp
+    src/codegen_select.cpp
+    src/codegen_dml.cpp
+    src/codegen_ddl.cpp
+    src/codegen_with.cpp
+    src/codegen_pragma.cpp
     src/pragma_sqlite_orm.cpp
     src/process.cpp
     src/schema_reader.cpp

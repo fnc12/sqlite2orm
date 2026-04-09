@@ -5,10 +5,6 @@
 
 namespace codegen_test_helpers {
 
-    void setSuppressWithCteStyleDecisionPointForTests(sqlite2orm::CodeGenerator& generator, bool suppress) {
-        generator.suppressWithCteStyleDecisionPoint = suppress;
-    }
-
     std::string generate(std::string_view sql) {
         Tokenizer tokenizer;
         auto tokens = tokenizer.tokenize(sql);

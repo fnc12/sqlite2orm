@@ -1,0 +1,40 @@
+---
+description: C++ coding style conventions for the sqlite2orm project
+globs: "**/*.{cpp,h,hpp}"
+alwaysApply: false
+---
+
+# C++ Style Conventions
+
+## Naming
+
+- **Types/classes**: PascalCase, full words — `ExpressionCodeGenerator`, not `ExprCodeGen`
+- **Methods/variables**: camelCase, full words — `generator`, not `gen`; `expression`, not `expr`
+- **Constants**: `kCamelCase` — `kCommentCpp20ColumnAliases`
+- **No single-letter variables** — use descriptive names
+- **No abbreviations** in names unless universally understood (e.g. `id`, `url`)
+
+## Fields and `this->`
+
+- **No underscore suffixes** on member fields — write `generator`, not `generator_` or `gen_`
+- **Always use `this->`** to access member fields — `this->generator`, `this->columnTypes`
+
+```cpp
+// BAD
+CodeGenerator& gen_;
+this->gen_.generateNode(node);
+
+// GOOD
+CodeGenerator& generator;
+this->generator.generateNode(node);
+```
+
+## General
+
+- C++20, 4-space indentation
+- `#pragma once` for header guards
+- `struct` for data/POD types, `class` for types with logic
+- `operator==` via `= default` where possible
+- Everything inside `namespace sqlite2orm { }`, indented one level
+- Anonymous `namespace { }` for file-internal helpers (not `static`)
+- Include order: project headers (`<sqlite2orm/...>`), then STL

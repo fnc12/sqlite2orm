@@ -75,8 +75,8 @@ TEST_CASE("codegen: with_cte_style legacy_colalias") {
         "using namespace sqlite_orm::literals;\n"
         "using cnt = decltype(1_ctealias);\n"
         "constexpr auto cnt_x = colalias_a{};\n"
-        "auto rows = storage.with_recursive(cte<cnt>().as(union_all(select(1), select(c(column<cnt>(cnt_x)) + 1, "
-        "limit(999)))), select(column<cnt>(cnt_x)));";
+        "auto rows = storage.with_recursive(cte<cnt>(\"x\").as(union_all(select(1 >>= cnt_x), "
+        "select(c(column<cnt>(cnt_x)) + 1, limit(999)))), select(column<cnt>(cnt_x)));";
     REQUIRE(codeGenResult.code == expected);
 }
 
@@ -89,8 +89,8 @@ TEST_CASE("codegen: with_cte_style cpp20_monikers") {
         "using namespace sqlite_orm::literals;\n"
         "constexpr orm_cte_moniker auto cnt_cte = \"cnt\"_cte;\n"
         "constexpr orm_column_alias auto cnt__x = \"x\"_col;\n"
-        "auto rows = storage.with_recursive(cnt_cte().as(union_all(select(1), select(cnt_cte->*cnt__x + 1, "
-        "limit(999)))), select(cnt_cte->*cnt__x));";
+        "auto rows = storage.with_recursive(cnt_cte(cnt__x).as(union_all(select(1 >>= cnt__x), "
+        "select(cnt_cte->*cnt__x + 1, limit(999)))), select(cnt_cte->*cnt__x));";
     REQUIRE(codeGenResult.code == expected);
 }
 

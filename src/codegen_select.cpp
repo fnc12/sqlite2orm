@@ -236,6 +236,10 @@ namespace sqlite2orm {
                 if(legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + legacyIt->second + ")";
                 }
+                auto cpp20It = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
+                if(cpp20It != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                    return "column<" + cteIt->second + ">(" + cpp20It->second + ")";
+                }
                 if(this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
                     return "column<" + cteIt->second + ">(" +
                            identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) + ")";
@@ -744,6 +748,10 @@ namespace sqlite2orm {
                 auto legacyIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
                 if(legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + legacyIt->second + ")";
+                }
+                auto cpp20It = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
+                if(cpp20It != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                    return "column<" + cteIt->second + ">(" + cpp20It->second + ")";
                 }
                 if(this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
                     return "column<" + cteIt->second + ">(" +

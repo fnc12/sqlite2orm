@@ -145,6 +145,14 @@ namespace sqlite2orm {
             }
         }
 
+        if(withStyle == "cpp20_monikers") {
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string key = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                this->context.activeCteTypedefByTableKey[key] =
+                    this->context.withCteCpp20MonikerVarByCteKey[key];
+            }
+        }
+
         this->context.cteBaseStructByKey.clear();
         this->context.cteColumnNamesByTableKey.clear();
         for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
@@ -176,14 +184,27 @@ namespace sqlite2orm {
         for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
             const auto& cte = ctes[cteIndex];
             this->context.pendingAnchorCteBindings.clear();
-            if(!this->context.withCteIndexedColVarByPipeKey.empty() && !cte.columnNames.empty()) {
+            if(!cte.columnNames.empty()) {
                 const std::string cteKey = normalizeSqlIdentifier(cte.cteName);
                 for(const auto& colName : cte.columnNames) {
                     const std::string colKey = normalizeSqlIdentifier(colName);
                     const std::string pipe = cteKey + "|" + colKey;
-                    auto it = this->context.withCteIndexedColVarByPipeKey.find(pipe);
-                    this->context.pendingAnchorCteBindings.push_back(
-                        it != this->context.withCteIndexedColVarByPipeKey.end() ? it->second : "");
+                    std::string varName;
+                    auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
+                    if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                        varName = indexedIt->second;
+                    } else {
+                        auto legacyIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
+                        if(legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
+                            varName = legacyIt->second;
+                        } else {
+                            auto cpp20It = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
+                            if(cpp20It != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                                varName = cpp20It->second;
+                            }
+                        }
+                    }
+                    this->context.pendingAnchorCteBindings.push_back(std::move(varName));
                 }
             }
             auto part = this->coordinator.tryCodegenSelectLikeSubquery(*cte.query);
@@ -281,9 +302,33 @@ namespace sqlite2orm {
             std::string built;
             if(withStyle == "cpp20_monikers") {
                 const std::string normalizedCteTableKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
-                built = this->context.withCteCpp20MonikerVarByCteKey[normalizedCteTableKey] + "()";
+                built = this->context.withCteCpp20MonikerVarByCteKey[normalizedCteTableKey] + "(";
+                for(size_t cn = 0; cn < ctes[cteIndex].columnNames.size(); ++cn) {
+                    if(cn > 0) {
+                        built += ", ";
+                    }
+                    const std::string colK = normalizeSqlIdentifier(ctes[cteIndex].columnNames[cn]);
+                    const std::string pipe = normalizedCteTableKey + "|" + colK;
+                    auto colVarIt = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
+                    if(colVarIt != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                        built += colVarIt->second;
+                    }
+                }
+                built += ")";
             } else if(withStyle == "legacy_colalias") {
-                built = "cte<" + cteTypedefIds[cteIndex] + ">()";
+                built = "cte<" + cteTypedefIds[cteIndex] + ">";
+                if(!ctes[cteIndex].columnNames.empty()) {
+                    built += "(";
+                    for(size_t cn = 0; cn < ctes[cteIndex].columnNames.size(); ++cn) {
+                        if(cn > 0) {
+                            built += ", ";
+                        }
+                        built += identifierToCppStringLiteral(ctes[cteIndex].columnNames[cn]);
+                    }
+                    built += ")";
+                } else {
+                    built += "()";
+                }
             } else {
                 built = "cte<" + cteTypedefIds[cteIndex] + ">";
                 if(!ctes[cteIndex].columnNames.empty()) {

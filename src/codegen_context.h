@@ -48,6 +48,8 @@ namespace sqlite2orm {
         std::map<std::string, std::string> withCteLegacyColVarByPipeKey;
         std::map<std::string, std::string> withCteCpp20MonikerVarByCteKey;
         std::map<std::string, std::string> withCteCpp20ColVarByPipeKey;
+        std::map<std::string, std::string> withCteIndexedColVarByPipeKey;
+        std::vector<std::string> pendingAnchorCteBindings;
         std::vector<Cpp20TableAliasDeclaration> cpp20TableAliasDeclarations;
 
         bool suppressWithCteStyleDecisionPoint = false;

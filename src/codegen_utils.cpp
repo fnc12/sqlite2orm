@@ -25,14 +25,18 @@ namespace sqlite2orm {
     }
 
     std::string colaliasBuiltinSlot(size_t slotIndex) {
-        static constexpr std::array<std::string_view, 10> kColaliasSlots = {
-            "colalias_i{}", "colalias_j{}", "colalias_k{}", "colalias_l{}", "colalias_m{}",
-            "colalias_n{}", "colalias_o{}", "colalias_p{}", "colalias_q{}", "colalias_r{}",
+        static constexpr std::array<std::string_view, 9> kBuiltinSlots = {
+            "colalias_a{}", "colalias_b{}", "colalias_c{}", "colalias_d{}", "colalias_e{}",
+            "colalias_f{}", "colalias_g{}", "colalias_h{}", "colalias_i{}",
         };
-        if(slotIndex < kColaliasSlots.size()) {
-            return std::string(kColaliasSlots[slotIndex]);
+        if(slotIndex < kBuiltinSlots.size()) {
+            return std::string(kBuiltinSlots[slotIndex]);
         }
-        return "colalias_i{}";
+        char letter = static_cast<char>('a' + slotIndex);
+        if(letter > 'z') {
+            letter = 'a';
+        }
+        return "sqlite_orm::internal::column_alias<'" + std::string(1, letter) + "'>{}";
     }
 
     std::string stripIdentifierQuotes(std::string_view identifier) {

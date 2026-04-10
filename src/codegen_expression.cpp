@@ -100,9 +100,26 @@ namespace sqlite2orm {
                         return CodeGenResult{std::move(cteCol), {}};
                     }
                 }
+                {
+                    auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
+                    if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                        std::string cteCol = "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" +
+                                             indexedIt->second + ")";
+                        return CodeGenResult{std::move(cteCol), {}};
+                    }
+                }
             }
             if(this->context.implicitSingleSourceCteTypedef) {
                 if(this->context.implicitCteFromTableKeyNorm) {
+                    const std::string fallbackPipe =
+                        *this->context.implicitCteFromTableKeyNorm + "|" +
+                        normalizeSqlIdentifier(columnRef->columnName);
+                    auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(fallbackPipe);
+                    if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                        std::string cteCol = "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" +
+                                             indexedIt->second + ")";
+                        return CodeGenResult{std::move(cteCol), {}};
+                    }
                     if(this->context.isExplicitCteColumn(*this->context.implicitCteFromTableKeyNorm,
                                                          columnRef->columnName)) {
                         std::string colLit =
@@ -174,6 +191,13 @@ namespace sqlite2orm {
                     auto colIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
                     if(colIt != this->context.withCteLegacyColVarByPipeKey.end()) {
                         return CodeGenResult{"column<" + cteIt->second + ">(" + colIt->second + ")", {},
+                                             std::move(qualWarnings)};
+                    }
+                }
+                {
+                    auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
+                    if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                        return CodeGenResult{"column<" + cteIt->second + ">(" + indexedIt->second + ")", {},
                                              std::move(qualWarnings)};
                     }
                 }

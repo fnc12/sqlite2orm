@@ -226,6 +226,16 @@ namespace sqlite2orm {
             auto tableKey = normalizeSqlIdentifier(tableName);
             auto cteIt = this->context.activeCteTypedefByTableKey.find(tableKey);
             if(cteIt != this->context.activeCteTypedefByTableKey.end()) {
+                std::string colKey = normalizeSqlIdentifier(colSql);
+                std::string pipe = tableKey + "|" + colKey;
+                auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
+                if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                    return "column<" + cteIt->second + ">(" + indexedIt->second + ")";
+                }
+                auto legacyIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
+                if(legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
+                    return "column<" + cteIt->second + ">(" + legacyIt->second + ")";
+                }
                 if(this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
                     return "column<" + cteIt->second + ">(" +
                            identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) + ")";
@@ -666,6 +676,14 @@ namespace sqlite2orm {
             return result.code;
         };
 
+        auto colExprWithBinding = [&](size_t colIndex, const std::string& expr) -> std::string {
+            if(colIndex < this->context.pendingAnchorCteBindings.size() &&
+               !this->context.pendingAnchorCteBindings[colIndex].empty()) {
+                return expr + " >>= " + this->context.pendingAnchorCteBindings[colIndex];
+            }
+            return expr;
+        };
+
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
         std::string columnPart;
         if(isStar) {
@@ -680,26 +698,30 @@ namespace sqlite2orm {
         } else {
             if(selectNode.distinct) {
                 if(selectNode.columns.size() == 1) {
-                    columnPart = "distinct(" + expressionCode(*selectNode.columns.at(0).expression) + ")";
+                    columnPart = "distinct(" +
+                                 colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression)) + ")";
                 } else {
                     columnPart = "distinct(columns(";
                     for(size_t i = 0; i < selectNode.columns.size(); ++i) {
                         if(i > 0) columnPart += ", ";
-                        columnPart += expressionCode(*selectNode.columns.at(i).expression);
+                        columnPart +=
+                            colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
                     }
                     columnPart += "))";
                 }
             } else if(selectNode.columns.size() == 1) {
-                columnPart = expressionCode(*selectNode.columns.at(0).expression);
+                columnPart = colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression));
             } else {
                 columnPart = "columns(";
                 for(size_t i = 0; i < selectNode.columns.size(); ++i) {
                     if(i > 0) columnPart += ", ";
-                    columnPart += expressionCode(*selectNode.columns.at(i).expression);
+                    columnPart +=
+                        colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
                 }
                 columnPart += ")";
             }
         }
+        this->context.pendingAnchorCteBindings.clear();
 
         auto resolveJoinType = [&](const FromTableClause& ft) -> std::string {
             std::string key = ft.alias ? *ft.alias : ft.tableName;
@@ -713,6 +735,16 @@ namespace sqlite2orm {
             auto tableKey = normalizeSqlIdentifier(tableName);
             auto cteIt = this->context.activeCteTypedefByTableKey.find(tableKey);
             if(cteIt != this->context.activeCteTypedefByTableKey.end()) {
+                std::string colKey = normalizeSqlIdentifier(colSql);
+                std::string pipe = tableKey + "|" + colKey;
+                auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
+                if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                    return "column<" + cteIt->second + ">(" + indexedIt->second + ")";
+                }
+                auto legacyIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
+                if(legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
+                    return "column<" + cteIt->second + ">(" + legacyIt->second + ")";
+                }
                 if(this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
                     return "column<" + cteIt->second + ">(" +
                            identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) + ")";

@@ -23,6 +23,8 @@ namespace sqlite2orm {
                 context->withCteLegacyColVarByPipeKey.clear();
                 context->withCteCpp20MonikerVarByCteKey.clear();
                 context->withCteCpp20ColVarByPipeKey.clear();
+                context->withCteIndexedColVarByPipeKey.clear();
+                context->pendingAnchorCteBindings.clear();
                 context->cpp20TableAliasDeclarations.clear();
             }
         } clearGuard{&this->context};
@@ -85,6 +87,8 @@ namespace sqlite2orm {
         this->context.withCteLegacyColVarByPipeKey.clear();
         this->context.withCteCpp20MonikerVarByCteKey.clear();
         this->context.withCteCpp20ColVarByPipeKey.clear();
+        this->context.withCteIndexedColVarByPipeKey.clear();
+        this->context.pendingAnchorCteBindings.clear();
 
         if(withStyle == "legacy_colalias") {
             for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
@@ -126,6 +130,21 @@ namespace sqlite2orm {
             }
         }
 
+        if(withStyle == "indexed_typedef") {
+            size_t earlyColaliasSlot = 0;
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string cteKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                for(size_t colIdx = 0; colIdx < ctes[cteIndex].columnNames.size(); ++colIdx) {
+                    const std::string colKey = normalizeSqlIdentifier(ctes[cteIndex].columnNames[colIdx]);
+                    const std::string pipe = cteKey + "|" + colKey;
+                    const std::string varName = toCppIdentifier(ctes[cteIndex].cteName) + "__" +
+                                                toCppIdentifier(ctes[cteIndex].columnNames[colIdx]);
+                    this->context.withCteIndexedColVarByPipeKey[pipe] = varName;
+                    ++earlyColaliasSlot;
+                }
+            }
+        }
+
         this->context.cteBaseStructByKey.clear();
         this->context.cteColumnNamesByTableKey.clear();
         for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
@@ -154,8 +173,21 @@ namespace sqlite2orm {
 
         std::vector<std::string> innerCodes;
         innerCodes.reserve(ctes.size());
-        for(const auto& cte : ctes) {
+        for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+            const auto& cte = ctes[cteIndex];
+            this->context.pendingAnchorCteBindings.clear();
+            if(!this->context.withCteIndexedColVarByPipeKey.empty() && !cte.columnNames.empty()) {
+                const std::string cteKey = normalizeSqlIdentifier(cte.cteName);
+                for(const auto& colName : cte.columnNames) {
+                    const std::string colKey = normalizeSqlIdentifier(colName);
+                    const std::string pipe = cteKey + "|" + colKey;
+                    auto it = this->context.withCteIndexedColVarByPipeKey.find(pipe);
+                    this->context.pendingAnchorCteBindings.push_back(
+                        it != this->context.withCteIndexedColVarByPipeKey.end() ? it->second : "");
+                }
+            }
             auto part = this->coordinator.tryCodegenSelectLikeSubquery(*cte.query);
+            this->context.pendingAnchorCteBindings.clear();
             allDecisionPoints.insert(allDecisionPoints.end(),
                 std::make_move_iterator(part.decisionPoints.begin()),
                 std::make_move_iterator(part.decisionPoints.end()));
@@ -229,6 +261,19 @@ namespace sqlite2orm {
             for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
                 prelude += "using " + cteTypedefIds[cteIndex] + " = decltype(" + std::to_string(cteIndex + 1) +
                            "_ctealias);\n";
+            }
+            size_t globalColaliasSlot = 0;
+            for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
+                const std::string cteKey = normalizeSqlIdentifier(ctes[cteIndex].cteName);
+                for(size_t colIdx = 0; colIdx < ctes[cteIndex].columnNames.size(); ++colIdx) {
+                    const std::string colKey = normalizeSqlIdentifier(ctes[cteIndex].columnNames[colIdx]);
+                    const std::string pipe = cteKey + "|" + colKey;
+                    auto it = this->context.withCteIndexedColVarByPipeKey.find(pipe);
+                    if(it != this->context.withCteIndexedColVarByPipeKey.end()) {
+                        prelude += "constexpr auto " + it->second + " = " +
+                                   colaliasBuiltinSlot(globalColaliasSlot++) + ";\n";
+                    }
+                }
             }
         }
 
@@ -329,7 +374,7 @@ namespace sqlite2orm {
                 if(hasColumnList) {
                     alts.push_back(
                         Alternative{"legacy_colalias", altCode("legacy_colalias"),
-                                    "using typedef from SQL CTE name + colalias_i… + column<T>(var)"});
+                                    "using typedef from SQL CTE name + colalias_a… + column<T>(var)"});
                 }
                 alts.push_back(Alternative{
                     "cpp20_monikers", altCode("cpp20_monikers"),

@@ -21,8 +21,9 @@ TEST_CASE("codegen: WITH RECURSIVE … UNION ALL arm with LIMIT still uses with_
                  "cnt;") ==
         "using namespace sqlite_orm::literals;\n"
         "using cte_0 = decltype(1_ctealias);\n"
-        "auto rows = storage.with_recursive(cte<cte_0>(\"x\").as(union_all(select(1), "
-        "select(c(column<cte_0>(\"x\")) + 1, limit(1000000)))), column<cte_0>(\"x\"));");
+        "constexpr auto cnt__x = colalias_a{};\n"
+        "auto rows = storage.with_recursive(cte<cte_0>(\"x\").as(union_all(select(1 >>= cnt__x), "
+        "select(c(column<cte_0>(cnt__x)) + 1, limit(1000000)))), column<cte_0>(cnt__x));");
 }
 
 TEST_CASE("codegen: WITH single-CTE SELECT does not emit synthetic struct Cnt in prefix") {
@@ -54,7 +55,7 @@ TEST_CASE("codegen: WITH single CTE exposes with_cte_style decision point") {
             {Alternative{"indexed_typedef", codeIndexed,
                          "using cte_N + column<cte_N>(\"col\") (default sqlite2orm style)"},
              Alternative{"legacy_colalias", codeLegacy,
-                         "using typedef from SQL CTE name + colalias_i… + column<T>(var)"},
+                         "using typedef from SQL CTE name + colalias_a… + column<T>(var)"},
              Alternative{"cpp20_monikers", codeCpp20,
                          "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"}}}},
         {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
@@ -73,7 +74,7 @@ TEST_CASE("codegen: with_cte_style legacy_colalias") {
     const std::string expected =
         "using namespace sqlite_orm::literals;\n"
         "using cnt = decltype(1_ctealias);\n"
-        "constexpr auto cnt_x = colalias_i{};\n"
+        "constexpr auto cnt_x = colalias_a{};\n"
         "auto rows = storage.with_recursive(cte<cnt>().as(union_all(select(1), select(c(column<cnt>(cnt_x)) + 1, "
         "limit(999)))), column<cnt>(cnt_x));";
     REQUIRE(codeGenResult.code == expected);
@@ -170,7 +171,7 @@ TEST_CASE("codegen: WITH single-quoted table names in FROM and column refs") {
         "SELECT AVG('org'.\"height\") FROM 'org' "
         "WHERE(\"name\" IN(SELECT 'cte_1'.\"n\" FROM 'cte_1'))");
     REQUIRE(result.find("storage.with") != std::string::npos);
-    REQUIRE(result.find("column<cte_0>(\"n\")") != std::string::npos);
+    REQUIRE(result.find("column<cte_0>(cte_1__n)") != std::string::npos);
 }
 
 TEST_CASE("codegen: WITH RECURSIVE multi-CTE with JOIN USING between CTEs") {
@@ -188,40 +189,47 @@ TEST_CASE("codegen: WITH RECURSIVE multi-CTE with JOIN USING between CTEs") {
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
             "using cte_1 = decltype(2_ctealias);\n"
+            "constexpr auto parent_of__name = colalias_a{};\n"
+            "constexpr auto parent_of__parent = colalias_b{};\n"
+            "constexpr auto ancestor_of_alice__name = colalias_c{};\n"
             "auto rows = storage.with_recursive("
             "std::make_tuple("
             "cte<cte_0>(\"name\", \"parent\").as("
             "union_("
-            "select(columns(&Family::name, &Family::mom)), "
+            "select(columns(&Family::name >>= parent_of__name, &Family::mom >>= parent_of__parent)), "
             "select(columns(&Family::name, &Family::dad)))), "
             "cte<cte_1>(\"name\").as("
             "union_all("
-            "select(column<cte_0>(\"parent\"), where(c(column<cte_0>(\"name\")) == \"Alice\")), "
-            "select(column<cte_0>(\"parent\"), join<cte_1>(using_(column<cte_0>(\"name\"))))))), "
+            "select(column<cte_0>(parent_of__parent) >>= ancestor_of_alice__name, "
+            "where(c(column<cte_0>(parent_of__name)) == \"Alice\")), "
+            "select(column<cte_0>(parent_of__parent), "
+            "join<cte_1>(using_(column<cte_0>(parent_of__name))))))), "
             "&Family::name, "
-            "where(c(column<cte_1>(\"name\")) == &Family::name and is_null(&Family::died)), "
+            "where(c(column<cte_1>(ancestor_of_alice__name)) == &Family::name and is_null(&Family::died)), "
             "order_by(&Family::born));");
 }
 
-TEST_CASE("codegen: CTE explicit column resolved as string literal, not member pointer") {
+TEST_CASE("codegen: CTE explicit column resolved as colalias, not string literal") {
     REQUIRE(generate("WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt LIMIT 1000000) "
                      "SELECT x FROM cnt;") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
+            "constexpr auto cnt__x = colalias_a{};\n"
             "auto rows = storage.with_recursive("
             "cte<cte_0>(\"x\").as("
-            "union_all(select(1), select(c(column<cte_0>(\"x\")) + 1, limit(1000000)))), "
-            "column<cte_0>(\"x\"));");
+            "union_all(select(1 >>= cnt__x), select(c(column<cte_0>(cnt__x)) + 1, limit(1000000)))), "
+            "column<cte_0>(cnt__x));");
 }
 
 TEST_CASE("codegen: outer SELECT with CTE+real table resolves bare columns to real table") {
     REQUIRE(generate("WITH c(val) AS (SELECT 1) SELECT name FROM c, users WHERE c.val = id;") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
+            "constexpr auto c__val = colalias_a{};\n"
             "auto rows = storage.with("
-            "cte<cte_0>(\"val\").as(select(1)), "
+            "cte<cte_0>(\"val\").as(select(1 >>= c__val)), "
             "&Users::name, "
-            "where(c(column<cte_0>(\"val\")) == &Users::id));");
+            "where(c(column<cte_0>(c__val)) == &Users::id));");
 }
 
 TEST_CASE("codegen: SELECT from single-quoted table is same as double-quoted") {

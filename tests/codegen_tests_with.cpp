@@ -12,7 +12,7 @@ TEST_CASE("codegen: WITH … SELECT single CTE FROM uses column<cte_0> for bare 
     REQUIRE(generate("WITH c AS (SELECT 1 AS a) SELECT a FROM c;") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
-            "auto rows = storage.with(cte<cte_0>().as(select(1)), column<cte_0>(\"a\"));");
+            "auto rows = storage.with(cte<cte_0>().as(select(1)), select(column<cte_0>(\"a\")));");
 }
 
 TEST_CASE("codegen: WITH RECURSIVE … UNION ALL arm with LIMIT still uses with_recursive") {
@@ -23,7 +23,7 @@ TEST_CASE("codegen: WITH RECURSIVE … UNION ALL arm with LIMIT still uses with_
         "using cte_0 = decltype(1_ctealias);\n"
         "constexpr auto cnt__x = colalias_a{};\n"
         "auto rows = storage.with_recursive(cte<cte_0>(\"x\").as(union_all(select(1 >>= cnt__x), "
-        "select(c(column<cte_0>(cnt__x)) + 1, limit(1000000)))), column<cte_0>(cnt__x));");
+        "select(c(column<cte_0>(cnt__x)) + 1, limit(1000000)))), select(column<cte_0>(cnt__x)));");
 }
 
 TEST_CASE("codegen: WITH single-CTE SELECT does not emit synthetic struct Cnt in prefix") {
@@ -76,7 +76,7 @@ TEST_CASE("codegen: with_cte_style legacy_colalias") {
         "using cnt = decltype(1_ctealias);\n"
         "constexpr auto cnt_x = colalias_a{};\n"
         "auto rows = storage.with_recursive(cte<cnt>().as(union_all(select(1), select(c(column<cnt>(cnt_x)) + 1, "
-        "limit(999)))), column<cnt>(cnt_x));";
+        "limit(999)))), select(column<cnt>(cnt_x)));";
     REQUIRE(codeGenResult.code == expected);
 }
 
@@ -90,7 +90,7 @@ TEST_CASE("codegen: with_cte_style cpp20_monikers") {
         "constexpr orm_cte_moniker auto cnt_cte = \"cnt\"_cte;\n"
         "constexpr orm_column_alias auto cnt__x = \"x\"_col;\n"
         "auto rows = storage.with_recursive(cnt_cte().as(union_all(select(1), select(cnt_cte->*cnt__x + 1, "
-        "limit(999)))), cnt_cte->*cnt__x);";
+        "limit(999)))), select(cnt_cte->*cnt__x));";
     REQUIRE(codeGenResult.code == expected);
 }
 
@@ -108,7 +108,7 @@ TEST_CASE("codegen: WITH RECURSIVE comma-join CTE skips cross_join and uses alia
             "cte<cte_0>().as(union_all("
             "select(asterisk<Org>(), where(c(&Org::name) == \"Fred\")), "
             "select(asterisk<alias_a<Org>>(), where(alias_column<alias_a<Org>>(&Org::name) == column<cte_0>(&Org::boss))))), "
-            "column<cte_0>(&Org::name));");
+            "select(column<cte_0>(&Org::name)));");
 }
 
 TEST_CASE("codegen: WITH CTE column refs use member pointers when base struct known") {
@@ -119,7 +119,7 @@ TEST_CASE("codegen: WITH CTE column refs use member pointers when base struct kn
             "using cte_0 = decltype(1_ctealias);\n"
             "auto rows = storage.with("
             "cte<cte_0>().as(select(columns(&Users::name, &Users::id), where(c(&Users::id) > 0))), "
-            "column<cte_0>(&Users::name));");
+            "select(column<cte_0>(&Users::name)));");
 }
 
 TEST_CASE("codegen: WITH RECURSIVE cpp20_monikers with table alias and member pointers") {
@@ -140,7 +140,7 @@ TEST_CASE("codegen: WITH RECURSIVE cpp20_monikers with table alias and member po
             "chain_cte().as(union_all("
             "select(asterisk<Org>(), where(c(&Org::name) == \"Fred\")), "
             "select(asterisk<parent>(), where(parent->*&Org::name == chain_cte->*&Org::boss)))), "
-            "chain_cte->*&Org::name);");
+            "select(chain_cte->*&Org::name));");
 }
 
 TEST_CASE("codegen: WITH no column list still offers cpp20_monikers as alternative") {
@@ -204,9 +204,9 @@ TEST_CASE("codegen: WITH RECURSIVE multi-CTE with JOIN USING between CTEs") {
             "where(c(column<cte_0>(parent_of__name)) == \"Alice\")), "
             "select(column<cte_0>(parent_of__parent), "
             "join<cte_1>(using_(column<cte_0>(parent_of__name))))))), "
-            "&Family::name, "
+            "select(&Family::name, "
             "where(c(column<cte_1>(ancestor_of_alice__name)) == &Family::name and is_null(&Family::died)), "
-            "order_by(&Family::born));");
+            "order_by(&Family::born)));");
 }
 
 TEST_CASE("codegen: CTE explicit column resolved as colalias, not string literal") {
@@ -218,7 +218,7 @@ TEST_CASE("codegen: CTE explicit column resolved as colalias, not string literal
             "auto rows = storage.with_recursive("
             "cte<cte_0>(\"x\").as("
             "union_all(select(1 >>= cnt__x), select(c(column<cte_0>(cnt__x)) + 1, limit(1000000)))), "
-            "column<cte_0>(cnt__x));");
+            "select(column<cte_0>(cnt__x)));");
 }
 
 TEST_CASE("codegen: outer SELECT with CTE+real table resolves bare columns to real table") {
@@ -228,8 +228,8 @@ TEST_CASE("codegen: outer SELECT with CTE+real table resolves bare columns to re
             "constexpr auto c__val = colalias_a{};\n"
             "auto rows = storage.with("
             "cte<cte_0>(\"val\").as(select(1 >>= c__val)), "
-            "&Users::name, "
-            "where(c(column<cte_0>(c__val)) == &Users::id));");
+            "select(&Users::name, "
+            "where(c(column<cte_0>(c__val)) == &Users::id)));");
 }
 
 TEST_CASE("codegen: SELECT from single-quoted table is same as double-quoted") {

@@ -565,9 +565,9 @@ namespace sqlite2orm {
         std::vector<std::string> subWarnings;
         std::vector<DecisionPoint> subDecisionPoints;
 
-        if(selectNode.groupBy || !selectNode.orderBy.empty()) {
+        if(selectNode.groupBy) {
             subWarnings.push_back(
-                "GROUP BY / ORDER BY in subquery are not yet mapped to sqlite_orm select(...)");
+                "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
         }
         if(selectNode.offsetValue >= 0 && selectNode.limitValue < 0) {
@@ -844,6 +844,46 @@ namespace sqlite2orm {
             if(!windowArgs.empty()) {
                 tailParts.push_back("window(" + identifierToCppStringLiteral(namedWindow.name) + ", " +
                                     windowArgs + ")");
+            }
+        }
+
+        if(!selectNode.orderBy.empty()) {
+            auto formatSubOrderTerm = [&](const OrderByTerm& term) -> std::string {
+                std::string orderCode = "order_by(" + expressionCode(*term.expression) + ")";
+                if(term.direction == SortDirection::asc) {
+                    orderCode += ".asc()";
+                } else if(term.direction == SortDirection::desc) {
+                    orderCode += ".desc()";
+                }
+                if(!term.collation.empty()) {
+                    std::string collLower = toLowerAscii(term.collation);
+                    if(collLower == "nocase") {
+                        orderCode += ".collate_nocase()";
+                    } else if(collLower == "binary") {
+                        orderCode += ".collate_binary()";
+                    } else if(collLower == "rtrim") {
+                        orderCode += ".collate_rtrim()";
+                    } else {
+                        orderCode += ".collate(" + identifierToCppStringLiteral(term.collation) + ")";
+                    }
+                }
+                if(term.nulls == NullsOrdering::first) {
+                    orderCode += ".nulls_first()";
+                } else if(term.nulls == NullsOrdering::last) {
+                    orderCode += ".nulls_last()";
+                }
+                return orderCode;
+            };
+            if(selectNode.orderBy.size() == 1) {
+                tailParts.push_back(formatSubOrderTerm(selectNode.orderBy.at(0)));
+            } else {
+                std::string multiCode = "multi_order_by(";
+                for(size_t i = 0; i < selectNode.orderBy.size(); ++i) {
+                    if(i > 0) multiCode += ", ";
+                    multiCode += formatSubOrderTerm(selectNode.orderBy.at(i));
+                }
+                multiCode += ")";
+                tailParts.push_back(multiCode);
             }
         }
 

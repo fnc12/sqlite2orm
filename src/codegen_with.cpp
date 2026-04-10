@@ -355,7 +355,7 @@ namespace sqlite2orm {
             }
 
             std::string code = prelude + "auto rows = storage." + std::string(withApi) + "(" + cteArgument +
-                               ", " + *outerArgOpt + ");";
+                               ", select(" + *outerArgOpt + "));";
 
             if(!this->context.suppressWithCteStyleDecisionPoint && ctes.size() == 1u) {
                 const bool hasColumnList = !ctes[0].columnNames.empty();

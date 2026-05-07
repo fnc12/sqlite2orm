@@ -822,12 +822,7 @@ namespace sqlite2orm {
             }
             if(funcCall->over) {
                 std::string overArgs = this->codegenOverClause(*funcCall->over, decisionPoints, funcWarnings);
-                if(overArgs.empty()) {
-                    funcWarnings.push_back(
-                        "OVER clause could not be mapped to sqlite_orm (.over(...)); emitted bare function only");
-                } else {
-                    baseCode += ".over(" + overArgs + ")";
-                }
+                baseCode += ".over(" + overArgs + ")";
             }
             return CodeGenResult{std::move(baseCode), std::move(decisionPoints), std::move(funcWarnings)};
         }

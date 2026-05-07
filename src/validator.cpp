@@ -139,12 +139,7 @@ namespace sqlite2orm {
                 errors.insert(errors.end(), ee.begin(), ee.end());
             }
         } else if(auto* bindParam = dynamic_cast<const BindParameterNode*>(&astNode)) {
-            errors.push_back(ValidationError{
-                "bind parameter " + std::string(bindParam->value) +
-                " is not supported — use C++ variables instead",
-                bindParam->location,
-                "BindParameterNode"
-            });
+            (void)bindParam;
         } else if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
             auto operandErrors = validate(*collateNode->operand);
             errors.insert(errors.end(), operandErrors.begin(), operandErrors.end());

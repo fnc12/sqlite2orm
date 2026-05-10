@@ -153,8 +153,8 @@ namespace sqlite2orm {
         std::vector<OrderByTerm> orderBy;
         std::optional<GroupByClause> groupBy;
         std::vector<NamedWindowDefinition> namedWindows;
-        int limitValue = -1;
-        int offsetValue = -1;
+        AstNodePointer limitValue;
+        AstNodePointer offsetValue;
 
         SelectNode(SourceLocation location) : AstNode(location) {}
 
@@ -164,9 +164,10 @@ namespace sqlite2orm {
             if(this->distinct != o->distinct || this->selectAll != o->selectAll ||
                this->fromClause != o->fromClause || this->columns != o->columns ||
                this->orderBy != o->orderBy || this->groupBy != o->groupBy ||
-               this->namedWindows != o->namedWindows || this->limitValue != o->limitValue ||
-               this->offsetValue != o->offsetValue)
+               this->namedWindows != o->namedWindows)
                 return false;
+            if(!astNodesEqual(this->limitValue, o->limitValue)) return false;
+            if(!astNodesEqual(this->offsetValue, o->offsetValue)) return false;
             if(!this->whereClause && !o->whereClause) return true;
             if(!this->whereClause || !o->whereClause) return false;
             return *this->whereClause == *o->whereClause;

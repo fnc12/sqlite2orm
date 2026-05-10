@@ -282,7 +282,7 @@ TEST_CASE("parser: SELECT with LIMIT") {
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
     expected.fromClause = fromOne("users");
-    expected.limitValue = 10;
+    expected.limitValue = makeNode<IntegerLiteralNode>("10");
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -292,8 +292,8 @@ TEST_CASE("parser: SELECT with LIMIT OFFSET") {
     SelectNode expected({});
     expected.columns = {SelectColumn{nullptr, ""}};
     expected.fromClause = fromOne("users");
-    expected.limitValue = 10;
-    expected.offsetValue = 20;
+    expected.limitValue = makeNode<IntegerLiteralNode>("10");
+    expected.offsetValue = makeNode<IntegerLiteralNode>("20");
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -376,8 +376,8 @@ TEST_CASE("parser: SELECT with all clauses") {
         BinaryOperator::greaterThan, makeNode<ColumnRefNode>("age"), makeNode<IntegerLiteralNode>("18"));
     expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}, nullptr};
     expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::asc}};
-    expected.limitValue = 10;
-    expected.offsetValue = 5;
+    expected.limitValue = makeNode<IntegerLiteralNode>("10");
+    expected.offsetValue = makeNode<IntegerLiteralNode>("5");
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 

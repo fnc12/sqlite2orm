@@ -390,10 +390,12 @@ namespace sqlite2orm {
             }
         }
 
-        if(selectNode.limitValue >= 0) {
-            std::string limitCode = "limit(" + std::to_string(selectNode.limitValue);
-            if(selectNode.offsetValue >= 0) {
-                limitCode += ", offset(" + std::to_string(selectNode.offsetValue) + ")";
+        if(selectNode.limitValue) {
+            auto limitResult = this->coordinator.generateNode(*selectNode.limitValue);
+            std::string limitCode = "limit(" + limitResult.code;
+            if(selectNode.offsetValue) {
+                auto offsetResult = this->coordinator.generateNode(*selectNode.offsetValue);
+                limitCode += ", offset(" + offsetResult.code + ")";
             }
             limitCode += ")";
             appendClause(limitCode);
@@ -574,7 +576,7 @@ namespace sqlite2orm {
                 "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
         }
-        if(selectNode.offsetValue >= 0 && selectNode.limitValue < 0) {
+        if(selectNode.offsetValue && !selectNode.limitValue) {
             subWarnings.push_back(
                 "OFFSET without LIMIT in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
@@ -900,10 +902,12 @@ namespace sqlite2orm {
             code += ", ";
             code += part;
         }
-        if(selectNode.limitValue >= 0) {
-            code += ", limit(" + std::to_string(selectNode.limitValue);
-            if(selectNode.offsetValue >= 0) {
-                code += ", offset(" + std::to_string(selectNode.offsetValue) + ")";
+        if(selectNode.limitValue) {
+            auto limitResult = this->coordinator.generateNode(*selectNode.limitValue);
+            code += ", limit(" + limitResult.code;
+            if(selectNode.offsetValue) {
+                auto offsetResult = this->coordinator.generateNode(*selectNode.offsetValue);
+                code += ", offset(" + offsetResult.code + ")";
             }
             code += ")";
         }

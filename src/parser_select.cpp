@@ -115,14 +115,12 @@ namespace sqlite2orm {
         }
 
         if(match(TokenType::kwLimit)) {
-            if(!atEnd() && current().type == TokenType::integerLiteral) {
-                node->limitValue = std::stoi(std::string(current().value));
-                advanceToken();
+            if(!atEnd() && (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
+                node->limitValue = this->parser.parsePrimary();
             }
             if(match(TokenType::kwOffset)) {
-                if(!atEnd() && current().type == TokenType::integerLiteral) {
-                    node->offsetValue = std::stoi(std::string(current().value));
-                    advanceToken();
+                if(!atEnd() && (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
+                    node->offsetValue = this->parser.parsePrimary();
                 }
             }
         }

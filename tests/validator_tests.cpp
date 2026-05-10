@@ -240,11 +240,8 @@ TEST_CASE("validator: table-function in FROM gives validation error") {
              {1, 1}, "SelectNode"}});
 }
 
-TEST_CASE("validator: bind parameter gives validation error") {
-    REQUIRE(validate("SELECT ? FROM t") ==
-        std::vector<ValidationError>{
-            {"bind parameter ? is not supported — use C++ variables instead",
-             {1, 8}, "BindParameterNode"}});
+TEST_CASE("validator: bind parameter is allowed") {
+    REQUIRE(validate("SELECT ? FROM t").empty());
 }
 
 TEST_CASE("validator: IN table-name gives validation error") {

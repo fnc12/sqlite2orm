@@ -488,5 +488,11 @@ TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
                                            "support)"}}}},
                 {},
                 {},
-                {std::string(kExpectedCpp20ColumnAliasComment)}});
+                 {std::string(kExpectedCpp20ColumnAliasComment)}});
+}
+
+TEST_CASE("codegen: SELECT with window function OVER(), bind params in WHERE and LIMIT") {
+    auto result = generate(
+        "SELECT id, firstName, lastName, count(id) OVER() FROM user_profile WHERE id > :refId ORDER BY id LIMIT :resultperpage;");
+    REQUIRE(result == "auto rows = storage.select(columns(&UserProfile::id, &UserProfile::firstName, &UserProfile::lastName, count(&UserProfile::id).over()), where(c(&UserProfile::id) > refId), order_by(&UserProfile::id), limit(resultperpage));");
 }

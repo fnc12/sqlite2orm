@@ -32,14 +32,12 @@ TEST_CASE("codegen: CREATE VIEW - standalone, types fall back to name heuristics
 
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
-    bool hasReflectionComment = false;
-    for(const std::string& comment : result.comments) {
-        if(comment.find("C++26") != std::string::npos &&
-           comment.find("make_view") != std::string::npos) {
-            hasReflectionComment = true;
-        }
-    }
-    REQUIRE(hasReflectionComment);
+    REQUIRE(result.comments ==
+        std::vector<std::string>{
+            "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
+            "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
+            "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
+            "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
 }
 
 TEST_CASE("codegen: CREATE VIEW - field types from CREATE TABLE in same batch") {
@@ -115,12 +113,16 @@ TEST_CASE("codegen: CREATE VIEW - aggregate functions infer int/double") {
 
 TEST_CASE("codegen: CREATE VIEW - schema-qualified name warns and uses bare name") {
     auto result = generateFull("CREATE VIEW main.v AS SELECT 1;");
-    REQUIRE(result.code.find("[[= \"v\"_orm_name]]") != std::string::npos);
-    bool hasSchemaWarning = false;
-    for(const std::string& warning : result.warnings) {
-        if(warning.find("schema-qualified view name") != std::string::npos) {
-            hasSchemaWarning = true;
-        }
-    }
-    REQUIRE(hasSchemaWarning);
+    REQUIRE(result.code ==
+        "struct [[= \"v\"_orm_name]] V {\n"
+        "    int64_t column_1 = 0;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_view<V>(select(1)));");
+    REQUIRE(result.warnings ==
+        std::vector<std::string>{
+            "schema-qualified view name is not represented in sqlite_orm; generated code uses unqualified "
+            "view name only",
+            "view v: SELECT column 1 has no name; using synthesized field name `column_1`"});
 }

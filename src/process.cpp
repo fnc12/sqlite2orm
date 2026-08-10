@@ -103,24 +103,67 @@ namespace sqlite2orm {
     }
 
     std::string joinGeneratedCode(const std::vector<ProcessSqlResult>& results) {
-        std::string out;
-        bool hadDdl = false;
-        bool dmlSeparatorAdded = false;
+        // Standalone DDL codegen wraps each statement in its own `auto storage = ...`; a batch
+        // describes ONE database, so merge every storage argument into a single make_storage().
+        static constexpr std::string_view storageMarker = "\nauto storage = make_storage(\"\",\n    ";
+
+        std::vector<std::string> structBlocks;
+        std::vector<std::string> storageArguments;
+        std::vector<std::string> otherStatements;
         for(const auto& result : results) {
-            if(result.codegen.code.empty()) {
+            const std::string& code = result.codegen.code;
+            if(code.empty()) {
                 continue;
             }
-            bool isDml = result.codegen.code.starts_with("storage.");
-            if(isDml && hadDdl && !dmlSeparatorAdded) {
-                out += '\n';
-                dmlSeparatorAdded = true;
+            const size_t markerPosition = code.find(storageMarker);
+            if(markerPosition != std::string::npos && code.ends_with(");")) {
+                std::string structPart = code.substr(0, markerPosition);
+                while(!structPart.empty() && structPart.back() == '\n') {
+                    structPart.pop_back();
+                }
+                if(!structPart.empty()) {
+                    structBlocks.push_back(std::move(structPart));
+                }
+                storageArguments.push_back(
+                    code.substr(markerPosition + storageMarker.size(),
+                                code.size() - markerPosition - storageMarker.size() - 2));
+                continue;
             }
-            out += result.codegen.code;
+            if(code.starts_with("make_index(") || code.starts_with("make_unique_index(") ||
+               code.starts_with("make_trigger(")) {
+                std::string argument = code;
+                while(!argument.empty() &&
+                      (argument.back() == '\n' || argument.back() == ';' || argument.back() == ' ')) {
+                    argument.pop_back();
+                }
+                storageArguments.push_back(std::move(argument));
+                continue;
+            }
+            otherStatements.push_back(code);
+        }
+
+        std::string out;
+        for(const std::string& structBlock : structBlocks) {
+            out += structBlock;
+            out += "\n\n";
+        }
+        if(!storageArguments.empty()) {
+            out += "auto storage = make_storage(\"\"";
+            for(const std::string& storageArgument : storageArguments) {
+                out += ",\n    ";
+                out += storageArgument;
+            }
+            out += ");\n";
+        }
+        bool separatorAdded = out.empty();
+        for(const std::string& statement : otherStatements) {
+            if(!separatorAdded) {
+                out += '\n';
+                separatorAdded = true;
+            }
+            out += statement;
             if(out.back() != '\n') {
                 out += '\n';
-            }
-            if(!isDml) {
-                hadDdl = true;
             }
         }
         return out;

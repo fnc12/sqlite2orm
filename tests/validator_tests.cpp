@@ -212,16 +212,13 @@ TEST_CASE("validator: valid virtual table statements") {
     REQUIRE(validate("CREATE VIRTUAL TABLE z USING dbstat").empty());
 }
 
-TEST_CASE("validator: CREATE VIEW — not supported for codegen (AST is full parse)") {
-    REQUIRE(validate("CREATE VIEW v AS SELECT 1;") ==
-            std::vector<ValidationError>{
-                {"CREATE VIEW v is not supported for sqlite_orm code generation yet", {1, 1}, "CreateViewNode"}});
+TEST_CASE("validator: CREATE VIEW maps to make_view()") {
+    REQUIRE(validate("CREATE VIEW v AS SELECT 1;").empty());
+    REQUIRE(validate("CREATE VIEW main.v AS SELECT 1;").empty());
 }
 
-TEST_CASE("validator: CREATE VIEW schema-qualified name in error") {
-    REQUIRE(validate("CREATE VIEW main.v AS SELECT 1;") ==
-            std::vector<ValidationError>{
-                {"CREATE VIEW main.v is not supported for sqlite_orm code generation yet", {1, 1}, "CreateViewNode"}});
+TEST_CASE("validator: CREATE VIEW inner SELECT is still validated") {
+    REQUIRE_FALSE(validate("CREATE VIEW v AS SELECT unknown_function_xyz(1);").empty());
 }
 
 TEST_CASE("validator: ALTER TABLE points to sync_schema") {

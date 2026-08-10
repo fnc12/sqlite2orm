@@ -62,6 +62,11 @@ namespace sqlite2orm {
         return this->ddlCodeGenerator->createTableParts(createTable);
     }
 
+    CreateViewParts CodeGenerator::createViewParts(const CreateViewNode& node) {
+        this->syncToContext();
+        return this->ddlCodeGenerator->createViewParts(node);
+    }
+
     CodeGenResult CodeGenerator::generateNode(const AstNode& astNode) {
         if(dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
            dynamic_cast<const RealLiteralNode*>(&astNode) ||

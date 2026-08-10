@@ -22,6 +22,7 @@ namespace sqlite2orm {
         CodeGenResult generateCreateView(const CreateViewNode& node);
 
         CreateTableParts createTableParts(const CreateTableNode& createTable);
+        CreateViewParts createViewParts(const CreateViewNode& node);
 
       private:
         CodeGenerator& coordinator;

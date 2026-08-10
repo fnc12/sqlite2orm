@@ -1,5 +1,8 @@
 #include <sqlite2orm/schema_process.h>
 
+#include "codegen_utils.h"
+#include "process_internal.h"
+
 #include <algorithm>
 #include <cctype>
 
@@ -53,6 +56,7 @@ namespace sqlite2orm {
         });
 
         ProcessSqliteSchemaResult out;
+        std::map<std::string, std::vector<SourceTableColumn>> sourceTables;
         for(const auto& row: rows) {
             if(row.sql.empty()) {
                 continue;
@@ -62,7 +66,12 @@ namespace sqlite2orm {
             one.meta.name = row.name;
             one.meta.tableName = row.tableName;
             one.meta.sql = row.sql;
-            one.pipeline = processSql(one.meta.sql);
+            one.pipeline = processSqlWithSourceTables(one.meta.sql, nullptr, sourceTables);
+            if(const auto* createTable = dynamic_cast<const CreateTableNode*>(
+                   one.pipeline.parseResult.astNodePointer.get())) {
+                sourceTables[normalizeSqlIdentifier(stripIdentifierQuotes(createTable->tableName))] =
+                    sourceTableColumnsFromCreateTable(*createTable);
+            }
             out.statements.push_back(std::move(one));
         }
         return out;

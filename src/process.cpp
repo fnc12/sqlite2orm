@@ -2,13 +2,43 @@
 #include <sqlite2orm/tokenizer.h>
 #include <sqlite2orm/validator.h>
 
+#include "codegen_utils.h"
+#include "process_internal.h"
+
 namespace sqlite2orm {
+
+    namespace {
+
+        /** Column registry from every CREATE TABLE in the batch, so views can infer field types. */
+        std::map<std::string, std::vector<SourceTableColumn>>
+        collectSourceTables(const std::vector<ParseResult>& parseResults) {
+            std::map<std::string, std::vector<SourceTableColumn>> sourceTables;
+            for(const ParseResult& parseResult : parseResults) {
+                const auto* createTable =
+                    dynamic_cast<const CreateTableNode*>(parseResult.astNodePointer.get());
+                if(!createTable) {
+                    continue;
+                }
+                sourceTables[normalizeSqlIdentifier(stripIdentifierQuotes(createTable->tableName))] =
+                    sourceTableColumnsFromCreateTable(*createTable);
+            }
+            return sourceTables;
+        }
+
+    }  // namespace
 
     ProcessSqlResult processSql(std::string_view sql) {
         return processSql(sql, nullptr);
     }
 
     ProcessSqlResult processSql(std::string_view sql, const CodeGenPolicy* policy) {
+        return processSqlWithSourceTables(sql, policy, {});
+    }
+
+    ProcessSqlResult processSqlWithSourceTables(
+        std::string_view sql,
+        const CodeGenPolicy* policy,
+        const std::map<std::string, std::vector<SourceTableColumn>>& sourceTables) {
         ProcessSqlResult out;
         try {
             Tokenizer tokenizer;
@@ -32,6 +62,7 @@ namespace sqlite2orm {
 
         CodeGenerator codeGenerator;
         codeGenerator.codeGenPolicy = policy;
+        codeGenerator.context().sourceTableColumnsByNormalizedName = sourceTables;
         out.codegen = codeGenerator.generate(*out.parseResult.astNodePointer);
         return out;
     }
@@ -43,6 +74,7 @@ namespace sqlite2orm {
             auto tokens = tokenizer.tokenize(sql);
             Parser parser;
             auto parseResults = parser.parseAll(std::move(tokens));
+            const auto sourceTables = collectSourceTables(parseResults);
             for(auto& pr : parseResults) {
                 ProcessSqlResult one;
                 one.parseResult = std::move(pr);
@@ -58,6 +90,7 @@ namespace sqlite2orm {
                 }
                 CodeGenerator codeGenerator;
                 codeGenerator.codeGenPolicy = policy;
+                codeGenerator.context().sourceTableColumnsByNormalizedName = sourceTables;
                 one.codegen = codeGenerator.generate(*one.parseResult.astNodePointer);
                 results.push_back(std::move(one));
             }

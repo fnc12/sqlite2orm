@@ -79,7 +79,7 @@ TEST_CASE("processSql: validator rejects unary plus") {
     REQUIRE(processSql("+1") == expectedOutcome);
 }
 
-TEST_CASE("processSql: CREATE VIEW stops at validation") {
+TEST_CASE("processSql: CREATE VIEW generates make_view") {
     const ProcessSqlResult expected = expectedFromPipeline("CREATE VIEW v AS SELECT 1;");
     REQUIRE(processSql("CREATE VIEW v AS SELECT 1;") == expected);
 }

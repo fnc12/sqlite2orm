@@ -152,6 +152,57 @@ TEST_CASE("processMultiSql: CREATE TEMP TRIGGER body semicolons do not split the
         "CREATE TEMP TRIGGER tt BEFORE INSERT ON x BEGIN DELETE FROM x; END; SELECT 3;") == expected);
 }
 
+TEST_CASE("joinGeneratedCode: DDL statements merge into a single make_storage") {
+    const auto results = processMultiSql(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER NOT NULL);\n"
+        "CREATE VIEW adults AS SELECT id, name FROM users WHERE age >= 18;");
+    REQUIRE(joinGeneratedCode(results) ==
+        "struct Users {\n"
+        "    int64_t id = 0;\n"
+        "    std::optional<std::string> name;\n"
+        "    int64_t age = 0;\n"
+        "};\n"
+        "\n"
+        "struct [[= \"adults\"_orm_name]] Adults {\n"
+        "    int64_t id = 0;\n"
+        "    std::optional<std::string> name;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"users\",\n"
+        "        make_column(\"id\", &Users::id, primary_key()),\n"
+        "        make_column(\"name\", &Users::name),\n"
+        "        make_column(\"age\", &Users::age)),\n"
+        "    make_view<Adults>(select(columns(&Users::id, &Users::name), where(c(&Users::age) >= 18))));\n");
+}
+
+TEST_CASE("joinGeneratedCode: index merges into make_storage, DML follows after blank line") {
+    const auto results = processMultiSql(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER);"
+        "CREATE INDEX idx ON t(x);"
+        "SELECT x FROM t;");
+    REQUIRE(joinGeneratedCode(results) ==
+        "struct T {\n"
+        "    int64_t id = 0;\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"id\", &T::id, primary_key()),\n"
+        "        make_column(\"x\", &T::x)),\n"
+        "    make_index(\"idx\", indexed_column(&T::x)));\n"
+        "\n"
+        "auto rows = storage.select(&T::x);\n");
+}
+
+TEST_CASE("joinGeneratedCode: DML-only batch stays unchanged") {
+    const auto results = processMultiSql("SELECT 1; SELECT 2;");
+    REQUIRE(joinGeneratedCode(results) ==
+        "auto rows = storage.select(1);\n"
+        "auto rows = storage.select(2);\n");
+}
+
 TEST_CASE("processMultiSql: validation error does not block other statements") {
     std::vector<ProcessSqlResult> expected;
     expected.push_back(processSql("INSERT INTO t VALUES (1);"));

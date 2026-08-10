@@ -111,6 +111,24 @@ TEST_CASE("codegen: CREATE TRIGGER before delete OLD in WHERE") {
         "old(&Users::id)))));");
 }
 
+TEST_CASE("codegen: CREATE TRIGGER OLD binds to subject table, not DML target") {
+    REQUIRE(
+        generate(
+            "CREATE TRIGGER tx_delete AFTER DELETE ON transactions BEGIN "
+            "DELETE FROM tx_rtree WHERE id = old.id; END") ==
+        "make_trigger(\"tx_delete\", after().delete_().on<Transactions>().begin(remove_all<TxRtree>("
+        "where(c(&TxRtree::id) == old(&Transactions::id)))));");
+}
+
+TEST_CASE("codegen: CREATE TRIGGER NEW binds to subject table, not DML target") {
+    REQUIRE(
+        generate(
+            "CREATE TRIGGER tx_insert AFTER INSERT ON transactions BEGIN "
+            "INSERT INTO audit (tx_id) VALUES (new.id); END") ==
+        "make_trigger(\"tx_insert\", after().insert().on<Transactions>().begin(insert(into<Audit>(), "
+        "columns(&Audit::tx_id), values(std::make_tuple(new_(&Transactions::id))))));");
+}
+
 TEST_CASE("codegen: CREATE TRIGGER after insert") {
     REQUIRE(generate("CREATE TRIGGER t2 AFTER INSERT ON users BEGIN DELETE FROM users; END") ==
             "make_trigger(\"t2\", after().insert().on<Users>().begin(remove_all<Users>()));");

@@ -5,7 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(SQLite3 REQUIRED)
+# Consumers (e.g. Android, where the NDK ships no libsqlite3) may provide their own
+# SQLite3::SQLite3 target before adding this project.
+if(NOT TARGET SQLite3::SQLite3)
+    find_package(SQLite3 REQUIRED)
+endif()
 
 include(FetchContent)
 message(STATUS "[sqlite2orm] Fetching fmt…")

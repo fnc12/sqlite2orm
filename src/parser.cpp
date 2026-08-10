@@ -138,15 +138,43 @@ namespace sqlite2orm {
                 break;
             }
 
+            // CREATE [TEMP|TEMPORARY] TRIGGER bodies contain semicolon-terminated statements
+            // between BEGIN and END (the SQLite grammar requires them), so a semicolon ends the
+            // whole statement only after the trigger body's END.
+            bool isCreateTrigger = false;
+            if(this->tokenStream.check(TokenType::kwCreate)) {
+                const TokenType afterCreate = this->tokenStream.peekToken(1).type;
+                if(afterCreate == TokenType::kwTrigger) {
+                    isCreateTrigger = true;
+                } else if((afterCreate == TokenType::kwTemp || afterCreate == TokenType::kwTemporary) &&
+                          this->tokenStream.peekToken(2).type == TokenType::kwTrigger) {
+                    isCreateTrigger = true;
+                }
+            }
+
             std::vector<Token> slice;
             int parenDepth = 0;
+            int caseDepth = 0;
+            bool inTriggerBody = false;
+            bool triggerBodyClosed = false;
             while(!this->tokenStream.atEnd()) {
                 const Token& tok = this->tokenStream.current();
                 if(tok.type == TokenType::leftParen) {
                     ++parenDepth;
                 } else if(tok.type == TokenType::rightParen) {
                     --parenDepth;
-                } else if(tok.type == TokenType::semicolon && parenDepth <= 0) {
+                } else if(isCreateTrigger && tok.type == TokenType::kwCase) {
+                    ++caseDepth;
+                } else if(isCreateTrigger && tok.type == TokenType::kwBegin && !inTriggerBody) {
+                    inTriggerBody = true;
+                } else if(isCreateTrigger && tok.type == TokenType::kwEnd) {
+                    if(caseDepth > 0) {
+                        --caseDepth;
+                    } else if(inTriggerBody) {
+                        triggerBodyClosed = true;
+                    }
+                } else if(tok.type == TokenType::semicolon && parenDepth <= 0 &&
+                          (!isCreateTrigger || !inTriggerBody || triggerBodyClosed)) {
                     break;
                 }
                 slice.push_back(tok);

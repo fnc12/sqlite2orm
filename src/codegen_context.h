@@ -55,6 +55,9 @@ namespace sqlite2orm {
         /** Normalized table/view name → columns; filled from CREATE TABLE statements seen in this batch. */
         std::map<std::string, std::vector<SourceTableColumn>> sourceTableColumnsByNormalizedName;
 
+        /** Struct of the table a trigger is ON; OLD/NEW refs bind to it, not to the DML target table. */
+        std::optional<std::string> triggerSubjectStructName;
+
         std::optional<std::string> activeWithCteStyle;
         std::map<std::string, std::string> withCteLegacyColVarByPipeKey;
         std::map<std::string, std::string> withCteCpp20MonikerVarByCteKey;

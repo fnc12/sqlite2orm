@@ -115,6 +115,43 @@ TEST_CASE("processMultiSql: CREATE TABLE + INSERT") {
         "INSERT INTO t (id, name) VALUES (1, 'Alice');") == expected);
 }
 
+TEST_CASE("processMultiSql: CREATE TRIGGER body semicolons do not split the statement") {
+    std::vector<ProcessSqlResult> expected;
+    expected.push_back(processSql(
+        "CREATE TRIGGER tx_delete AFTER DELETE ON transactions BEGIN "
+        "DELETE FROM tx_rtree WHERE id = old.id; END;"));
+    expected.push_back(processSql("SELECT 1;"));
+    REQUIRE(processMultiSql(
+        "CREATE TRIGGER tx_delete AFTER DELETE ON transactions BEGIN\n"
+        "    DELETE FROM tx_rtree WHERE id = old.id;\n"
+        "END;\n"
+        "SELECT 1;") == expected);
+}
+
+TEST_CASE("processMultiSql: CREATE TRIGGER with multiple body statements and CASE END") {
+    std::vector<ProcessSqlResult> expected;
+    expected.push_back(processSql("CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);"));
+    expected.push_back(processSql(
+        "CREATE TRIGGER t AFTER INSERT ON a BEGIN "
+        "UPDATE a SET x = CASE WHEN new.x > 0 THEN 1 ELSE 0 END; "
+        "DELETE FROM a WHERE id = old.id; END;"));
+    expected.push_back(processSql("SELECT 2;"));
+    REQUIRE(processMultiSql(
+        "CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);"
+        "CREATE TRIGGER t AFTER INSERT ON a BEGIN "
+        "UPDATE a SET x = CASE WHEN new.x > 0 THEN 1 ELSE 0 END; "
+        "DELETE FROM a WHERE id = old.id; END;"
+        "SELECT 2;") == expected);
+}
+
+TEST_CASE("processMultiSql: CREATE TEMP TRIGGER body semicolons do not split the statement") {
+    std::vector<ProcessSqlResult> expected;
+    expected.push_back(processSql("CREATE TEMP TRIGGER tt BEFORE INSERT ON x BEGIN DELETE FROM x; END;"));
+    expected.push_back(processSql("SELECT 3;"));
+    REQUIRE(processMultiSql(
+        "CREATE TEMP TRIGGER tt BEFORE INSERT ON x BEGIN DELETE FROM x; END; SELECT 3;") == expected);
+}
+
 TEST_CASE("processMultiSql: validation error does not block other statements") {
     std::vector<ProcessSqlResult> expected;
     expected.push_back(processSql("INSERT INTO t VALUES (1);"));

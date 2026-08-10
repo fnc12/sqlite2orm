@@ -282,12 +282,14 @@ namespace sqlite2orm {
                   savedColumnAliases(ctx->activeSelectColumnAliases),
                   savedColumnAliasCpp20Vars(ctx->activeSelectColumnAliasCpp20Vars) {
                 ctx->structName = subject;
+                ctx->triggerSubjectStructName = subject;
                 ctx->fromTableAliasToStructName.clear();
                 ctx->activeSelectColumnAliases.clear();
                 ctx->activeSelectColumnAliasCpp20Vars.clear();
             }
             ~TriggerStepScope() {
                 ctx->structName = std::move(savedStruct);
+                ctx->triggerSubjectStructName.reset();
                 ctx->fromTableAliasToStructName = std::move(savedAliases);
                 ctx->activeSelectColumnAliases = std::move(savedColumnAliases);
                 ctx->activeSelectColumnAliasCpp20Vars = std::move(savedColumnAliasCpp20Vars);

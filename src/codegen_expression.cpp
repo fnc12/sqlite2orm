@@ -275,11 +275,15 @@ namespace sqlite2orm {
         } else if(auto* newRef = dynamic_cast<const NewRefNode*>(&astNode)) {
             auto cppName = toCppIdentifier(newRef->columnName);
             this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
-            return CodeGenResult{"new_(&" + this->context.structName + "::" + cppName + ")", {}};
+            const std::string& subjectStruct =
+                this->context.triggerSubjectStructName.value_or(this->context.structName);
+            return CodeGenResult{"new_(&" + subjectStruct + "::" + cppName + ")", {}};
         } else if(auto* oldRef = dynamic_cast<const OldRefNode*>(&astNode)) {
             auto cppName = toCppIdentifier(oldRef->columnName);
             this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
-            return CodeGenResult{"old(&" + this->context.structName + "::" + cppName + ")", {}};
+            const std::string& subjectStruct =
+                this->context.triggerSubjectStructName.value_or(this->context.structName);
+            return CodeGenResult{"old(&" + subjectStruct + "::" + cppName + ")", {}};
         } else if(auto* excludedRef = dynamic_cast<const ExcludedRefNode*>(&astNode)) {
             auto cppName = toCppIdentifier(excludedRef->columnName);
             return CodeGenResult{"excluded(&" + this->context.structName + "::" + cppName + ")", {}};

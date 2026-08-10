@@ -199,6 +199,22 @@ namespace sqlite2orm {
                 continue;
             }
 
+            if(auto* createView = dynamic_cast<const CreateViewNode*>(root)) {
+                CreateViewParts viewParts = gen.createViewParts(*createView);
+                allWarnings.insert(allWarnings.end(), viewParts.warnings.begin(), viewParts.warnings.end());
+                appendUniqueStrings(allComments, viewParts.comments);
+                allDecisionPoints.insert(allDecisionPoints.end(), viewParts.decisionPoints.begin(),
+                                         viewParts.decisionPoints.end());
+                if(viewParts.makeViewExpression.empty()) {
+                    allWarnings.push_back("CREATE VIEW `" + statementResult.meta.name +
+                                          "` is not merged into make_storage()");
+                    continue;
+                }
+                oss << viewParts.structDeclaration << "\n";
+                storageArgs.push_back(viewParts.makeViewExpression);
+                continue;
+            }
+
             if(dynamic_cast<const CreateIndexNode*>(root) || dynamic_cast<const CreateTriggerNode*>(root)) {
                 CodeGenResult fragment = gen.generate(*root);
                 allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());

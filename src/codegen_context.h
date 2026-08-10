@@ -7,6 +7,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace sqlite2orm {
@@ -14,6 +15,13 @@ namespace sqlite2orm {
     struct TableAliasInfo {
         std::string ormAliasType;
         std::string baseStructName;
+    };
+
+    /** A column of a known CREATE TABLE (or view), used to infer view struct field types. */
+    struct SourceTableColumn {
+        std::string sqlName;
+        std::string cppType;
+        bool nullable = false;
     };
 
     struct Cpp20TableAliasDeclaration {
@@ -44,6 +52,9 @@ namespace sqlite2orm {
         std::map<std::string, std::string> activeSelectColumnAliasCpp20Vars;
         std::optional<std::string> columnAliasStyleOverride;
 
+        /** Normalized table/view name → columns; filled from CREATE TABLE statements seen in this batch. */
+        std::map<std::string, std::vector<SourceTableColumn>> sourceTableColumnsByNormalizedName;
+
         std::optional<std::string> activeWithCteStyle;
         std::map<std::string, std::string> withCteLegacyColVarByPipeKey;
         std::map<std::string, std::string> withCteCpp20MonikerVarByCteKey;
@@ -61,6 +72,10 @@ namespace sqlite2orm {
         bool withCteCpp20Monikers() const;
         bool columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const;
         bool isExplicitCteColumn(std::string_view cteKeyNorm, std::string_view columnName) const;
+
+        void registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns);
+        const SourceTableColumn* findSourceTableColumn(std::string_view tableName,
+                                                       std::string_view columnName) const;
 
         void registerColumn(const std::string& cppName, const std::string& cppType);
         void registerPrefixColumn(const std::string& cppName, const std::string& cppType);

@@ -35,6 +35,10 @@ namespace sqlite2orm {
     std::string defaultCppTypeForSyntheticColumn(std::string_view cppIdentifier);
 
     extern const std::string kCommentCpp20ColumnAliases;
+    extern const std::string kCommentViewReflection;
+
+    struct SourceTableColumn;
+    std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 
     void appendUniqueStrings(std::vector<std::string>& destination, const std::vector<std::string>& source);
     void appendUniqueString(std::vector<std::string>& destination, const std::string& value);

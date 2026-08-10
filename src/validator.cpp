@@ -471,16 +471,6 @@ namespace sqlite2orm {
                 alterTable->location,
                 "AlterTableStatementNode"});
         } else if(auto* createView = dynamic_cast<const CreateViewNode*>(&astNode)) {
-            std::string displayName;
-            if(createView->viewSchemaName) {
-                displayName = *createView->viewSchemaName;
-                displayName += '.';
-            }
-            displayName += createView->viewName;
-            errors.push_back(ValidationError{
-                "CREATE VIEW " + displayName + " is not supported for sqlite_orm code generation yet",
-                createView->location,
-                "CreateViewNode"});
             if(createView->selectQuery) {
                 auto se = validate(*createView->selectQuery);
                 errors.insert(errors.end(), se.begin(), se.end());

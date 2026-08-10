@@ -79,7 +79,7 @@ namespace sqlite2orm {
                     auto colIt = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
                     if(monIt != this->context.withCteCpp20MonikerVarByCteKey.end() &&
                        colIt != this->context.withCteCpp20ColVarByPipeKey.end()) {
-                        return CodeGenResult{monIt->second + "->*" + colIt->second, {}};
+                        return CodeGenResult{monIt->second + "->*" + colIt->second, {}, {}, {}};
                     }
                     if(monIt != this->context.withCteCpp20MonikerVarByCteKey.end()) {
                         if(!this->context.isExplicitCteColumn(*this->context.implicitCteFromTableKeyNorm,
@@ -87,7 +87,7 @@ namespace sqlite2orm {
                             auto baseIt =
                                 this->context.cteBaseStructByKey.find(*this->context.implicitCteFromTableKeyNorm);
                             if(baseIt != this->context.cteBaseStructByKey.end()) {
-                                return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + cppName, {}};
+                                return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + cppName, {}, {}, {}};
                             }
                         }
                     }
@@ -97,7 +97,7 @@ namespace sqlite2orm {
                     if(colIt != this->context.withCteLegacyColVarByPipeKey.end()) {
                         std::string cteCol =
                             "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" + colIt->second + ")";
-                        return CodeGenResult{std::move(cteCol), {}};
+                        return CodeGenResult{std::move(cteCol), {}, {}, {}};
                     }
                 }
                 {
@@ -105,7 +105,7 @@ namespace sqlite2orm {
                     if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
                         std::string cteCol = "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" +
                                              indexedIt->second + ")";
-                        return CodeGenResult{std::move(cteCol), {}};
+                        return CodeGenResult{std::move(cteCol), {}, {}, {}};
                     }
                 }
             }
@@ -118,7 +118,7 @@ namespace sqlite2orm {
                     if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
                         std::string cteCol = "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" +
                                              indexedIt->second + ")";
-                        return CodeGenResult{std::move(cteCol), {}};
+                        return CodeGenResult{std::move(cteCol), {}, {}, {}};
                     }
                     if(this->context.isExplicitCteColumn(*this->context.implicitCteFromTableKeyNorm,
                                                          columnRef->columnName)) {
@@ -126,20 +126,20 @@ namespace sqlite2orm {
                             identifierToCppStringLiteral(stripIdentifierQuotes(columnRef->columnName));
                         std::string cteCol =
                             "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" + colLit + ")";
-                        return CodeGenResult{std::move(cteCol), {}};
+                        return CodeGenResult{std::move(cteCol), {}, {}, {}};
                     }
                     auto baseIt =
                         this->context.cteBaseStructByKey.find(*this->context.implicitCteFromTableKeyNorm);
                     if(baseIt != this->context.cteBaseStructByKey.end()) {
                         std::string cteCol = "column<" + *this->context.implicitSingleSourceCteTypedef + ">(&" +
                                              baseIt->second + "::" + cppName + ")";
-                        return CodeGenResult{std::move(cteCol), {}};
+                        return CodeGenResult{std::move(cteCol), {}, {}, {}};
                     }
                 }
                 std::string colLit = identifierToCppStringLiteral(stripIdentifierQuotes(columnRef->columnName));
                 std::string cteCol =
                     "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" + colLit + ")";
-                return CodeGenResult{std::move(cteCol), {}};
+                return CodeGenResult{std::move(cteCol), {}, {}, {}};
             }
             std::string memberPointer = "&" + this->context.structName + "::" + cppName;
             std::string columnPointer = "column<" + this->context.structName + ">(" + memberPointer + ")";
@@ -154,7 +154,10 @@ namespace sqlite2orm {
                                chosenCol,
                                emittedCol,
                                {Alternative{"column_pointer", columnPointer,
-                                            "explicit mapped type (inheritance / ambiguity)"}}}}};
+                                            "explicit mapped type (inheritance / ambiguity)"}}}},
+                {},
+                {},
+                {}};
         } else if(auto* qualifiedRef = dynamic_cast<const QualifiedColumnRefNode*>(&astNode)) {
             std::vector<std::string> qualWarnings;
             if(qualifiedRef->schemaName) {
@@ -174,7 +177,7 @@ namespace sqlite2orm {
                     auto colIt = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
                     if(monIt != this->context.withCteCpp20MonikerVarByCteKey.end() &&
                        colIt != this->context.withCteCpp20ColVarByPipeKey.end()) {
-                        return CodeGenResult{monIt->second + "->*" + colIt->second, {}, std::move(qualWarnings)};
+                        return CodeGenResult{monIt->second + "->*" + colIt->second, {}, std::move(qualWarnings), {}, {}};
                     }
                     if(monIt != this->context.withCteCpp20MonikerVarByCteKey.end()) {
                         if(!this->context.isExplicitCteColumn(tableKeyNorm, qualifiedRef->columnName)) {
@@ -182,7 +185,7 @@ namespace sqlite2orm {
                             if(baseIt != this->context.cteBaseStructByKey.end()) {
                                 std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
                                 return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + colCpp, {},
-                                                     std::move(qualWarnings)};
+                                                     std::move(qualWarnings), {}, {}};
                             }
                         }
                     }
@@ -191,31 +194,31 @@ namespace sqlite2orm {
                     auto colIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
                     if(colIt != this->context.withCteLegacyColVarByPipeKey.end()) {
                         return CodeGenResult{"column<" + cteIt->second + ">(" + colIt->second + ")", {},
-                                             std::move(qualWarnings)};
+                                             std::move(qualWarnings), {}, {}};
                     }
                 }
                 {
                     auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
                     if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
                         return CodeGenResult{"column<" + cteIt->second + ">(" + indexedIt->second + ")", {},
-                                             std::move(qualWarnings)};
+                                             std::move(qualWarnings), {}, {}};
                     }
                 }
                 if(this->context.isExplicitCteColumn(tableKeyNorm, qualifiedRef->columnName)) {
                     std::string colLit =
                         identifierToCppStringLiteral(stripIdentifierQuotes(qualifiedRef->columnName));
-                    return CodeGenResult{"column<" + cteIt->second + ">(" + colLit + ")", {},
-                                         std::move(qualWarnings)};
+                return CodeGenResult{"column<" + cteIt->second + ">(" + colLit + ")", {},
+                                         std::move(qualWarnings), {}, {}};
                 }
                 auto baseIt = this->context.cteBaseStructByKey.find(tableKeyNorm);
                 if(baseIt != this->context.cteBaseStructByKey.end()) {
                     std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
                     return CodeGenResult{"column<" + cteIt->second + ">(&" + baseIt->second + "::" + colCpp + ")", {},
-                                         std::move(qualWarnings)};
+                                         std::move(qualWarnings), {}, {}};
                 }
                 std::string colLit = identifierToCppStringLiteral(stripIdentifierQuotes(qualifiedRef->columnName));
                 return CodeGenResult{"column<" + cteIt->second + ">(" + colLit + ")", {},
-                                     std::move(qualWarnings)};
+                                         std::move(qualWarnings), {}, {}};
             }
             std::string tableKey = std::string(qualifiedRef->tableName);
             auto tableAliasIt = this->context.activeTableAliases.find(tableKey);
@@ -229,7 +232,7 @@ namespace sqlite2orm {
                 } else {
                     code = "alias_column<" + info.ormAliasType + ">(&" + info.baseStructName + "::" + colCpp + ")";
                 }
-                return CodeGenResult{std::move(code), {}, std::move(qualWarnings)};
+                return CodeGenResult{std::move(code), {}, std::move(qualWarnings), {}, {}};
             }
             std::string structForColumn = toStructName(qualifiedRef->tableName);
             auto aliasIt = this->context.fromTableAliasToStructName.find(tableKey);
@@ -252,7 +255,7 @@ namespace sqlite2orm {
                                emittedQ,
                                {Alternative{"column_pointer", columnPointer,
                                             "explicit mapped type (inheritance / ambiguity)"}}}},
-                std::move(qualWarnings)};
+                std::move(qualWarnings), {}, {}};
         } else if(auto* qualifiedAsterisk = dynamic_cast<const QualifiedAsteriskNode*>(&astNode)) {
             std::vector<std::string> qualifiedAsteriskWarnings;
             if(qualifiedAsterisk->schemaName) {
@@ -280,7 +283,29 @@ namespace sqlite2orm {
         } else if(auto* excludedRef = dynamic_cast<const ExcludedRefNode*>(&astNode)) {
             auto cppName = toCppIdentifier(excludedRef->columnName);
             return CodeGenResult{"excluded(&" + this->context.structName + "::" + cppName + ")", {}};
-        } else if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+        }
+        auto nodeGeneratesColumnPointer = [&](const AstNode* node) -> bool {
+            if(auto* qualifiedColumnRefNode = dynamic_cast<const QualifiedColumnRefNode*>(node)) {
+                std::string tableKey = normalizeSqlIdentifier(qualifiedColumnRefNode->tableName);
+                if(this->context.activeCteTypedefByTableKey.find(tableKey) !=
+                   this->context.activeCteTypedefByTableKey.end())
+                    return true;
+                std::string tableName = std::string(qualifiedColumnRefNode->tableName);
+                if(this->context.activeTableAliases.find(tableName) !=
+                   this->context.activeTableAliases.end())
+                    return true;
+                if(policyEquals(this->context.codeGenPolicy, "column_ref_style", "column_pointer"))
+                    return true;
+                return false;
+            }
+            if(dynamic_cast<const ColumnRefNode*>(node)) {
+                if(this->context.implicitSingleSourceCteTypedef) return true;
+                if(policyEquals(this->context.codeGenPolicy, "column_ref_style", "column_pointer"))
+                    return true;
+            }
+            return false;
+        };
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
             if(binaryOp->binaryOperator == BinaryOperator::isOp ||
                binaryOp->binaryOperator == BinaryOperator::isNot ||
                binaryOp->binaryOperator == BinaryOperator::isDistinctFrom ||
@@ -343,8 +368,10 @@ namespace sqlite2orm {
                 rightNoWrap = true;
             }
 
-            std::string wrappedLeft = (leftLeaf && !leftNoWrap) ? wrap(leftResult.code) : leftResult.code;
-            std::string wrappedRight = (rightLeaf && !rightNoWrap) ? wrap(rightResult.code) : rightResult.code;
+            std::string wrappedLeft =
+                (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(binaryOp->lhs.get())) ? wrap(leftResult.code) : leftResult.code;
+            std::string wrappedRight =
+                (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(binaryOp->rhs.get())) ? wrap(rightResult.code) : rightResult.code;
 
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
             std::string functionalCode =
@@ -434,7 +461,7 @@ namespace sqlite2orm {
                 }
             }
             std::string operandStr;
-            if(operandLeaf && !operandNoWrap) {
+            if(operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(unaryOp->operand.get())) {
                 operandStr = wrap(operandResult.code);
             } else if(!operandLeaf) {
                 operandStr = "(" + operandResult.code + ")";

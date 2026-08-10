@@ -367,6 +367,31 @@ Statuses: `[ ]` not started, `[~]` in progress, `[x]` done
   Keep consuming **sqlite_orm** via `FetchContent`, submodule, or `find_package`
   as a declared dependency; update CI badges and install docs accordingly.
 
+### Phase 25: Sync with sqlite_orm dev, August 2026 (make_view, reflection)
+
+Upstream context: sqlite_orm PR #1481 (`make_view()` + `_orm_name`, C++26
+reflection), #1492 (reflection-based `make_table`), #1488 (`from()` value form).
+
+- [x] 25.1: CREATE VIEW → `struct [[= "name"_orm_name]] T { ... }` +
+  `make_view<T>(select(...))`. Field names: explicit view column list → SELECT
+  alias → column name → synthesized (warning). Field types: inferred from
+  CREATE TABLE statements in the same batch (`SourceTableColumn` registry in
+  `CodeGeneratorContext`, filled by `createTableParts` /
+  `processSqlWithSourceTables`); fallback: name heuristics + warning.
+  `SELECT *` / `t.*` expand source table columns. Codegen comment explains the
+  C++26 reflection requirement (auto-detected: `SQLITE_ORM_REFLECTION_SUPPORTED`
+  → `SQLITE_ORM_WITH_VIEW`; no user macro). Schema header merges views into
+  `make_storage()`; unsupported view SELECTs (e.g. GROUP BY subexpression) warn
+  and are omitted.
+- [ ] 25.2: GROUP BY (and other gaps) in select subexpression codegen — needed
+  for aggregate views (`tryCodegenSqliteSelectSubexpression`).
+- [ ] 25.3: Reflection-based `make_table` (sqlite_orm #1492) as a
+  `table_mapping_style` decision point: default `make_table` (classic),
+  alternative `reflection` (annotated struct: `[[= primary_key()]]`,
+  `[[= not_null()]]`, `[[= default_value(...)]]`, `[[= collate_*()]]`).
+- [ ] 25.4: `from()` value form (sqlite_orm #1488) — alternative `from(u)` vs
+  `from<u>()` where explicit `from` is generated.
+
 ---
 
 ## Not supported in sqlite_orm (validator errors)
@@ -400,7 +425,7 @@ Source: https://www.sqlite.org/syntaxdiagrams.html
 
 ## How to work with this plan in a new context
 
-Phases 1–23 above are **complete** (`[x]`). Further work is driven by
+Phases 1–23 and 25.1 above are **complete** (`[x]`). Further work is driven by
 [COVERAGE.md](COVERAGE.md), issues, and sqlite_orm API changes — not by the
 numbered phase list.
 

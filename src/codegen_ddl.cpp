@@ -423,16 +423,386 @@ namespace sqlite2orm {
         return CodeGenResult{"/* CREATE VIRTUAL TABLE: unknown module */", std::move(decisionPoints), std::move(warnings)};
     }
 
-    CodeGenResult DdlCodeGenerator::generateCreateView(const CreateViewNode& node) {
-        std::string displayName;
-        if(node.viewSchemaName) {
-            displayName = *node.viewSchemaName;
-            displayName += '.';
+    namespace {
+
+        struct InferredFieldType {
+            std::string cppType;
+            bool nullable = false;
+        };
+
+        /** Resolves view SELECT output expressions to C++ field types using tables known to the context. */
+        struct ViewFieldTypeInferrer {
+            const CodeGeneratorContext& context;
+            /** Raw FROM table names in order; aliases resolved separately. */
+            std::vector<std::string> fromTables;
+            std::map<std::string, std::string> tableByAliasNorm;
+
+            explicit ViewFieldTypeInferrer(const CodeGeneratorContext& context, const SelectNode& selectNode)
+                : context(context) {
+                for(const FromClauseItem& fromItem : selectNode.fromClause) {
+                    if(fromItem.table.derivedSelect || !fromItem.table.tableFunctionArgs.empty()) {
+                        continue;
+                    }
+                    const std::string rawTable = stripIdentifierQuotes(fromItem.table.tableName);
+                    this->fromTables.push_back(rawTable);
+                    if(fromItem.table.alias) {
+                        this->tableByAliasNorm[normalizeSqlIdentifier(*fromItem.table.alias)] = rawTable;
+                    }
+                }
+            }
+
+            const SourceTableColumn* resolveQualified(std::string_view tableOrAlias,
+                                                      std::string_view columnName) const {
+                const auto aliasIterator = this->tableByAliasNorm.find(normalizeSqlIdentifier(tableOrAlias));
+                const std::string_view tableName =
+                    aliasIterator != this->tableByAliasNorm.end() ? std::string_view(aliasIterator->second)
+                                                                  : tableOrAlias;
+                return this->context.findSourceTableColumn(tableName, columnName);
+            }
+
+            const SourceTableColumn* resolveUnqualified(std::string_view columnName) const {
+                for(const std::string& tableName : this->fromTables) {
+                    if(const SourceTableColumn* column =
+                           this->context.findSourceTableColumn(tableName, columnName)) {
+                        return column;
+                    }
+                }
+                return nullptr;
+            }
+
+            std::optional<InferredFieldType> inferFunctionCall(const FunctionCallNode& functionCall) const {
+                const std::string lower = toLowerAscii(functionCall.name);
+                auto firstArgument = [&]() -> std::optional<InferredFieldType> {
+                    if(functionCall.arguments.empty() || !functionCall.arguments.front()) {
+                        return std::nullopt;
+                    }
+                    return this->infer(*functionCall.arguments.front());
+                };
+                if(lower == "count" || lower == "row_number" || lower == "rank" || lower == "dense_rank" ||
+                   lower == "ntile" || lower == "length" || lower == "octet_length" || lower == "instr" ||
+                   lower == "unicode" || lower == "changes" || lower == "total_changes" ||
+                   lower == "last_insert_rowid") {
+                    return InferredFieldType{"int"};
+                }
+                if(lower == "avg" || lower == "total" || lower == "sum" || lower == "round" ||
+                   lower == "julianday" || lower == "percent_rank" || lower == "cume_dist" ||
+                   lower == "unixepoch" || lower == "pow" || lower == "power" || lower == "sqrt" ||
+                   lower == "exp" || lower == "ln" || lower == "log" || lower == "log2" || lower == "log10" ||
+                   lower == "sin" || lower == "cos" || lower == "tan" || lower == "asin" || lower == "acos" ||
+                   lower == "atan" || lower == "atan2" || lower == "degrees" || lower == "radians" ||
+                   lower == "pi" || lower == "ceil" || lower == "ceiling" || lower == "floor" ||
+                   lower == "trunc" || lower == "mod") {
+                    return InferredFieldType{"double"};
+                }
+                if(lower == "group_concat" || lower == "string_agg" || lower == "upper" || lower == "lower" ||
+                   lower == "substr" || lower == "substring" || lower == "trim" || lower == "ltrim" ||
+                   lower == "rtrim" || lower == "replace" || lower == "hex" || lower == "quote" ||
+                   lower == "printf" || lower == "format" || lower == "typeof" || lower == "char" ||
+                   lower == "date" || lower == "time" || lower == "datetime" || lower == "strftime" ||
+                   lower == "concat" || lower == "concat_ws" || lower == "json" || lower == "json_extract" ||
+                   lower == "json_array" || lower == "json_object" || lower == "json_quote" ||
+                   lower == "json_group_array" || lower == "json_group_object") {
+                    return InferredFieldType{"std::string"};
+                }
+                if(lower == "random") {
+                    return InferredFieldType{"int64_t"};
+                }
+                if(lower == "randomblob" || lower == "zeroblob") {
+                    return InferredFieldType{"std::vector<char>"};
+                }
+                if(lower == "abs" || lower == "min" || lower == "max" || lower == "coalesce" ||
+                   lower == "ifnull" || lower == "nullif" || lower == "lag" || lower == "lead" ||
+                   lower == "first_value" || lower == "last_value" || lower == "nth_value") {
+                    return firstArgument();
+                }
+                if(lower == "iif") {
+                    if(functionCall.arguments.size() >= 2 && functionCall.arguments.at(1)) {
+                        return this->infer(*functionCall.arguments.at(1));
+                    }
+                    return std::nullopt;
+                }
+                return std::nullopt;
+            }
+
+            std::optional<InferredFieldType> infer(const AstNode& node) const {
+                if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&node)) {
+                    if(const SourceTableColumn* column = this->resolveUnqualified(columnRef->columnName)) {
+                        return InferredFieldType{column->cppType, column->nullable};
+                    }
+                    return std::nullopt;
+                }
+                if(auto* qualifiedRef = dynamic_cast<const QualifiedColumnRefNode*>(&node)) {
+                    if(const SourceTableColumn* column =
+                           this->resolveQualified(qualifiedRef->tableName, qualifiedRef->columnName)) {
+                        return InferredFieldType{column->cppType, column->nullable};
+                    }
+                    return std::nullopt;
+                }
+                if(dynamic_cast<const IntegerLiteralNode*>(&node)) return InferredFieldType{"int64_t"};
+                if(dynamic_cast<const RealLiteralNode*>(&node)) return InferredFieldType{"double"};
+                if(dynamic_cast<const StringLiteralNode*>(&node)) return InferredFieldType{"std::string"};
+                if(dynamic_cast<const BoolLiteralNode*>(&node)) return InferredFieldType{"bool"};
+                if(dynamic_cast<const BlobLiteralNode*>(&node)) return InferredFieldType{"std::vector<char>"};
+                if(dynamic_cast<const CurrentDatetimeLiteralNode*>(&node)) {
+                    return InferredFieldType{"std::string"};
+                }
+                if(auto* cast = dynamic_cast<const CastNode*>(&node)) {
+                    return InferredFieldType{sqliteTypeToCpp(cast->typeName)};
+                }
+                if(auto* collate = dynamic_cast<const CollateNode*>(&node)) {
+                    if(collate->operand) {
+                        return this->infer(*collate->operand);
+                    }
+                    return std::nullopt;
+                }
+                if(auto* functionCall = dynamic_cast<const FunctionCallNode*>(&node)) {
+                    return this->inferFunctionCall(*functionCall);
+                }
+                if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&node)) {
+                    switch(unaryOperator->unaryOperator) {
+                    case UnaryOperator::minus:
+                    case UnaryOperator::plus:
+                        if(unaryOperator->operand) {
+                            return this->infer(*unaryOperator->operand);
+                        }
+                        return std::nullopt;
+                    case UnaryOperator::bitwiseNot: return InferredFieldType{"int64_t"};
+                    case UnaryOperator::logicalNot: return InferredFieldType{"bool"};
+                    }
+                    return std::nullopt;
+                }
+                if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&node)) {
+                    switch(binaryOperator->binaryOperator) {
+                    case BinaryOperator::concatenate:
+                    case BinaryOperator::jsonArrow:
+                    case BinaryOperator::jsonArrow2: return InferredFieldType{"std::string"};
+                    case BinaryOperator::add:
+                    case BinaryOperator::subtract:
+                    case BinaryOperator::multiply:
+                    case BinaryOperator::divide:
+                    case BinaryOperator::modulo: {
+                        auto lhsType = binaryOperator->lhs ? this->infer(*binaryOperator->lhs) : std::nullopt;
+                        auto rhsType = binaryOperator->rhs ? this->infer(*binaryOperator->rhs) : std::nullopt;
+                        if((lhsType && lhsType->cppType == "double") ||
+                           (rhsType && rhsType->cppType == "double")) {
+                            return InferredFieldType{"double"};
+                        }
+                        if(lhsType || rhsType) {
+                            return InferredFieldType{"int64_t"};
+                        }
+                        return std::nullopt;
+                    }
+                    case BinaryOperator::bitwiseAnd:
+                    case BinaryOperator::bitwiseOr:
+                    case BinaryOperator::shiftLeft:
+                    case BinaryOperator::shiftRight: return InferredFieldType{"int64_t"};
+                    default: return InferredFieldType{"bool"};
+                    }
+                }
+                if(dynamic_cast<const IsNullNode*>(&node) || dynamic_cast<const IsNotNullNode*>(&node) ||
+                   dynamic_cast<const BetweenNode*>(&node) || dynamic_cast<const InNode*>(&node) ||
+                   dynamic_cast<const ExistsNode*>(&node) || dynamic_cast<const LikeNode*>(&node) ||
+                   dynamic_cast<const GlobNode*>(&node)) {
+                    return InferredFieldType{"bool"};
+                }
+                if(auto* caseNode = dynamic_cast<const CaseNode*>(&node)) {
+                    if(!caseNode->branches.empty() && caseNode->branches.front().result) {
+                        return this->infer(*caseNode->branches.front().result);
+                    }
+                    return std::nullopt;
+                }
+                return std::nullopt;
+            }
+        };
+
+        std::string viewDisplayName(const CreateViewNode& node) {
+            std::string displayName;
+            if(node.viewSchemaName) {
+                displayName = *node.viewSchemaName;
+                displayName += '.';
+            }
+            displayName += node.viewName;
+            return displayName;
         }
-        displayName += node.viewName;
-        return CodeGenResult{"/* CREATE VIEW " + displayName + " — not supported for sqlite_orm */",
-                             {},
-                             {"CREATE VIEW " + displayName + " is not supported for sqlite_orm code generation"}};
+
+    }  // namespace
+
+    CreateViewParts DdlCodeGenerator::createViewParts(const CreateViewNode& node) {
+        CreateViewParts parts;
+        const std::string displayName = viewDisplayName(node);
+        if(!node.selectQuery) {
+            parts.warnings.push_back("CREATE VIEW " + displayName + " has no SELECT; cannot generate make_view()");
+            return parts;
+        }
+        if(node.viewSchemaName) {
+            parts.warnings.push_back(
+                "schema-qualified view name is not represented in sqlite_orm; generated code uses unqualified "
+                "view name only");
+        }
+
+        CodeGenResult selectExpression = this->coordinator.tryCodegenSelectLikeSubquery(*node.selectQuery);
+        parts.decisionPoints.insert(parts.decisionPoints.end(),
+                                    std::make_move_iterator(selectExpression.decisionPoints.begin()),
+                                    std::make_move_iterator(selectExpression.decisionPoints.end()));
+        appendUniqueStrings(parts.warnings, selectExpression.warnings);
+        appendUniqueStrings(parts.comments, selectExpression.comments);
+        if(selectExpression.code.empty()) {
+            parts.warnings.push_back("CREATE VIEW " + displayName +
+                                     ": SELECT is not supported for sqlite_orm code generation");
+            return parts;
+        }
+
+        const SelectNode* firstSelect = dynamic_cast<const SelectNode*>(node.selectQuery.get());
+        if(!firstSelect) {
+            if(auto* compound = dynamic_cast<const CompoundSelectNode*>(node.selectQuery.get())) {
+                if(!compound->selects.empty()) {
+                    firstSelect = dynamic_cast<const SelectNode*>(compound->selects.front().get());
+                }
+            }
+        }
+        if(!firstSelect) {
+            parts.warnings.push_back("CREATE VIEW " + displayName +
+                                     ": cannot derive view columns from its SELECT");
+            return parts;
+        }
+
+        const ViewFieldTypeInferrer inferrer(this->context, *firstSelect);
+        const std::string rawViewName = stripIdentifierQuotes(node.viewName);
+        const std::string structName = toStructName(node.viewName);
+
+        struct ViewField {
+            std::string cppName;
+            std::string cppType;
+            bool nullable = false;
+        };
+        std::vector<ViewField> fields;
+        std::vector<SourceTableColumn> registeredColumns;
+
+        auto appendField = [&](std::string sqlName, const std::optional<InferredFieldType>& inferred) {
+            ViewField field;
+            field.cppName = toCppIdentifier(sqlName);
+            if(inferred) {
+                field.cppType = inferred->cppType;
+                field.nullable = inferred->nullable;
+            } else {
+                field.cppType = defaultCppTypeForSyntheticColumn(field.cppName);
+                parts.warnings.push_back("view " + rawViewName + ": type of column `" + sqlName +
+                                         "` could not be inferred; defaulting to " + field.cppType);
+            }
+            registeredColumns.push_back(SourceTableColumn{std::move(sqlName), field.cppType, field.nullable});
+            fields.push_back(std::move(field));
+        };
+
+        auto expandAllColumnsOf = [&](std::string_view tableName) -> bool {
+            const auto tableIterator = this->context.sourceTableColumnsByNormalizedName.find(
+                normalizeSqlIdentifier(tableName));
+            if(tableIterator == this->context.sourceTableColumnsByNormalizedName.end()) {
+                return false;
+            }
+            for(const SourceTableColumn& column : tableIterator->second) {
+                appendField(column.sqlName, InferredFieldType{column.cppType, column.nullable});
+            }
+            return true;
+        };
+
+        {
+            if(!node.columnNames.empty() && node.columnNames.size() != firstSelect->columns.size()) {
+                parts.warnings.push_back("view " + rawViewName +
+                                         ": explicit column list size differs from SELECT column count");
+            }
+            for(size_t columnIndex = 0; columnIndex < firstSelect->columns.size(); ++columnIndex) {
+                const SelectColumn& selectColumn = firstSelect->columns.at(columnIndex);
+                if(!selectColumn.expression) {
+                    // Bare `SELECT *`: expand every FROM table's columns.
+                    if(inferrer.fromTables.empty()) {
+                        parts.warnings.push_back("CREATE VIEW " + displayName +
+                                                 ": cannot derive view columns from SELECT *");
+                        return parts;
+                    }
+                    for(const std::string& tableName : inferrer.fromTables) {
+                        if(!expandAllColumnsOf(tableName)) {
+                            parts.warnings.push_back("CREATE VIEW " + displayName + ": columns of table `" +
+                                                     tableName +
+                                                     "` are unknown; cannot derive view columns from SELECT *");
+                            return parts;
+                        }
+                    }
+                    continue;
+                }
+                if(auto* qualifiedAsterisk =
+                       dynamic_cast<const QualifiedAsteriskNode*>(selectColumn.expression.get())) {
+                    std::string_view sourceTable = qualifiedAsterisk->tableName;
+                    const auto aliasIterator =
+                        inferrer.tableByAliasNorm.find(normalizeSqlIdentifier(sourceTable));
+                    if(aliasIterator != inferrer.tableByAliasNorm.end()) {
+                        sourceTable = aliasIterator->second;
+                    }
+                    if(!expandAllColumnsOf(sourceTable)) {
+                        parts.warnings.push_back("CREATE VIEW " + displayName + ": columns of table `" +
+                                                 std::string(sourceTable) +
+                                                 "` are unknown; cannot derive view columns from `.*`");
+                        return parts;
+                    }
+                    continue;
+                }
+                std::string sqlName;
+                if(columnIndex < node.columnNames.size()) {
+                    sqlName = stripIdentifierQuotes(node.columnNames.at(columnIndex));
+                } else if(!selectColumn.alias.empty()) {
+                    sqlName = stripIdentifierQuotes(selectColumn.alias);
+                } else if(auto* columnRef =
+                              dynamic_cast<const ColumnRefNode*>(selectColumn.expression.get())) {
+                    sqlName = stripIdentifierQuotes(columnRef->columnName);
+                } else if(auto* qualifiedRef =
+                              dynamic_cast<const QualifiedColumnRefNode*>(selectColumn.expression.get())) {
+                    sqlName = stripIdentifierQuotes(qualifiedRef->columnName);
+                } else {
+                    sqlName = "column_" + std::to_string(columnIndex + 1);
+                    parts.warnings.push_back("view " + rawViewName + ": SELECT column " +
+                                             std::to_string(columnIndex + 1) +
+                                             " has no name; using synthesized field name `" + sqlName + "`");
+                }
+                std::optional<InferredFieldType> inferred;
+                if(selectColumn.expression) {
+                    inferred = inferrer.infer(*selectColumn.expression);
+                }
+                appendField(std::move(sqlName), inferred);
+            }
+        }
+
+        std::string structDeclaration =
+            "struct [[= \"" + rawViewName + "\"_orm_name]] " + structName + " {\n";
+        for(const ViewField& field : fields) {
+            if(field.nullable) {
+                structDeclaration += "    std::optional<" + field.cppType + "> " + field.cppName + ";\n";
+            } else {
+                structDeclaration +=
+                    "    " + field.cppType + " " + field.cppName + defaultInitializer(field.cppType) + ";\n";
+            }
+        }
+        structDeclaration += "};\n";
+
+        this->context.registerSourceTable(rawViewName, std::move(registeredColumns));
+
+        parts.structDeclaration = std::move(structDeclaration);
+        parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
+        appendUniqueString(parts.comments, kCommentViewReflection);
+        return parts;
+    }
+
+    CodeGenResult DdlCodeGenerator::generateCreateView(const CreateViewNode& node) {
+        CreateViewParts parts = this->createViewParts(node);
+        if(parts.makeViewExpression.empty()) {
+            return CodeGenResult{"/* CREATE VIEW " + viewDisplayName(node) + " — not supported for sqlite_orm */",
+                                 std::move(parts.decisionPoints),
+                                 std::move(parts.warnings),
+                                 {},
+                                 std::move(parts.comments)};
+        }
+        std::string code = parts.structDeclaration + "\nauto storage = make_storage(\"\",\n    " +
+                           parts.makeViewExpression + ");";
+        return CodeGenResult{std::move(code), std::move(parts.decisionPoints), std::move(parts.warnings), {},
+                             std::move(parts.comments)};
     }
 
     CreateTableParts DdlCodeGenerator::createTableParts(const CreateTableNode& createTable) {
@@ -454,6 +824,7 @@ namespace sqlite2orm {
             }
         }
         structDeclaration += "};\n";
+        this->context.registerSourceTable(rawTableName, sourceTableColumnsFromCreateTable(createTable));
 
         std::string makeExpression = "make_table(\"" + rawTableName + "\"";
         for(const auto& column : createTable.columns) {

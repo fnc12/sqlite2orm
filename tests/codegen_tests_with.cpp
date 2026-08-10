@@ -23,7 +23,7 @@ TEST_CASE("codegen: WITH RECURSIVE … UNION ALL arm with LIMIT still uses with_
         "using cte_0 = decltype(1_ctealias);\n"
         "constexpr auto cnt__x = colalias_a{};\n"
         "auto rows = storage.with_recursive(cte<cte_0>(\"x\").as(union_all(select(1 >>= cnt__x), "
-        "select(c(column<cte_0>(cnt__x)) + 1, limit(1000000)))), select(column<cte_0>(cnt__x)));");
+        "select(column<cte_0>(cnt__x) + 1, limit(1000000)))), select(column<cte_0>(cnt__x)));");
 }
 
 TEST_CASE("codegen: WITH single-CTE SELECT does not emit synthetic struct Cnt in prefix") {
@@ -76,7 +76,7 @@ TEST_CASE("codegen: with_cte_style legacy_colalias") {
         "using cnt = decltype(1_ctealias);\n"
         "constexpr auto cnt_x = colalias_a{};\n"
         "auto rows = storage.with_recursive(cte<cnt>(\"x\").as(union_all(select(1 >>= cnt_x), "
-        "select(c(column<cnt>(cnt_x)) + 1, limit(999)))), select(column<cnt>(cnt_x)));";
+        "select(column<cnt>(cnt_x) + 1, limit(999)))), select(column<cnt>(cnt_x)));";
     REQUIRE(codeGenResult.code == expected);
 }
 
@@ -201,11 +201,11 @@ TEST_CASE("codegen: WITH RECURSIVE multi-CTE with JOIN USING between CTEs") {
             "cte<cte_1>(\"name\").as("
             "union_all("
             "select(column<cte_0>(parent_of__parent) >>= ancestor_of_alice__name, "
-            "where(c(column<cte_0>(parent_of__name)) == \"Alice\")), "
+            "where(column<cte_0>(parent_of__name) == \"Alice\")), "
             "select(column<cte_0>(parent_of__parent), "
             "join<cte_1>(using_(column<cte_0>(parent_of__name))))))), "
             "select(&Family::name, "
-            "where(c(column<cte_1>(ancestor_of_alice__name)) == &Family::name and is_null(&Family::died)), "
+            "where(column<cte_1>(ancestor_of_alice__name) == &Family::name and is_null(&Family::died)), "
             "order_by(&Family::born)));");
 }
 
@@ -217,7 +217,7 @@ TEST_CASE("codegen: CTE explicit column resolved as colalias, not string literal
             "constexpr auto cnt__x = colalias_a{};\n"
             "auto rows = storage.with_recursive("
             "cte<cte_0>(\"x\").as("
-            "union_all(select(1 >>= cnt__x), select(c(column<cte_0>(cnt__x)) + 1, limit(1000000)))), "
+            "union_all(select(1 >>= cnt__x), select(column<cte_0>(cnt__x) + 1, limit(1000000)))), "
             "select(column<cte_0>(cnt__x)));");
 }
 
@@ -229,7 +229,7 @@ TEST_CASE("codegen: outer SELECT with CTE+real table resolves bare columns to re
             "auto rows = storage.with("
             "cte<cte_0>(\"val\").as(select(1 >>= c__val)), "
             "select(&Users::name, "
-            "where(c(column<cte_0>(c__val)) == &Users::id)));");
+            "where(column<cte_0>(c__val) == &Users::id)));");
 }
 
 TEST_CASE("codegen: SELECT from single-quoted table is same as double-quoted") {
@@ -247,4 +247,32 @@ TEST_CASE("codegen: WINDOW clause maps to window(...) on select") {
     REQUIRE(generate("SELECT row_number() OVER w FROM users WINDOW w AS (ORDER BY id);") ==
             "auto rows = storage.select(row_number().over(window_ref(\"w\")), "
             "window(\"w\", order_by(&Users::id)));");
+}
+
+TEST_CASE("codegen: WITH RECURSIVE VALUES(1) UNION ALL — Klaus example") {
+    constexpr std::string_view sql =
+        "WITH RECURSIVE cnt(x) AS(VALUES(1) UNION ALL SELECT x + 1 FROM cnt WHERE x < 1000000) SELECT x FROM cnt;";
+
+    SECTION("default indexed_typedef style") {
+        REQUIRE(generate(sql) ==
+                "using namespace sqlite_orm::literals;\n"
+                "using cte_0 = decltype(1_ctealias);\n"
+                "constexpr auto cnt__x = colalias_a{};\n"
+                "auto rows = storage.with_recursive(cte<cte_0>(\"x\").as(union_all(select(1 >>= cnt__x), "
+                "select(column<cte_0>(cnt__x) + 1, where(column<cte_0>(cnt__x) < 1000000)))), "
+                "select(column<cte_0>(cnt__x)));");
+    }
+
+    SECTION("cpp20_monikers style") {
+        CodeGenPolicy codeGenPolicy;
+        codeGenPolicy.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+        auto result = generateWithPolicy(sql, codeGenPolicy);
+        REQUIRE(result.code ==
+                "using namespace sqlite_orm::literals;\n"
+                "constexpr orm_cte_moniker auto cnt_cte = \"cnt\"_cte;\n"
+                "constexpr orm_column_alias auto cnt__x = \"x\"_col;\n"
+                "auto rows = storage.with_recursive(cnt_cte(cnt__x).as(union_all(select(1 >>= cnt__x), "
+                "select(cnt_cte->*cnt__x + 1, where(cnt_cte->*cnt__x < 1000000)))), "
+                "select(cnt_cte->*cnt__x));");
+    }
 }

@@ -51,6 +51,27 @@ namespace sqlite2orm {
         return false;
     }
 
+    void CodeGeneratorContext::registerSourceTable(std::string_view tableName,
+                                                   std::vector<SourceTableColumn> columns) {
+        this->sourceTableColumnsByNormalizedName[normalizeSqlIdentifier(tableName)] = std::move(columns);
+    }
+
+    const SourceTableColumn* CodeGeneratorContext::findSourceTableColumn(std::string_view tableName,
+                                                                         std::string_view columnName) const {
+        const auto tableIterator =
+            this->sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(tableName));
+        if(tableIterator == this->sourceTableColumnsByNormalizedName.end()) {
+            return nullptr;
+        }
+        const std::string normalizedColumn = normalizeSqlIdentifier(columnName);
+        for(const SourceTableColumn& sourceTableColumn : tableIterator->second) {
+            if(normalizeSqlIdentifier(sourceTableColumn.sqlName) == normalizedColumn) {
+                return &sourceTableColumn;
+            }
+        }
+        return nullptr;
+    }
+
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {
         auto [it, inserted] = this->columnTypes.try_emplace(cppName, cppType);
         if(!inserted && it->second == "int" && cppType != "int") {

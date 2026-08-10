@@ -408,7 +408,16 @@ Statuses:
 
 ## create-view-stmt (https://www.sqlite.org/lang_createview.html)
 
-- [!] CREATE VIEW (not in sqlite_orm)
+- [x] CREATE VIEW → annotated struct (`[[= "name"_orm_name]]`) + `make_view<T>(select(...))`;
+  field types inferred from CREATE TABLE statements in the same batch / database (fallback:
+  name heuristics + warning). Requires a C++26 compiler with reflection (P2996) — sqlite_orm
+  auto-detects it (`SQLITE_ORM_REFLECTION_SUPPORTED` → `SQLITE_ORM_WITH_VIEW`); codegen
+  attaches an explanatory comment.
+- [x] Explicit view column list — `CREATE VIEW v(a, b) AS ...` names the struct fields
+- [x] `SELECT *` / `t.*` in view body — expanded to the source table's columns
+- [~] Views whose SELECT is not supported as a subexpression (e.g. GROUP BY) — warning,
+  view omitted from `make_storage()`
+- [~] schema-qualified view name (parsed; codegen warns, uses unqualified name)
 
 ---
 
@@ -597,7 +606,6 @@ Legend: **`[!]`** — no sqlite_orm mapping (validator error, or warning where
 noted). **`[x]`** — sqlite2orm emits sqlite_orm API for this construct. The
 parser recognizes everything listed; this section tracks **downstream** support.
 
-- [!] CREATE VIEW
 - [!] Subselect in FROM
 - [!] NULLS FIRST / NULLS LAST
 - [!] RETURNING clause

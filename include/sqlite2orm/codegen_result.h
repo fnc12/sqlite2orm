@@ -43,4 +43,12 @@ namespace sqlite2orm {
         std::vector<std::string> warnings;
     };
 
+    struct CreateViewParts {
+        std::string structDeclaration;
+        std::string makeViewExpression;
+        std::vector<DecisionPoint> decisionPoints;
+        std::vector<std::string> warnings;
+        std::vector<std::string> comments;
+    };
+
 }  // namespace sqlite2orm

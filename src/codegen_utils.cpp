@@ -1,4 +1,5 @@
 #include "codegen_utils.h"
+#include "codegen_context.h"
 
 #include <sqlite2orm/utils.h>
 
@@ -259,6 +260,23 @@ namespace sqlite2orm {
         "built with the preprocessor macro SQLITE_ORM_WITH_CPP20_ALIASES defined. Your project may enable "
         "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
         "mechanism.";
+
+    std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable) {
+        std::vector<SourceTableColumn> columns;
+        for(const ColumnDef& column : createTable.columns) {
+            const auto cppType =
+                column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+            const bool nullable = !column.primaryKey && !column.notNull;
+            columns.push_back(SourceTableColumn{stripIdentifierQuotes(column.name), cppType, nullable});
+        }
+        return columns;
+    }
+
+    const std::string kCommentViewReflection =
+        "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
+        "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
+        "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
+        "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile.";
 
     void appendUniqueStrings(std::vector<std::string>& destination, const std::vector<std::string>& source) {
         for(const auto& value : source) {

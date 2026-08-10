@@ -43,6 +43,9 @@ namespace sqlite2orm {
         /** Struct body + `make_table(...)[.without_rowid()]` for schema header merge (no make_storage). */
         CreateTableParts createTableParts(const CreateTableNode& createTable);
 
+        /** Annotated struct + `make_view<T>(select(...))` for schema header merge (no make_storage). */
+        CreateViewParts createViewParts(const CreateViewNode& node);
+
         CodeGenResult generateNode(const AstNode& astNode);
 
         CodeGenResult tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode);

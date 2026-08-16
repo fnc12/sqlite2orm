@@ -370,6 +370,70 @@ TEST_CASE("processSql: SAVEPOINT lifecycle") {
     REQUIRE(processSql("SAVEPOINT sp1; ROLLBACK TO SAVEPOINT sp1; RELEASE SAVEPOINT sp1;") == expected);
 }
 
+TEST_CASE("joinGeneratedCode: functional savepoints wrap the statements up to RELEASE") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "functional";
+    const auto results = processMultiSql(
+        "SAVEPOINT sp1; DELETE FROM t; RELEASE sp1;", &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "storage.savepoint(\"sp1\", [&] {\n"
+        "    storage.remove_all<T>();\n"
+        "    return true;\n"
+        "});\n");
+}
+
+TEST_CASE("joinGeneratedCode: functional savepoints nest") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "functional";
+    const auto results = processMultiSql(
+        "SAVEPOINT outer_sp; DELETE FROM t; SAVEPOINT inner_sp; DELETE FROM u; RELEASE inner_sp; "
+        "RELEASE outer_sp;",
+        &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "storage.savepoint(\"outer_sp\", [&] {\n"
+        "    storage.remove_all<T>();\n"
+        "    storage.savepoint(\"inner_sp\", [&] {\n"
+        "        storage.remove_all<U>();\n"
+        "        return true;\n"
+        "    });\n"
+        "    return true;\n"
+        "});\n");
+}
+
+TEST_CASE("joinGeneratedCode: functional savepoint without RELEASE degrades to the manual call") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "functional";
+    const auto results = processMultiSql("SAVEPOINT sp1; DELETE FROM t;", &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "storage.savepoint(\"sp1\");\n"
+        "storage.remove_all<T>();\n");
+}
+
+TEST_CASE("joinGeneratedCode: ROLLBACK TO inside a functional savepoint keeps the direct call") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "functional";
+    const auto results = processMultiSql(
+        "SAVEPOINT sp1; DELETE FROM t; ROLLBACK TO SAVEPOINT sp1; RELEASE sp1;", &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "storage.savepoint(\"sp1\", [&] {\n"
+        "    storage.remove_all<T>();\n"
+        "    storage.rollback_to_savepoint(\"sp1\");\n"
+        "    return true;\n"
+        "});\n");
+}
+
+TEST_CASE("joinGeneratedCode: guard style leaves statements flat") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "guard";
+    const auto results = processMultiSql(
+        "SAVEPOINT sp1; DELETE FROM t; ROLLBACK TO SAVEPOINT sp1; RELEASE sp1;", &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "auto sp1_savepoint = storage.savepoint_guard(\"sp1\");\n"
+        "storage.remove_all<T>();\n"
+        "sp1_savepoint.rollback_to();\n"
+        "sp1_savepoint.release();\n");
+}
+
 TEST_CASE("processSql: VACUUM") {
     const ProcessSqlResult expected = expectedFromPipeline("VACUUM;");
     REQUIRE(processSql("VACUUM;") == expected);

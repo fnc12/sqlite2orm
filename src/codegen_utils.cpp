@@ -25,6 +25,17 @@ namespace sqlite2orm {
         return result;
     }
 
+    std::string savepointGuardVariableName(std::string_view savepointName) {
+        std::string variableName;
+        for(const char c : stripIdentifierQuotes(savepointName)) {
+            variableName += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
+        }
+        if(variableName.empty() || std::isdigit(static_cast<unsigned char>(variableName.front()))) {
+            variableName.insert(variableName.begin(), '_');
+        }
+        return variableName + "_savepoint";
+    }
+
     std::string colaliasBuiltinSlot(size_t slotIndex) {
         static constexpr std::array<std::string_view, 9> kBuiltinSlots = {
             "colalias_a{}", "colalias_b{}", "colalias_c{}", "colalias_d{}", "colalias_e{}",

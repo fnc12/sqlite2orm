@@ -191,6 +191,11 @@ namespace sqlite2orm {
             return CodeGenResult{"storage.commit();", {}, {}};
         }
         if(node.rollbackToSavepoint) {
+            if(policyEquals(this->context.codeGenPolicy, "savepoint_style", "guard")) {
+                return CodeGenResult{savepointGuardVariableName(*node.rollbackToSavepoint) + ".rollback_to();",
+                                     {},
+                                     {}};
+            }
             return CodeGenResult{"storage.rollback_to_savepoint(" +
                                      identifierToCppStringLiteral(*node.rollbackToSavepoint) + ");",
                                  {},
@@ -199,16 +204,66 @@ namespace sqlite2orm {
         return CodeGenResult{"storage.rollback();", {}, {}};
     }
 
+    namespace {
+
+        std::string chosenSavepointStyle(const CodeGenPolicy* policy) {
+            for(std::string_view style : {"guard", "functional"}) {
+                if(policyEquals(policy, "savepoint_style", style)) {
+                    return std::string(style);
+                }
+            }
+            return "manual";
+        }
+
+        std::string savepointManualCode(const std::string& name) {
+            return "storage.savepoint(" + identifierToCppStringLiteral(name) + ");";
+        }
+
+        std::string savepointGuardCode(const std::string& name) {
+            return "auto " + savepointGuardVariableName(name) + " = storage.savepoint_guard(" +
+                   identifierToCppStringLiteral(name) + ");";
+        }
+
+        std::string savepointFunctionalCode(const std::string& name) {
+            return "storage.savepoint(" + identifierToCppStringLiteral(name) + ", [&] {\n    return true;\n});";
+        }
+
+    }  // namespace
+
     CodeGenResult DdlCodeGenerator::generateSavepoint(const SavepointNode& node) {
-        CodeGenResult result{"storage.savepoint(" + identifierToCppStringLiteral(node.name) + ");", {}, {}};
-        result.comments.push_back(
-            "sqlite_orm also offers a RAII variant (`auto guard = storage.savepoint_guard(name)`, rolls back and "
-            "releases in its destructor unless `guard.release()` is called) and a functional one "
-            "(`storage.savepoint(name, lambda)`); the direct calls here mirror the SQL statements 1:1.");
+        const std::string style = chosenSavepointStyle(this->context.codeGenPolicy);
+        std::string code = style == "guard"        ? savepointGuardCode(node.name)
+                           : style == "functional" ? savepointFunctionalCode(node.name)
+                                                   : savepointManualCode(node.name);
+
+        std::vector<Alternative> alternatives;
+        alternatives.push_back(Alternative{
+            "manual", savepointManualCode(node.name),
+            "direct calls mirroring the SQL statements 1:1 (savepoint / release_savepoint / "
+            "rollback_to_savepoint)"});
+        alternatives.push_back(Alternative{
+            "guard", savepointGuardCode(node.name),
+            "RAII savepoint_t: rolls back and releases in its destructor unless released; RELEASE and ROLLBACK TO "
+            "for this name become " +
+                savepointGuardVariableName(node.name) + ".release() / .rollback_to()"});
+        alternatives.push_back(Alternative{
+            "functional", savepointFunctionalCode(node.name),
+            "storage.savepoint(name, lambda): the statements up to the matching RELEASE move into the lambda; "
+            "returning true releases the savepoint, false rolls it back"});
+
+        CodeGenResult result{std::move(code), {}, {}};
+        result.decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
+                                                      "savepoint_style",
+                                                      style,
+                                                      result.code,
+                                                      std::move(alternatives)});
         return result;
     }
 
     CodeGenResult DdlCodeGenerator::generateRelease(const ReleaseNode& node) {
+        if(chosenSavepointStyle(this->context.codeGenPolicy) == "guard") {
+            return CodeGenResult{savepointGuardVariableName(node.name) + ".release();", {}, {}};
+        }
         return CodeGenResult{"storage.release_savepoint(" + identifierToCppStringLiteral(node.name) + ");",
                              {},
                              {}};

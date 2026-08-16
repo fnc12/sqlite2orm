@@ -191,11 +191,27 @@ namespace sqlite2orm {
             return CodeGenResult{"storage.commit();", {}, {}};
         }
         if(node.rollbackToSavepoint) {
-            return CodeGenResult{"/* ROLLBACK TO SAVEPOINT */",
+            return CodeGenResult{"storage.rollback_to_savepoint(" +
+                                     identifierToCppStringLiteral(*node.rollbackToSavepoint) + ");",
                                  {},
-                                 {"ROLLBACK TO SAVEPOINT is not supported in the sqlite_orm storage API"}};
+                                 {}};
         }
         return CodeGenResult{"storage.rollback();", {}, {}};
+    }
+
+    CodeGenResult DdlCodeGenerator::generateSavepoint(const SavepointNode& node) {
+        CodeGenResult result{"storage.savepoint(" + identifierToCppStringLiteral(node.name) + ");", {}, {}};
+        result.comments.push_back(
+            "sqlite_orm also offers a RAII variant (`auto guard = storage.savepoint_guard(name)`, rolls back and "
+            "releases in its destructor unless `guard.release()` is called) and a functional one "
+            "(`storage.savepoint(name, lambda)`); the direct calls here mirror the SQL statements 1:1.");
+        return result;
+    }
+
+    CodeGenResult DdlCodeGenerator::generateRelease(const ReleaseNode& node) {
+        return CodeGenResult{"storage.release_savepoint(" + identifierToCppStringLiteral(node.name) + ");",
+                             {},
+                             {}};
     }
 
     CodeGenResult DdlCodeGenerator::generateVacuum(const VacuumStatementNode& node) {

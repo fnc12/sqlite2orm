@@ -126,6 +126,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/codegen_tests_virtual_table.cpp
         tests/codegen_tests_with.cpp
         tests/codegen_tests_pragma.cpp
+        tests/codegen_tests_savepoint.cpp
         tests/validator_tests.cpp
         tests/process_tests.cpp
         tests/schema_reader_tests.cpp

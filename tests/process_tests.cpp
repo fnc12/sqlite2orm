@@ -364,6 +364,12 @@ TEST_CASE("processSql: BEGIN TRANSACTION") {
     REQUIRE(processSql("BEGIN TRANSACTION;") == expected);
 }
 
+TEST_CASE("processSql: SAVEPOINT lifecycle") {
+    const ProcessSqlResult expected =
+        expectedFromPipeline("SAVEPOINT sp1; ROLLBACK TO SAVEPOINT sp1; RELEASE SAVEPOINT sp1;");
+    REQUIRE(processSql("SAVEPOINT sp1; ROLLBACK TO SAVEPOINT sp1; RELEASE SAVEPOINT sp1;") == expected);
+}
+
 TEST_CASE("processSql: VACUUM") {
     const ProcessSqlResult expected = expectedFromPipeline("VACUUM;");
     REQUIRE(processSql("VACUUM;") == expected);

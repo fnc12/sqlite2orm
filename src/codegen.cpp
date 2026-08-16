@@ -122,6 +122,12 @@ namespace sqlite2orm {
         if(auto* transactionControl = dynamic_cast<const TransactionControlNode*>(&astNode)) {
             return this->ddlCodeGenerator->generateTransactionControl(*transactionControl);
         }
+        if(auto* savepointNode = dynamic_cast<const SavepointNode*>(&astNode)) {
+            return this->ddlCodeGenerator->generateSavepoint(*savepointNode);
+        }
+        if(auto* releaseNode = dynamic_cast<const ReleaseNode*>(&astNode)) {
+            return this->ddlCodeGenerator->generateRelease(*releaseNode);
+        }
         if(auto* vacuumStatement = dynamic_cast<const VacuumStatementNode*>(&astNode)) {
             return this->ddlCodeGenerator->generateVacuum(*vacuumStatement);
         }

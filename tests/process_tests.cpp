@@ -422,6 +422,46 @@ TEST_CASE("joinGeneratedCode: ROLLBACK TO inside a functional savepoint keeps th
         "});\n");
 }
 
+TEST_CASE("joinGeneratedCode: guard style - same-name savepoints get unique variables") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "guard";
+    const auto results = processMultiSql(
+        "SAVEPOINT sp; SAVEPOINT sp; RELEASE sp; RELEASE sp;", &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "auto sp_savepoint = storage.savepoint_guard(\"sp\");\n"
+        "auto sp_savepoint_2 = storage.savepoint_guard(\"sp\");\n"
+        "sp_savepoint_2.release();\n"
+        "sp_savepoint.release();\n");
+}
+
+TEST_CASE("joinGeneratedCode: guard style - RELEASE of an outer savepoint pops the inner ones") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "guard";
+    // RELEASE a also releases b (SQLite stack semantics), so a later SAVEPOINT b
+    // must get a fresh variable, not collide with the popped one.
+    const auto results = processMultiSql(
+        "SAVEPOINT a; SAVEPOINT b; RELEASE a; SAVEPOINT b; RELEASE b;", &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "auto a_savepoint = storage.savepoint_guard(\"a\");\n"
+        "auto b_savepoint = storage.savepoint_guard(\"b\");\n"
+        "a_savepoint.release();\n"
+        "auto b_savepoint_2 = storage.savepoint_guard(\"b\");\n"
+        "b_savepoint_2.release();\n");
+}
+
+TEST_CASE("joinGeneratedCode: guard style - ROLLBACK TO resolves to the innermost same-name savepoint") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "guard";
+    const auto results = processMultiSql(
+        "SAVEPOINT sp; SAVEPOINT sp; ROLLBACK TO sp; RELEASE sp; RELEASE sp;", &policy);
+    REQUIRE(joinGeneratedCode(results) ==
+        "auto sp_savepoint = storage.savepoint_guard(\"sp\");\n"
+        "auto sp_savepoint_2 = storage.savepoint_guard(\"sp\");\n"
+        "sp_savepoint_2.rollback_to();\n"
+        "sp_savepoint_2.release();\n"
+        "sp_savepoint.release();\n");
+}
+
 TEST_CASE("joinGeneratedCode: guard style leaves statements flat") {
     CodeGenPolicy policy;
     policy.chosenAlternativeValueByCategory["savepoint_style"] = "guard";

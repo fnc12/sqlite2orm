@@ -475,14 +475,6 @@ namespace sqlite2orm {
                 auto se = validate(*createView->selectQuery);
                 errors.insert(errors.end(), se.begin(), se.end());
             }
-        } else if(auto* node = dynamic_cast<const SavepointNode*>(&astNode)) {
-            errors.push_back(ValidationError{
-                "SAVEPOINT is not supported in sqlite_orm",
-                node->location, "SavepointNode"});
-        } else if(auto* node = dynamic_cast<const ReleaseNode*>(&astNode)) {
-            errors.push_back(ValidationError{
-                "RELEASE is not supported in sqlite_orm",
-                node->location, "ReleaseNode"});
         } else if(auto* node = dynamic_cast<const AttachDatabaseNode*>(&astNode)) {
             errors.push_back(ValidationError{
                 "ATTACH DATABASE is not supported in sqlite_orm",

@@ -19,6 +19,9 @@ namespace sqlite2orm {
     std::string stripIdentifierQuotes(std::string_view identifier);
     std::string toCppIdentifier(std::string_view sqlName);
     std::string identifierToCppStringLiteral(std::string_view sqlIdentifier);
+
+    /** C++ variable name for the RAII guard of a savepoint (`sp 1` -> `sp_1_savepoint`). */
+    std::string savepointGuardVariableName(std::string_view savepointName);
     std::string sqlStringToCpp(std::string_view sqlString);
 
     std::string stripColumnAliasQuotes(std::string_view alias);

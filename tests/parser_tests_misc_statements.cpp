@@ -18,6 +18,26 @@ TEST_CASE("parser: RELEASE name (without SAVEPOINT keyword)") {
     REQUIRE(requireNode<ReleaseNode>(result) == ReleaseNode({}, "sp1"));
 }
 
+TEST_CASE("parser: ROLLBACK TO SAVEPOINT name") {
+    auto result = parse("ROLLBACK TO SAVEPOINT sp1;");
+    const auto& node = requireNode<TransactionControlNode>(result);
+    REQUIRE(node.kind == TransactionControlNode::Kind::rollback);
+    REQUIRE(node.rollbackToSavepoint == "sp1");
+}
+
+TEST_CASE("parser: ROLLBACK TRANSACTION TO SAVEPOINT name") {
+    auto result = parse("ROLLBACK TRANSACTION TO SAVEPOINT sp1;");
+    const auto& node = requireNode<TransactionControlNode>(result);
+    REQUIRE(node.kind == TransactionControlNode::Kind::rollback);
+    REQUIRE(node.rollbackToSavepoint == "sp1");
+}
+
+TEST_CASE("parser: ROLLBACK TO name (without SAVEPOINT keyword)") {
+    auto result = parse("ROLLBACK TO sp1;");
+    const auto& node = requireNode<TransactionControlNode>(result);
+    REQUIRE(node.rollbackToSavepoint == "sp1");
+}
+
 TEST_CASE("parser: ATTACH DATABASE") {
     auto result = parse("ATTACH DATABASE 'test.db' AS test_schema;");
     const auto& node = requireNode<AttachDatabaseNode>(result);

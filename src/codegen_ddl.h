@@ -16,6 +16,8 @@ namespace sqlite2orm {
         CodeGenResult generateCreateTrigger(const CreateTriggerNode& createTrigger);
         CodeGenResult generateCreateIndex(const CreateIndexNode& createIndex);
         CodeGenResult generateTransactionControl(const TransactionControlNode& node);
+        CodeGenResult generateSavepoint(const SavepointNode& node);
+        CodeGenResult generateRelease(const ReleaseNode& node);
         CodeGenResult generateVacuum(const VacuumStatementNode& node);
         CodeGenResult generateDrop(const DropStatementNode& node);
         CodeGenResult generateCreateVirtualTable(const CreateVirtualTableNode& node);

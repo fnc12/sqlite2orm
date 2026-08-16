@@ -300,18 +300,16 @@ TEST_CASE("validator: UPDATE FROM gives validation error") {
              {1, 1}, "UpdateNode"}});
 }
 
-TEST_CASE("validator: SAVEPOINT gives validation error") {
-    REQUIRE(validate("SAVEPOINT sp1") ==
-        std::vector<ValidationError>{
-            {"SAVEPOINT is not supported in sqlite_orm",
-             {1, 1}, "SavepointNode"}});
+TEST_CASE("validator: SAVEPOINT is supported") {
+    REQUIRE(validate("SAVEPOINT sp1") == std::vector<ValidationError>{});
 }
 
-TEST_CASE("validator: RELEASE gives validation error") {
-    REQUIRE(validate("RELEASE sp1") ==
-        std::vector<ValidationError>{
-            {"RELEASE is not supported in sqlite_orm",
-             {1, 1}, "ReleaseNode"}});
+TEST_CASE("validator: RELEASE is supported") {
+    REQUIRE(validate("RELEASE sp1") == std::vector<ValidationError>{});
+}
+
+TEST_CASE("validator: ROLLBACK TO SAVEPOINT is supported") {
+    REQUIRE(validate("ROLLBACK TO SAVEPOINT sp1") == std::vector<ValidationError>{});
 }
 
 TEST_CASE("validator: ATTACH DATABASE gives validation error") {

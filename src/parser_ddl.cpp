@@ -758,6 +758,7 @@ namespace sqlite2orm {
             advanceToken();
             auto node = std::make_unique<TransactionControlNode>(location);
             node->kind = TransactionControlNode::Kind::rollback;
+            match(TokenType::kwTransaction);
             if(match(TokenType::kwTo)) {
                 (void)match(TokenType::kwSavepoint);
                 if(!isColumnNameToken()) {
@@ -765,9 +766,7 @@ namespace sqlite2orm {
                 }
                 node->rollbackToSavepoint = std::string(current().value);
                 advanceToken();
-                return node;
             }
-            match(TokenType::kwTransaction);
             return node;
         }
         return nullptr;

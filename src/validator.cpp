@@ -120,6 +120,11 @@ namespace sqlite2orm {
             errors.insert(errors.end(), e.begin(), e.end());
             auto pe = validate(*node->pattern);
             errors.insert(errors.end(), pe.begin(), pe.end());
+        } else if(auto* node = dynamic_cast<const MatchNode*>(&astNode)) {
+            auto e = validate(*node->operand);
+            errors.insert(errors.end(), e.begin(), e.end());
+            auto pe = validate(*node->pattern);
+            errors.insert(errors.end(), pe.begin(), pe.end());
         } else if(auto* node = dynamic_cast<const CastNode*>(&astNode)) {
             auto e = validate(*node->operand);
             errors.insert(errors.end(), e.begin(), e.end());

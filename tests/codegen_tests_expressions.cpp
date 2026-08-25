@@ -302,6 +302,14 @@ TEST_CASE("codegen: NOT GLOB") {
     REQUIRE(generate("name NOT GLOB '*foo*'") == "not_(glob(&User::name, \"*foo*\"))");
 }
 
+TEST_CASE("codegen: MATCH") {
+    REQUIRE(generate("body MATCH 'word'") == "match(&User::body, \"word\")");
+}
+
+TEST_CASE("codegen: NOT MATCH") {
+    REQUIRE(generate("body NOT MATCH 'word'") == "not_(match(&User::body, \"word\"))");
+}
+
 TEST_CASE("codegen: IS NULL in compound expression") {
     auto result = generateFull("a IS NULL AND b = 1");
     REQUIRE(result.code == "is_null(&User::a) and c(&User::b) == 1");

@@ -548,6 +548,18 @@ TEST_CASE("parser: NOT GLOB") {
             GlobNode(makeNode<ColumnRefNode>("name"), makeNode<StringLiteralNode>("'*foo*'"), true, {}));
 }
 
+TEST_CASE("parser: MATCH") {
+    auto parseResult = parse("body MATCH 'word'");
+    REQUIRE(requireNode<MatchNode>(parseResult) ==
+            MatchNode(makeNode<ColumnRefNode>("body"), makeNode<StringLiteralNode>("'word'"), false, {}));
+}
+
+TEST_CASE("parser: NOT MATCH") {
+    auto parseResult = parse("body NOT MATCH 'word'");
+    REQUIRE(requireNode<MatchNode>(parseResult) ==
+            MatchNode(makeNode<ColumnRefNode>("body"), makeNode<StringLiteralNode>("'word'"), true, {}));
+}
+
 TEST_CASE("parser: IS NULL in AND expression") {
     auto parseResult = parse("a IS NULL AND b IS NOT NULL");
     REQUIRE(requireNode<BinaryOperatorNode>(parseResult) == BinaryOperatorNode(

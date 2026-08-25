@@ -673,7 +673,7 @@ namespace sqlite2orm {
                 if(dynamic_cast<const IsNullNode*>(&node) || dynamic_cast<const IsNotNullNode*>(&node) ||
                    dynamic_cast<const BetweenNode*>(&node) || dynamic_cast<const InNode*>(&node) ||
                    dynamic_cast<const ExistsNode*>(&node) || dynamic_cast<const LikeNode*>(&node) ||
-                   dynamic_cast<const GlobNode*>(&node)) {
+                   dynamic_cast<const GlobNode*>(&node) || dynamic_cast<const MatchNode*>(&node)) {
                     return InferredFieldType{"bool"};
                 }
                 if(auto* caseNode = dynamic_cast<const CaseNode*>(&node)) {

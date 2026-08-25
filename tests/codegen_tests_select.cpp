@@ -496,3 +496,23 @@ TEST_CASE("codegen: SELECT with window function OVER(), bind params in WHERE and
         "SELECT id, firstName, lastName, count(id) OVER() FROM user_profile WHERE id > :refId ORDER BY id LIMIT :resultperpage;");
     REQUIRE(result == "auto rows = storage.select(columns(&UserProfile::id, &UserProfile::firstName, &UserProfile::lastName, count(&UserProfile::id).over()), where(c(&UserProfile::id) > refId), order_by(&UserProfile::id), limit(resultperpage));");
 }
+
+TEST_CASE("codegen: MATCH against a column") {
+    auto result = generate("SELECT * FROM docs WHERE body MATCH 'sqlite'");
+    REQUIRE(result == "auto rows = storage.get_all<Docs>(where(match(&Docs::body, \"sqlite\")));");
+}
+
+TEST_CASE("codegen: MATCH against the FTS5 table name uses the hidden any column") {
+    auto result = generateFull("SELECT * FROM docs_search WHERE docs_search MATCH 'sqlite'");
+    REQUIRE(result.code ==
+            "auto rows = storage.get_all<DocsSearch>(where(match(c<DocsSearch>()->*&fts5::hidden::any, "
+            "\"sqlite\")));");
+    REQUIRE(result.warnings ==
+            std::vector<std::string>{"MATCH against table \"docs_search\" maps to the hidden FTS5 'any' "
+                                     "column; requires an FTS5 virtual table mapped as DocsSearch"});
+}
+
+TEST_CASE("codegen: MATCH against an aliased FTS5 table name") {
+    auto result = generateFull("SELECT d.* FROM docs d JOIN docs_search s ON d.id = s.rowid WHERE docs_search MATCH 'word'");
+    REQUIRE(result.code.find("match(c<DocsSearch>()->*&fts5::hidden::any, \"word\")") != std::string::npos);
+}

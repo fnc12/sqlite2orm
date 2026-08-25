@@ -214,13 +214,7 @@ namespace sqlite2orm {
                     });
                 }
             }
-            if(createTable->strict) {
-                errors.push_back(ValidationError{
-                    "STRICT tables are not supported in sqlite_orm",
-                    createTable->location,
-                    "CreateTableNode"
-                });
-            }
+            // STRICT is not an error: codegen converts the table as non-strict and warns.
         } else if(auto* compoundNode = dynamic_cast<const CompoundSelectNode*>(&astNode)) {
             for(const auto& childSelect : compoundNode->selects) {
                 auto childErrors = validate(*childSelect);

@@ -286,11 +286,8 @@ TEST_CASE("validator: IS DISTINCT FROM gives validation error") {
              {1, 10}, "BinaryOperatorNode"}});
 }
 
-TEST_CASE("validator: STRICT table gives validation error") {
-    REQUIRE(validate("CREATE TABLE t (a TEXT) STRICT") ==
-        std::vector<ValidationError>{
-            {"STRICT tables are not supported in sqlite_orm",
-             {1, 1}, "CreateTableNode"}});
+TEST_CASE("validator: STRICT table passes validation (codegen warns instead)") {
+    REQUIRE(validate("CREATE TABLE t (a TEXT) STRICT") == std::vector<ValidationError>{});
 }
 
 TEST_CASE("validator: UPDATE FROM gives validation error") {

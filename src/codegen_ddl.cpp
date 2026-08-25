@@ -1087,8 +1087,9 @@ namespace sqlite2orm {
             makeExpression += ".without_rowid()";
         }
         if(createTable.strict) {
-            warnings.push_back("STRICT tables are not directly supported by sqlite_orm — "
-                               "the STRICT qualifier is ignored in codegen");
+            warnings.push_back("STRICT is not yet supported in sqlite_orm and was ignored for table " +
+                               stripIdentifierQuotes(createTable.tableName) +
+                               " (converted as a regular table)");
         }
 
         return CreateTableParts{std::move(structDeclaration), std::move(makeExpression), std::move(warnings)};

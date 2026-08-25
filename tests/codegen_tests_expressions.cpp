@@ -203,7 +203,6 @@ TEST_CASE("codegen: logical NOT") {
                 DecisionPoint{2, "expr_style", "operator", "not c(&User::a)",
                               {
                                   Alternative{"operator_excl", "!c(&User::a)", "use ! instead of not"},
-                                  Alternative{"functional", "not_(&User::a)", "functional style"},
                               }},
             }});
     }
@@ -218,7 +217,6 @@ TEST_CASE("codegen: logical NOT") {
                 DecisionPoint{3, "expr_style", "operator", "not (-c(&User::a))",
                               {
                                   Alternative{"operator_excl", "!(-c(&User::a))", "use ! instead of not"},
-                                  Alternative{"functional", "not_(-c(&User::a))", "functional style"},
                               }},
             }
         });
@@ -255,7 +253,7 @@ TEST_CASE("codegen: BETWEEN") {
 }
 
 TEST_CASE("codegen: NOT BETWEEN") {
-    REQUIRE(generate("a NOT BETWEEN 1 AND 10") == "not_(between(&User::a, 1, 10))");
+    REQUIRE(generate("a NOT BETWEEN 1 AND 10") == "!between(&User::a, 1, 10)");
 }
 
 TEST_CASE("codegen: IN") {
@@ -273,9 +271,22 @@ TEST_CASE("codegen: NOT IN") {
                                   "negation_style",
                                   "not_in",
                                   "not_in(&User::a, {1, 2})",
-                                  {Alternative{"not_wrapper", "not_(in(&User::a, {1, 2}))", "use not_() wrapper"}}},
+                                  {Alternative{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}},
                 },
                 {}});
+}
+
+TEST_CASE("codegen: NOT IN with the operator_excl negation policy") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["negation_style"] = "operator_excl";
+    auto result = generateWithPolicy("a NOT IN (1, 2)", policy);
+    REQUIRE(result.code == "!in(&User::a, {1, 2})");
+    REQUIRE(result.decisionPoints.at(1) ==
+            DecisionPoint{2,
+                          "negation_style",
+                          "operator_excl",
+                          "!in(&User::a, {1, 2})",
+                          {Alternative{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"}}});
 }
 
 TEST_CASE("codegen: IN with empty list") {
@@ -291,7 +302,7 @@ TEST_CASE("codegen: LIKE with ESCAPE") {
 }
 
 TEST_CASE("codegen: NOT LIKE") {
-    REQUIRE(generate("name NOT LIKE '%foo%'") == "not_(like(&User::name, \"%foo%\"))");
+    REQUIRE(generate("name NOT LIKE '%foo%'") == "!like(&User::name, \"%foo%\")");
 }
 
 TEST_CASE("codegen: GLOB") {
@@ -299,7 +310,7 @@ TEST_CASE("codegen: GLOB") {
 }
 
 TEST_CASE("codegen: NOT GLOB") {
-    REQUIRE(generate("name NOT GLOB '*foo*'") == "not_(glob(&User::name, \"*foo*\"))");
+    REQUIRE(generate("name NOT GLOB '*foo*'") == "!glob(&User::name, \"*foo*\")");
 }
 
 TEST_CASE("codegen: MATCH") {
@@ -307,7 +318,7 @@ TEST_CASE("codegen: MATCH") {
 }
 
 TEST_CASE("codegen: NOT MATCH") {
-    REQUIRE(generate("body NOT MATCH 'word'") == "not_(match(&User::body, \"word\"))");
+    REQUIRE(generate("body NOT MATCH 'word'") == "!match(&User::body, \"word\")");
 }
 
 TEST_CASE("codegen: IS NULL in compound expression") {

@@ -483,3 +483,13 @@ TEST_CASE("processSql: DROP TABLE IF EXISTS") {
     const ProcessSqlResult expected = expectedFromPipeline("DROP TABLE IF EXISTS t;");
     REQUIRE(processSql("DROP TABLE IF EXISTS t;") == expected);
 }
+
+TEST_CASE("process: STRICT table converts with a warning instead of failing validation") {
+    auto result = processSql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;");
+    REQUIRE(result.parseResult.errors.empty());
+    REQUIRE(result.validationErrors.empty());
+    REQUIRE(result.codegen.code.find("make_table(\"users\"") != std::string::npos);
+    REQUIRE(result.codegen.warnings ==
+            std::vector<std::string>{"STRICT is not yet supported in sqlite_orm and was ignored for "
+                                     "table users (converted as a regular table)"});
+}

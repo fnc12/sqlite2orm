@@ -490,13 +490,16 @@ namespace sqlite2orm {
 
             std::vector<Alternative> alternatives;
             if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+                // sqlite_orm negates via operator! / `not` only; there is no functional form.
                 alternatives.push_back(Alternative{"operator_excl", "!" + operandStr, "use ! instead of not"});
+            } else {
+                alternatives.push_back(Alternative{"functional", functionalCode, "functional style"});
             }
-            alternatives.push_back(Alternative{"functional", functionalCode, "functional style"});
 
             std::string chosenUnaryVal = "operator";
             std::string emittedUnary = operatorCode;
-            if(policyEquals(this->context.codeGenPolicy, "expr_style", "functional")) {
+            if(policyEquals(this->context.codeGenPolicy, "expr_style", "functional") &&
+               unaryOp->unaryOperator != UnaryOperator::logicalNot) {
                 chosenUnaryVal = "functional";
                 emittedUnary = functionalCode;
             } else if(policyEquals(this->context.codeGenPolicy, "expr_style", "operator_excl") &&
@@ -540,7 +543,7 @@ namespace sqlite2orm {
 
             std::string betweenCode =
                 "between(" + operandResult.code + ", " + lowResult.code + ", " + highResult.code + ")";
-            std::string code = betweenNode->negated ? "not_(" + betweenCode + ")" : betweenCode;
+            std::string code = betweenNode->negated ? "!" + betweenCode : betweenCode;
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if(auto* subqueryNode = dynamic_cast<const SubqueryNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*subqueryNode->select);
@@ -692,10 +695,17 @@ namespace sqlite2orm {
             std::string inCode = "in(" + operandResult.code + ", {" + valuesList + "})";
             if(inNode->negated) {
                 std::string notInCode = "not_in(" + operandResult.code + ", {" + valuesList + "})";
-                decisionPoints.push_back(
-                    DecisionPoint{this->context.nextDecisionPointId++, "negation_style", "not_in", notInCode,
-                                  {Alternative{"not_wrapper", "not_(" + inCode + ")", "use not_() wrapper"}}});
-                return CodeGenResult{notInCode, std::move(decisionPoints)};
+                std::string negatedInCode = "!" + inCode;
+                const bool useOperator =
+                    policyEquals(this->context.codeGenPolicy, "negation_style", "operator_excl");
+                const std::string& chosenNegation = useOperator ? negatedInCode : notInCode;
+                Alternative alternative = useOperator
+                                              ? Alternative{"not_in", notInCode, "use not_in()"}
+                                              : Alternative{"operator_excl", negatedInCode, "use the ! operator"};
+                decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++, "negation_style",
+                                                       useOperator ? "operator_excl" : "not_in", chosenNegation,
+                                                       {std::move(alternative)}});
+                return CodeGenResult{chosenNegation, std::move(decisionPoints)};
             }
             return CodeGenResult{inCode, std::move(decisionPoints)};
         } else if(auto* likeNode = dynamic_cast<const LikeNode*>(&astNode)) {
@@ -721,7 +731,7 @@ namespace sqlite2orm {
             }
             likeCode += ")";
 
-            std::string code = likeNode->negated ? "not_(" + likeCode + ")" : likeCode;
+            std::string code = likeNode->negated ? "!" + likeCode : likeCode;
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if(auto* globNode = dynamic_cast<const GlobNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*globNode->operand);
@@ -737,7 +747,7 @@ namespace sqlite2orm {
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
 
             std::string globCode = "glob(" + operandResult.code + ", " + patternResult.code + ")";
-            std::string code = globNode->negated ? "not_(" + globCode + ")" : globCode;
+            std::string code = globNode->negated ? "!" + globCode : globCode;
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if(auto* matchNode = dynamic_cast<const MatchNode*>(&astNode)) {
             std::vector<DecisionPoint> decisionPoints;
@@ -773,7 +783,12 @@ namespace sqlite2orm {
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
 
             std::string matchCode = "match(" + lhsCode + ", " + patternResult.code + ")";
-            std::string code = matchNode->negated ? "not_(" + matchCode + ")" : matchCode;
+            std::string code = matchNode->negated ? "!" + matchCode : matchCode;
+            if(matchNode->negated) {
+                warnings.push_back(
+                    "negated MATCH does not compile against sqlite_orm dev yet: match_t is not accepted by "
+                    "operator! (https://github.com/fnc12/sqlite_orm/issues/1501)");
+            }
             return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
         } else if(auto* castNode = dynamic_cast<const CastNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*castNode->operand);

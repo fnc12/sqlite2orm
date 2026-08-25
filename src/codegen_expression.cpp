@@ -739,6 +739,42 @@ namespace sqlite2orm {
             std::string globCode = "glob(" + operandResult.code + ", " + patternResult.code + ")";
             std::string code = globNode->negated ? "not_(" + globCode + ")" : globCode;
             return CodeGenResult{code, std::move(decisionPoints)};
+        } else if(auto* matchNode = dynamic_cast<const MatchNode*>(&astNode)) {
+            std::vector<DecisionPoint> decisionPoints;
+            std::vector<std::string> warnings;
+
+            // `fts_table MATCH pattern` targets the hidden FTS5 "any" column of that table.
+            std::string lhsCode;
+            if(auto* col = dynamic_cast<const ColumnRefNode*>(matchNode->operand.get())) {
+                const std::string key = normalizeSqlIdentifier(stripIdentifierQuotes(col->columnName));
+                for(const auto& [fromName, mappedStructName] : this->context.fromTableAliasToStructName) {
+                    if(normalizeSqlIdentifier(stripIdentifierQuotes(fromName)) == key) {
+                        lhsCode = "c<" + mappedStructName + ">()->*&fts5::hidden::any";
+                        warnings.push_back("MATCH against table \"" + std::string(col->columnName) +
+                                           "\" maps to the hidden FTS5 'any' column; requires an FTS5 "
+                                           "virtual table mapped as " +
+                                           mappedStructName);
+                        break;
+                    }
+                }
+            }
+            if(lhsCode.empty()) {
+                auto operandResult = this->coordinator.generateNode(*matchNode->operand);
+                if(auto* col = dynamic_cast<const ColumnRefNode*>(matchNode->operand.get())) {
+                    this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
+                }
+                decisionPoints = std::move(operandResult.decisionPoints);
+                lhsCode = std::move(operandResult.code);
+            }
+
+            auto patternResult = this->coordinator.generateNode(*matchNode->pattern);
+            decisionPoints.insert(decisionPoints.end(),
+                                  std::make_move_iterator(patternResult.decisionPoints.begin()),
+                                  std::make_move_iterator(patternResult.decisionPoints.end()));
+
+            std::string matchCode = "match(" + lhsCode + ", " + patternResult.code + ")";
+            std::string code = matchNode->negated ? "not_(" + matchCode + ")" : matchCode;
+            return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
         } else if(auto* castNode = dynamic_cast<const CastNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*castNode->operand);
             std::string cppType = sqliteTypeToCpp(castNode->typeName);

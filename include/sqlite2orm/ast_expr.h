@@ -329,6 +329,24 @@ namespace sqlite2orm {
         }
     };
 
+    struct MatchNode : AstNode {
+        AstNodePointer operand;
+        AstNodePointer pattern;
+        bool negated;
+
+        MatchNode(AstNodePointer operand, AstNodePointer pattern,
+                   bool negated, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)),
+              pattern(std::move(pattern)), negated(negated) {}
+
+        bool operator==(const AstNode& other) const override {
+            auto* o = dynamic_cast<const MatchNode*>(&other);
+            return o && this->negated == o->negated &&
+                   astNodesEqual(this->operand, o->operand) &&
+                   astNodesEqual(this->pattern, o->pattern);
+        }
+    };
+
     struct OverClause;
 
     struct FunctionCallNode : AstNode {

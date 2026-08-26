@@ -379,8 +379,9 @@ namespace sqlite2orm {
         return text.size() >= suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
     }
 
-    std::optional<std::string> extractStorageSelectArgument(std::string_view generated) {
-        constexpr std::string_view prefix = "auto rows = storage.select(";
+    std::optional<std::string> extractStorageSelectArgument(std::string_view generated,
+                                                            std::string_view variableName) {
+        const std::string prefix = "auto " + std::string(variableName) + " = storage.select(";
         if(generated.size() <= prefix.size() + 2 || !generated.starts_with(prefix) || !endsWith(generated, ");")) {
             return std::nullopt;
         }

@@ -390,7 +390,8 @@ namespace sqlite2orm {
                 std::make_move_iterator(outerResult.decisionPoints.begin()),
                 std::make_move_iterator(outerResult.decisionPoints.end()));
 
-            auto outerArgOpt = extractStorageSelectArgument(outerResult.code);
+            const std::string rowsVariable = this->context.statementVariableName("rows");
+            auto outerArgOpt = extractStorageSelectArgument(outerResult.code, rowsVariable);
             if(!outerArgOpt) {
                 warnings.push_back(
                     "WITH: outer SELECT is not in the expected `auto rows = storage.select(...);` form; emitted "
@@ -399,7 +400,8 @@ namespace sqlite2orm {
                 return CodeGenResult{outerResult.code, std::move(allDecisionPoints), std::move(warnings)};
             }
 
-            std::string code = prelude + "auto rows = storage." + std::string(withApi) + "(" + cteArgument +
+            std::string code = prelude + "auto " + rowsVariable + " = storage." + std::string(withApi) + "(" +
+                               cteArgument +
                                ", select(" + *outerArgOpt + "));";
 
             if(!this->context.suppressWithCteStyleDecisionPoint && ctes.size() == 1u) {
@@ -411,6 +413,7 @@ namespace sqlite2orm {
                     CodeGenerator gen;
                     gen.codeGenPolicy = &pol;
                     gen.context().suppressWithCteStyleDecisionPoint = true;
+                    gen.context().statementVariableNames = this->context.statementVariableNames;
                     return gen.generate(static_cast<const AstNode&>(withQueryNode)).code;
                 };
                 std::vector<Alternative> alts;

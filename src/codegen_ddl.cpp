@@ -391,7 +391,7 @@ namespace sqlite2orm {
                     "make_column(" + identifierToCppStringLiteral(rawColumn) + ", " + moduleArgumentCodegen.code + ")";
             }
             this->context.structName = savedStruct;
-            code += "auto vtab = make_virtual_table<" + structName + ">(" + nameLiteral + ", using_fts5(" + columnParts +
+            code += "auto " + this->context.statementVariableName("vtab") + " = make_virtual_table<" + structName + ">(" + nameLiteral + ", using_fts5(" + columnParts +
                     "));\n";
             return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
         }
@@ -448,7 +448,7 @@ namespace sqlite2orm {
             }
             this->context.structName = savedStruct;
             const char* usingFunction = isInt32 ? "using_rtree_i32" : "using_rtree";
-            code += "auto vtab = make_virtual_table<" + structName + ">(" + nameLiteral + ", " + usingFunction + "(" + columnParts +
+            code += "auto " + this->context.statementVariableName("vtab") + " = make_virtual_table<" + structName + ">(" + nameLiteral + ", " + usingFunction + "(" + columnParts +
                     "));\n";
             return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
         }
@@ -461,7 +461,7 @@ namespace sqlite2orm {
                 return CodeGenResult{"/* CREATE VIRTUAL TABLE: generate_series (unmapped arguments) */",
                                      std::move(decisionPoints), std::move(warnings)};
             }
-            std::string code = "auto vtab = make_virtual_table<generate_series>(" + nameLiteral +
+            std::string code = "auto " + this->context.statementVariableName("vtab") + " = make_virtual_table<generate_series>(" + nameLiteral +
                                ", internal::using_generate_series());\n";
             return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
         }
@@ -475,11 +475,11 @@ namespace sqlite2orm {
             }
             if(node.moduleArguments.empty()) {
                 std::string code =
-                    "auto vtab = make_virtual_table<dbstat>(" + nameLiteral + ", using_dbstat());\n";
+                    "auto " + this->context.statementVariableName("vtab") + " = make_virtual_table<dbstat>(" + nameLiteral + ", using_dbstat());\n";
                 return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
             }
             if(auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(node.moduleArguments[0].get())) {
-                std::string code = "auto vtab = make_virtual_table<dbstat>(" + nameLiteral + ", using_dbstat(" +
+                std::string code = "auto " + this->context.statementVariableName("vtab") + " = make_virtual_table<dbstat>(" + nameLiteral + ", using_dbstat(" +
                                    sqlStringToCpp(stringLiteral->value) + "));\n";
                 return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
             }

@@ -52,7 +52,9 @@ namespace sqlite2orm {
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 
     bool endsWith(std::string_view text, std::string_view suffix);
-    std::optional<std::string> extractStorageSelectArgument(std::string_view generated);
+    /** The `...` of `auto <variableName> = storage.select(...);`, if `generated` has exactly that form. */
+    std::optional<std::string> extractStorageSelectArgument(std::string_view generated,
+                                                            std::string_view variableName);
     std::string stripStoragePrefixAndTrailingSemicolon(std::string code);
 
     std::string blobToCpp(std::string_view blobLiteral);

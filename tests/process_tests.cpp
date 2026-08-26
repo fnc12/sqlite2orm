@@ -100,10 +100,13 @@ TEST_CASE("processSql: WITH … INSERT pipeline") {
 }
 
 TEST_CASE("processMultiSql: multiple statements") {
-    std::vector<ProcessSqlResult> expected;
-    expected.push_back(processSql("SELECT 1;"));
-    expected.push_back(processSql("SELECT 2;"));
-    REQUIRE(processMultiSql("SELECT 1; SELECT 2;") == expected);
+    const auto results = processMultiSql("SELECT 1; SELECT 2;");
+    REQUIRE(results.size() == 2);
+    REQUIRE(results[0] == processSql("SELECT 1;"));
+    // The second statement is the same pipeline, except that its result variable is unique in the batch.
+    REQUIRE(results[1].codegen.code == "auto rows2 = storage.select(2);");
+    REQUIRE(results[1].parseResult == processSql("SELECT 2;").parseResult);
+    REQUIRE(results[1].validationErrors.empty());
 }
 
 TEST_CASE("processMultiSql: CREATE TABLE + INSERT") {
@@ -196,11 +199,11 @@ TEST_CASE("joinGeneratedCode: index merges into make_storage, DML follows after 
         "auto rows = storage.select(&T::x);\n");
 }
 
-TEST_CASE("joinGeneratedCode: DML-only batch stays unchanged") {
+TEST_CASE("joinGeneratedCode: DML-only batch keeps statements, uniques the result names") {
     const auto results = processMultiSql("SELECT 1; SELECT 2;");
     REQUIRE(joinGeneratedCode(results) ==
         "auto rows = storage.select(1);\n"
-        "auto rows = storage.select(2);\n");
+        "auto rows2 = storage.select(2);\n");
 }
 
 TEST_CASE("processMultiSql: validation error does not block other statements") {
@@ -492,4 +495,19 @@ TEST_CASE("process: STRICT table converts with a warning instead of failing vali
     REQUIRE(result.codegen.warnings ==
             std::vector<std::string>{"STRICT is not yet supported in sqlite_orm and was ignored for "
                                      "table users (converted as a regular table)"});
+}
+
+TEST_CASE("process: join gives repeated statement variables unique names") {
+    auto results = processMultiSql("SELECT * FROM docs WHERE body MATCH 'a'; SELECT * FROM docs WHERE body MATCH 'b'; SELECT * FROM docs;", nullptr);
+    REQUIRE(joinGeneratedCode(results) ==
+            "auto rows = storage.get_all<Docs>(where(match(&Docs::body, \"a\")));\n"
+            "auto rows2 = storage.get_all<Docs>(where(match(&Docs::body, \"b\")));\n"
+            "auto rows3 = storage.get_all<Docs>();\n");
+}
+
+TEST_CASE("process: join gives repeated virtual table variables unique names") {
+    auto results = processMultiSql("CREATE VIRTUAL TABLE a USING fts5(x); CREATE VIRTUAL TABLE b USING fts5(y);", nullptr);
+    const std::string joined = joinGeneratedCode(results);
+    REQUIRE(joined.find("auto vtab = make_virtual_table<A>") != std::string::npos);
+    REQUIRE(joined.find("auto vtab2 = make_virtual_table<B>") != std::string::npos);
 }

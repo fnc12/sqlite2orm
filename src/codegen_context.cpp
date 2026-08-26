@@ -110,6 +110,18 @@ namespace sqlite2orm {
         return result;
     }
 
+    std::string CodeGeneratorContext::statementVariableName(std::string_view baseName) {
+        const std::string base(baseName);
+        auto resolved = this->statementVariableNames.find(base);
+        if(resolved != this->statementVariableNames.end()) {
+            return resolved->second;
+        }
+        const int use = ++this->batchVariableUses[base];
+        std::string name = use == 1 ? base : base + std::to_string(use);
+        this->statementVariableNames.emplace(base, name);
+        return name;
+    }
+
     void CodeGeneratorContext::resetForGeneration() {
         this->accumulatedErrors.clear();
     }

@@ -19,7 +19,8 @@ namespace sqlite2orm {
             return CodeGenResult{"/* compound SELECT */", std::move(inner.decisionPoints),
                                  std::move(compoundWarnings), {}, std::move(inner.comments)};
         }
-        return CodeGenResult{"auto rows = storage.select(" + inner.code + ");",
+        return CodeGenResult{"auto " + this->context.statementVariableName("rows") + " = storage.select(" +
+                                 inner.code + ");",
                              std::move(inner.decisionPoints), std::move(compoundWarnings), {},
                              std::move(inner.comments)};
     }
@@ -136,6 +137,8 @@ namespace sqlite2orm {
             }
         } implicitScope{&this->context, std::move(implicitCte), std::move(implicitCteTableKey)};
 
+        // Resolved before the baseline snapshot so alternatives regenerate with the same name.
+        const std::string rowsVariable = this->context.statementVariableName("rows");
         CodeGeneratorContext selectAltBaseline = this->context;
 
         auto expressionCode = [&](const AstNode& node) -> std::string {
@@ -165,7 +168,7 @@ namespace sqlite2orm {
                     aliasPreamble = generateColumnAliasPreamble(selectNode.columns);
                 }
             }
-            code = "auto rows = storage.select(";
+            code = "auto " + rowsVariable + " = storage.select(";
             if(selectNode.distinct) {
                 if(selectNode.columns.size() == 1) {
                     auto colCode = expressionCode(*selectNode.columns.at(0).expression);
@@ -415,11 +418,11 @@ namespace sqlite2orm {
                                                  : this->context.structName;
             std::string tail = selectTrailingClauses.empty() ? "" : (", " + trailingJoined);
             std::string codeGetAll =
-                "auto rows = storage.get_all<" + starRowType + ">(" + trailingJoined + ");";
+                "auto " + rowsVariable + " = storage.get_all<" + starRowType + ">(" + trailingJoined + ");";
             std::string codeSelectObject =
-                "auto rows = storage.select(object<" + starRowType + ">()" + tail + ");";
+                "auto " + rowsVariable + " = storage.select(object<" + starRowType + ">()" + tail + ");";
             std::string codeSelectAsterisk =
-                "auto rows = storage.select(asterisk<" + starRowType + ">()" + tail + ");";
+                "auto " + rowsVariable + " = storage.select(asterisk<" + starRowType + ">()" + tail + ");";
             std::string chosenApi = "get_all";
             code = codeGetAll;
             if(policyEquals(this->context.codeGenPolicy, "api_level", "select_object")) {
@@ -517,6 +520,7 @@ namespace sqlite2orm {
                     CodeGenerator gen;
                     gen.codeGenPolicy = &pol;
                     gen.context().suppressTableAliasStyleDecisionPoint = true;
+                    gen.context().statementVariableNames = this->context.statementVariableNames;
                     return gen.generate(static_cast<const AstNode&>(selectNode)).code;
                 };
                 selectDecisionPoints.push_back(DecisionPoint{

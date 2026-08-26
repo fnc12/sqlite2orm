@@ -69,6 +69,21 @@ namespace sqlite2orm {
         bool suppressWithCteStyleDecisionPoint = false;
         bool suppressTableAliasStyleDecisionPoint = false;
 
+        /**
+         *  How many statements of the current batch already declared each result variable
+         *  (`rows`, `vtab`, …). `processMultiSql` carries it from one statement to the next so
+         *  that every statement gets its own name.
+         */
+        std::map<std::string, int> batchVariableUses;
+        /**
+         *  Result variable names resolved for the statement being generated. Cached so that the
+         *  main code and every regenerated alternative of one statement agree on the name.
+         */
+        std::map<std::string, std::string> statementVariableNames;
+
+        /** `rows` for the first statement declaring it in the batch, then `rows2`, `rows3`, … */
+        std::string statementVariableName(std::string_view baseName);
+
         bool useCpp20ColumnAliasStyle() const;
         bool useCpp20TableAliasStyle() const;
         bool withCteLegacyColalias() const;

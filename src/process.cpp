@@ -77,6 +77,7 @@ namespace sqlite2orm {
             Parser parser;
             auto parseResults = parser.parseAll(std::move(tokens));
             const auto sourceTables = collectSourceTables(parseResults);
+            std::map<std::string, int> batchVariableUses;
             for(auto& pr : parseResults) {
                 ProcessSqlResult one;
                 one.parseResult = std::move(pr);
@@ -93,7 +94,9 @@ namespace sqlite2orm {
                 CodeGenerator codeGenerator;
                 codeGenerator.codeGenPolicy = policy;
                 codeGenerator.context().sourceTableColumnsByNormalizedName = sourceTables;
+                codeGenerator.context().batchVariableUses = std::move(batchVariableUses);
                 one.codegen = codeGenerator.generate(*one.parseResult.astNodePointer);
+                batchVariableUses = std::move(codeGenerator.context().batchVariableUses);
                 results.push_back(std::move(one));
             }
         } catch(const TokenizeError& e) {

@@ -416,19 +416,21 @@ namespace sqlite2orm {
                     gen.context().statementVariableNames = this->context.statementVariableNames;
                     return gen.generate(static_cast<const AstNode&>(withQueryNode)).code;
                 };
-                std::vector<Alternative> alts;
-                alts.push_back(Alternative{"indexed_typedef", altCode("indexed_typedef"),
-                                           "using cte_N + column<cte_N>(\"col\") (default sqlite2orm style)"});
+                // options lists every applicable style (the chosen one included). legacy_colalias
+                // only applies when the CTE has an explicit column list.
+                std::vector<Option> options;
+                options.push_back(Option{"indexed_typedef", altCode("indexed_typedef"),
+                                         "using cte_N + column<cte_N>(\"col\") (default sqlite2orm style)"});
                 if(hasColumnList) {
-                    alts.push_back(
-                        Alternative{"legacy_colalias", altCode("legacy_colalias"),
-                                    "using typedef from SQL CTE name + colalias_a… + column<T>(var)"});
+                    options.push_back(
+                        Option{"legacy_colalias", altCode("legacy_colalias"),
+                               "using typedef from SQL CTE name + colalias_a… + column<T>(var)"});
                 }
-                alts.push_back(Alternative{
+                options.push_back(Option{
                     "cpp20_monikers", altCode("cpp20_monikers"),
                     "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"});
                 allDecisionPoints.push_back(
-                    DecisionPoint{dpId, "with_cte_style", withStyle, code, std::move(alts)});
+                    DecisionPoint{dpId, "with_cte_style", withStyle, code, std::move(options)});
             }
 
             warnings.push_back(

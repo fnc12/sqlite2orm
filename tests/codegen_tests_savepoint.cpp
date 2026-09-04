@@ -4,19 +4,21 @@ TEST_CASE("codegen: SAVEPOINT") {
     REQUIRE(generate("SAVEPOINT sp1;") == "storage.savepoint(\"sp1\");");
 }
 
-TEST_CASE("codegen: SAVEPOINT - savepoint_style decision point with three alternatives") {
+TEST_CASE("codegen: SAVEPOINT - savepoint_style decision point lists every style once") {
     auto result = generateFull("SAVEPOINT sp1;");
     REQUIRE(result.decisionPoints.size() == 1);
     const auto& dp = result.decisionPoints.front();
     REQUIRE(dp.category == "savepoint_style");
     REQUIRE(dp.chosenValue == "manual");
     REQUIRE(dp.chosenCode == "storage.savepoint(\"sp1\");");
-    REQUIRE(dp.alternatives.size() == 3);
-    REQUIRE(dp.alternatives[0].value == "manual");
-    REQUIRE(dp.alternatives[1].value == "guard");
-    REQUIRE(dp.alternatives[1].code == "auto sp1_savepoint = storage.savepoint_guard(\"sp1\");");
-    REQUIRE(dp.alternatives[2].value == "functional");
-    REQUIRE(dp.alternatives[2].code ==
+    // options lists all three styles (the chosen "manual" included), each exactly once.
+    REQUIRE(dp.options.size() == 3);
+    REQUIRE(dp.options[0].value == "manual");
+    REQUIRE(dp.options[0].code == "storage.savepoint(\"sp1\");");
+    REQUIRE(dp.options[1].value == "guard");
+    REQUIRE(dp.options[1].code == "auto sp1_savepoint = storage.savepoint_guard(\"sp1\");");
+    REQUIRE(dp.options[2].value == "functional");
+    REQUIRE(dp.options[2].code ==
         "storage.savepoint(\"sp1\", [&] {\n    return true;\n});");
 }
 

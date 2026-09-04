@@ -147,14 +147,17 @@ namespace sqlite2orm {
                 policyEquals(this->context.codeGenPolicy, "column_ref_style", "column_pointer");
             const std::string& emittedCol = useColumnPtr ? columnPointer : memberPointer;
             const std::string chosenCol = useColumnPtr ? "column_pointer" : "member_pointer";
+            // options lists every variant (the chosen one included); the consumer decides how to
+            // present the selection.
             return CodeGenResult{
                 emittedCol,
                 {DecisionPoint{this->context.nextDecisionPointId++,
                                "column_ref_style",
                                chosenCol,
                                emittedCol,
-                               {Alternative{"column_pointer", columnPointer,
-                                            "explicit mapped type (inheritance / ambiguity)"}}}},
+                               {Option{"member_pointer", memberPointer, "direct member pointer"},
+                                Option{"column_pointer", columnPointer,
+                                       "explicit mapped type (inheritance / ambiguity)"}}}},
                 {},
                 {},
                 {}};
@@ -247,14 +250,16 @@ namespace sqlite2orm {
                 policyEquals(this->context.codeGenPolicy, "column_ref_style", "column_pointer");
             const std::string& emittedQ = useQColPtr ? columnPointer : memberPointer;
             const std::string chosenQ = useQColPtr ? "column_pointer" : "member_pointer";
+            // options lists every variant (the chosen one included).
             return CodeGenResult{
                 emittedQ,
                 {DecisionPoint{this->context.nextDecisionPointId++,
                                "column_ref_style",
                                chosenQ,
                                emittedQ,
-                               {Alternative{"column_pointer", columnPointer,
-                                            "explicit mapped type (inheritance / ambiguity)"}}}},
+                               {Option{"member_pointer", memberPointer, "direct member pointer"},
+                                Option{"column_pointer", columnPointer,
+                                       "explicit mapped type (inheritance / ambiguity)"}}}},
                 std::move(qualWarnings), {}, {}};
         } else if(auto* qualifiedAsterisk = dynamic_cast<const QualifiedAsteriskNode*>(&astNode)) {
             std::vector<std::string> qualifiedAsteriskWarnings;
@@ -404,16 +409,17 @@ namespace sqlite2orm {
                 emittedExpr = functionalCode;
             }
 
+            // options lists every variant (the chosen one included); the consumer decides how to
+            // present the selection.
             decisionPoints.push_back(DecisionPoint{
                 this->context.nextDecisionPointId++,
                 "expr_style",
                 chosenExprVal,
                 emittedExpr,
-                {
-                    Alternative{"operator_wrap_right", wrapRightCode, "wrap right operand"},
-                    Alternative{"functional", functionalCode, "functional style"},
-                    Alternative{"operator_wrap_both", wrapBothCode, "wrap both operands", true},
-                }});
+                {Option{"operator_wrap_left", wrapLeftCode, "wrap left operand"},
+                 Option{"operator_wrap_right", wrapRightCode, "wrap right operand"},
+                 Option{"functional", functionalCode, "functional style"},
+                 Option{"operator_wrap_both", wrapBothCode, "wrap both operands", true}}});
 
             std::vector<std::string> binWarnings;
             binWarnings.insert(binWarnings.end(),
@@ -488,14 +494,6 @@ namespace sqlite2orm {
             std::string operatorCode = std::string(opStr) + operandStr;
             std::string functionalCode = std::string(unaryFuncName) + "(" + operandResult.code + ")";
 
-            std::vector<Alternative> alternatives;
-            if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
-                // sqlite_orm negates via operator! / `not` only; there is no functional form.
-                alternatives.push_back(Alternative{"operator_excl", "!" + operandStr, "use ! instead of not"});
-            } else {
-                alternatives.push_back(Alternative{"functional", functionalCode, "functional style"});
-            }
-
             std::string chosenUnaryVal = "operator";
             std::string emittedUnary = operatorCode;
             if(policyEquals(this->context.codeGenPolicy, "expr_style", "functional") &&
@@ -508,9 +506,19 @@ namespace sqlite2orm {
                 emittedUnary = "!" + operandStr;
             }
 
+            // options lists every variant (the chosen one included).
+            std::vector<Option> options;
+            options.push_back(Option{"operator", operatorCode, "operator style"});
+            if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+                // sqlite_orm negates via operator! / `not` only; there is no functional form.
+                options.push_back(Option{"operator_excl", "!" + operandStr, "use ! instead of not"});
+            } else {
+                options.push_back(Option{"functional", functionalCode, "functional style"});
+            }
+
             decisionPoints.push_back(
                 DecisionPoint{this->context.nextDecisionPointId++, "expr_style", chosenUnaryVal, emittedUnary,
-                              std::move(alternatives)});
+                              std::move(options)});
 
             return CodeGenResult{std::move(emittedUnary), std::move(decisionPoints), {}, {},
                                  std::move(operandResult.comments)};
@@ -699,12 +707,12 @@ namespace sqlite2orm {
                 const bool useOperator =
                     policyEquals(this->context.codeGenPolicy, "negation_style", "operator_excl");
                 const std::string& chosenNegation = useOperator ? negatedInCode : notInCode;
-                Alternative alternative = useOperator
-                                              ? Alternative{"not_in", notInCode, "use not_in()"}
-                                              : Alternative{"operator_excl", negatedInCode, "use the ! operator"};
-                decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++, "negation_style",
-                                                       useOperator ? "operator_excl" : "not_in", chosenNegation,
-                                                       {std::move(alternative)}});
+                // options lists every variant (the chosen one included).
+                decisionPoints.push_back(DecisionPoint{
+                    this->context.nextDecisionPointId++, "negation_style",
+                    useOperator ? "operator_excl" : "not_in", chosenNegation,
+                    {Option{"not_in", notInCode, "use not_in()"},
+                     Option{"operator_excl", negatedInCode, "use the ! operator"}}});
                 return CodeGenResult{chosenNegation, std::move(decisionPoints)};
             }
             return CodeGenResult{inCode, std::move(decisionPoints)};

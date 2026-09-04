@@ -86,16 +86,18 @@ TEST_CASE("codegen: concatenation") {
                 columnRefStyleDp(2, "&User::b"),
                 DecisionPoint{3, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b",
                     {
-                        Alternative{"operator_wrap_right", "&User::a || c(&User::b)", "wrap right operand"},
-                        Alternative{"functional", "conc(&User::a, &User::b)", "functional style"},
-                        Alternative{"operator_wrap_both", "c(&User::a) || c(&User::b)", "wrap both operands", true},
+                        Option{"operator_wrap_left", "c(&User::a) || &User::b", "wrap left operand"},
+                        Option{"operator_wrap_right", "&User::a || c(&User::b)", "wrap right operand"},
+                        Option{"functional", "conc(&User::a, &User::b)", "functional style"},
+                        Option{"operator_wrap_both", "c(&User::a) || c(&User::b)", "wrap both operands", true},
                     }},
                 columnRefStyleDp(4, "&User::c"),
                 DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b || &User::c",
                     {
-                        Alternative{"operator_wrap_right", "c(&User::a) || &User::b || c(&User::c)", "wrap right operand"},
-                        Alternative{"functional", "conc(c(&User::a) || &User::b, &User::c)", "functional style"},
-                        Alternative{"operator_wrap_both", "c(&User::a) || &User::b || c(&User::c)", "wrap both operands", true},
+                        Option{"operator_wrap_left", "c(&User::a) || &User::b || &User::c", "wrap left operand"},
+                        Option{"operator_wrap_right", "c(&User::a) || &User::b || c(&User::c)", "wrap right operand"},
+                        Option{"functional", "conc(c(&User::a) || &User::b, &User::c)", "functional style"},
+                        Option{"operator_wrap_both", "c(&User::a) || &User::b || c(&User::c)", "wrap both operands", true},
                     }},
             }
         });
@@ -113,7 +115,8 @@ TEST_CASE("codegen: unary minus") {
     SECTION("-5") {
         auto result = generateFull("-5");
         REQUIRE(result == CodeGenResult{"-c(5)", {DecisionPoint{1, "expr_style", "operator", "-c(5)",
-            {Alternative{"functional", "minus(5)", "functional style"}}
+            {Option{"operator", "-c(5)", "operator style"},
+             Option{"functional", "minus(5)", "functional style"}}
         }}});
     }
     SECTION("-a") {
@@ -122,7 +125,8 @@ TEST_CASE("codegen: unary minus") {
             {
                 columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
-                              {Alternative{"functional", "minus(&User::a)", "functional style"}}},
+                              {Option{"operator", "-c(&User::a)", "operator style"},
+                               Option{"functional", "minus(&User::a)", "functional style"}}},
             }});
     }
 }
@@ -138,7 +142,8 @@ TEST_CASE("codegen: bitwise not") {
     SECTION("~5") {
         auto result = generateFull("~5");
         REQUIRE(result == CodeGenResult{"~c(5)", {DecisionPoint{1, "expr_style", "operator", "~c(5)",
-            {Alternative{"functional", "bitwise_not(5)", "functional style"}}
+            {Option{"operator", "~c(5)", "operator style"},
+             Option{"functional", "bitwise_not(5)", "functional style"}}
         }}});
     }
     SECTION("~a") {
@@ -147,7 +152,8 @@ TEST_CASE("codegen: bitwise not") {
             {
                 columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "~c(&User::a)",
-                              {Alternative{"functional", "bitwise_not(&User::a)", "functional style"}}},
+                              {Option{"operator", "~c(&User::a)", "operator style"},
+                               Option{"functional", "bitwise_not(&User::a)", "functional style"}}},
             }});
     }
 }
@@ -165,9 +171,10 @@ TEST_CASE("codegen: logical AND") {
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
         expectedDps.push_back(DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) == 1 and c(&User::b) == 2",
             {
-                Alternative{"operator_wrap_right", "c(&User::a) == 1 and c(&User::b) == 2", "wrap right operand"},
-                Alternative{"functional", "and_(c(&User::a) == 1, c(&User::b) == 2)", "functional style"},
-                Alternative{"operator_wrap_both", "c(&User::a) == 1 and c(&User::b) == 2", "wrap both operands", true},
+                Option{"operator_wrap_left", "c(&User::a) == 1 and c(&User::b) == 2", "wrap left operand"},
+                Option{"operator_wrap_right", "c(&User::a) == 1 and c(&User::b) == 2", "wrap right operand"},
+                Option{"functional", "and_(c(&User::a) == 1, c(&User::b) == 2)", "functional style"},
+                Option{"operator_wrap_both", "c(&User::a) == 1 and c(&User::b) == 2", "wrap both operands", true},
             }});
         REQUIRE(result == CodeGenResult{"c(&User::a) == 1 and c(&User::b) == 2", std::move(expectedDps)});
     }
@@ -186,9 +193,10 @@ TEST_CASE("codegen: logical OR") {
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
         expectedDps.push_back(DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) == 1 or c(&User::b) == 2",
             {
-                Alternative{"operator_wrap_right", "c(&User::a) == 1 or c(&User::b) == 2", "wrap right operand"},
-                Alternative{"functional", "or_(c(&User::a) == 1, c(&User::b) == 2)", "functional style"},
-                Alternative{"operator_wrap_both", "c(&User::a) == 1 or c(&User::b) == 2", "wrap both operands", true},
+                Option{"operator_wrap_left", "c(&User::a) == 1 or c(&User::b) == 2", "wrap left operand"},
+                Option{"operator_wrap_right", "c(&User::a) == 1 or c(&User::b) == 2", "wrap right operand"},
+                Option{"functional", "or_(c(&User::a) == 1, c(&User::b) == 2)", "functional style"},
+                Option{"operator_wrap_both", "c(&User::a) == 1 or c(&User::b) == 2", "wrap both operands", true},
             }});
         REQUIRE(result == CodeGenResult{"c(&User::a) == 1 or c(&User::b) == 2", std::move(expectedDps)});
     }
@@ -202,7 +210,8 @@ TEST_CASE("codegen: logical NOT") {
                 columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "not c(&User::a)",
                               {
-                                  Alternative{"operator_excl", "!c(&User::a)", "use ! instead of not"},
+                                  Option{"operator", "not c(&User::a)", "operator style"},
+                                  Option{"operator_excl", "!c(&User::a)", "use ! instead of not"},
                               }},
             }});
     }
@@ -213,10 +222,12 @@ TEST_CASE("codegen: logical NOT") {
             {
                 columnRefStyleDp(1, "&User::a"),
                 DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
-                              {Alternative{"functional", "minus(&User::a)", "functional style"}}},
+                              {Option{"operator", "-c(&User::a)", "operator style"},
+                               Option{"functional", "minus(&User::a)", "functional style"}}},
                 DecisionPoint{3, "expr_style", "operator", "not (-c(&User::a))",
                               {
-                                  Alternative{"operator_excl", "!(-c(&User::a))", "use ! instead of not"},
+                                  Option{"operator", "not (-c(&User::a))", "operator style"},
+                                  Option{"operator_excl", "!(-c(&User::a))", "use ! instead of not"},
                               }},
             }
         });
@@ -230,9 +241,11 @@ TEST_CASE("codegen: double unary minus parenthesized") {
         {
             columnRefStyleDp(1, "&User::a"),
             DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
-                          {Alternative{"functional", "minus(&User::a)", "functional style"}}},
+                          {Option{"operator", "-c(&User::a)", "operator style"},
+                           Option{"functional", "minus(&User::a)", "functional style"}}},
             DecisionPoint{3, "expr_style", "operator", "-(-c(&User::a))",
-                          {Alternative{"functional", "minus(-c(&User::a))", "functional style"}}},
+                          {Option{"operator", "-(-c(&User::a))", "operator style"},
+                           Option{"functional", "minus(-c(&User::a))", "functional style"}}},
         }
     });
 }
@@ -271,7 +284,8 @@ TEST_CASE("codegen: NOT IN") {
                                   "negation_style",
                                   "not_in",
                                   "not_in(&User::a, {1, 2})",
-                                  {Alternative{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}},
+                                  {Option{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"},
+                                   Option{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}},
                 },
                 {}});
 }
@@ -286,7 +300,8 @@ TEST_CASE("codegen: NOT IN with the operator_excl negation policy") {
                           "negation_style",
                           "operator_excl",
                           "!in(&User::a, {1, 2})",
-                          {Alternative{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"}}});
+                          {Option{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"},
+                           Option{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}});
 }
 
 TEST_CASE("codegen: IN with empty list") {
@@ -512,14 +527,42 @@ TEST_CASE("codegen: JSON -> operator") {
                       {columnRefStyleDp(1, "&Users::data"),
                        DecisionPoint{2, "expr_style", "functional",
                           "json_extract(&Users::data, \"$.name\")",
-                          {Alternative{"operator_wrap_right",
+                          {Option{"operator_wrap_left",
+                              "c(&Users::data) -> \"$.name\"", "wrap left operand"},
+                           Option{"operator_wrap_right",
                               "&Users::data -> c(\"$.name\")", "wrap right operand"},
-                           Alternative{"functional",
+                           Option{"functional",
                               "json_extract(&Users::data, \"$.name\")", "functional style"},
-                           Alternative{"operator_wrap_both",
+                           Option{"operator_wrap_both",
                               "c(&Users::data) -> c(\"$.name\")", "wrap both operands", true}}}},
                       {"JSON -> / ->> operator is mapped to json_extract() "
                        "— return type may differ from sqlite"}});
+}
+
+TEST_CASE("codegen: column_ref_style options list every variant without duplicating the chosen") {
+    // options always carry the full set of variants (both member_pointer and column_pointer),
+    // each exactly once, regardless of which one is chosen — so a consumer never sees a
+    // duplicated entry / double checkmark, and can always switch to the other variant.
+    auto check = [](const DecisionPoint& dp, const std::string& expectedChosen) {
+        REQUIRE(dp.category == "column_ref_style");
+        REQUIRE(dp.chosenValue == expectedChosen);
+        REQUIRE(dp.options.size() == 2);
+        REQUIRE(dp.options[0].value == "member_pointer");
+        REQUIRE(dp.options[1].value == "column_pointer");
+        // The chosen value appears in options exactly once (never duplicated).
+        int chosenCount = 0;
+        for(const auto& option : dp.options) {
+            if(option.value == dp.chosenValue) {
+                ++chosenCount;
+            }
+        }
+        REQUIRE(chosenCount == 1);
+    };
+    check(generateFull("SELECT id FROM users;").decisionPoints.at(0), "member_pointer");
+
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["column_ref_style"] = "column_pointer";
+    check(generateWithPolicy("SELECT id FROM users;", policy).decisionPoints.at(0), "column_pointer");
 }
 
 TEST_CASE("codegen: JSON ->> operator") {
@@ -528,11 +571,13 @@ TEST_CASE("codegen: JSON ->> operator") {
                       {columnRefStyleDp(1, "&Users::data"),
                        DecisionPoint{2, "expr_style", "functional",
                           "json_extract(&Users::data, \"$.name\")",
-                          {Alternative{"operator_wrap_right",
+                          {Option{"operator_wrap_left",
+                              "c(&Users::data) ->> \"$.name\"", "wrap left operand"},
+                           Option{"operator_wrap_right",
                               "&Users::data ->> c(\"$.name\")", "wrap right operand"},
-                           Alternative{"functional",
+                           Option{"functional",
                               "json_extract(&Users::data, \"$.name\")", "functional style"},
-                           Alternative{"operator_wrap_both",
+                           Option{"operator_wrap_both",
                               "c(&Users::data) ->> c(\"$.name\")", "wrap both operands", true}}}},
                       {"JSON -> / ->> operator is mapped to json_extract() "
                        "— return type may differ from sqlite"}});

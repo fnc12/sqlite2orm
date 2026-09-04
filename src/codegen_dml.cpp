@@ -184,13 +184,15 @@ namespace sqlite2orm {
         if(insertNode.replaceInto) {
             std::string insertOrReplace =
                 "storage.insert(or_replace(), into<" + tableStruct + ">(), " + middle + upsertSuffix + ");";
-            dps.push_back(DecisionPoint{this->context.nextDecisionPointId++,
-                                        "replace_style",
-                                        "replace_call",
-                                        code,
-                                        {Alternative{"insert_or_replace",
-                                                     insertOrReplace,
-                                                     "same semantics via raw insert(or_replace(), into<T>(), ...)"}}});
+            // options lists every variant (the chosen one included).
+            dps.push_back(DecisionPoint{
+                this->context.nextDecisionPointId++,
+                "replace_style",
+                "replace_call",
+                code,
+                {Option{"replace_call", code, "storage.replace(into<T>(), ...)"},
+                 Option{"insert_or_replace", insertOrReplace,
+                        "same semantics via raw insert(or_replace(), into<T>(), ...)"}}});
         }
         return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
     }

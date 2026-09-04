@@ -52,11 +52,12 @@ TEST_CASE("codegen: WITH single CTE exposes with_cte_style decision point") {
             "with_cte_style",
             "indexed_typedef",
             codeIndexed,
-            {Alternative{"indexed_typedef", codeIndexed,
+            // options lists every applicable style (the chosen "indexed_typedef" included).
+            {Option{"indexed_typedef", codeIndexed,
                          "using cte_N + column<cte_N>(\"col\") (default sqlite2orm style)"},
-             Alternative{"legacy_colalias", codeLegacy,
+             Option{"legacy_colalias", codeLegacy,
                          "using typedef from SQL CTE name + colalias_a… + column<T>(var)"},
-             Alternative{"cpp20_monikers", codeCpp20,
+             Option{"cpp20_monikers", codeCpp20,
                          "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"}}}},
         {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
          "sqlite_orm::literals` scope for `_ctealias`"},
@@ -154,7 +155,7 @@ TEST_CASE("codegen: WITH no column list still offers cpp20_monikers as alternati
     bool hasCpp20 = false;
     for(const auto& dp : result.decisionPoints) {
         if(dp.category == "with_cte_style") {
-            for(const auto& alt : dp.alternatives) {
+            for(const auto& alt : dp.options) {
                 if(alt.value == "cpp20_monikers") {
                     hasCpp20 = true;
                 }

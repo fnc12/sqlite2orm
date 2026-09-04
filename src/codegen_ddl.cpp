@@ -236,27 +236,27 @@ namespace sqlite2orm {
                            : style == "functional" ? savepointFunctionalCode(node.name)
                                                    : savepointManualCode(node.name);
 
-        std::vector<Alternative> alternatives;
-        alternatives.push_back(Alternative{
-            "manual", savepointManualCode(node.name),
-            "direct calls mirroring the SQL statements 1:1 (savepoint / release_savepoint / "
-            "rollback_to_savepoint)"});
-        alternatives.push_back(Alternative{
-            "guard", savepointGuardCode(node.name),
-            "RAII savepoint_t: rolls back and releases in its destructor unless released; RELEASE and ROLLBACK TO "
-            "for this name become " +
-                savepointGuardVariableName(node.name) + ".release() / .rollback_to()"});
-        alternatives.push_back(Alternative{
-            "functional", savepointFunctionalCode(node.name),
-            "storage.savepoint(name, lambda): the statements up to the matching RELEASE move into the lambda; "
-            "returning true releases the savepoint, false rolls it back"});
+        // options lists every variant (the chosen one included); the consumer decides how to
+        // present the selection.
+        std::vector<Option> options = {
+            Option{"manual", savepointManualCode(node.name),
+                   "direct calls mirroring the SQL statements 1:1 (savepoint / release_savepoint / "
+                   "rollback_to_savepoint)"},
+            Option{"guard", savepointGuardCode(node.name),
+                   "RAII savepoint_t: rolls back and releases in its destructor unless released; RELEASE and "
+                   "ROLLBACK TO for this name become " +
+                       savepointGuardVariableName(node.name) + ".release() / .rollback_to()"},
+            Option{"functional", savepointFunctionalCode(node.name),
+                   "storage.savepoint(name, lambda): the statements up to the matching RELEASE move into the "
+                   "lambda; returning true releases the savepoint, false rolls it back"},
+        };
 
         CodeGenResult result{std::move(code), {}, {}};
         result.decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
                                                       "savepoint_style",
                                                       style,
                                                       result.code,
-                                                      std::move(alternatives)});
+                                                      std::move(options)});
         return result;
     }
 

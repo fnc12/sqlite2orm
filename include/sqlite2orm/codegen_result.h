@@ -5,7 +5,7 @@
 
 namespace sqlite2orm {
 
-    struct Alternative {
+    struct Option {
         std::string value;
         std::string code;
         std::string description;
@@ -13,7 +13,7 @@ namespace sqlite2orm {
         /** Optional notes when this alternative is shown or chosen (e.g. build requirements); any consumer may show them. */
         std::vector<std::string> comments;
 
-        bool operator==(const Alternative&) const = default;
+        bool operator==(const Option&) const = default;
     };
 
     struct DecisionPoint {
@@ -21,7 +21,7 @@ namespace sqlite2orm {
         std::string category;
         std::string chosenValue;
         std::string chosenCode;
-        std::vector<Alternative> alternatives;
+        std::vector<Option> options;
 
         bool operator==(const DecisionPoint&) const = default;
     };

@@ -137,7 +137,7 @@ namespace sqlite2orm {
             }
         } implicitScope{&this->context, std::move(implicitCte), std::move(implicitCteTableKey)};
 
-        // Resolved before the baseline snapshot so alternatives regenerate with the same name.
+        // Resolved before the baseline snapshot so options regenerate with the same name.
         const std::string rowsVariable = this->context.statementVariableName("rows");
         CodeGeneratorContext selectAltBaseline = this->context;
 
@@ -433,13 +433,17 @@ namespace sqlite2orm {
                 code = codeSelectAsterisk;
             }
             if(apiLevelDecisionId >= 0) {
+                // options lists every variant (the chosen one included, default get_all first).
+                std::vector<Option> apiOptions = {
+                    Option{"get_all", codeGetAll, "get_all<T>(...) returns full row objects"},
+                    Option{"select_object", codeSelectObject,
+                           "select(object<T>(), ...) returns std::tuple of columns"},
+                    Option{"select_asterisk", codeSelectAsterisk,
+                           "select(asterisk<T>(), ...) returns full row objects"},
+                };
                 selectDecisionPoints.insert(
                     selectDecisionPoints.begin(),
-                    DecisionPoint{apiLevelDecisionId, "api_level", chosenApi, code,
-                                  {Alternative{"select_object", codeSelectObject,
-                                               "select(object<T>(), ...) returns std::tuple of columns"},
-                                   Alternative{"select_asterisk", codeSelectAsterisk,
-                                               "select(asterisk<T>(), ...) returns full row objects"}}});
+                    DecisionPoint{apiLevelDecisionId, "api_level", chosenApi, code, std::move(apiOptions)});
             }
         } else {
             if(!trailingJoined.empty()) {
@@ -479,12 +483,15 @@ namespace sqlite2orm {
                     altGen.context() = selectAltBaseline;
                     altGen.context().columnAliasStyleOverride = "cpp20_literal";
                     auto altRes = altGen.generateNode(selectNode);
-                    Alternative cpp20Alt{"cpp20_literal", altRes.code,
-                                         "C++20 literal aliases (`orm_column_alias`, `_col`)"};
+                    Option cpp20Alt{"cpp20_literal", altRes.code,
+                                    "C++20 literal aliases (`orm_column_alias`, `_col`)"};
                     cpp20Alt.comments = std::move(altRes.comments);
-                    selectDecisionPoints.push_back(
-                        DecisionPoint{this->context.nextDecisionPointId++, "column_alias_style", "alias_tag",
-                                      code, {std::move(cpp20Alt)}});
+                    // options lists every variant (the chosen one included).
+                    selectDecisionPoints.push_back(DecisionPoint{
+                        this->context.nextDecisionPointId++, "column_alias_style", "alias_tag", code,
+                        {Option{"alias_tag", code,
+                                "alias_tag / colalias_* / generated struct (default; wider compiler support)"},
+                         std::move(cpp20Alt)}});
                 }
             }
         }
@@ -494,10 +501,12 @@ namespace sqlite2orm {
             altGen.context() = selectAltBaseline;
             altGen.context().columnAliasStyleOverride = "alias_tag";
             auto altRes = altGen.generateNode(selectNode);
+            // options lists every variant (the chosen one included).
             selectDecisionPoints.push_back(DecisionPoint{
                 this->context.nextDecisionPointId++, "column_alias_style", "cpp20_literal", code,
-                {Alternative{"alias_tag", altRes.code,
-                             "alias_tag / colalias_* / generated struct (default; wider compiler support)"}}});
+                {Option{"alias_tag", altRes.code,
+                        "alias_tag / colalias_* / generated struct (default; wider compiler support)"},
+                 Option{"cpp20_literal", code, "C++20 literal aliases (`orm_column_alias`, `_col`)"}}});
         }
         bool hasTableAliases = !this->context.activeTableAliases.empty();
         if(!this->context.cpp20TableAliasDeclarations.empty() && !this->context.activeWithCteStyle) {
@@ -523,12 +532,14 @@ namespace sqlite2orm {
                     gen.context().statementVariableNames = this->context.statementVariableNames;
                     return gen.generate(static_cast<const AstNode&>(selectNode)).code;
                 };
-                selectDecisionPoints.push_back(DecisionPoint{
-                    this->context.nextDecisionPointId++, "table_alias_style", currentStyle, code,
-                    {Alternative{"pre_cpp20", makeAlt("pre_cpp20"),
-                                 "alias_a<T> + alias_column<> (wider compiler support)"},
-                     Alternative{"cpp20", makeAlt("cpp20"),
-                                 "\"name\"_alias.for_<T>() + ->* (C++20 sqlite_orm)"}}});
+                // options lists every variant (the chosen one included).
+                std::vector<Option> tableAliasOptions = {
+                    Option{"pre_cpp20", makeAlt("pre_cpp20"), "alias_a<T> + alias_column<> (wider compiler support)"},
+                    Option{"cpp20", makeAlt("cpp20"), "\"name\"_alias.for_<T>() + ->* (C++20 sqlite_orm)"},
+                };
+                selectDecisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
+                                                             "table_alias_style", currentStyle, code,
+                                                             std::move(tableAliasOptions)});
             }
         }
         this->context.cpp20TableAliasDeclarations.clear();

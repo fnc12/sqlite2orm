@@ -19,7 +19,11 @@ TEST_CASE("codegen: REPLACE INTO") {
                     "replace_style",
                     "replace_call",
                     "storage.replace(into<Posts>(), columns(&Posts::user_id), values(std::make_tuple(5)));",
-                    {Alternative{
+                    {Option{"replace_call",
+                            "storage.replace(into<Posts>(), columns(&Posts::user_id), "
+                            "values(std::make_tuple(5)));",
+                            "storage.replace(into<T>(), ...)"},
+                     Option{
                         "insert_or_replace",
                         "storage.insert(or_replace(), into<Posts>(), columns(&Posts::user_id), "
                         "values(std::make_tuple(5)));",

@@ -4,7 +4,7 @@
 
 namespace sqlite2orm {
 
-    void to_json(nlohmann::json& out, const Alternative& alternative) {
+    void to_json(nlohmann::json& out, const Option& alternative) {
         out = nlohmann::json{{"value", alternative.value},
                             {"code", alternative.code},
                             {"description", alternative.description},
@@ -17,7 +17,7 @@ namespace sqlite2orm {
                             {"category", decisionPoint.category},
                             {"chosenValue", decisionPoint.chosenValue},
                             {"chosenCode", decisionPoint.chosenCode},
-                            {"alternatives", decisionPoint.alternatives}};
+                            {"options", decisionPoint.options}};
     }
 
     std::string decisionPointsToJson(const std::vector<DecisionPoint>& decisionPoints) {

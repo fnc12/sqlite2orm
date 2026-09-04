@@ -73,7 +73,8 @@ namespace codegen_test_helpers {
             "column_ref_style",
             "member_pointer",
             mp,
-            {Alternative{"column_pointer", columnPointer, "explicit mapped type (inheritance / ambiguity)"}}};
+            {Option{"member_pointer", mp, "direct member pointer"},
+             Option{"column_pointer", columnPointer, "explicit mapped type (inheritance / ambiguity)"}}};
     }
 
     void appendColumnRefDps(std::vector<DecisionPoint>& out, int& nextId, std::string_view codeStr) {
@@ -93,10 +94,11 @@ namespace codegen_test_helpers {
             "api_level",
             "get_all",
             code,
-            {Alternative{"select_object",
+            {Option{"get_all", code, "get_all<T>(...) returns full row objects"},
+             Option{"select_object",
                          codeSelectObject,
                          "select(object<T>(), ...) returns std::tuple of columns"},
-             Alternative{"select_asterisk",
+             Option{"select_asterisk",
                          codeSelectAsterisk,
                          "select(asterisk<T>(), ...) returns full row objects"}}};
     }
@@ -118,9 +120,10 @@ namespace codegen_test_helpers {
         appendColumnRefDps(dps, nextId, rightCode);
         dps.push_back(DecisionPoint{nextId, "expr_style", "operator_wrap_left", wrapLeft,
                                     {
-                                        Alternative{"operator_wrap_right", wrapRight, "wrap right operand"},
-                                        Alternative{"functional", functional, "functional style"},
-                                        Alternative{"operator_wrap_both", wrapBoth, "wrap both operands", true},
+                                        Option{"operator_wrap_left", wrapLeft, "wrap left operand"},
+                                        Option{"operator_wrap_right", wrapRight, "wrap right operand"},
+                                        Option{"functional", functional, "functional style"},
+                                        Option{"operator_wrap_both", wrapBoth, "wrap both operands", true},
                                     }});
         return CodeGenResult{wrapLeft, std::move(dps)};
     }

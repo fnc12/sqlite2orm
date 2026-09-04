@@ -46,8 +46,8 @@ int main() {
         fmt::print("\nDecision points:\n");
         for(const auto& dp : codegenResult.decisionPoints) {
             fmt::print("  [{}] {}: {}\n", dp.id, dp.category, dp.chosenValue);
-            for(const auto& alt : dp.alternatives) {
-                fmt::print("    - {}: {}\n", alt.value, alt.description);
+            for(const auto& option : dp.options) {
+                fmt::print("    - {}: {}\n", option.value, option.description);
             }
         }
     }

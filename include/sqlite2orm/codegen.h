@@ -65,6 +65,9 @@ namespace sqlite2orm {
 
         void syncToContext();
 
+        /** Prepend user-defined/extension function structs (+ registration) and add their decision points. */
+        void injectCustomFunctions(CodeGenResult& result);
+
         std::unique_ptr<CodeGeneratorContext> generatorContext;
         std::unique_ptr<ExpressionCodeGenerator> expressionCodeGenerator;
         std::unique_ptr<SelectCodeGenerator> selectCodeGenerator;

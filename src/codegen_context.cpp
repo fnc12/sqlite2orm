@@ -75,6 +75,28 @@ namespace sqlite2orm {
         return nullptr;
     }
 
+    std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {
+        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&argument)) {
+            // Schema type wins when the column belongs to a known CREATE TABLE in the batch.
+            const std::string normalizedColumn = normalizeSqlIdentifier(columnRef->columnName);
+            for(const auto& [tableKey, columns] : this->sourceTableColumnsByNormalizedName) {
+                (void)tableKey;
+                for(const SourceTableColumn& column : columns) {
+                    if(normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
+                        return column.cppType;
+                    }
+                }
+            }
+            const std::string cppName = toCppIdentifier(columnRef->columnName);
+            const auto known = this->columnTypes.find(cppName);
+            if(known != this->columnTypes.end()) {
+                return known->second;
+            }
+            return this->syntheticColumnCppType(cppName);  // name heuristic (name → std::string, else int)
+        }
+        return this->inferTypeFromNode(argument);
+    }
+
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {
         auto [it, inserted] = this->columnTypes.try_emplace(cppName, cppType);
         if(!inserted && it->second == "int" && cppType != "int") {
@@ -125,8 +147,18 @@ namespace sqlite2orm {
         return name;
     }
 
+    void CodeGeneratorContext::registerCustomFunction(CustomFunctionUse use) {
+        for(const auto& existing : this->customFunctions) {
+            if(existing.structName == use.structName) {
+                return;
+            }
+        }
+        this->customFunctions.push_back(std::move(use));
+    }
+
     void CodeGeneratorContext::resetForGeneration() {
         this->accumulatedErrors.clear();
+        this->customFunctions.clear();
     }
 
 }  // namespace sqlite2orm

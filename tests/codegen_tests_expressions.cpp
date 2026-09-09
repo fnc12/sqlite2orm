@@ -605,3 +605,64 @@ TEST_CASE("codegen: expr COLLATE warning") {
                       {columnRefStyleDp(1, "&Users::name")},
                       {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
 }
+
+namespace {
+    const sqlite2orm::DecisionPoint* findDp(const sqlite2orm::CodeGenResult& result, std::string_view category) {
+        for(const auto& dp : result.decisionPoints) {
+            if(dp.category == category) return &dp;
+        }
+        return nullptr;
+    }
+}  // namespace
+
+TEST_CASE("codegen: unknown function becomes a scalar user-defined function") {
+    auto result = generateFull("SELECT * FROM transactions WHERE k = morton_encode(day, cat)");
+    CHECK(result.code.find("struct MortonEncode {") != std::string::npos);
+    CHECK(result.code.find("int operator()(int day, int cat) const { return {}; }") != std::string::npos);
+    CHECK(result.code.find("static const char *name() { return \"morton_encode\"; }") != std::string::npos);
+    CHECK(result.code.find("storage.create_scalar_function<MortonEncode>();") != std::string::npos);
+    CHECK(result.code.find("func<MortonEncode>(&Transactions::day, &Transactions::cat)") != std::string::npos);
+    CHECK(result.errors.empty());
+}
+
+TEST_CASE("codegen: custom function exposes a scalar/aggregate/func_only decision point") {
+    auto result = generateFull("SELECT * FROM t WHERE k = my_fn(a)");
+    const auto* dp = findDp(result, "custom_function");
+    REQUIRE(dp != nullptr);
+    CHECK(dp->chosenValue == "scalar");
+    REQUIRE(dp->options.size() == 3);
+    CHECK(dp->options[0].value == "scalar");
+    CHECK(dp->options[1].value == "aggregate");
+    CHECK(dp->options[2].value == "func_only");
+    // The aggregate option renders step/fin; func_only renders a bare declaration and no registration.
+    CHECK(dp->options[1].code.find("void step(") != std::string::npos);
+    CHECK(dp->options[1].code.find("create_aggregate_function<MyFn>") != std::string::npos);
+    CHECK(dp->options[2].code.find("const;") != std::string::npos);
+    CHECK(dp->options[2].code.find("create_scalar_function") == std::string::npos);
+}
+
+TEST_CASE("codegen: custom_function_style aggregate policy") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["custom_function_style"] = "aggregate";
+    auto result = generateWithPolicy("SELECT * FROM t WHERE k = my_fn(a)", policy);
+    CHECK(result.code.find("void step(int a) {}") != std::string::npos);
+    CHECK(result.code.find("int fin() const { return {}; }") != std::string::npos);
+    CHECK(result.code.find("storage.create_aggregate_function<MyFn>();") != std::string::npos);
+}
+
+TEST_CASE("codegen: custom_function_style func_only policy (extension)") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["custom_function_style"] = "func_only";
+    auto result = generateWithPolicy("SELECT * FROM t WHERE k = my_fn(a)", policy);
+    CHECK(result.code.find("int operator()(int a) const;") != std::string::npos);
+    CHECK(result.code.find("create_scalar_function") == std::string::npos);
+    CHECK(result.code.find("create_aggregate_function") == std::string::npos);
+    CHECK(result.code.find("func<MyFn>(&T::a)") != std::string::npos);
+}
+
+TEST_CASE("codegen: known functions are not turned into custom functions") {
+    auto result = generateFull("SELECT abs(day) FROM t");
+    CHECK(result.code.find("struct") == std::string::npos);
+    CHECK(findDp(result, "custom_function") == nullptr);
+    CHECK(result.code.find("abs(&T::day)") != std::string::npos);
+}

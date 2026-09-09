@@ -479,19 +479,24 @@ namespace sqlite2orm {
                         "requires `using namespace sqlite_orm`");
                 }
                 if(!this->context.columnAliasStyleOverride) {
-                    CodeGenerator altGen;
-                    altGen.context() = selectAltBaseline;
-                    altGen.context().columnAliasStyleOverride = "cpp20_literal";
-                    auto altRes = altGen.generateNode(selectNode);
-                    Option cpp20Alt{"cpp20_literal", altRes.code,
-                                    "C++20 literal aliases (`orm_column_alias`, `_col`)"};
-                    cpp20Alt.comments = std::move(altRes.comments);
-                    // options lists every variant (the chosen one included).
-                    selectDecisionPoints.push_back(DecisionPoint{
-                        this->context.nextDecisionPointId++, "column_alias_style", "alias_tag", code,
-                        {Option{"alias_tag", code,
-                                "alias_tag / colalias_* / generated struct (default; wider compiler support)"},
-                         std::move(cpp20Alt)}});
+                    // options lists every applicable variant (the chosen one included).
+                    std::vector<Option> aliasOptions = {
+                        Option{"alias_tag", code,
+                               "alias_tag / colalias_* / generated struct (default; wider compiler support)"}};
+                    if(cpp20Allowed(this->context.codeGenPolicy)) {
+                        CodeGenerator altGen;
+                        altGen.context() = selectAltBaseline;
+                        altGen.context().columnAliasStyleOverride = "cpp20_literal";
+                        auto altRes = altGen.generateNode(selectNode);
+                        Option cpp20Alt{"cpp20_literal", altRes.code,
+                                        "C++20 literal aliases (`orm_column_alias`, `_col`)"};
+                        cpp20Alt.comments = std::move(altRes.comments);
+                        cpp20Alt.minCppStandard = 20;
+                        aliasOptions.push_back(std::move(cpp20Alt));
+                    }
+                    selectDecisionPoints.push_back(
+                        DecisionPoint{this->context.nextDecisionPointId++, "column_alias_style", "alias_tag",
+                                      code, std::move(aliasOptions)});
                 }
             }
         }
@@ -502,11 +507,14 @@ namespace sqlite2orm {
             altGen.context().columnAliasStyleOverride = "alias_tag";
             auto altRes = altGen.generateNode(selectNode);
             // options lists every variant (the chosen one included).
+            Option cpp20LiteralChosen{"cpp20_literal", code,
+                                      "C++20 literal aliases (`orm_column_alias`, `_col`)"};
+            cpp20LiteralChosen.minCppStandard = 20;
             selectDecisionPoints.push_back(DecisionPoint{
                 this->context.nextDecisionPointId++, "column_alias_style", "cpp20_literal", code,
                 {Option{"alias_tag", altRes.code,
                         "alias_tag / colalias_* / generated struct (default; wider compiler support)"},
-                 Option{"cpp20_literal", code, "C++20 literal aliases (`orm_column_alias`, `_col`)"}}});
+                 std::move(cpp20LiteralChosen)}});
         }
         bool hasTableAliases = !this->context.activeTableAliases.empty();
         if(!this->context.cpp20TableAliasDeclarations.empty() && !this->context.activeWithCteStyle) {
@@ -520,9 +528,11 @@ namespace sqlite2orm {
         }
         if(hasTableAliases) {
             if(!this->context.activeWithCteStyle && !this->context.suppressTableAliasStyleDecisionPoint) {
+                const bool allowCpp20 = cpp20Allowed(this->context.codeGenPolicy);
                 const std::string currentStyle =
-                    policyEquals(this->context.codeGenPolicy, "table_alias_style", "cpp20") ? "cpp20"
-                                                                                            : "pre_cpp20";
+                    (allowCpp20 && policyEquals(this->context.codeGenPolicy, "table_alias_style", "cpp20"))
+                        ? "cpp20"
+                        : "pre_cpp20";
                 auto makeAlt = [&](const char* styleValue) -> std::string {
                     CodeGenPolicy pol =
                         policyWithOverride(this->context.codeGenPolicy, "table_alias_style", styleValue);
@@ -532,11 +542,16 @@ namespace sqlite2orm {
                     gen.context().statementVariableNames = this->context.statementVariableNames;
                     return gen.generate(static_cast<const AstNode&>(selectNode)).code;
                 };
-                // options lists every variant (the chosen one included).
+                // options lists every applicable variant (the chosen one included).
                 std::vector<Option> tableAliasOptions = {
                     Option{"pre_cpp20", makeAlt("pre_cpp20"), "alias_a<T> + alias_column<> (wider compiler support)"},
-                    Option{"cpp20", makeAlt("cpp20"), "\"name\"_alias.for_<T>() + ->* (C++20 sqlite_orm)"},
                 };
+                if(allowCpp20) {
+                    Option cpp20TableAlias{"cpp20", makeAlt("cpp20"),
+                                           "\"name\"_alias.for_<T>() + ->* (C++20 sqlite_orm)"};
+                    cpp20TableAlias.minCppStandard = 20;
+                    tableAliasOptions.push_back(std::move(cpp20TableAlias));
+                }
                 selectDecisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
                                                              "table_alias_style", currentStyle, code,
                                                              std::move(tableAliasOptions)});

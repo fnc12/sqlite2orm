@@ -36,7 +36,8 @@ namespace sqlite2orm {
         std::string withStyle = "indexed_typedef";
         if(policyEquals(this->context.codeGenPolicy, "with_cte_style", "legacy_colalias")) {
             withStyle = "legacy_colalias";
-        } else if(policyEquals(this->context.codeGenPolicy, "with_cte_style", "cpp20_monikers")) {
+        } else if(cpp20Allowed(this->context.codeGenPolicy) &&
+                  policyEquals(this->context.codeGenPolicy, "with_cte_style", "cpp20_monikers")) {
             withStyle = "cpp20_monikers";
         }
 
@@ -426,9 +427,13 @@ namespace sqlite2orm {
                         Option{"legacy_colalias", altCode("legacy_colalias"),
                                "using typedef from SQL CTE name + colalias_a… + column<T>(var)"});
                 }
-                options.push_back(Option{
-                    "cpp20_monikers", altCode("cpp20_monikers"),
-                    "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"});
+                if(cpp20Allowed(this->context.codeGenPolicy)) {
+                    Option cpp20Moniker{
+                        "cpp20_monikers", altCode("cpp20_monikers"),
+                        "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"};
+                    cpp20Moniker.minCppStandard = 20;
+                    options.push_back(std::move(cpp20Moniker));
+                }
                 allDecisionPoints.push_back(
                     DecisionPoint{dpId, "with_cte_style", withStyle, code, std::move(options)});
             }

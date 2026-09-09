@@ -9,7 +9,8 @@ namespace sqlite2orm {
                             {"code", alternative.code},
                             {"description", alternative.description},
                             {"hidden", alternative.hidden},
-                            {"comments", alternative.comments}};
+                            {"comments", alternative.comments},
+                            {"minCppStandard", alternative.minCppStandard}};
     }
 
     void to_json(nlohmann::json& out, const DecisionPoint& decisionPoint) {

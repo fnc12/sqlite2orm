@@ -58,7 +58,8 @@ TEST_CASE("codegen: WITH single CTE exposes with_cte_style decision point") {
              Option{"legacy_colalias", codeLegacy,
                          "using typedef from SQL CTE name + colalias_a… + column<T>(var)"},
              Option{"cpp20_monikers", codeCpp20,
-                         "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)"}}}},
+                         "constexpr orm_cte_moniker / orm_table_alias + operator->* (C++20 sqlite_orm)",
+                         false, {}, 20}}}},
         {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
          "sqlite_orm::literals` scope for `_ctealias`"},
         {},
@@ -276,4 +277,37 @@ TEST_CASE("codegen: WITH RECURSIVE VALUES(1) UNION ALL — Klaus example") {
                 "select(cnt_cte->*cnt__x + 1, where(cnt_cte->*cnt__x < 1000000)))), "
                 "select(cnt_cte->*cnt__x));");
     }
+}
+
+TEST_CASE("codegen: targetCppStandard 17 drops the C++20 with_cte_style option") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 17;
+    auto result = generateWithPolicy(
+        "WITH cnt(x) AS (SELECT 1 AS x) SELECT x FROM cnt;", policy);
+    const DecisionPoint* dp = nullptr;
+    for(const auto& candidate : result.decisionPoints) {
+        if(candidate.category == "with_cte_style") {
+            dp = &candidate;
+        }
+    }
+    REQUIRE(dp != nullptr);
+    for(const auto& option : dp->options) {
+        CHECK(option.value != "cpp20_monikers");
+        CHECK(option.minCppStandard <= 17);
+    }
+    CHECK(dp->chosenValue != "cpp20_monikers");
+}
+
+TEST_CASE("codegen: explicit cpp20_monikers policy overridden by targetCppStandard 17") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 17;
+    policy.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+    auto result = generateWithPolicy(
+        "WITH cnt(x) AS (SELECT 1 AS x) SELECT x FROM cnt;", policy);
+    for(const auto& candidate : result.decisionPoints) {
+        if(candidate.category == "with_cte_style") {
+            CHECK(candidate.chosenValue != "cpp20_monikers");
+        }
+    }
+    CHECK(result.code.find("orm_cte_moniker") == std::string::npos);
 }

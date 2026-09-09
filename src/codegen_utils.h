@@ -14,6 +14,11 @@ namespace sqlite2orm {
     bool policyEquals(const CodeGenPolicy* policy, std::string_view category, std::string_view value);
     CodeGenPolicy policyWithOverride(const CodeGenPolicy* base, std::string_view category, std::string_view value);
 
+    /** Target C++ standard from the policy (a null policy means the default, C++20). */
+    int policyTargetCppStandard(const CodeGenPolicy* policy);
+    /** Whether C++20-only variants may be offered/chosen under the policy's target standard. */
+    bool cpp20Allowed(const CodeGenPolicy* policy);
+
     std::string colaliasBuiltinSlot(size_t slotIndex);
 
     std::string stripIdentifierQuotes(std::string_view identifier);

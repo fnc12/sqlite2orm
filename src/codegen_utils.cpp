@@ -25,6 +25,14 @@ namespace sqlite2orm {
         return result;
     }
 
+    int policyTargetCppStandard(const CodeGenPolicy* policy) {
+        return policy ? policy->targetCppStandard : CodeGenPolicy{}.targetCppStandard;
+    }
+
+    bool cpp20Allowed(const CodeGenPolicy* policy) {
+        return policyTargetCppStandard(policy) >= 20;
+    }
+
     std::string savepointGuardVariableName(std::string_view savepointName) {
         std::string variableName;
         for(const char c : stripIdentifierQuotes(savepointName)) {

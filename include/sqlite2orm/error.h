@@ -10,7 +10,10 @@ namespace sqlite2orm {
     struct ParseError {
         std::string message;
         SourceLocation location;
+        /** Optional "did you mean …?" fix for a recognized typo (e.g. `PRIMARY_KEY` → `PRIMARY KEY`); empty if none. */
+        std::string suggestion;
 
+        // Equality intentionally ignores `suggestion` so it stays purely advisory.
         bool operator==(const ParseError& other) const {
             return message == other.message;
         }
@@ -20,7 +23,10 @@ namespace sqlite2orm {
         std::string message;
         SourceLocation location;
         std::string nodeType;
+        /** Optional "did you mean …?" fix for a recognized typo; empty if none. */
+        std::string suggestion;
 
+        // Equality intentionally ignores `suggestion` so it stays purely advisory.
         bool operator==(const ValidationError& other) const {
             return message == other.message && nodeType == other.nodeType;
         }

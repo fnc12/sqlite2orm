@@ -1,4 +1,5 @@
 #include <sqlite2orm/parser.h>
+#include <sqlite2orm/utils.h>
 
 #include "parser_expression.h"
 #include "parser_select.h"
@@ -112,14 +113,19 @@ namespace sqlite2orm {
 
         if(!astNodePointer) {
             const Token& token = this->tokenStream.current();
-            return ParseResult{nullptr, {ParseError{"unexpected token: " + std::string(token.value), token.location}}};
+            return ParseResult{
+                nullptr,
+                {ParseError{"unexpected token: " + std::string(token.value), token.location,
+                            keywordTypoSuggestion(token.value)}}};
         }
 
         if(!this->tokenStream.atEnd()) {
             const Token& token = this->tokenStream.current();
             if(token.type != TokenType::semicolon) {
-                return ParseResult{std::move(astNodePointer),
-                                  {ParseError{"unexpected token after statement: " + std::string(token.value), token.location}}};
+                return ParseResult{
+                    std::move(astNodePointer),
+                    {ParseError{"unexpected token after statement: " + std::string(token.value), token.location,
+                                keywordTypoSuggestion(token.value)}}};
             }
         }
 

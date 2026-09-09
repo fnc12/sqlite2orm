@@ -588,3 +588,36 @@ TEST_CASE("parser: CREATE TABLE - FK DEFERRABLE INITIALLY DEFERRED") {
         false, {});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
+
+TEST_CASE("parser: PRIMARY_KEY typo yields a suggestion") {
+    auto parseResult = parse("CREATE TABLE users (id INTEGER PRIMARY_KEY AUTOINCREMENT)");
+    REQUIRE(parseResult.astNodePointer == nullptr);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: PRIMARY_KEY");
+    CHECK(parseResult.errors.front().suggestion == "PRIMARY KEY");
+}
+
+TEST_CASE("parser: NOT_NULL typo yields a suggestion") {
+    auto parseResult = parse("CREATE TABLE t (id INTEGER NOT_NULL)");
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().suggestion == "NOT NULL");
+}
+
+TEST_CASE("parser: IF NOT EXIST typo yields a suggestion") {
+    auto parseResult = parse("CREATE TABLE if not exist students (id integer primary key)");
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: exist");
+    CHECK(parseResult.errors.front().suggestion == "EXISTS");
+}
+
+TEST_CASE("parser: valid PRIMARY KEY has no error or suggestion") {
+    auto parseResult = parse("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)");
+    REQUIRE(parseResult.errors.empty());
+    REQUIRE(parseResult.astNodePointer != nullptr);
+}
+
+TEST_CASE("parser: unrelated unexpected token has no suggestion") {
+    auto parseResult = parse("CREATE TABLE t (id INTEGER) @@@");
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().suggestion.empty());
+}

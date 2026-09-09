@@ -33,6 +33,10 @@ namespace sqlite2orm {
         }
     }
 
+    bool isKnownSqlFunction(std::string_view lowerName) {
+        return knownFunctions().count(std::string(lowerName)) != 0;
+    }
+
     std::vector<ValidationError> Validator::validate(const AstNode& astNode) {
         std::vector<ValidationError> errors;
 
@@ -149,14 +153,8 @@ namespace sqlite2orm {
             auto operandErrors = validate(*collateNode->operand);
             errors.insert(errors.end(), operandErrors.begin(), operandErrors.end());
         } else if(auto* func = dynamic_cast<const FunctionCallNode*>(&astNode)) {
-            std::string lowerName = toLowerAscii(func->name);
-            if(knownFunctions().count(lowerName) == 0) {
-                errors.push_back(ValidationError{
-                    "unknown function: " + func->name,
-                    func->location,
-                    "FunctionCallNode"
-                });
-            }
+            // Unknown functions are treated as user-defined (scalar/aggregate) or extension
+            // functions and turned into a func<>() call plus a stub in codegen — not rejected.
             for(auto& arg : func->arguments) {
                 auto argErrors = validate(*arg);
                 errors.insert(errors.end(), argErrors.begin(), argErrors.end());

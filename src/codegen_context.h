@@ -30,6 +30,17 @@ namespace sqlite2orm {
         std::string sqlAlias;
     };
 
+    /** A user-defined / extension function referenced in a statement, turned into a func<>() call. */
+    struct CustomFunctionUse {
+        std::string sqlName;                 // original SQL name, e.g. "morton_encode"
+        std::string structName;              // C++ struct name, e.g. "MortonEncode"
+        std::vector<std::string> argTypes;   // best-effort C++ type per argument
+        std::vector<std::string> argNames;   // parameter names (column name when known, else argN)
+        std::string returnType = "int";      // best-effort result type
+
+        bool operator==(const CustomFunctionUse&) const = default;
+    };
+
     class CodeGeneratorContext {
       public:
         std::string structName = "User";
@@ -69,6 +80,12 @@ namespace sqlite2orm {
         bool suppressWithCteStyleDecisionPoint = false;
         bool suppressTableAliasStyleDecisionPoint = false;
 
+        /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
+        std::vector<CustomFunctionUse> customFunctions;
+
+        /** Records a custom function use if its struct name is not already present. */
+        void registerCustomFunction(CustomFunctionUse use);
+
         /**
          *  How many statements of the current batch already declared each result variable
          *  (`rows`, `vtab`, …). `processMultiSql` carries it from one statement to the next so
@@ -94,6 +111,9 @@ namespace sqlite2orm {
         void registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns);
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName,
                                                        std::string_view columnName) const;
+
+        /** Best-effort C++ type for a custom-function argument: schema type when known, else the name heuristic. */
+        std::string customFunctionArgType(const AstNode& argument) const;
 
         void registerColumn(const std::string& cppName, const std::string& cppType);
         void registerPrefixColumn(const std::string& cppName, const std::string& cppType);

@@ -511,3 +511,15 @@ TEST_CASE("process: join gives repeated virtual table variables unique names") {
     REQUIRE(joined.find("auto vtab = make_virtual_table<A>") != std::string::npos);
     REQUIRE(joined.find("auto vtab2 = make_virtual_table<B>") != std::string::npos);
 }
+
+TEST_CASE("processMultiSql: custom-function arg types come from the schema") {
+    const auto results = processMultiSql(
+        "CREATE TABLE transactions (day INTEGER, cat TEXT, a_norm REAL, morton_key INTEGER);"
+        "SELECT * FROM transactions WHERE morton_key = morton_encode(day, cat, a_norm);");
+    REQUIRE(results.size() == 2);
+    const std::string& code = results[1].codegen.code;
+    // day INTEGER -> int64_t, cat TEXT -> std::string, a_norm REAL -> double (from the schema).
+    CHECK(code.find("int64_t day, std::string cat, double a_norm") != std::string::npos);
+    CHECK(code.find("func<MortonEncode>(&Transactions::day, &Transactions::cat, &Transactions::a_norm)") !=
+          std::string::npos);
+}

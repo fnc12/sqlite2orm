@@ -57,10 +57,10 @@ TEST_CASE("validator: known functions are valid") {
     REQUIRE(validate("json_extract(data, '$.key')").empty());
 }
 
-TEST_CASE("validator: unknown function") {
-    REQUIRE(validate("my_custom_func(a)") == std::vector<ValidationError>{
-        {"unknown function: my_custom_func", {1, 1}, "FunctionCallNode"}
-    });
+TEST_CASE("validator: unknown function is accepted as user-defined") {
+    // Unknown functions are treated as user-defined/extension functions (codegen emits a
+    // func<>() call plus a stub), so validation no longer rejects them.
+    REQUIRE(validate("my_custom_func(a)").empty());
 }
 
 TEST_CASE("validator: known function case insensitive") {
@@ -218,7 +218,7 @@ TEST_CASE("validator: CREATE VIEW maps to make_view()") {
 }
 
 TEST_CASE("validator: CREATE VIEW inner SELECT is still validated") {
-    REQUIRE_FALSE(validate("CREATE VIEW v AS SELECT unknown_function_xyz(1);").empty());
+    REQUIRE_FALSE(validate("CREATE VIEW v AS SELECT +1;").empty());
 }
 
 TEST_CASE("validator: ALTER TABLE points to sync_schema") {

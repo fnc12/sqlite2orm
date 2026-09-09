@@ -15,6 +15,10 @@ namespace sqlite2orm {
      *  `with_cte_style` (single CTE with explicit column list only): `indexed_typedef` (default: cte_0 +
      *  column<cte_0>("…")), `legacy_colalias` (using name from SQL + colalias_i… + column<T>(var)), or
      *  `cpp20_monikers` (constexpr orm_cte_moniker / orm_column_alias + ->*).
+     *
+     *  `custom_function_style` (unknown/user-defined function): `scalar` (default: struct +
+     *  create_scalar_function + stub body), `aggregate` (struct with step/fin + create_aggregate_function),
+     *  or `func_only` (declaration only, for a function provided by a loaded extension — no registration).
      */
     struct CodeGenPolicy {
         std::unordered_map<std::string, std::string> chosenAlternativeValueByCategory;

@@ -1,6 +1,7 @@
 #include <sqlite2orm/codegen.h>
 
 #include "codegen_context.h"
+#include "codegen_utils.h"
 #include "codegen_expression.h"
 #include "codegen_select.h"
 #include "codegen_dml.h"
@@ -43,6 +44,121 @@ namespace sqlite2orm {
         return *this->generatorContext;
     }
 
+    namespace {
+        std::string escapeForCppStringLiteral(std::string_view text) {
+            std::string result;
+            for(char character : text) {
+                if(character == '\\' || character == '"') {
+                    result += '\\';
+                }
+                result += character;
+            }
+            return result;
+        }
+
+        std::string renderCustomFunctionStruct(const CustomFunctionUse& fn, std::string_view style) {
+            std::string params;
+            for(size_t i = 0; i < fn.argTypes.size(); ++i) {
+                if(i > 0) {
+                    params += ", ";
+                }
+                params += fn.argTypes[i] + " " + fn.argNames[i];
+            }
+            std::string out = "struct " + fn.structName + " {\n";
+            if(style == "aggregate") {
+                out += "    // TODO: accumulate one input row at a time\n";
+                out += "    void step(" + params + ") {}\n";
+                out += "    // TODO: return the aggregate result\n";
+                out += "    " + fn.returnType + " fin() const { return {}; }\n";
+            } else if(style == "func_only") {
+                out += "    // Provided by a loaded SQLite extension — declared for func<>() only, not registered here.\n";
+                out += "    " + fn.returnType + " operator()(" + params + ") const;\n";
+            } else {
+                out += "    // TODO: implement this user-defined scalar function\n";
+                out += "    " + fn.returnType + " operator()(" + params + ") const { return {}; }\n";
+            }
+            out += "    static const char *name() { return \"" + escapeForCppStringLiteral(fn.sqlName) + "\"; }\n";
+            out += "};";
+            return out;
+        }
+
+        std::string customFunctionRegistration(const CustomFunctionUse& fn, std::string_view style) {
+            if(style == "aggregate") {
+                return "storage.create_aggregate_function<" + fn.structName + ">();";
+            }
+            if(style == "func_only") {
+                return {};
+            }
+            return "storage.create_scalar_function<" + fn.structName + ">();";
+        }
+
+        /** Structs (+ registrations) for every custom function, using `styleFor(fn)` per function. */
+        template<class StyleFor>
+        std::string customFunctionsPreamble(const std::vector<CustomFunctionUse>& fns, StyleFor styleFor) {
+            std::string structs;
+            std::string registrations;
+            for(const CustomFunctionUse& fn : fns) {
+                const std::string style = styleFor(fn);
+                structs += renderCustomFunctionStruct(fn, style) + "\n";
+                const std::string registration = customFunctionRegistration(fn, style);
+                if(!registration.empty()) {
+                    registrations += registration + "\n";
+                }
+            }
+            std::string preamble = structs;
+            if(!registrations.empty()) {
+                preamble += "\n" + registrations;
+            }
+            return preamble;
+        }
+
+        std::string chosenCustomFunctionStyle(const CodeGenPolicy* policy) {
+            if(policyEquals(policy, "custom_function_style", "aggregate")) {
+                return "aggregate";
+            }
+            if(policyEquals(policy, "custom_function_style", "func_only")) {
+                return "func_only";
+            }
+            return "scalar";
+        }
+    }
+
+    void CodeGenerator::injectCustomFunctions(CodeGenResult& result) {
+        const auto& fns = this->generatorContext->customFunctions;
+        if(fns.empty()) {
+            return;
+        }
+        const CodeGenPolicy* policy = this->generatorContext->codeGenPolicy;
+        const std::string chosen = chosenCustomFunctionStyle(policy);
+        const std::string statementCode = result.code;
+
+        auto allChosen = [&](const CustomFunctionUse&) {
+            return chosen;
+        };
+        result.code = customFunctionsPreamble(fns, allChosen) + "\n" + statementCode;
+
+        // One decision point per function: scalar (impl) / aggregate (impl) / func_only (extension).
+        for(const CustomFunctionUse& fn : fns) {
+            auto optionCode = [&](std::string_view style) {
+                auto styleFor = [&](const CustomFunctionUse& other) -> std::string {
+                    return other.structName == fn.structName ? std::string(style) : chosen;
+                };
+                return customFunctionsPreamble(fns, styleFor) + "\n" + statementCode;
+            };
+            std::vector<Option> options = {
+                Option{"scalar", optionCode("scalar"),
+                       "user-defined scalar function (create_scalar_function + stub body)"},
+                Option{"aggregate", optionCode("aggregate"),
+                       "user-defined aggregate function (create_aggregate_function + step/fin stubs)"},
+                Option{"func_only", optionCode("func_only"),
+                       "call only, for a function from a loaded extension (no registration)"},
+            };
+            result.decisionPoints.push_back(DecisionPoint{this->generatorContext->nextDecisionPointId++,
+                                                          "custom_function", chosen, result.code,
+                                                          std::move(options)});
+        }
+    }
+
     CodeGenResult CodeGenerator::generate(const AstNode& astNode) {
         this->syncToContext();
         this->generatorContext->resetForGeneration();
@@ -50,6 +166,7 @@ namespace sqlite2orm {
         if(!this->generatorContext->accumulatedErrors.empty()) {
             return CodeGenResult{{}, {}, {}, std::move(this->generatorContext->accumulatedErrors), {}};
         }
+        this->injectCustomFunctions(result);
         return result;
     }
 

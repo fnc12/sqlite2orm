@@ -3,6 +3,7 @@
 #include "codegen_utils.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
+#include <sqlite2orm/validator.h>
 
 namespace sqlite2orm {
 
@@ -874,9 +875,16 @@ namespace sqlite2orm {
                     baseCode = funcName + "()";
                 }
             } else {
+                const bool customFunction = !isKnownSqlFunction(funcName);
+                CustomFunctionUse customUse;
+                if(customFunction) {
+                    customUse.sqlName = funcCall->name;
+                    customUse.structName = toStructName(funcCall->name);
+                }
                 std::string argList;
                 for(size_t argIndex = 0; argIndex < funcCall->arguments.size(); ++argIndex) {
-                    auto argResult = this->coordinator.generateNode(*funcCall->arguments.at(argIndex));
+                    const AstNode& argNode = *funcCall->arguments.at(argIndex);
+                    auto argResult = this->coordinator.generateNode(argNode);
                     decisionPoints.insert(decisionPoints.end(),
                                           std::make_move_iterator(argResult.decisionPoints.begin()),
                                           std::make_move_iterator(argResult.decisionPoints.end()));
@@ -886,6 +894,14 @@ namespace sqlite2orm {
                     if(argIndex > 0)
                         argList += ", ";
                     argList += argResult.code;
+                    if(customFunction) {
+                        customUse.argTypes.push_back(this->context.customFunctionArgType(argNode));
+                        if(auto* col = dynamic_cast<const ColumnRefNode*>(&argNode)) {
+                            customUse.argNames.push_back(toCppIdentifier(col->columnName));
+                        } else {
+                            customUse.argNames.push_back("arg" + std::to_string(argIndex));
+                        }
+                    }
                 }
                 if(!funcCall->star && !funcCall->arguments.empty() &&
                    sqliteScalarFirstArgTextContext(funcName)) {
@@ -893,7 +909,10 @@ namespace sqlite2orm {
                         this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
                     }
                 }
-                if(funcCall->distinct && !argList.empty()) {
+                if(customFunction) {
+                    this->context.registerCustomFunction(std::move(customUse));
+                    baseCode = "func<" + toStructName(funcCall->name) + ">(" + argList + ")";
+                } else if(funcCall->distinct && !argList.empty()) {
                     baseCode = funcName + "(distinct(" + argList + "))";
                 } else {
                     baseCode = funcName + "(" + argList + ")";

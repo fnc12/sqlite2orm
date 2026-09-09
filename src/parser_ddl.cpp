@@ -19,6 +19,9 @@ namespace sqlite2orm {
                    check(TokenType::kwReferences) || check(TokenType::kwGenerated) ||
                    check(TokenType::kwConstraint) || check(TokenType::kwAutoincrement) ||
                    check(TokenType::kwAs)) break;
+                // A glued/hyphenated keyword typo (PRIMARY_KEY, NOT_NULL, …) must not be absorbed
+                // into a multi-word type name; stop so it surfaces as a suggestible error.
+                if(!keywordTypoSuggestion(current().value).empty()) break;
             }
 
             if(!typeName.empty()) {
@@ -202,6 +205,11 @@ namespace sqlite2orm {
                     if(depth > 0) advanceToken();
                 }
                 if(depth == 0) advanceToken();
+            } else if(!keywordTypoSuggestion(current().value).empty()) {
+                // A glued/hyphenated keyword typo (e.g. PRIMARY_KEY) would otherwise be silently
+                // swallowed here and surface as a confusing downstream error. Stop instead, so the
+                // statement fails on this token and the parser attaches a "did you mean …?" fix.
+                break;
             } else {
                 advanceToken();
             }

@@ -28,4 +28,25 @@ namespace sqlite2orm {
         return toLowerAscii(stripSqlQuotes(identifier));
     }
 
+    std::string keywordTypoSuggestion(std::string_view token) {
+        // Glued/hyphenated/partial keyword typos → the correct SQLite spelling. Compared
+        // case-insensitively; the returned form is what a "did you mean …?" hint should show.
+        const std::string normalized = toLowerAscii(token);
+        static const std::pair<std::string_view, std::string_view> kTypos[] = {
+            {"primary_key", "PRIMARY KEY"},   {"primarykey", "PRIMARY KEY"},
+            {"foreign_key", "FOREIGN KEY"},   {"foreignkey", "FOREIGN KEY"},
+            {"not_null", "NOT NULL"},         {"notnull", "NOT NULL"},
+            {"unique_key", "UNIQUE"},
+            {"auto_increment", "AUTOINCREMENT"}, {"auto-increment", "AUTOINCREMENT"},
+            {"exist", "EXISTS"},
+            {"defualt", "DEFAULT"},           {"referances", "REFERENCES"},
+        };
+        for(const auto& [typo, fix] : kTypos) {
+            if(normalized == typo) {
+                return std::string(fix);
+            }
+        }
+        return {};
+    }
+
 }  // namespace sqlite2orm

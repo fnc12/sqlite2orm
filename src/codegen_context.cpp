@@ -8,16 +8,19 @@ namespace sqlite2orm {
 
     bool CodeGeneratorContext::useCpp20ColumnAliasStyle() const {
         if(this->columnAliasStyleOverride) {
+            // Internal override used to render the C++20 alternative for the options list; ungated.
             return *this->columnAliasStyleOverride == "cpp20_literal";
         }
-        return policyEquals(this->codeGenPolicy, "column_alias_style", "cpp20_literal");
+        return cpp20Allowed(this->codeGenPolicy) &&
+               policyEquals(this->codeGenPolicy, "column_alias_style", "cpp20_literal");
     }
 
     bool CodeGeneratorContext::useCpp20TableAliasStyle() const {
         if(this->withCteCpp20Monikers()) {
             return true;
         }
-        return policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
+        return cpp20Allowed(this->codeGenPolicy) &&
+               policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
     }
 
     bool CodeGeneratorContext::withCteLegacyColalias() const {

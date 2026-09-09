@@ -446,7 +446,8 @@ TEST_CASE("codegen: column_alias_style decision point offers C++20 alternative")
                                            cpp20AltCode,
                                            "C++20 literal aliases (`orm_column_alias`, `_col`)",
                                            false,
-                                           {std::string(kExpectedCpp20ColumnAliasComment)}}}}},
+                                           {std::string(kExpectedCpp20ColumnAliasComment)},
+                                           20}}}},
                 {"SELECT column alias uses sqlite_orm built-in colalias_* types; requires `using namespace sqlite_orm`"},
                 {},
                 {}});
@@ -491,7 +492,8 @@ TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
                                            "alias_tag / colalias_* / generated struct (default; wider compiler "
                                            "support)"},
                                 Option{"cpp20_literal", mainCode,
-                                           "C++20 literal aliases (`orm_column_alias`, `_col`)"}}}},
+                                           "C++20 literal aliases (`orm_column_alias`, `_col`)",
+                                           false, {}, 20}}}},
                 {},
                 {},
                  {std::string(kExpectedCpp20ColumnAliasComment)}});
@@ -521,4 +523,67 @@ TEST_CASE("codegen: MATCH against the FTS5 table name uses the hidden any column
 TEST_CASE("codegen: MATCH against an aliased FTS5 table name") {
     auto result = generateFull("SELECT d.* FROM docs d JOIN docs_search s ON d.id = s.rowid WHERE docs_search MATCH 'word'");
     REQUIRE(result.code.find("match(c<DocsSearch>()->*&fts5::hidden::any, \"word\")") != std::string::npos);
+}
+
+namespace {
+    const sqlite2orm::DecisionPoint* findDecisionPoint(const sqlite2orm::CodeGenResult& result,
+                                                       std::string_view category) {
+        for(const auto& dp : result.decisionPoints) {
+            if(dp.category == category) {
+                return &dp;
+            }
+        }
+        return nullptr;
+    }
+
+    bool hasOptionValue(const sqlite2orm::DecisionPoint& dp, std::string_view value) {
+        for(const auto& option : dp.options) {
+            if(option.value == value) {
+                return true;
+            }
+        }
+        return false;
+    }
+}  // namespace
+
+TEST_CASE("codegen: targetCppStandard 17 drops the C++20 column_alias option") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 17;
+    auto result = generateWithPolicy("SELECT name AS i FROM users", policy);
+    const auto* dp = findDecisionPoint(result, "column_alias_style");
+    REQUIRE(dp != nullptr);
+    CHECK(dp->chosenValue == "alias_tag");
+    CHECK(hasOptionValue(*dp, "alias_tag"));
+    CHECK_FALSE(hasOptionValue(*dp, "cpp20_literal"));
+    for(const auto& option : dp->options) {
+        CHECK(option.minCppStandard <= 17);
+    }
+}
+
+TEST_CASE("codegen: default targetCppStandard 20 keeps the C++20 column_alias option") {
+    auto result = generateFull("SELECT name AS i FROM users");
+    const auto* dp = findDecisionPoint(result, "column_alias_style");
+    REQUIRE(dp != nullptr);
+    CHECK(hasOptionValue(*dp, "cpp20_literal"));
+}
+
+TEST_CASE("codegen: targetCppStandard 17 drops the C++20 table_alias option") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 17;
+    auto result = generateWithPolicy("SELECT u.id FROM users u", policy);
+    const auto* dp = findDecisionPoint(result, "table_alias_style");
+    REQUIRE(dp != nullptr);
+    CHECK(dp->chosenValue == "pre_cpp20");
+    CHECK_FALSE(hasOptionValue(*dp, "cpp20"));
+}
+
+TEST_CASE("codegen: explicit C++20 table_alias policy is overridden by targetCppStandard 17") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 17;
+    policy.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT u.id FROM users u", policy);
+    const auto* dp = findDecisionPoint(result, "table_alias_style");
+    REQUIRE(dp != nullptr);
+    CHECK(dp->chosenValue == "pre_cpp20");
+    CHECK_FALSE(hasOptionValue(*dp, "cpp20"));
 }

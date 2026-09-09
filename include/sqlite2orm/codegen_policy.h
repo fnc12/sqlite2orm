@@ -18,6 +18,13 @@ namespace sqlite2orm {
      */
     struct CodeGenPolicy {
         std::unordered_map<std::string, std::string> chosenAlternativeValueByCategory;
+
+        /**
+         *  Target C++ standard (14 / 17 / 20 / …). Decision-point options that need a newer standard
+         *  than this (e.g. the C++20 sqlite_orm aliases/monikers) are neither offered nor chosen; a
+         *  consumer targeting C++17 therefore never sees C++20-only variants. Defaults to C++20.
+         */
+        int targetCppStandard = 20;
     };
 
 }  // namespace sqlite2orm

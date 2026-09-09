@@ -12,6 +12,12 @@ namespace sqlite2orm {
         bool hidden = false;
         /** Optional notes when this alternative is shown or chosen (e.g. build requirements); any consumer may show them. */
         std::vector<std::string> comments;
+        /**
+         *  Minimum C++ standard this variant compiles against (14 by default; 20 for options that
+         *  rely on C++20 sqlite_orm features). Options requiring more than `CodeGenPolicy::targetCppStandard`
+         *  are dropped before the result is returned, so a consumer never sees an unusable variant.
+         */
+        int minCppStandard = 14;
 
         bool operator==(const Option&) const = default;
     };

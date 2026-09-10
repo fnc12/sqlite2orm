@@ -311,3 +311,37 @@ TEST_CASE("codegen: explicit cpp20_monikers policy overridden by targetCppStanda
     }
     CHECK(result.code.find("orm_cte_moniker") == std::string::npos);
 }
+
+TEST_CASE("codegen: WITH … SELECT * FROM cte wraps the outer select (regression)") {
+    // Previously the outer `SELECT *` rendered as storage.get_all<cte_0>(), which is not a
+    // storage.with() argument, so the whole WITH was dropped and the code referenced an
+    // undefined cte_0. It must now wrap as storage.with(…, select(asterisk<cte_0>())).
+    REQUIRE(generate("WITH e(id, name, salary) AS (SELECT id, name, salary FROM employee WHERE salary > 60000.0) "
+                     "SELECT * FROM e;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "constexpr auto e__id = colalias_a{};\n"
+            "constexpr auto e__name = colalias_b{};\n"
+            "constexpr auto e__salary = colalias_c{};\n"
+            "auto rows = storage.with(cte<cte_0>(\"id\", \"name\", \"salary\").as(select(columns("
+            "&Employee::id >>= e__id, &Employee::name >>= e__name, &Employee::salary >>= e__salary), "
+            "where(c(&Employee::salary) > 60000.0))), select(asterisk<cte_0>()));");
+}
+
+TEST_CASE("codegen: WITH … SELECT * FROM cte cpp20_monikers also wraps") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+    CodeGenResult result = generateWithPolicy(
+        "WITH e(id, name, salary) AS (SELECT id, name, salary FROM employee WHERE salary > 60000.0) "
+        "SELECT * FROM e;",
+        pol);
+    REQUIRE(result.code ==
+            "using namespace sqlite_orm::literals;\n"
+            "constexpr orm_cte_moniker auto e_cte = \"e\"_cte;\n"
+            "constexpr orm_column_alias auto e__id = \"id\"_col;\n"
+            "constexpr orm_column_alias auto e__name = \"name\"_col;\n"
+            "constexpr orm_column_alias auto e__salary = \"salary\"_col;\n"
+            "auto rows = storage.with(e_cte(e__id, e__name, e__salary).as(select(columns("
+            "&Employee::id >>= e__id, &Employee::name >>= e__name, &Employee::salary >>= e__salary), "
+            "where(c(&Employee::salary) > 60000.0))), select(asterisk<e_cte>()));");
+}

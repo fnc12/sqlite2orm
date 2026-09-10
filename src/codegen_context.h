@@ -79,6 +79,12 @@ namespace sqlite2orm {
 
         bool suppressWithCteStyleDecisionPoint = false;
         bool suppressTableAliasStyleDecisionPoint = false;
+        /**
+         *  Set while generating the outer SELECT of a WITH: a bare `SELECT *` must use the
+         *  `select(asterisk<T>())` form (which nests into `storage.with(...)`), not `storage.get_all<T>()`
+         *  (a storage method that cannot be a `with()` argument). Consumed once by the outer select.
+         */
+        bool withOuterSelect = false;
 
         /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
         std::vector<CustomFunctionUse> customFunctions;

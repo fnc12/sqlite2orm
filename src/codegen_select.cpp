@@ -29,6 +29,10 @@ namespace sqlite2orm {
         std::vector<std::string> selectWarnings;
         std::vector<DecisionPoint> selectDecisionPoints;
         std::vector<std::string> selectComments;
+        // Consume the WITH-outer flag here so it applies only to this (top-level) select, not to any
+        // nested subselect generated while producing it.
+        const bool forceOuterAsterisk = this->context.withOuterSelect;
+        this->context.withOuterSelect = false;
         for(const auto& fromItem : selectNode.fromClause) {
             if(fromItem.table.derivedSelect) {
                 selectWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
@@ -154,7 +158,8 @@ namespace sqlite2orm {
 
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
         int apiLevelDecisionId = -1;
-        if(isStar && !selectNode.fromClause.empty()) {
+        // No api_level choice for a WITH outer: it is fixed to the `select(asterisk<T>())` form.
+        if(isStar && !selectNode.fromClause.empty() && !forceOuterAsterisk) {
             apiLevelDecisionId = this->context.nextDecisionPointId++;
         }
         std::string code;
@@ -429,6 +434,11 @@ namespace sqlite2orm {
                 chosenApi = "select_object";
                 code = codeSelectObject;
             } else if(policyEquals(this->context.codeGenPolicy, "api_level", "select_asterisk")) {
+                chosenApi = "select_asterisk";
+                code = codeSelectAsterisk;
+            }
+            // A WITH outer cannot use storage.get_all<T>() (not a with() argument); use asterisk instead.
+            if(forceOuterAsterisk && chosenApi == "get_all") {
                 chosenApi = "select_asterisk";
                 code = codeSelectAsterisk;
             }

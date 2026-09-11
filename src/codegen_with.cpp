@@ -384,6 +384,8 @@ namespace sqlite2orm {
         const auto* outerDelete = dynamic_cast<const DeleteNode*>(withQueryNode.statement.get());
 
         if(outerSelect || outerCompound) {
+            // A bare `SELECT *` outer must render as select(asterisk<T>()) so it nests into storage.with().
+            this->context.withOuterSelect = true;
             auto outerResult = this->coordinator.generateNode(*withQueryNode.statement);
             warnings.insert(warnings.end(), std::make_move_iterator(outerResult.warnings.begin()),
                              std::make_move_iterator(outerResult.warnings.end()));

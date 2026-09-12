@@ -12,6 +12,17 @@ namespace {
         return results.back().codegen;
     }
 
+    /**
+     *  The warning every view carries below C++26 (views need reflection). `displayName` is the
+     *  name as it appears in the DDL; the span underlines the `CREATE VIEW` keyword (11 chars).
+     */
+    CodegenWarning cpp26ViewWarning(const std::string& displayName, size_t line) {
+        return {"CREATE VIEW " + displayName +
+                    ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
+                    "requires C++26 and will not compile under the selected C++ standard",
+                SourceLocation{line, 1}, 11};
+    }
+
 }  // namespace
 
 TEST_CASE("codegen: CREATE VIEW - standalone, types fall back to name heuristics") {
@@ -28,7 +39,8 @@ TEST_CASE("codegen: CREATE VIEW - standalone, types fall back to name heuristics
         std::vector<CodegenWarning>{
             {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
             {"view v: type of column `name` could not be inferred; defaulting to std::string",
-             SourceLocation{1, 29}, 4}});
+             SourceLocation{1, 29}, 4},
+            cpp26ViewWarning("v", 1)});
 }
 
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
@@ -53,7 +65,7 @@ TEST_CASE("codegen: CREATE VIEW - field types from CREATE TABLE in same batch") 
         "\n"
         "auto storage = make_storage(\"\",\n"
         "    make_view<Adults>(select(columns(&Users::id, &Users::name), where(c(&Users::age) >= 18))));");
-    REQUIRE(result.warnings.empty());
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("adults", 2)});
 }
 
 TEST_CASE("codegen: CREATE VIEW - explicit column list names the fields") {
@@ -109,7 +121,7 @@ TEST_CASE("codegen: CREATE VIEW - aggregate functions infer int/double") {
         "\n"
         "auto storage = make_storage(\"\",\n"
         "    make_view<Stats>(select(columns(count<Emp>(), avg(&Emp::salary)))));");
-    REQUIRE(result.warnings.empty());
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("stats", 2)});
 }
 
 TEST_CASE("codegen: CREATE VIEW - schema-qualified name warns and uses bare name") {
@@ -125,12 +137,25 @@ TEST_CASE("codegen: CREATE VIEW - schema-qualified name warns and uses bare name
         std::vector<CodegenWarning>{
             "schema-qualified view name is not represented in sqlite_orm; generated code uses unqualified "
             "view name only",
-            "view v: SELECT column 1 has no name; using synthesized field name `column_1`"});
+            "view v: SELECT column 1 has no name; using synthesized field name `column_1`",
+            cpp26ViewWarning("main.v", 1)});
 }
 
 TEST_CASE("codegen: view column-type warning carries a source location to underline") {
     // `id` sits at line 1, column 25 of the SQL and is 2 characters long.
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `id` could not be inferred; defaulting to int",
+                 SourceLocation{1, 25}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
+TEST_CASE("codegen: targeting C++26 drops the reflection-not-supported view warning") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    auto result = generateWithPolicy("CREATE VIEW v AS SELECT id FROM users;", policy);
+    // Only the column-type inference warning remains; the C++26 gate warning is gone.
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
                 {"view v: type of column `id` could not be inferred; defaulting to int",

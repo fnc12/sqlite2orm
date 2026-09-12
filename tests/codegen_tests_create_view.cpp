@@ -25,9 +25,10 @@ TEST_CASE("codegen: CREATE VIEW - standalone, types fall back to name heuristics
         "auto storage = make_storage(\"\",\n"
         "    make_view<V>(select(columns(&Users::id, &Users::name))));");
     REQUIRE(result.warnings ==
-        std::vector<std::string>{
-            "view v: type of column `id` could not be inferred; defaulting to int",
-            "view v: type of column `name` could not be inferred; defaulting to std::string"});
+        std::vector<CodegenWarning>{
+            {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
+            {"view v: type of column `name` could not be inferred; defaulting to std::string",
+             SourceLocation{1, 29}, 4}});
 }
 
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
@@ -121,8 +122,17 @@ TEST_CASE("codegen: CREATE VIEW - schema-qualified name warns and uses bare name
         "auto storage = make_storage(\"\",\n"
         "    make_view<V>(select(1)));");
     REQUIRE(result.warnings ==
-        std::vector<std::string>{
+        std::vector<CodegenWarning>{
             "schema-qualified view name is not represented in sqlite_orm; generated code uses unqualified "
             "view name only",
             "view v: SELECT column 1 has no name; using synthesized field name `column_1`"});
+}
+
+TEST_CASE("codegen: view column-type warning carries a source location to underline") {
+    // `id` sits at line 1, column 25 of the SQL and is 2 characters long.
+    auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `id` could not be inferred; defaulting to int",
+                 SourceLocation{1, 25}, 2}});
 }

@@ -249,7 +249,7 @@ TEST_CASE("codegen: CREATE TABLE - UNIQUE has no warnings") {
 
 TEST_CASE("codegen: CREATE TABLE - UNIQUE ON CONFLICT generates warning") {
     auto result = generateFull("CREATE TABLE t (email TEXT UNIQUE ON CONFLICT IGNORE)");
-    REQUIRE(result.warnings == std::vector<std::string>{
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
         "UNIQUE ON CONFLICT clause on column 'email' is not supported by sqlite_orm::unique()"
     });
 }
@@ -304,7 +304,7 @@ TEST_CASE("codegen: CREATE TABLE - COLLATE RTRIM") {
 
 TEST_CASE("codegen: CREATE TABLE - custom COLLATE generates warning") {
     auto result = generateFull("CREATE TABLE t (name TEXT COLLATE UNICODE)");
-    REQUIRE(result.warnings == std::vector<std::string>{
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
         "COLLATE UNICODE on column 'name' is not a built-in collation in sqlite_orm"
     });
 }
@@ -544,7 +544,7 @@ TEST_CASE("codegen: STRICT table warning") {
     REQUIRE_FALSE(result.warnings.empty());
     bool found = false;
     for(const auto& w: result.warnings) {
-        if(w.find("STRICT") != std::string::npos) {
+        if(w.message.find("STRICT") != std::string::npos) {
             found = true;
             break;
         }
@@ -565,7 +565,7 @@ TEST_CASE("codegen: FK DEFERRABLE parsed") {
         "        make_column(\"id\", &T::id),\n"
         "        foreign_key(&T::id).references(&P::id)));");
     REQUIRE(result.warnings ==
-        std::vector<std::string>{
+        std::vector<CodegenWarning>{
             "DEFERRABLE INITIALLY DEFERRED on foreign key for column 'id' "
             "is not supported in sqlite_orm — ignored in codegen"});
 }

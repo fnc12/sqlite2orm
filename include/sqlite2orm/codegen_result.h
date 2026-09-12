@@ -1,9 +1,34 @@
 #pragma once
 
+#include <sqlite2orm/token.h>
+
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace sqlite2orm {
+
+    /**
+     *  A codegen warning, optionally anchored to a span of the source SQL so a consumer can
+     *  underline the relevant text. Implicitly constructible from a string, so the many plain
+     *  `warnings.push_back("…")` sites keep compiling; only sites with a known location set one.
+     *  Equality ignores the location (advisory), so existing message-based comparisons still hold.
+     */
+    struct CodegenWarning {
+        std::string message;
+        /** Start of the relevant SQL token; `length` characters from here should be underlined. */
+        std::optional<SourceLocation> location;
+        /** Number of characters to underline from `location` (0 when unknown). */
+        size_t length = 0;
+
+        CodegenWarning() = default;
+        CodegenWarning(std::string message) : message(std::move(message)) {}
+        CodegenWarning(const char* message) : message(message) {}
+        CodegenWarning(std::string message, SourceLocation location, size_t length)
+            : message(std::move(message)), location(location), length(length) {}
+
+        bool operator==(const CodegenWarning&) const = default;
+    };
 
     struct Option {
         std::string value;
@@ -35,7 +60,7 @@ namespace sqlite2orm {
     struct CodeGenResult {
         std::string code;
         std::vector<DecisionPoint> decisionPoints;
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         std::vector<std::string> errors;
         /** Optional hints for the generated snippet (deduplicated when merging fragments). */
         std::vector<std::string> comments;
@@ -46,14 +71,14 @@ namespace sqlite2orm {
     struct CreateTableParts {
         std::string structDeclaration;
         std::string makeTableExpression;
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
     };
 
     struct CreateViewParts {
         std::string structDeclaration;
         std::string makeViewExpression;
         std::vector<DecisionPoint> decisionPoints;
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         std::vector<std::string> comments;
     };
 

@@ -312,6 +312,22 @@ namespace sqlite2orm {
         }
     }
 
+    void appendUniqueWarnings(std::vector<CodegenWarning>& destination,
+                              const std::vector<CodegenWarning>& source) {
+        for(const auto& warning : source) {
+            bool dupe = false;
+            for(const auto& existing : destination) {
+                if(existing.message == warning.message) {
+                    dupe = true;
+                    break;
+                }
+            }
+            if(!dupe) {
+                destination.push_back(warning);
+            }
+        }
+    }
+
     void appendUniqueString(std::vector<std::string>& destination, const std::string& value) {
         for(const auto& existing : destination) {
             if(existing == value) return;

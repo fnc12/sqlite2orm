@@ -175,7 +175,7 @@ namespace sqlite2orm {
 
         std::vector<std::string> storageArgs;
         std::vector<DecisionPoint> allDecisionPoints;
-        std::vector<std::string> allWarnings;
+        std::vector<CodegenWarning> allWarnings;
         std::vector<std::string> allComments;
 
         for(const CreateTableNode* createTableNode : sortedTables) {

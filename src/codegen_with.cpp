@@ -185,7 +185,10 @@ namespace sqlite2orm {
         for(size_t cteIndex = 0; cteIndex < ctes.size(); ++cteIndex) {
             const auto& cte = ctes[cteIndex];
             this->context.pendingAnchorCteBindings.clear();
-            if(!cte.columnNames.empty()) {
+            // cpp20_monikers names the CTE columns in the moniker call (e_cte(e__id, …)); adding
+            // `>>= e__id` in the driving SELECT too would name them twice. Other styles need the
+            // anchor `>>=` bindings to name the columns.
+            if(!cte.columnNames.empty() && withStyle != "cpp20_monikers") {
                 const std::string cteKey = normalizeSqlIdentifier(cte.cteName);
                 for(const auto& colName : cte.columnNames) {
                     const std::string colKey = normalizeSqlIdentifier(colName);

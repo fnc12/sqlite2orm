@@ -91,7 +91,7 @@ TEST_CASE("codegen: with_cte_style cpp20_monikers") {
         "using namespace sqlite_orm::literals;\n"
         "constexpr orm_cte_moniker auto cnt_cte = \"cnt\"_cte;\n"
         "constexpr orm_column_alias auto cnt__x = \"x\"_col;\n"
-        "auto rows = storage.with_recursive(cnt_cte(cnt__x).as(union_all(select(1 >>= cnt__x), "
+        "auto rows = storage.with_recursive(cnt_cte(cnt__x).as(union_all(select(1), "
         "select(cnt_cte->*cnt__x + 1, limit(999)))), select(cnt_cte->*cnt__x));";
     REQUIRE(codeGenResult.code == expected);
 }
@@ -273,7 +273,7 @@ TEST_CASE("codegen: WITH RECURSIVE VALUES(1) UNION ALL — Klaus example") {
                 "using namespace sqlite_orm::literals;\n"
                 "constexpr orm_cte_moniker auto cnt_cte = \"cnt\"_cte;\n"
                 "constexpr orm_column_alias auto cnt__x = \"x\"_col;\n"
-                "auto rows = storage.with_recursive(cnt_cte(cnt__x).as(union_all(select(1 >>= cnt__x), "
+                "auto rows = storage.with_recursive(cnt_cte(cnt__x).as(union_all(select(1), "
                 "select(cnt_cte->*cnt__x + 1, where(cnt_cte->*cnt__x < 1000000)))), "
                 "select(cnt_cte->*cnt__x));");
     }
@@ -342,6 +342,6 @@ TEST_CASE("codegen: WITH … SELECT * FROM cte cpp20_monikers also wraps") {
             "constexpr orm_column_alias auto e__name = \"name\"_col;\n"
             "constexpr orm_column_alias auto e__salary = \"salary\"_col;\n"
             "auto rows = storage.with(e_cte(e__id, e__name, e__salary).as(select(columns("
-            "&Employee::id >>= e__id, &Employee::name >>= e__name, &Employee::salary >>= e__salary), "
+            "&Employee::id, &Employee::name, &Employee::salary), "
             "where(c(&Employee::salary) > 60000.0))), select(asterisk<e_cte>()));");
 }

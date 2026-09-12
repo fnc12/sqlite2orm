@@ -295,7 +295,7 @@ namespace sqlite2orm {
 
     std::string CodeGenerator::codegenOverClause(const OverClause& overClause,
                                                   std::vector<DecisionPoint>& decisionPoints,
-                                                  std::vector<std::string>& warnings) {
+                                                  std::vector<CodegenWarning>& warnings) {
         return this->expressionCodeGenerator->codegenOverClause(overClause, decisionPoints, warnings);
     }
 

@@ -13,11 +13,11 @@ namespace sqlite2orm {
         const CreateTableParts parts = this->createTableParts(createTable);
         std::string code = parts.structDeclaration + "\nauto storage = make_storage(\"\",\n    " +
                            parts.makeTableExpression + ");";
-        return CodeGenResult{std::move(code), {}, std::vector<std::string>(parts.warnings)};
+        return CodeGenResult{std::move(code), {}, std::vector<CodegenWarning>(parts.warnings)};
     }
 
     CodeGenResult DdlCodeGenerator::generateCreateTrigger(const CreateTriggerNode& createTrigger) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         if(createTrigger.ifNotExists) {
             warnings.push_back(
                 "CREATE TRIGGER IF NOT EXISTS is not represented in sqlite_orm make_trigger(); generated code "
@@ -101,7 +101,7 @@ namespace sqlite2orm {
     }
 
     CodeGenResult DdlCodeGenerator::generateCreateIndex(const CreateIndexNode& createIndex) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         if(createIndex.indexSchemaName) {
             warnings.push_back(
                 "schema-qualified INDEX name is not represented in sqlite_orm; generated code uses unqualified "
@@ -280,7 +280,7 @@ namespace sqlite2orm {
     }
 
     CodeGenResult DdlCodeGenerator::generateDrop(const DropStatementNode& node) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         if(node.schemaName) {
             warnings.push_back(
                 "schema-qualified name in DROP is not represented in sqlite_orm; generated call uses unqualified "
@@ -319,7 +319,7 @@ namespace sqlite2orm {
     }
 
     CodeGenResult DdlCodeGenerator::generateCreateVirtualTable(const CreateVirtualTableNode& node) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         std::vector<DecisionPoint> decisionPoints;
 
         if(node.tableSchemaName) {
@@ -715,7 +715,7 @@ namespace sqlite2orm {
         parts.decisionPoints.insert(parts.decisionPoints.end(),
                                     std::make_move_iterator(selectExpression.decisionPoints.begin()),
                                     std::make_move_iterator(selectExpression.decisionPoints.end()));
-        appendUniqueStrings(parts.warnings, selectExpression.warnings);
+        appendUniqueWarnings(parts.warnings, selectExpression.warnings);
         appendUniqueStrings(parts.comments, selectExpression.comments);
         if(selectExpression.code.empty()) {
             parts.warnings.push_back("CREATE VIEW " + displayName +
@@ -749,7 +749,8 @@ namespace sqlite2orm {
         std::vector<ViewField> fields;
         std::vector<SourceTableColumn> registeredColumns;
 
-        auto appendField = [&](std::string sqlName, const std::optional<InferredFieldType>& inferred) {
+        auto appendField = [&](std::string sqlName, const std::optional<InferredFieldType>& inferred,
+                               std::optional<SourceLocation> location, size_t underlineLength) {
             ViewField field;
             field.cppName = toCppIdentifier(sqlName);
             if(inferred) {
@@ -757,8 +758,13 @@ namespace sqlite2orm {
                 field.nullable = inferred->nullable;
             } else {
                 field.cppType = defaultCppTypeForSyntheticColumn(field.cppName);
-                parts.warnings.push_back("view " + rawViewName + ": type of column `" + sqlName +
-                                         "` could not be inferred; defaulting to " + field.cppType);
+                std::string message = "view " + rawViewName + ": type of column `" + sqlName +
+                                      "` could not be inferred; defaulting to " + field.cppType;
+                if(location) {
+                    parts.warnings.push_back(CodegenWarning{std::move(message), *location, underlineLength});
+                } else {
+                    parts.warnings.push_back(CodegenWarning{std::move(message)});
+                }
             }
             registeredColumns.push_back(SourceTableColumn{std::move(sqlName), field.cppType, field.nullable});
             fields.push_back(std::move(field));
@@ -771,7 +777,7 @@ namespace sqlite2orm {
                 return false;
             }
             for(const SourceTableColumn& column : tableIterator->second) {
-                appendField(column.sqlName, InferredFieldType{column.cppType, column.nullable});
+                appendField(column.sqlName, InferredFieldType{column.cppType, column.nullable}, std::nullopt, 0);
             }
             return true;
         };
@@ -834,10 +840,13 @@ namespace sqlite2orm {
                                              " has no name; using synthesized field name `" + sqlName + "`");
                 }
                 std::optional<InferredFieldType> inferred;
+                std::optional<SourceLocation> columnLocation;
                 if(selectColumn.expression) {
                     inferred = inferrer.infer(*selectColumn.expression);
+                    columnLocation = selectColumn.expression->location;
                 }
-                appendField(std::move(sqlName), inferred);
+                const size_t underlineLength = sqlName.size();
+                appendField(std::move(sqlName), inferred, columnLocation, underlineLength);
             }
         }
 
@@ -880,7 +889,7 @@ namespace sqlite2orm {
         const auto structName = toStructName(createTable.tableName);
         this->context.structName = structName;
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
 
         std::string structDeclaration = "struct " + structName + " {\n";
         for(const auto& column : createTable.columns) {

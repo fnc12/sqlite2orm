@@ -18,16 +18,16 @@ namespace sqlite2orm {
         CodeGenResult generateExpression(const AstNode& astNode);
 
         std::string codegenOverClause(const OverClause& overClause, std::vector<DecisionPoint>& decisionPoints,
-                                      std::vector<std::string>& warnings);
+                                      std::vector<CodegenWarning>& warnings);
 
       private:
         CodeGenerator& coordinator;
         CodeGeneratorContext& context;
 
         std::string codegenWindowFrameBound(const WindowFrameBound& bound, std::vector<DecisionPoint>& decisionPoints,
-                                            std::vector<std::string>& warnings);
+                                            std::vector<CodegenWarning>& warnings);
         std::string codegenWindowFrameSpec(const WindowFrameSpec& frame, std::vector<DecisionPoint>& decisionPoints,
-                                           std::vector<std::string>& warnings);
+                                           std::vector<CodegenWarning>& warnings);
     };
 
 }  // namespace sqlite2orm

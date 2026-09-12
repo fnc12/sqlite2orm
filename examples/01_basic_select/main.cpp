@@ -19,7 +19,7 @@ int main() {
     fmt::print("{}\n", result.codegen.code);
 
     for(const auto& warning : result.codegen.warnings) {
-        fmt::print(stderr, "warning: {}\n", warning);
+        fmt::print(stderr, "warning: {}\n", warning.message);
     }
 
     return 0;

@@ -49,6 +49,7 @@ namespace sqlite2orm {
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 
     void appendUniqueStrings(std::vector<std::string>& destination, const std::vector<std::string>& source);
+    void appendUniqueWarnings(std::vector<CodegenWarning>& destination, const std::vector<CodegenWarning>& source);
     void appendUniqueString(std::vector<std::string>& destination, const std::string& value);
 
     std::string_view binaryOperatorString(BinaryOperator binaryOperator);

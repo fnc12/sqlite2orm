@@ -13,7 +13,7 @@ namespace sqlite2orm {
         : coordinator(coordinator), context(context) {}
 
     CodeGenResult DmlCodeGenerator::generateInsert(const InsertNode& insertNode) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         if(insertNode.schemaName) {
             warnings.push_back("schema-qualified table in INSERT is not represented in sqlite_orm mapping");
         }
@@ -198,7 +198,7 @@ namespace sqlite2orm {
     }
 
     CodeGenResult DmlCodeGenerator::generateUpdate(const UpdateNode& updateNode) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         if(updateNode.schemaName) {
             warnings.push_back("schema-qualified table in UPDATE is not represented in sqlite_orm mapping");
         }
@@ -246,7 +246,7 @@ namespace sqlite2orm {
     }
 
     CodeGenResult DmlCodeGenerator::generateDelete(const DeleteNode& deleteNode) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         if(deleteNode.schemaName) {
             warnings.push_back("schema-qualified table in DELETE is not represented in sqlite_orm mapping");
         }

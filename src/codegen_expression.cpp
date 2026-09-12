@@ -28,7 +28,7 @@ namespace sqlite2orm {
             if(!raiseNode->message) {
                 return CodeGenResult{"raise_ignore()", {}};
             }
-            std::vector<std::string> raiseWarnings;
+            std::vector<CodegenWarning> raiseWarnings;
             const char* api = "raise_abort";
             if(raiseNode->kind == RaiseKind::rollback) {
                 api = "raise_rollback";
@@ -163,7 +163,7 @@ namespace sqlite2orm {
                 {},
                 {}};
         } else if(auto* qualifiedRef = dynamic_cast<const QualifiedColumnRefNode*>(&astNode)) {
-            std::vector<std::string> qualWarnings;
+            std::vector<CodegenWarning> qualWarnings;
             if(qualifiedRef->schemaName) {
                 qualWarnings.push_back(
                     "schema-qualified column " + std::string(*qualifiedRef->schemaName) + "." +
@@ -263,7 +263,7 @@ namespace sqlite2orm {
                                        "explicit mapped type (inheritance / ambiguity)"}}}},
                 std::move(qualWarnings), {}, {}};
         } else if(auto* qualifiedAsterisk = dynamic_cast<const QualifiedAsteriskNode*>(&astNode)) {
-            std::vector<std::string> qualifiedAsteriskWarnings;
+            std::vector<CodegenWarning> qualifiedAsteriskWarnings;
             if(qualifiedAsterisk->schemaName) {
                 qualifiedAsteriskWarnings.push_back(
                     "schema-qualified SELECT result column " + *qualifiedAsterisk->schemaName + "." +
@@ -422,7 +422,7 @@ namespace sqlite2orm {
                  Option{"functional", functionalCode, "functional style"},
                  Option{"operator_wrap_both", wrapBothCode, "wrap both operands", true}}});
 
-            std::vector<std::string> binWarnings;
+            std::vector<CodegenWarning> binWarnings;
             binWarnings.insert(binWarnings.end(),
                                std::make_move_iterator(leftResult.warnings.begin()),
                                std::make_move_iterator(leftResult.warnings.end()));
@@ -663,7 +663,7 @@ namespace sqlite2orm {
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(sub.decisionPoints.begin()),
                                       std::make_move_iterator(sub.decisionPoints.end()));
-                std::vector<std::string> inSubWarnings;
+                std::vector<CodegenWarning> inSubWarnings;
                 inSubWarnings.insert(inSubWarnings.end(),
                                      std::make_move_iterator(operandResult.warnings.begin()),
                                      std::make_move_iterator(operandResult.warnings.end()));
@@ -760,7 +760,7 @@ namespace sqlite2orm {
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if(auto* matchNode = dynamic_cast<const MatchNode*>(&astNode)) {
             std::vector<DecisionPoint> decisionPoints;
-            std::vector<std::string> warnings;
+            std::vector<CodegenWarning> warnings;
 
             // `fts_table MATCH pattern` targets the hidden FTS5 "any" column of that table.
             std::string lhsCode;
@@ -862,7 +862,7 @@ namespace sqlite2orm {
         } else if(auto* funcCall = dynamic_cast<const FunctionCallNode*>(&astNode)) {
             std::string funcName = toLowerAscii(funcCall->name);
             std::vector<DecisionPoint> decisionPoints;
-            std::vector<std::string> funcWarnings;
+            std::vector<CodegenWarning> funcWarnings;
             std::string baseCode;
 
             if(funcCall->star) {
@@ -940,7 +940,7 @@ namespace sqlite2orm {
 
     std::string ExpressionCodeGenerator::codegenWindowFrameBound(const WindowFrameBound& bound,
                                                                  std::vector<DecisionPoint>& decisionPoints,
-                                                                 std::vector<std::string>& warnings) {
+                                                                 std::vector<CodegenWarning>& warnings) {
         switch(bound.kind) {
         case WindowFrameBoundKind::unboundedPreceding:
             return "unbounded_preceding()";
@@ -970,7 +970,7 @@ namespace sqlite2orm {
 
     std::string ExpressionCodeGenerator::codegenWindowFrameSpec(const WindowFrameSpec& frame,
                                                                 std::vector<DecisionPoint>& decisionPoints,
-                                                                std::vector<std::string>& warnings) {
+                                                                std::vector<CodegenWarning>& warnings) {
         std::string_view frameApi;
         switch(frame.unit) {
         case WindowFrameUnit::rows:
@@ -1007,7 +1007,7 @@ namespace sqlite2orm {
 
     std::string ExpressionCodeGenerator::codegenOverClause(const OverClause& overClause,
                                                            std::vector<DecisionPoint>& decisionPoints,
-                                                           std::vector<std::string>& warnings) {
+                                                           std::vector<CodegenWarning>& warnings) {
         if(overClause.namedWindow) {
             return "window_ref(" + identifierToCppStringLiteral(*overClause.namedWindow) + ")";
         }

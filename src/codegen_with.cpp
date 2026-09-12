@@ -10,7 +10,7 @@ namespace sqlite2orm {
         : coordinator(coordinator), context(context) {}
 
     CodeGenResult WithCodeGenerator::generateWithQuery(const WithQueryNode& withQueryNode) {
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
         std::vector<DecisionPoint> allDecisionPoints;
 
         struct ClearActiveCteMap {

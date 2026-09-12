@@ -11,7 +11,7 @@ namespace sqlite2orm {
 
     CodeGenResult SelectCodeGenerator::generateCompoundSelect(const CompoundSelectNode& compoundNode) {
         auto inner = this->tryCodegenCompoundSelectSubexpression(compoundNode);
-        std::vector<std::string> compoundWarnings = std::move(inner.warnings);
+        std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if(inner.code.empty()) {
             compoundWarnings.insert(compoundWarnings.begin(),
                                     "compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
@@ -26,7 +26,7 @@ namespace sqlite2orm {
     }
 
     CodeGenResult SelectCodeGenerator::generateSelect(const SelectNode& selectNode) {
-        std::vector<std::string> selectWarnings;
+        std::vector<CodegenWarning> selectWarnings;
         std::vector<DecisionPoint> selectDecisionPoints;
         std::vector<std::string> selectComments;
         // Consume the WITH-outer flag here so it applies only to this (top-level) select, not to any
@@ -608,7 +608,7 @@ namespace sqlite2orm {
             }
         } restore{&this->context};
 
-        std::vector<std::string> subWarnings;
+        std::vector<CodegenWarning> subWarnings;
         std::vector<DecisionPoint> subDecisionPoints;
 
         if(selectNode.groupBy) {
@@ -1000,7 +1000,7 @@ namespace sqlite2orm {
         }
         if(auto* withQueryNode = dynamic_cast<const WithQueryNode*>(&node)) {
             auto inner = this->tryCodegenSelectLikeSubquery(*withQueryNode->statement);
-            std::vector<std::string> subWarnings = std::move(inner.warnings);
+            std::vector<CodegenWarning> subWarnings = std::move(inner.warnings);
             subWarnings.insert(subWarnings.begin(),
                                "nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs; generated code "
                                "uses the inner SELECT only (WITH clause dropped)");

@@ -493,7 +493,7 @@ TEST_CASE("process: STRICT table converts with a warning instead of failing vali
     REQUIRE(result.validationErrors.empty());
     REQUIRE(result.codegen.code.find("make_table(\"users\"") != std::string::npos);
     REQUIRE(result.codegen.warnings ==
-            std::vector<std::string>{"STRICT is not yet supported in sqlite_orm and was ignored for "
+            std::vector<CodegenWarning>{"STRICT is not yet supported in sqlite_orm and was ignored for "
                                      "table users (converted as a regular table)"});
 }
 

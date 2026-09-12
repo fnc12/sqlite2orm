@@ -14,7 +14,7 @@ namespace sqlite2orm {
     CodeGenResult PragmaCodeGenerator::codegenPragmaStatement(const PragmaNode& node) {
         const std::string name = toLowerAscii(node.pragmaName);
         std::vector<DecisionPoint> decisionPoints;
-        std::vector<std::string> warnings;
+        std::vector<CodegenWarning> warnings;
 
         auto mergeSub = [&](CodeGenResult sub) {
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(sub.decisionPoints.begin()),

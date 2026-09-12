@@ -42,7 +42,7 @@ TEST_CASE("codegen: SELECT schema.table.* generates asterisk with warning") {
     auto result = generateFull("SELECT main.users.* FROM users");
     REQUIRE(result.code == "auto rows = storage.select(asterisk<Users>());");
     REQUIRE(result.warnings ==
-        std::vector<std::string>{
+        std::vector<CodegenWarning>{
             "schema-qualified SELECT result column main.users.* is not represented in sqlite_orm; generated code uses "
             "asterisk<Users>() (table type only)"});
 }
@@ -106,7 +106,7 @@ TEST_CASE("codegen: SELECT with FROM schema qualifier warns") {
     REQUIRE(generateFull("SELECT name FROM main.users") ==
         CodeGenResult{"auto rows = storage.select(&Users::name);",
                       {columnRefStyleDp(1, "&Users::name")},
-                      std::vector<std::string>{
+                      std::vector<CodegenWarning>{
                           "FROM clause schema qualifier 'main' for table 'users' is not represented in sqlite_orm "
                           "mapping"}});
 }
@@ -395,7 +395,7 @@ TEST_CASE("codegen: SELECT builtin colalias for single-letter alias") {
     REQUIRE(result.code == "auto rows = storage.select(as<colalias_i>(&Users::name));");
     bool hasBuiltinWarning = false;
     for(const auto& w : result.warnings) {
-        if(w.find("colalias_") != std::string::npos) hasBuiltinWarning = true;
+        if(w.message.find("colalias_") != std::string::npos) hasBuiltinWarning = true;
     }
     REQUIRE(hasBuiltinWarning);
 }
@@ -516,7 +516,7 @@ TEST_CASE("codegen: MATCH against the FTS5 table name uses the hidden any column
             "auto rows = storage.get_all<DocsSearch>(where(match(c<DocsSearch>()->*&fts5::hidden::any, "
             "\"sqlite\")));");
     REQUIRE(result.warnings ==
-            std::vector<std::string>{"MATCH against table \"docs_search\" maps to the hidden FTS5 'any' "
+            std::vector<CodegenWarning>{"MATCH against table \"docs_search\" maps to the hidden FTS5 'any' "
                                      "column; requires an FTS5 virtual table mapped as DocsSearch"});
 }
 

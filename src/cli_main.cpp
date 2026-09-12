@@ -64,13 +64,13 @@ namespace {
             }
             for(const auto& st: schema.statements) {
                 for(const auto& w: st.pipeline.codegen.warnings) {
-                    fmt::print(stderr, "warning: {}\n", w);
+                    fmt::print(stderr, "warning: {}\n", w.message);
                 }
             }
             if(!jsonOnly) {
                 const CodeGenResult header = generateSqliteSchemaHeader(schema);
                 for(const auto& w: header.warnings) {
-                    fmt::print(stderr, "warning: {}\n", w);
+                    fmt::print(stderr, "warning: {}\n", w.message);
                 }
                 if(!schema.allOk()) {
                     for(const auto& st: schema.statements) {
@@ -154,7 +154,7 @@ int main(int argc, char** argv) {
     int exitCode = EXIT_SUCCESS;
     for(const ProcessSqlResult& result : results) {
         for(const auto& warning : result.codegen.warnings) {
-            fmt::print(stderr, "warning: {}\n", warning);
+            fmt::print(stderr, "warning: {}\n", warning.message);
         }
         if(!result.parseResult.errors.empty()) {
             for(const auto& err : result.parseResult.errors) {

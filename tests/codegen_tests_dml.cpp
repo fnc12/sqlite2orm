@@ -219,7 +219,7 @@ TEST_CASE("codegen: UPDATE FROM warning") {
     REQUIRE_FALSE(result.warnings.empty());
     bool found = false;
     for(const auto& w: result.warnings) {
-        if(w.find("FROM") != std::string::npos) {
+        if(w.message.find("FROM") != std::string::npos) {
             found = true;
             break;
         }

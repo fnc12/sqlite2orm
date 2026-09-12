@@ -867,6 +867,15 @@ namespace sqlite2orm {
         parts.structDeclaration = std::move(structDeclaration);
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
         appendUniqueString(parts.comments, kCommentViewReflection);
+        // sqlite_orm maps views to C++26 reflection (make_view + [[= "…"_orm_name]]); there is no
+        // pre-C++26 form. Surface a visible warning (anchored at CREATE VIEW) when the target is lower.
+        if(policyTargetCppStandard(this->context.codeGenPolicy) < 26) {
+            parts.warnings.push_back(CodegenWarning{
+                "CREATE VIEW " + displayName +
+                    ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
+                    "requires C++26 and will not compile under the selected C++ standard",
+                node.location, std::string_view("CREATE VIEW").size()});
+        }
         return parts;
     }
 

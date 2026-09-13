@@ -396,16 +396,24 @@ TEST_CASE("tokenizer: unexpected character") {
     REQUIRE_THROWS_AS(tokenize("SELECT # FROM"), TokenizeError);
 }
 
-TEST_CASE("tokenizer: unexpected multi-byte character reports the whole code point") {
-    // A stray UTF-8 character must be echoed whole; a lone lead byte would make the error
-    // message invalid UTF-8 and crash downstream JSON serialization.
-    REQUIRE_THROWS_MATCHES(tokenize("café"), TokenizeError,
-                           Catch::Matchers::Message("unexpected character 'é'"));
-    REQUIRE_THROWS_MATCHES(tokenize("привет"), TokenizeError,
-                           Catch::Matchers::Message("unexpected character 'п'"));
-}
-
-TEST_CASE("tokenizer: a stray non-UTF-8 byte is reported in hex, not raw") {
-    REQUIRE_THROWS_MATCHES(tokenize("\xff"), TokenizeError,
-                           Catch::Matchers::Message("unexpected byte 0xFF"));
+TEST_CASE("tokenizer: non-ASCII identifiers are accepted like SQLite") {
+    // SQLite treats bytes >= 0x80 as identifier characters, so accented / non-Latin
+    // identifiers tokenize as a single identifier rather than erroring.
+    REQUIRE(tokenize("café") == std::vector<Token>{
+        {TokenType::identifier, "café"},
+        {TokenType::eof},
+    });
+    REQUIRE(tokenize("привет") == std::vector<Token>{
+        {TokenType::identifier, "привет"},
+        {TokenType::eof},
+    });
+    REQUIRE(tokenize("CREATE TABLE café (x)") == std::vector<Token>{
+        {TokenType::kwCreate, "CREATE"},
+        {TokenType::kwTable, "TABLE"},
+        {TokenType::identifier, "café"},
+        {TokenType::leftParen, "("},
+        {TokenType::identifier, "x"},
+        {TokenType::rightParen, ")"},
+        {TokenType::eof},
+    });
 }

@@ -165,12 +165,17 @@ namespace sqlite2orm {
             return map;
         }
 
+        // SQLite treats any byte >= 0x80 as an identifier character (it never decodes UTF-8),
+        // so non-ASCII identifiers like `café` or `привет` are accepted unquoted. Match that;
+        // the codegen sanitises such names into a valid C++ identifier separately.
         bool isIdentifierStart(char c) {
-            return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+            const unsigned char uc = static_cast<unsigned char>(c);
+            return std::isalpha(uc) || c == '_' || uc >= 0x80;
         }
 
         bool isIdentifierChar(char c) {
-            return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+            const unsigned char uc = static_cast<unsigned char>(c);
+            return std::isalnum(uc) || c == '_' || uc >= 0x80;
         }
 
         std::string toLower(std::string_view sv) {
@@ -508,31 +513,10 @@ namespace sqlite2orm {
                 }
                 return makeToken(TokenType::minus, start, location);
             }
-            default: {
-                // `c` is a single byte; for a multi-byte UTF-8 character, emitting it alone
-                // yields an invalid-UTF-8 message that later JSON serialization rejects. Gather
-                // the whole code point, and fall back to a hex form for a stray/invalid byte.
-                const unsigned char lead = static_cast<unsigned char>(c);
-                if(lead >= 0x80) {
-                    const int continuationBytes = (lead >> 5) == 0x6    ? 1
-                                                  : (lead >> 4) == 0xE  ? 2
-                                                  : (lead >> 3) == 0x1E ? 3
-                                                                        : 0;
-                    if(continuationBytes == 0) {
-                        static const char* const hexDigits = "0123456789ABCDEF";
-                        std::string hex = "0x";
-                        hex += hexDigits[lead >> 4];
-                        hex += hexDigits[lead & 0xF];
-                        throw TokenizeError("unexpected byte " + hex, location);
-                    }
-                    std::string character(1, c);
-                    for(int i = 0; i < continuationBytes && (static_cast<unsigned char>(peek()) >> 6) == 0x2; ++i) {
-                        character += advance();
-                    }
-                    throw TokenizeError("unexpected character '" + character + "'", location);
-                }
+            default:
+                // Only ASCII reaches here: bytes >= 0x80 are identifier characters (see
+                // isIdentifierStart), so `c` is always a single valid-UTF-8 byte.
                 throw TokenizeError(std::string("unexpected character '") + c + "'", location);
-            }
         }
     }
 

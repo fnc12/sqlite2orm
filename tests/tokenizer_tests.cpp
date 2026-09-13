@@ -395,3 +395,17 @@ TEST_CASE("tokenizer: ISNULL and NOTNULL keywords") {
 TEST_CASE("tokenizer: unexpected character") {
     REQUIRE_THROWS_AS(tokenize("SELECT # FROM"), TokenizeError);
 }
+
+TEST_CASE("tokenizer: unexpected multi-byte character reports the whole code point") {
+    // A stray UTF-8 character must be echoed whole; a lone lead byte would make the error
+    // message invalid UTF-8 and crash downstream JSON serialization.
+    REQUIRE_THROWS_MATCHES(tokenize("café"), TokenizeError,
+                           Catch::Matchers::Message("unexpected character 'é'"));
+    REQUIRE_THROWS_MATCHES(tokenize("привет"), TokenizeError,
+                           Catch::Matchers::Message("unexpected character 'п'"));
+}
+
+TEST_CASE("tokenizer: a stray non-UTF-8 byte is reported in hex, not raw") {
+    REQUIRE_THROWS_MATCHES(tokenize("\xff"), TokenizeError,
+                           Catch::Matchers::Message("unexpected byte 0xFF"));
+}

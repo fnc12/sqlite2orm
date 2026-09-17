@@ -174,6 +174,18 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT integer") {
         "        make_column(\"x\", &T::x, default_value(42))));");
 }
 
+TEST_CASE("codegen: CREATE TABLE - DEFAULT integer with leading zeros") {
+    auto result = generate("CREATE TABLE t (x INTEGER DEFAULT 010)");
+    REQUIRE(result ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x, default_value(10))));");
+}
+
 TEST_CASE("codegen: CREATE TABLE - DEFAULT string") {
     auto result = generate("CREATE TABLE t (x TEXT DEFAULT 'hello')");
     REQUIRE(result ==

@@ -60,7 +60,7 @@ namespace sqlite2orm {
             }
             if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(node.value.get())) {
                 return CodeGenResult{
-                    "storage.pragma.integrity_check(" + numericLiteralToCpp(integerLiteral->value) + ");", {}, {}};
+                    "storage.pragma.integrity_check(" + integerLiteralToCpp(integerLiteral->value) + ");", {}, {}};
             }
             if(auto lit = pragmaTableNameLiteral(*node.value)) {
                 return CodeGenResult{"storage.pragma.integrity_check(" + *lit + ");", {}, {}};

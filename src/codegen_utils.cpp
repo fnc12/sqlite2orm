@@ -455,6 +455,23 @@ namespace sqlite2orm {
         return result;
     }
 
+    std::string integerLiteralToCpp(std::string_view integerLiteral) {
+        // A hexadecimal literal denotes the same number in both languages, but a decimal one with
+        // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not
+        // compile at all. The separators standing between those zeros go away with them, so that
+        // `0_9` becomes `9` rather than the octal constant `0'9`.
+        const bool hexadecimal = integerLiteral.size() > 1 && integerLiteral.front() == '0' &&
+                                 (integerLiteral[1] == 'x' || integerLiteral[1] == 'X');
+        size_t firstSignificant = 0;
+        if(!hexadecimal) {
+            while(firstSignificant + 1 < integerLiteral.size() &&
+                  (integerLiteral[firstSignificant] == '0' || integerLiteral[firstSignificant] == '_')) {
+                ++firstSignificant;
+            }
+        }
+        return numericLiteralToCpp(integerLiteral.substr(firstSignificant));
+    }
+
     bool isLeafNode(const AstNode& astNode) {
         return dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
                dynamic_cast<const RealLiteralNode*>(&astNode) ||
@@ -595,8 +612,9 @@ namespace sqlite2orm {
 
     std::optional<bool> pragmaRecursiveTriggersBool(const AstNode& valueNode) {
         if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
-            if(integerLiteral->value == "0") return false;
-            if(integerLiteral->value == "1") return true;
+            const std::string value = integerLiteralToCpp(integerLiteral->value);
+            if(value == "0") return false;
+            if(value == "1") return true;
             return std::nullopt;
         }
         if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {

@@ -37,6 +37,11 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 01") {
             CodeGenResult{"storage.pragma.recursive_triggers(true);", {}, {}, {}});
 }
 
+TEST_CASE("codegen: PRAGMA recursive_triggers = 00") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 00;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);", {}, {}, {}});
+}
+
 TEST_CASE("codegen: PRAGMA recursive_triggers = ON") {
     REQUIRE(generateFull("PRAGMA recursive_triggers = ON;") ==
             CodeGenResult{"storage.pragma.recursive_triggers(true);", {}, {}, {}});

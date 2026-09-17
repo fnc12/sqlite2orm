@@ -42,6 +42,8 @@ TEST_CASE("codegen: integer literal with leading zeros and digit separators") {
     REQUIRE(generate("01_0") == "1'0");
     REQUIRE(generate("0_0") == "0");
     REQUIRE(generate("000_1") == "1");
+    REQUIRE(generate("0_0_0") == "0");
+    REQUIRE(generate("00_00") == "0");
     REQUIRE(generate("SELECT 01_0;") == "auto rows = storage.select(1'0);");
 }
 
@@ -50,6 +52,8 @@ TEST_CASE("codegen: integer literal with leading zeros and digit separators") {
 TEST_CASE("codegen: leading zeros kept in hexadecimal and real literals") {
     REQUIRE(generate("0x0FF") == "0x0FF");
     REQUIRE(generate("0x0_1f") == "0x0'1f");
+    REQUIRE(generate("0X0FF") == "0X0FF");
+    REQUIRE(generate("0X0_1F") == "0X0'1F");
     REQUIRE(generate("010.5") == "010.5");
     REQUIRE(generate("01e2") == "01e2");
     REQUIRE(generate("00.5") == "00.5");

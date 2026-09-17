@@ -68,6 +68,8 @@ namespace sqlite2orm {
     std::string numericLiteralToCpp(std::string_view numericLiteral);
     /** Same for an integer literal, whose leading zeros C++ would read as an octal prefix (`010` is 10 in SQLite, 8 in C++). */
     std::string integerLiteralToCpp(std::string_view integerLiteral);
+    /** True when SQLite reads a decimal integer literal as a REAL because an int64 cannot hold it. */
+    bool integerLiteralExceedsInt64(std::string_view integerLiteral);
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);
 

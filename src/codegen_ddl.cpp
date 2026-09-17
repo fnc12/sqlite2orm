@@ -609,7 +609,12 @@ namespace sqlite2orm {
                     }
                     return std::nullopt;
                 }
-                if(dynamic_cast<const IntegerLiteralNode*>(&node)) return InferredFieldType{"int64_t"};
+                if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&node)) {
+                    // An integer literal an int64 cannot hold is a REAL for SQLite, so the field
+                    // holding it has to be a double as well.
+                    return InferredFieldType{
+                        integerLiteralExceedsInt64(integerLiteral->value) ? "double" : "int64_t"};
+                }
                 if(dynamic_cast<const RealLiteralNode*>(&node)) return InferredFieldType{"double"};
                 if(dynamic_cast<const StringLiteralNode*>(&node)) return InferredFieldType{"std::string"};
                 if(dynamic_cast<const BoolLiteralNode*>(&node)) return InferredFieldType{"bool"};

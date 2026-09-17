@@ -150,6 +150,10 @@ if(SQLITE2ORM_BUILD_TESTS)
             NAME sqlite2orm_cli_read_file
             COMMAND $<TARGET_FILE:sqlite2orm_cli> "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_fixtures/one_table.sql")
         set_tests_properties(sqlite2orm_cli_read_file PROPERTIES PASS_REGULAR_EXPRESSION "struct Demo")
+        add_test(
+            NAME sqlite2orm_cli_pragma_value_error_exit_code
+            COMMAND $<TARGET_FILE:sqlite2orm_cli> -e "PRAGMA recursive_triggers = NULL;")
+        set_tests_properties(sqlite2orm_cli_pragma_value_error_exit_code PROPERTIES WILL_FAIL TRUE)
         if(UNIX)
             add_test(
                 NAME sqlite2orm_cli_stdin

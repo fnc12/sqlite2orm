@@ -85,6 +85,9 @@ namespace {
                             fmt::print(stderr, "validation [{} {}]: {} ({})\n", st.meta.type, st.meta.name,
                                        err.message, err.nodeType);
                         }
+                        for(const auto& err: st.pipeline.codegen.errors) {
+                            fmt::print(stderr, "codegen error [{} {}]: {}\n", st.meta.type, st.meta.name, err);
+                        }
                     }
                     return 1;
                 }
@@ -165,6 +168,12 @@ int main(int argc, char** argv) {
         if(!result.validationErrors.empty()) {
             for(const auto& err : result.validationErrors) {
                 fmt::print(stderr, "validation: {} ({})\n", err.message, err.nodeType);
+            }
+            exitCode = 1;
+        }
+        if(!result.codegen.errors.empty()) {
+            for(const auto& err : result.codegen.errors) {
+                fmt::print(stderr, "codegen error: {}\n", err);
             }
             exitCode = 1;
         }

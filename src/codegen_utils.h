@@ -89,7 +89,11 @@ namespace sqlite2orm {
 
     /** The value of `PRAGMA name = <value>`, or nullopt for a node SQLite does not accept there. */
     std::optional<PragmaValue> pragmaValue(const AstNode& valueNode);
-    /** SQLite's `sqlite3GetBoolean()`: any non-zero number and `on`/`yes`/`true` are true, everything else is false. */
+    /**
+     *  SQLite's `sqlite3GetBoolean()`: `on`/`yes`/`true` are true, and so is a number whose int32
+     *  value has a non-zero low byte — `getSafetyLevel()` returns a u8, so `256` is false where
+     *  `255` and `257` are true. Everything else, names included, is false.
+     */
     bool sqlitePragmaBoolean(std::string_view valueText);
     /** Whether `valueText` is one of the boolean spellings SQLite documents (`0`/`1`, `ON`/`OFF`, …). */
     bool isCanonicalPragmaBooleanText(std::string_view valueText);

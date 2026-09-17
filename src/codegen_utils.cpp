@@ -658,7 +658,9 @@ namespace sqlite2orm {
 
     bool sqlitePragmaBoolean(std::string_view valueText) {
         if(!valueText.empty() && isDigit(valueText.front())) {
-            return sqliteTextToInt32(valueText) != 0;
+            // SQLite's `getSafetyLevel()` returns a u8, so the int32 loses everything above its low
+            // byte before the `!= 0` test: `256` and `65536` are false while `255` and `257` are true.
+            return (sqliteTextToInt32(valueText) & 0xFF) != 0;
         }
         const std::string lower = toLowerAscii(valueText);
         return lower == "on" || lower == "yes" || lower == "true";

@@ -447,6 +447,86 @@ namespace sqlite2orm {
         return result;
     }
 
+    std::string numericLiteralToCpp(std::string_view numericLiteral) {
+        std::string result;
+        result.reserve(numericLiteral.size());
+        for(char character: numericLiteral) {
+            result += character == '_' ? '\'' : character;
+        }
+        return result;
+    }
+
+    namespace {
+
+        bool isHexadecimalLiteral(std::string_view integerLiteral) {
+            return integerLiteral.size() > 1 && integerLiteral.front() == '0' &&
+                   (integerLiteral[1] == 'x' || integerLiteral[1] == 'X');
+        }
+
+        // Neither the `_` separators SQLite allows between digits nor the leading zeros carry any
+        // value, so both go away before a literal is measured against the int64 range.
+        std::string significantDigits(std::string_view digits) {
+            std::string result;
+            result.reserve(digits.size());
+            for(char character: digits) {
+                if(character != '_' && (character != '0' || !result.empty())) {
+                    result += character;
+                }
+            }
+            return result;
+        }
+
+        // SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the 16
+        // digits of `0xFFFFFFFFFFFFFFFF` mean -1. A longer one it rejects (see the tokenizer).
+        bool hexLiteralWrapsToNegative(std::string_view integerLiteral) {
+            const std::string digits = significantDigits(integerLiteral.substr(2));
+            return digits.size() == 16 && digits.front() >= '8';
+        }
+
+    }  // namespace
+
+    bool integerLiteralExceedsInt64(std::string_view integerLiteral) {
+        if(isHexadecimalLiteral(integerLiteral)) {
+            // A hex literal never leaves the range: SQLite wraps it around and rejects the one
+            // that would need a seventeenth digit.
+            return false;
+        }
+        static constexpr std::string_view int64Max = "9223372036854775807";
+        const std::string digits = significantDigits(integerLiteral);
+        return digits.size() > int64Max.size() ||
+               (digits.size() == int64Max.size() && std::string_view(digits) > int64Max);
+    }
+
+    std::string integerLiteralToCpp(std::string_view integerLiteral) {
+        // A hexadecimal literal denotes the same number in both languages, but a decimal one with
+        // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not
+        // compile at all. The separators standing between those zeros go away with them, so that
+        // `0_9` becomes `9` rather than the octal constant `0'9`.
+        if(isHexadecimalLiteral(integerLiteral)) {
+            // Past the int64 range the two languages part ways again: SQLite wraps the literal
+            // around into a negative integer while C++ gives the same spelling the unsigned type
+            // it fits in, turning `0xFFFFFFFFFFFFFFFF` from -1 into 18446744073709551615.
+            if(hexLiteralWrapsToNegative(integerLiteral)) {
+                return "static_cast<int64_t>(" + numericLiteralToCpp(integerLiteral) + ")";
+            }
+            return numericLiteralToCpp(integerLiteral);
+        }
+        size_t firstSignificant = 0;
+        while(firstSignificant + 1 < integerLiteral.size() &&
+              (integerLiteral[firstSignificant] == '0' || integerLiteral[firstSignificant] == '_')) {
+            ++firstSignificant;
+        }
+        const std::string_view significant = integerLiteral.substr(firstSignificant);
+        // A decimal literal that does not fit in an int64 is a REAL for SQLite, which reads
+        // `9223372036854775808` back as 9.22337203685478e+18. C++ would make that spelling an
+        // unsigned constant, and `99999999999999999999` does not fit in any integer type at all,
+        // so the fractional part turns it into the double SQLite computes.
+        if(integerLiteralExceedsInt64(significant)) {
+            return numericLiteralToCpp(significant) + ".0";
+        }
+        return numericLiteralToCpp(significant);
+    }
+
     bool isLeafNode(const AstNode& astNode) {
         return dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
                dynamic_cast<const RealLiteralNode*>(&astNode) ||

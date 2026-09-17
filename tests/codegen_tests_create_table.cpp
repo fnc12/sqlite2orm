@@ -174,6 +174,46 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT integer") {
         "        make_column(\"x\", &T::x, default_value(42))));");
 }
 
+TEST_CASE("codegen: CREATE TABLE - DEFAULT integer with leading zeros") {
+    auto result = generate("CREATE TABLE t (x INTEGER DEFAULT 010)");
+    REQUIRE(result ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x, default_value(10))));");
+}
+
+// An int64 cannot hold this default, so SQLite keeps the column's default as a REAL: the
+// schema `CREATE TABLE t (x INTEGER DEFAULT 99999999999999999999)` round-trips to
+// `DEFAULT (1e+20)` and a defaulted row reads back as real 1.0e+20. Checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT integer beyond int64") {
+    auto result = generate("CREATE TABLE t (x INTEGER DEFAULT 99999999999999999999)");
+    REQUIRE(result ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x, default_value(99999999999999999999.0))));");
+}
+
+// SQLite wraps a hex default around inside the int64, so this one is -1, not 18446744073709551615.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT hexadecimal past the int64 range") {
+    auto result = generate("CREATE TABLE t (x INTEGER DEFAULT 0xFFFFFFFFFFFFFFFF)");
+    REQUIRE(result ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x, default_value(static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)))));");
+}
+
 TEST_CASE("codegen: CREATE TABLE - DEFAULT string") {
     auto result = generate("CREATE TABLE t (x TEXT DEFAULT 'hello')");
     REQUIRE(result ==

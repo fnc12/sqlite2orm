@@ -30,8 +30,10 @@ Statuses:
 ## expr (https://www.sqlite.org/lang_expr.html)
 
 ### Literals
-- [x] numeric-literal (integer)
+- [x] numeric-literal (integer) — leading zeros (and the separators between them) are dropped so the C++ literal stays decimal like SQLite (`010` → `10`, `0009` → `9`, `0_9` → `9`); `0x0FF` and reals keep their spelling
+- [x] numeric-literal (integer) beyond int64 — SQLite reads it as a REAL, so the C++ literal gets a fractional part (`9223372036854775808` → `9223372036854775808.0`); a hex literal wraps around instead (`0xFFFFFFFFFFFFFFFF` → `static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)`, i.e. -1) and more than 16 significant hex digits are `hex literal too big`, as in SQLite
 - [x] numeric-literal (real / float)
+- [x] numeric-literal `_` digit separators (SQLite 3.46+) — `1_000_000` → `1'000'000`, `0x1_ffff` → `0x1'ffff`; a misplaced separator (`100_`, `1__0`, `0x_1f`) is an unrecognized token, as in SQLite
 - [x] string-literal
 - [x] blob-literal
 - [x] NULL

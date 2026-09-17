@@ -14,6 +14,79 @@ TEST_CASE("codegen: real literal") {
     REQUIRE(generate("3.14e-2") == "3.14e-2");
 }
 
+TEST_CASE("codegen: digit separators become C++ separators") {
+    REQUIRE(generate("SELECT 1_000_000;") == "auto rows = storage.select(1'000'000);");
+    REQUIRE(generate("1_000_000") == "1'000'000");
+    REQUIRE(generate("0x1_ffff") == "0x1'ffff");
+    REQUIRE(generate("3.141_592") == "3.141'592");
+    REQUIRE(generate("1e1_0") == "1e1'0");
+}
+
+// SQLite reads a leading zero as a plain decimal digit, C++ as an octal prefix: `010` would mean
+// 8 and `0009` would not even compile. Values checked against sqlite3 3.51.
+TEST_CASE("codegen: integer literal with leading zeros") {
+    REQUIRE(generate("010") == "10");
+    REQUIRE(generate("0009") == "9");
+    REQUIRE(generate("08") == "8");
+    REQUIRE(generate("00") == "0");
+    REQUIRE(generate("0") == "0");
+    REQUIRE(generate("SELECT 010;") == "auto rows = storage.select(10);");
+    REQUIRE(generate("SELECT 1 LIMIT 010;") == "auto rows = storage.select(1, limit(10));");
+}
+
+// A separator standing between leading zeros goes away with them: SQLite reads `0_9` as 9, while
+// C++ reads `0'9` as an octal constant with a bad digit and `01'0` as 8. The separators of the
+// significant digits stay, as in every other literal.
+TEST_CASE("codegen: integer literal with leading zeros and digit separators") {
+    REQUIRE(generate("0_9") == "9");
+    REQUIRE(generate("01_0") == "1'0");
+    REQUIRE(generate("0_0") == "0");
+    REQUIRE(generate("000_1") == "1");
+    REQUIRE(generate("0_0_0") == "0");
+    REQUIRE(generate("00_00") == "0");
+    REQUIRE(generate("SELECT 01_0;") == "auto rows = storage.select(1'0);");
+}
+
+// A leading zero is harmless in the two literals C++ does not read as octal, so they keep their
+// SQL spelling: `0x0FF` is 255 and `010.5` is 10.5 in both languages.
+TEST_CASE("codegen: leading zeros kept in hexadecimal and real literals") {
+    REQUIRE(generate("0x0FF") == "0x0FF");
+    REQUIRE(generate("0x0_1f") == "0x0'1f");
+    REQUIRE(generate("0X0FF") == "0X0FF");
+    REQUIRE(generate("0X0_1F") == "0X0'1F");
+    REQUIRE(generate("010.5") == "010.5");
+    REQUIRE(generate("01e2") == "01e2");
+    REQUIRE(generate("00.5") == "00.5");
+    REQUIRE(generate("0_1.5") == "0'1.5");
+}
+
+// An int64 cannot hold these, so SQLite reads them as REAL: `9223372036854775808` comes back as
+// 9.22337203685478e+18 and `99999999999999999999` as 1.0e+20. C++ would read the first spelling as
+// an unsigned constant and reject the second as too large for any integer type, so the generated
+// literal carries a fractional part and denotes the same double. Checked against sqlite3 3.51.
+TEST_CASE("codegen: integer literal beyond int64 becomes a double") {
+    REQUIRE(generate("9223372036854775807") == "9223372036854775807");
+    REQUIRE(generate("9223372036854775808") == "9223372036854775808.0");
+    REQUIRE(generate("99999999999999999999") == "99999999999999999999.0");
+    REQUIRE(generate("18446744073709551616") == "18446744073709551616.0");
+    REQUIRE(generate("0009223372036854775808") == "9223372036854775808.0");
+    REQUIRE(generate("9_223_372_036_854_775_808") == "9'223'372'036'854'775'808.0");
+    REQUIRE(generate("SELECT 9223372036854775808;") == "auto rows = storage.select(9223372036854775808.0);");
+}
+
+// SQLite wraps a hex literal around into a signed 64-bit integer, so `0xFFFFFFFFFFFFFFFF` is -1
+// and `0x8000000000000000` is -9223372036854775808. C++ gives the same spelling the unsigned type
+// it fits in, where it would mean 18446744073709551615, so the cast brings the value back.
+TEST_CASE("codegen: hexadecimal literal past the int64 range wraps around") {
+    REQUIRE(generate("0x7FFFFFFFFFFFFFFF") == "0x7FFFFFFFFFFFFFFF");
+    REQUIRE(generate("0x8000000000000000") == "static_cast<int64_t>(0x8000000000000000)");
+    REQUIRE(generate("0xFFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)");
+    REQUIRE(generate("0x0000FFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0x0000FFFFFFFFFFFFFFFF)");
+    REQUIRE(generate("0xFF_FF_FF_FF_FF_FF_FF_FF") == "static_cast<int64_t>(0xFF'FF'FF'FF'FF'FF'FF'FF)");
+    REQUIRE(generate("SELECT 0xFFFFFFFFFFFFFFFF;") ==
+            "auto rows = storage.select(static_cast<int64_t>(0xFFFFFFFFFFFFFFFF));");
+}
+
 TEST_CASE("codegen: string literal") {
     REQUIRE(generate("'hello'") == "\"hello\"");
     REQUIRE(generate("'it''s'") == "\"it's\"");
@@ -462,6 +535,13 @@ TEST_CASE("codegen: prefix - inferred string from comparison") {
 
 TEST_CASE("codegen: prefix - inferred double from real") {
     REQUIRE(prefixFor("x > 3.14") == "struct User {\n    double x = 0.0;\n};");
+}
+
+// The literal SQLite reads as a REAL drags the synthesized column along with it, the same way a
+// real literal does one line above.
+TEST_CASE("codegen: prefix - inferred double from an integer literal beyond int64") {
+    REQUIRE(prefixFor("x > 99999999999999999999") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > 9223372036854775807") == "struct User {\n    int x = 0;\n};");
 }
 
 TEST_CASE("codegen: prefix - LIKE infers string") {

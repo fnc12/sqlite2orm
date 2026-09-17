@@ -8,6 +8,16 @@ TEST_CASE("codegen: PRAGMA user_version = 1") {
     REQUIRE(generateFull("PRAGMA user_version = 1;") == CodeGenResult{"storage.pragma.user_version(1);", {}, {}, {}});
 }
 
+TEST_CASE("codegen: PRAGMA user_version = 010") {
+    REQUIRE(generateFull("PRAGMA user_version = 010;") ==
+            CodeGenResult{"storage.pragma.user_version(10);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA integrity_check = 010") {
+    REQUIRE(generateFull("PRAGMA integrity_check = 010;") ==
+            CodeGenResult{"storage.pragma.integrity_check(10);", {}, {}, {}});
+}
+
 TEST_CASE("codegen: PRAGMA journal_mode") {
     REQUIRE(generateFull("PRAGMA journal_mode;") == CodeGenResult{"storage.pragma.journal_mode();", {}, {}, {}});
 }
@@ -20,6 +30,16 @@ TEST_CASE("codegen: PRAGMA journal_mode = WAL") {
 TEST_CASE("codegen: PRAGMA table_info") {
     REQUIRE(generateFull("PRAGMA table_info('users');") ==
             CodeGenResult{R"(storage.pragma.table_info("users");)", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 01") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 01;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 00") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 00;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);", {}, {}, {}});
 }
 
 TEST_CASE("codegen: PRAGMA recursive_triggers = ON") {

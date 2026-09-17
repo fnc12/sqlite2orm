@@ -2,6 +2,7 @@
 #include <catch2/catch_all.hpp>
 
 #include <ostream>
+#include <string>
 #include <vector>
 
 using namespace sqlite2orm;
@@ -16,6 +17,15 @@ namespace {
     std::vector<Token> tokenize(std::string_view sql) {
         Tokenizer tokenizer;
         return tokenizer.tokenize(sql);
+    }
+
+    std::string tokenizeError(std::string_view sql) {
+        try {
+            tokenize(sql);
+        } catch(const TokenizeError& error) {
+            return error.what();
+        }
+        return "no error";
     }
 }
 
@@ -133,6 +143,167 @@ TEST_CASE("tokenizer: real literals") {
             {TokenType::eof},
         });
     }
+    // SQLite turns the literal into a float on `.` alone, so the exponent still applies.
+    SECTION("exponent right after the decimal point") {
+        REQUIRE(tokenize("1.e5") == std::vector<Token>{
+            {TokenType::realLiteral, "1.e5"},
+            {TokenType::eof},
+        });
+    }
+}
+
+TEST_CASE("tokenizer: digit separators in numeric literals") {
+    SECTION("decimal") {
+        REQUIRE(tokenize("1_000_000") == std::vector<Token>{
+            {TokenType::integerLiteral, "1_000_000"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("hex") {
+        REQUIRE(tokenize("0x1_ffff") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x1_ffff"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("fraction") {
+        REQUIRE(tokenize("3.141_592") == std::vector<Token>{
+            {TokenType::realLiteral, "3.141_592"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("1_000.000_1") == std::vector<Token>{
+            {TokenType::realLiteral, "1_000.000_1"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("exponent") {
+        REQUIRE(tokenize("1e1_0") == std::vector<Token>{
+            {TokenType::realLiteral, "1e1_0"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("every position inside one literal") {
+        REQUIRE(tokenize("1_000.000_1e1_0") == std::vector<Token>{
+            {TokenType::realLiteral, "1_000.000_1e1_0"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("9_223_372_036_854_775_807") == std::vector<Token>{
+            {TokenType::integerLiteral, "9_223_372_036_854_775_807"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize(".5_5") == std::vector<Token>{
+            {TokenType::realLiteral, ".5_5"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("1e+1_0") == std::vector<Token>{
+            {TokenType::realLiteral, "1e+1_0"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0X1_F") == std::vector<Token>{
+            {TokenType::integerLiteral, "0X1_F"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("leading separator is an identifier, like in SQLite") {
+        REQUIRE(tokenize("_100") == std::vector<Token>{
+            {TokenType::identifier, "_100"},
+            {TokenType::eof},
+        });
+    }
+    // Real SQLite rejects each of these as `unrecognized token` instead of splitting them into a
+    // number plus an identifier, verified with the sqlite3 3.51 CLI.
+    SECTION("separator not surrounded by digits is rejected") {
+        REQUIRE_THROWS_AS(tokenize("100_"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1_"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1__0"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1__"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1_000_"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1_.0"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1_e5"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1.2_"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1._2"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1e_1"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1e1_"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("1e1__0"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("0x_1f"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("0x1f_"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("0x1__f"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("0x_"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("0_x1f"), TokenizeError);
+        REQUIRE_THROWS_AS(tokenize("SELECT 100_;"), TokenizeError);
+    }
+    // The rejected run covers exactly the text real SQLite names in its own `unrecognized token`
+    // message, so `1_.5` is one bad literal rather than `1_` followed by `.5`.
+    SECTION("rejected literal spans the same text as in SQLite") {
+        REQUIRE(tokenizeError("1__0") == "unrecognized token '1__0'");
+        REQUIRE(tokenizeError("100_") == "unrecognized token '100_'");
+        REQUIRE(tokenizeError("1_.") == "unrecognized token '1_.'");
+        REQUIRE(tokenizeError("1_.5") == "unrecognized token '1_.5'");
+        REQUIRE(tokenizeError("1_e5") == "unrecognized token '1_e5'");
+        REQUIRE(tokenizeError("1.5_e3") == "unrecognized token '1.5_e3'");
+        REQUIRE(tokenizeError("100_abc") == "unrecognized token '100_abc'");
+        REQUIRE(tokenizeError("0x1f_") == "unrecognized token '0x1f_'");
+        REQUIRE(tokenizeError("0x_1f") == "unrecognized token '0x_1f'");
+    }
+    SECTION("rejected literal reports its position") {
+        try {
+            tokenize("SELECT 1__0;");
+            FAIL("expected a TokenizeError");
+        } catch(const TokenizeError& error) {
+            REQUIRE(std::string(error.what()) == "unrecognized token '1__0'");
+            REQUIRE(error.location.line == 1);
+            REQUIRE(error.location.column == 8);
+        }
+    }
+}
+
+// A hex literal stands for a signed 64-bit integer, so SQLite rejects one with more than the 16
+// hex digits that fit in it. Leading zeros and digit separators are not digits it counts, and the
+// message names the literal with the separators already taken out. Checked against sqlite3 3.51.
+TEST_CASE("tokenizer: hex literal beyond the int64 range") {
+    SECTION("sixteen significant digits still fit") {
+        REQUIRE(tokenize("0xFFFFFFFFFFFFFFFF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0xFFFFFFFFFFFFFFFF"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0x0000FFFFFFFFFFFFFFFF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x0000FFFFFFFFFFFFFFFF"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0xFF_FF_FF_FF_FF_FF_FF_FF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0xFF_FF_FF_FF_FF_FF_FF_FF"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("a seventeenth one does not") {
+        REQUIRE(tokenizeError("0x10000000000000000") == "hex literal too big: 0x10000000000000000");
+        REQUIRE(tokenizeError("0xFFFFFFFFFFFFFFFFF") == "hex literal too big: 0xFFFFFFFFFFFFFFFFF");
+        REQUIRE(tokenizeError("0x00001FFFFFFFFFFFFFFFF") == "hex literal too big: 0x00001FFFFFFFFFFFFFFFF");
+        REQUIRE(tokenizeError("0x1_FF_FF_FF_FF_FF_FF_FF_FF") == "hex literal too big: 0x1FFFFFFFFFFFFFFFF");
+    }
+    SECTION("rejected literal reports its position") {
+        try {
+            tokenize("SELECT 0x10000000000000000;");
+            FAIL("expected a TokenizeError");
+        } catch(const TokenizeError& error) {
+            REQUIRE(std::string(error.what()) == "hex literal too big: 0x10000000000000000");
+            REQUIRE(error.location.line == 1);
+            REQUIRE(error.location.column == 8);
+        }
+    }
+}
+
+// Trailing identifier characters have always made a numeric literal illegal in SQLite, not just
+// since digit separators arrived; `_` is one more identifier character that hits this rule.
+TEST_CASE("tokenizer: numeric literal followed by identifier characters") {
+    REQUIRE_THROWS_AS(tokenize("1a"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("1.x"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("1abc"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("1.2a"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("1_000a"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("0x1g"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("0x"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("1e"), TokenizeError);
+    REQUIRE_THROWS_AS(tokenize("1e+"), TokenizeError);
 }
 
 TEST_CASE("tokenizer: string literals") {

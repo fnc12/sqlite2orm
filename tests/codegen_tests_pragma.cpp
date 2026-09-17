@@ -225,3 +225,34 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = NULL is an error, not silence") 
                           {"PRAGMA recursive_triggers = …: expected a number or a name, as in 0/1, TRUE/FALSE or "
                            "ON/OFF"}});
 }
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 2147483649 is false, like SQLite") {
+    // Past int32 the value reads as 0 before the low byte is taken, so the low byte of the
+    // number itself (1) must not leak through.
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 2147483649;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 2147483649: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0x1FFFFFFFF is false, like SQLite") {
+    // A ninth hexadecimal digit makes the whole value read as 0, where the first eight digits
+    // alone (0x1FFFFFFF) would have been true.
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x1FFFFFFFF;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x1FFFFFFFF: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0x1FFFFFFF is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x1FFFFFFF;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x1FFFFFFF: SQLite reads this as true; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}

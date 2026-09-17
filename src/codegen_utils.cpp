@@ -673,28 +673,30 @@ namespace sqlite2orm {
                lower == "false";
     }
 
-    std::optional<std::string> pragmaValueText(const AstNode& valueNode) {
+    std::optional<PragmaValue> pragmaValue(const AstNode& valueNode) {
         if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
-            return std::string(integerLiteral->value);
+            return PragmaValue{std::string(integerLiteral->value), std::string(integerLiteral->value)};
         }
         if(const auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&valueNode)) {
-            return std::string(realLiteral->value);
+            return PragmaValue{std::string(realLiteral->value), std::string(realLiteral->value)};
         }
         if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
-            return std::string(boolLiteral->value ? "true" : "false");
+            const std::string written = boolLiteral->value ? "true" : "false";
+            return PragmaValue{written, written};
         }
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
-            return sqlStringLiteralText(stringLiteral->value);
+            return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value)};
         }
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
-            return stripIdentifierQuotes(columnRef->columnName);
+            return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName)};
         }
         if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             const bool numericOperand =
                 unaryOperator->operand && (dynamic_cast<const IntegerLiteralNode*>(unaryOperator->operand.get()) ||
                                            dynamic_cast<const RealLiteralNode*>(unaryOperator->operand.get()));
             if(unaryOperator->unaryOperator == UnaryOperator::minus && numericOperand) {
-                return "-" + *pragmaValueText(*unaryOperator->operand);
+                const PragmaValue operand = *pragmaValue(*unaryOperator->operand);
+                return PragmaValue{"-" + operand.text, "-" + operand.sqlText};
             }
         }
         return std::nullopt;

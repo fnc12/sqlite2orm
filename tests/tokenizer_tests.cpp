@@ -256,6 +256,42 @@ TEST_CASE("tokenizer: digit separators in numeric literals") {
     }
 }
 
+// A hex literal stands for a signed 64-bit integer, so SQLite rejects one with more than the 16
+// hex digits that fit in it. Leading zeros and digit separators are not digits it counts, and the
+// message names the literal with the separators already taken out. Checked against sqlite3 3.51.
+TEST_CASE("tokenizer: hex literal beyond the int64 range") {
+    SECTION("sixteen significant digits still fit") {
+        REQUIRE(tokenize("0xFFFFFFFFFFFFFFFF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0xFFFFFFFFFFFFFFFF"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0x0000FFFFFFFFFFFFFFFF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x0000FFFFFFFFFFFFFFFF"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0xFF_FF_FF_FF_FF_FF_FF_FF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0xFF_FF_FF_FF_FF_FF_FF_FF"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("a seventeenth one does not") {
+        REQUIRE(tokenizeError("0x10000000000000000") == "hex literal too big: 0x10000000000000000");
+        REQUIRE(tokenizeError("0xFFFFFFFFFFFFFFFFF") == "hex literal too big: 0xFFFFFFFFFFFFFFFFF");
+        REQUIRE(tokenizeError("0x00001FFFFFFFFFFFFFFFF") == "hex literal too big: 0x00001FFFFFFFFFFFFFFFF");
+        REQUIRE(tokenizeError("0x1_FF_FF_FF_FF_FF_FF_FF_FF") == "hex literal too big: 0x1FFFFFFFFFFFFFFFF");
+    }
+    SECTION("rejected literal reports its position") {
+        try {
+            tokenize("SELECT 0x10000000000000000;");
+            FAIL("expected a TokenizeError");
+        } catch(const TokenizeError& error) {
+            REQUIRE(std::string(error.what()) == "hex literal too big: 0x10000000000000000");
+            REQUIRE(error.location.line == 1);
+            REQUIRE(error.location.column == 8);
+        }
+    }
+}
+
 // Trailing identifier characters have always made a numeric literal illegal in SQLite, not just
 // since digit separators arrived; `_` is one more identifier character that hits this rule.
 TEST_CASE("tokenizer: numeric literal followed by identifier characters") {

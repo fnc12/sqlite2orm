@@ -204,6 +204,29 @@ namespace sqlite2orm {
             return TokenizeError("unrecognized token '" + std::string(text) + "'", location);
         }
 
+        std::string withoutDigitSeparators(std::string_view numericLiteral) {
+            std::string result;
+            result.reserve(numericLiteral.size());
+            for(char character: numericLiteral) {
+                if(character != '_') {
+                    result += character;
+                }
+            }
+            return result;
+        }
+
+        // Neither the `_` separators nor the leading zeros count towards the 16 hex digits an
+        // int64 holds, so `0x0000FFFFFFFFFFFFFFFF` and `0xFF_FF_FF_FF_FF_FF_FF_FF` both still fit.
+        size_t significantHexDigitCount(std::string_view hexLiteral) {
+            size_t count = 0;
+            for(char character: hexLiteral.substr(2)) {
+                if(character != '_' && (character != '0' || count > 0)) {
+                    ++count;
+                }
+            }
+            return count;
+        }
+
         std::string toLower(std::string_view sv) {
             std::string result(sv);
             std::transform(result.begin(), result.end(), result.begin(),
@@ -448,6 +471,13 @@ namespace sqlite2orm {
         auto text = this->sql.substr(start, this->position - start);
         if(hasMisplacedDigitSeparator(text, hexadecimal)) {
             throw unrecognizedToken(text, location);
+        }
+
+        // A hex literal stands for a signed 64-bit integer, and SQLite refuses one that does not
+        // fit: `SELECT 0x10000000000000000` is `hex literal too big`. It names the literal with
+        // the separators already taken out of it, the leading zeros still in.
+        if(hexadecimal && significantHexDigitCount(text) > 16) {
+            throw TokenizeError("hex literal too big: " + withoutDigitSeparators(text), location);
         }
         return Token{type, text, location};
     }

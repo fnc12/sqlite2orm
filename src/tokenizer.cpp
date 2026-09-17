@@ -178,6 +178,11 @@ namespace sqlite2orm {
             return std::isalnum(uc) || c == '_' || uc >= 0x80;
         }
 
+        bool isNumericDigit(char character, bool hexadecimal) {
+            const unsigned char byte = static_cast<unsigned char>(character);
+            return hexadecimal ? std::isxdigit(byte) != 0 : std::isdigit(byte) != 0;
+        }
+
         std::string toLower(std::string_view sv) {
             std::string result(sv);
             std::transform(result.begin(), result.end(), result.begin(),
@@ -359,6 +364,23 @@ namespace sqlite2orm {
         throw TokenizeError("unterminated string literal", location);
     }
 
+    // SQLite 3.46+ accepts `_` as a digit separator inside numeric literals, but only between two
+    // digits. `_100`, `100_`, `1__0` and `0x_1f` keep the pre-3.46 tokenization (number followed by
+    // an identifier), because there `_` is not surrounded by digits.
+    void Tokenizer::readDigitsWithSeparators(bool hexadecimal) {
+        while(!atEnd()) {
+            if(isNumericDigit(peek(), hexadecimal)) {
+                advance();
+            } else if(peek() == '_' && this->position > 0 &&
+                      isNumericDigit(this->sql[this->position - 1], hexadecimal) &&
+                      isNumericDigit(peekAhead(1), hexadecimal)) {
+                advance();
+            } else {
+                break;
+            }
+        }
+    }
+
     Token Tokenizer::readNumericLiteral(SourceLocation location) {
         size_t start = this->position;
         bool isReal = false;
@@ -366,22 +388,16 @@ namespace sqlite2orm {
         if(peek() == '0' && (peekAhead(1) == 'x' || peekAhead(1) == 'X')) {
             advance();  // 0
             advance();  // x
-            while(!atEnd() && std::isxdigit(static_cast<unsigned char>(peek()))) {
-                advance();
-            }
+            readDigitsWithSeparators(true);
             return Token{TokenType::integerLiteral, this->sql.substr(start, this->position - start), location};
         }
 
-        while(!atEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
-            advance();
-        }
+        readDigitsWithSeparators(false);
 
         if(peek() == '.' && std::isdigit(static_cast<unsigned char>(peekAhead(1)))) {
             isReal = true;
             advance();  // .
-            while(!atEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
-                advance();
-            }
+            readDigitsWithSeparators(false);
         } else if(peek() == '.' && !isIdentifierStart(peekAhead(1)) && peekAhead(1) != '.') {
             isReal = true;
             advance();  // .
@@ -396,9 +412,7 @@ namespace sqlite2orm {
             if(!std::isdigit(static_cast<unsigned char>(peek()))) {
                 throw TokenizeError("invalid numeric literal: expected digit after exponent", location);
             }
-            while(!atEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
-                advance();
-            }
+            readDigitsWithSeparators(false);
         }
 
         auto type = isReal ? TokenType::realLiteral : TokenType::integerLiteral;

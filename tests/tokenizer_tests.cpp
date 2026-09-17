@@ -135,6 +135,64 @@ TEST_CASE("tokenizer: real literals") {
     }
 }
 
+TEST_CASE("tokenizer: digit separators in numeric literals") {
+    SECTION("decimal") {
+        REQUIRE(tokenize("1_000_000") == std::vector<Token>{
+            {TokenType::integerLiteral, "1_000_000"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("hex") {
+        REQUIRE(tokenize("0x1_ffff") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x1_ffff"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("fraction") {
+        REQUIRE(tokenize("3.141_592") == std::vector<Token>{
+            {TokenType::realLiteral, "3.141_592"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("1_000.000_1") == std::vector<Token>{
+            {TokenType::realLiteral, "1_000.000_1"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("exponent") {
+        REQUIRE(tokenize("1e1_0") == std::vector<Token>{
+            {TokenType::realLiteral, "1e1_0"},
+            {TokenType::eof},
+        });
+    }
+    SECTION("separator not surrounded by digits") {
+        REQUIRE(tokenize("100_") == std::vector<Token>{
+            {TokenType::integerLiteral, "100"},
+            {TokenType::identifier, "_"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("_100") == std::vector<Token>{
+            {TokenType::identifier, "_100"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0x_1f") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x"},
+            {TokenType::identifier, "_1f"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("1__0") == std::vector<Token>{
+            {TokenType::integerLiteral, "1"},
+            {TokenType::identifier, "__0"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("1_.0") == std::vector<Token>{
+            {TokenType::integerLiteral, "1"},
+            {TokenType::identifier, "_"},
+            {TokenType::realLiteral, ".0"},
+            {TokenType::eof},
+        });
+    }
+}
+
 TEST_CASE("tokenizer: string literals") {
     SECTION("simple") {
         REQUIRE(tokenize("'hello'") == std::vector<Token>{

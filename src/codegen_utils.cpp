@@ -475,11 +475,15 @@ namespace sqlite2orm {
             return result;
         }
 
-        // SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the 16
-        // digits of `0xFFFFFFFFFFFFFFFF` mean -1. A longer one it rejects (see the tokenizer).
-        bool hexLiteralWrapsToNegative(std::string_view integerLiteral) {
+        // SQLite reads every hex literal as a signed 64-bit integer, while C++ gives one the
+        // first type of `int`, `unsigned int`, `long`, ... it fits in. Two spans of the range end
+        // up unsigned there: the 8 digits of `0xDEADBEEF` overflow an `int` and land in an
+        // `unsigned int`, and the 16 digits of `0xFFFFFFFFFFFFFFFF` overflow an `int64_t` and land
+        // in an `unsigned long`. Anything between the two spans stays signed, and a seventeenth
+        // digit the tokenizer rejects.
+        bool hexLiteralIsUnsignedInCpp(std::string_view integerLiteral) {
             const std::string digits = significantDigits(integerLiteral.substr(2));
-            return digits.size() == 16 && digits.front() >= '8';
+            return (digits.size() == 8 || digits.size() == 16) && digits.front() >= '8';
         }
 
     }  // namespace
@@ -502,10 +506,12 @@ namespace sqlite2orm {
         // compile at all. The separators standing between those zeros go away with them, so that
         // `0_9` becomes `9` rather than the octal constant `0'9`.
         if(isHexadecimalLiteral(integerLiteral)) {
-            // Past the int64 range the two languages part ways again: SQLite wraps the literal
-            // around into a negative integer while C++ gives the same spelling the unsigned type
-            // it fits in, turning `0xFFFFFFFFFFFFFFFF` from -1 into 18446744073709551615.
-            if(hexLiteralWrapsToNegative(integerLiteral)) {
+            // Where C++ picks an unsigned type for the literal the two languages part ways again:
+            // `0xFFFFFFFFFFFFFFFF` means -1 to SQLite and 18446744073709551615 to C++, and even
+            // where the value itself survives, as it does for `0xDEADBEEF`, an unsigned operand
+            // drags the rest of the expression along with it, so that `-1 > 0xDEADBEEF` is true in
+            // C++ and false in SQLite. The cast restores the type SQLite gives the literal.
+            if(hexLiteralIsUnsignedInCpp(integerLiteral)) {
                 return "static_cast<int64_t>(" + numericLiteralToCpp(integerLiteral) + ")";
             }
             return numericLiteralToCpp(integerLiteral);

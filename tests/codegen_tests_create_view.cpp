@@ -141,6 +141,24 @@ TEST_CASE("codegen: CREATE VIEW - schema-qualified name warns and uses bare name
             cpp26ViewWarning("main.v", 1)});
 }
 
+// A view column keeps the type of the literal behind it, and a literal an int64 cannot hold is a
+// REAL for SQLite: `CREATE VIEW v AS SELECT 99999999999999999999` has a real column, not an
+// integer one. Checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE VIEW - column of an integer literal beyond int64 is a double") {
+    auto result = generateFull("CREATE VIEW v AS SELECT 99999999999999999999;");
+    REQUIRE(result.code ==
+        "struct [[= \"v\"_orm_name]] V {\n"
+        "    double column_1 = 0.0;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_view<V>(select(99999999999999999999.0)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            "view v: SELECT column 1 has no name; using synthesized field name `column_1`",
+            cpp26ViewWarning("v", 1)});
+}
+
 TEST_CASE("codegen: view column-type warning carries a source location to underline") {
     // `id` sits at line 1, column 25 of the SQL and is 2 characters long.
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");

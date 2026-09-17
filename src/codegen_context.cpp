@@ -117,7 +117,10 @@ namespace sqlite2orm {
 
     std::string CodeGeneratorContext::inferTypeFromNode(const AstNode& node) const {
         if(dynamic_cast<const StringLiteralNode*>(&node)) return "std::string";
-        if(dynamic_cast<const IntegerLiteralNode*>(&node)) return "int";
+        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&node)) {
+            // An integer literal an int64 cannot hold is a REAL for SQLite, so is the column.
+            return integerLiteralExceedsInt64(integerLiteral->value) ? "double" : "int";
+        }
         if(dynamic_cast<const RealLiteralNode*>(&node)) return "double";
         if(dynamic_cast<const BoolLiteralNode*>(&node)) return "bool";
         return "int";

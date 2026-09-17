@@ -12,9 +12,9 @@ namespace sqlite2orm {
 
     CodeGenResult ExpressionCodeGenerator::generateExpression(const AstNode& astNode) {
         if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&astNode)) {
-            return CodeGenResult{std::string(integerLiteral->value), {}};
+            return CodeGenResult{integerLiteralToCpp(integerLiteral->value), {}};
         } else if(auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&astNode)) {
-            return CodeGenResult{std::string(realLiteral->value), {}};
+            return CodeGenResult{numericLiteralToCpp(realLiteral->value), {}};
         } else if(auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&astNode)) {
             return CodeGenResult{sqlStringToCpp(stringLiteral->value), {}};
         } else if(dynamic_cast<const NullLiteralNode*>(&astNode)) {

@@ -40,6 +40,8 @@ namespace sqlite2orm {
         Token readIdentifierOrKeyword(SourceLocation loc);
         Token readQuotedIdentifier(char quote, SourceLocation loc);
         Token readStringLiteral(SourceLocation loc);
+        /** Consumes a digit run that may contain SQLite 3.46+ `_` digit separators. */
+        void readDigitsWithSeparators(bool hexadecimal);
         Token readNumericLiteral(SourceLocation loc);
         Token readBlobLiteral(SourceLocation loc);
         Token readBindParameter(SourceLocation loc);

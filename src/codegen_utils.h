@@ -64,6 +64,10 @@ namespace sqlite2orm {
     std::string stripStoragePrefixAndTrailingSemicolon(std::string code);
 
     std::string blobToCpp(std::string_view blobLiteral);
+    /** SQL numeric literal to C++: SQLite's `_` digit separators become C++'s `'` (1_000 -> 1'000). */
+    std::string numericLiteralToCpp(std::string_view numericLiteral);
+    /** Same for an integer literal, whose leading zeros C++ would read as an octal prefix (`010` is 10 in SQLite, 8 in C++). */
+    std::string integerLiteralToCpp(std::string_view integerLiteral);
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);
 

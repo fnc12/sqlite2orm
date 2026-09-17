@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cctype>
+#include <cstdint>
 
 namespace sqlite2orm {
 
@@ -584,26 +585,117 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
-    std::optional<bool> pragmaRecursiveTriggersBool(const AstNode& valueNode) {
+    namespace {
+
+        bool isDigit(char character) {
+            return std::isdigit(static_cast<unsigned char>(character)) != 0;
+        }
+
+        bool isHexDigit(char character) {
+            return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+        }
+
+        int hexDigitValue(char character) {
+            return isDigit(character) ? character - '0' : (character | 0x20) - 'a' + 10;
+        }
+
+        /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
+        std::string sqlStringLiteralText(std::string_view literal) {
+            if(literal.size() < 2) {
+                return std::string(literal);
+            }
+            const char quote = literal.front();
+            const std::string_view content = literal.substr(1, literal.size() - 2);
+            std::string result;
+            result.reserve(content.size());
+            for(size_t index = 0; index < content.size(); ++index) {
+                if(content[index] == quote && index + 1 < content.size() && content[index + 1] == quote) {
+                    ++index;
+                }
+                result += content[index];
+            }
+            return result;
+        }
+
+        /**
+         *  SQLite's `sqlite3GetInt32()`: the leading decimal (or `0x…` hexadecimal) digits of `text`
+         *  as an int32. Everything that does not fit an int32 reads as 0 — a hexadecimal value with
+         *  the sign bit set, more than ten decimal digits, or a value above 2147483647 — which is why
+         *  `PRAGMA recursive_triggers = 2147483648` is false in SQLite while `= 2147483647` is true.
+         */
+        int sqliteTextToInt32(std::string_view text) {
+            if(text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') && isHexDigit(text[2])) {
+                size_t index = 2;
+                while(index < text.size() && text[index] == '0') {
+                    ++index;
+                }
+                std::uint32_t value = 0;
+                size_t digitCount = 0;
+                for(; index < text.size() && digitCount < 8 && isHexDigit(text[index]); ++index, ++digitCount) {
+                    value = value * 16 + static_cast<std::uint32_t>(hexDigitValue(text[index]));
+                }
+                if((value & 0x80000000u) != 0 || (index < text.size() && isHexDigit(text[index]))) {
+                    return 0;
+                }
+                return static_cast<int>(value);
+            }
+            size_t index = 0;
+            while(index < text.size() && text[index] == '0') {
+                ++index;
+            }
+            std::int64_t value = 0;
+            size_t digitCount = 0;
+            for(; index < text.size() && digitCount < 11 && isDigit(text[index]); ++index, ++digitCount) {
+                value = value * 10 + (text[index] - '0');
+            }
+            if(digitCount > 10 || value > 2147483647) {
+                return 0;
+            }
+            return static_cast<int>(value);
+        }
+
+    }  // namespace
+
+    bool sqlitePragmaBoolean(std::string_view valueText) {
+        if(!valueText.empty() && isDigit(valueText.front())) {
+            return sqliteTextToInt32(valueText) != 0;
+        }
+        const std::string lower = toLowerAscii(valueText);
+        return lower == "on" || lower == "yes" || lower == "true";
+    }
+
+    bool isCanonicalPragmaBooleanText(std::string_view valueText) {
+        if(valueText == "0" || valueText == "1") {
+            return true;
+        }
+        const std::string lower = toLowerAscii(valueText);
+        return lower == "on" || lower == "off" || lower == "yes" || lower == "no" || lower == "true" ||
+               lower == "false";
+    }
+
+    std::optional<std::string> pragmaValueText(const AstNode& valueNode) {
         if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
-            if(integerLiteral->value == "0") return false;
-            if(integerLiteral->value == "1") return true;
-            return std::nullopt;
+            return std::string(integerLiteral->value);
+        }
+        if(const auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&valueNode)) {
+            return std::string(realLiteral->value);
         }
         if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
-            return boolLiteral->value;
+            return std::string(boolLiteral->value ? "true" : "false");
         }
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
-            if(stringLiteral->value.size() >= 2) {
-                const std::string inner = toLowerAscii(stringLiteral->value.substr(1, stringLiteral->value.size() - 2));
-                if(inner == "on" || inner == "yes" || inner == "true") return true;
-                if(inner == "off" || inner == "no" || inner == "false") return false;
-            }
+            return sqlStringLiteralText(stringLiteral->value);
         }
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
-            const std::string token = toLowerAscii(columnRef->columnName);
-            if(token == "on") return true;
-            if(token == "off") return false;
+            return stripIdentifierQuotes(columnRef->columnName);
+        }
+        if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
+            const bool numericOperand =
+                unaryOperator->operand && (dynamic_cast<const IntegerLiteralNode*>(unaryOperator->operand.get()) ||
+                                           dynamic_cast<const RealLiteralNode*>(unaryOperator->operand.get()));
+            if(unaryOperator->unaryOperator == UnaryOperator::minus && numericOperand) {
+                return "-" + *pragmaValueText(*unaryOperator->operand);
+            }
         }
         return std::nullopt;
     }

@@ -79,6 +79,14 @@ namespace sqlite2orm {
     std::optional<std::string> lockingModeSqlTokenToCppEnum(std::string_view token);
     std::optional<std::string> pragmaTableNameLiteral(const AstNode& valueNode);
     std::optional<std::string> pragmaJournalOrLockingValueToken(const AstNode& valueNode);
-    std::optional<bool> pragmaRecursiveTriggersBool(const AstNode& valueNode);
+    /**
+     *  Text SQLite sees as the value of `PRAGMA name = <value>` (a literal spelled as written, a name
+     *  with its quotes removed), or nullopt for a node SQLite does not accept as a PRAGMA value.
+     */
+    std::optional<std::string> pragmaValueText(const AstNode& valueNode);
+    /** SQLite's `sqlite3GetBoolean()`: any non-zero number and `on`/`yes`/`true` are true, everything else is false. */
+    bool sqlitePragmaBoolean(std::string_view valueText);
+    /** Whether `valueText` is one of the boolean spellings SQLite documents (`0`/`1`, `ON`/`OFF`, …). */
+    bool isCanonicalPragmaBooleanText(std::string_view valueText);
 
 }  // namespace sqlite2orm

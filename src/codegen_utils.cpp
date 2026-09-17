@@ -446,6 +446,15 @@ namespace sqlite2orm {
         return result;
     }
 
+    std::string numericLiteralToCpp(std::string_view numericLiteral) {
+        std::string result;
+        result.reserve(numericLiteral.size());
+        for(char character: numericLiteral) {
+            result += character == '_' ? '\'' : character;
+        }
+        return result;
+    }
+
     bool isLeafNode(const AstNode& astNode) {
         return dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
                dynamic_cast<const RealLiteralNode*>(&astNode) ||

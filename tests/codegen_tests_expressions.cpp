@@ -14,6 +14,14 @@ TEST_CASE("codegen: real literal") {
     REQUIRE(generate("3.14e-2") == "3.14e-2");
 }
 
+TEST_CASE("codegen: digit separators become C++ separators") {
+    REQUIRE(generate("SELECT 1_000_000;") == "auto rows = storage.select(1'000'000);");
+    REQUIRE(generate("1_000_000") == "1'000'000");
+    REQUIRE(generate("0x1_ffff") == "0x1'ffff");
+    REQUIRE(generate("3.141_592") == "3.141'592");
+    REQUIRE(generate("1e1_0") == "1e1'0");
+}
+
 TEST_CASE("codegen: string literal") {
     REQUIRE(generate("'hello'") == "\"hello\"");
     REQUIRE(generate("'it''s'") == "\"it's\"");

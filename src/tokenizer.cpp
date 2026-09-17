@@ -183,6 +183,27 @@ namespace sqlite2orm {
             return hexadecimal ? std::isxdigit(byte) != 0 : std::isdigit(byte) != 0;
         }
 
+        // SQLite accepts a `_` digit separator only between two digits (hex digits inside a hex
+        // literal). It scans the literal greedily and checks the separators afterwards, so a
+        // misplaced one rejects the whole literal instead of ending it.
+        bool hasMisplacedDigitSeparator(std::string_view text, bool hexadecimal) {
+            for(size_t index = 0; index < text.size(); ++index) {
+                if(text[index] != '_') {
+                    continue;
+                }
+                if(index == 0 || index + 1 == text.size() ||
+                   !isNumericDigit(text[index - 1], hexadecimal) ||
+                   !isNumericDigit(text[index + 1], hexadecimal)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        TokenizeError unrecognizedToken(std::string_view text, SourceLocation location) {
+            return TokenizeError("unrecognized token '" + std::string(text) + "'", location);
+        }
+
         std::string toLower(std::string_view sv) {
             std::string result(sv);
             std::transform(result.begin(), result.end(), result.begin(),
@@ -364,59 +385,71 @@ namespace sqlite2orm {
         throw TokenizeError("unterminated string literal", location);
     }
 
-    // SQLite 3.46+ accepts `_` as a digit separator inside numeric literals, but only between two
-    // digits. `_100`, `100_`, `1__0` and `0x_1f` keep the pre-3.46 tokenization (number followed by
-    // an identifier), because there `_` is not surrounded by digits.
+    // Consumes a run of digits together with any `_` digit separators in it. Like SQLite, the run
+    // is taken greedily and separator placement is checked afterwards, so the whole literal is
+    // reported as one unrecognized token instead of being split up.
     void Tokenizer::readDigitsWithSeparators(bool hexadecimal) {
-        while(!atEnd()) {
-            if(isNumericDigit(peek(), hexadecimal)) {
-                advance();
-            } else if(peek() == '_' && this->position > 0 &&
-                      isNumericDigit(this->sql[this->position - 1], hexadecimal) &&
-                      isNumericDigit(peekAhead(1), hexadecimal)) {
-                advance();
-            } else {
-                break;
-            }
+        while(!atEnd() && (isNumericDigit(peek(), hexadecimal) || peek() == '_')) {
+            advance();
         }
     }
 
     Token Tokenizer::readNumericLiteral(SourceLocation location) {
         size_t start = this->position;
-        bool isReal = false;
+        auto type = TokenType::integerLiteral;
+        bool hexadecimal = false;
 
-        if(peek() == '0' && (peekAhead(1) == 'x' || peekAhead(1) == 'X')) {
+        // `0x` only starts a hex literal when a hex digit follows it; otherwise SQLite reads the
+        // leading `0` as a decimal literal and the rest as trailing identifier characters, which
+        // is what makes `0x`, `0xg` and `0x_1f` unrecognized tokens.
+        if(peek() == '0' && (peekAhead(1) == 'x' || peekAhead(1) == 'X') &&
+           isNumericDigit(peekAhead(2), true)) {
+            hexadecimal = true;
             advance();  // 0
             advance();  // x
             readDigitsWithSeparators(true);
-            return Token{TokenType::integerLiteral, this->sql.substr(start, this->position - start), location};
-        }
-
-        readDigitsWithSeparators(false);
-
-        if(peek() == '.' && std::isdigit(static_cast<unsigned char>(peekAhead(1)))) {
-            isReal = true;
-            advance();  // .
+        } else {
             readDigitsWithSeparators(false);
-        } else if(peek() == '.' && !isIdentifierStart(peekAhead(1)) && peekAhead(1) != '.') {
-            isReal = true;
-            advance();  // .
+
+            // A `.` makes the literal a float whatever follows it, so `1.` and `1.e5` are floats
+            // while `1.x` and `1._2` are rejected below.
+            if(peek() == '.') {
+                type = TokenType::realLiteral;
+                advance();  // .
+                readDigitsWithSeparators(false);
+            }
+
+            // An exponent needs at least one digit after the optional sign, otherwise the `e` is
+            // not part of the number at all and `1e`, `1e+` and `1e_1` stay unrecognized tokens.
+            const bool exponentHasDigits =
+                std::isdigit(static_cast<unsigned char>(peekAhead(1))) ||
+                ((peekAhead(1) == '+' || peekAhead(1) == '-') &&
+                 std::isdigit(static_cast<unsigned char>(peekAhead(2))));
+            if((peek() == 'e' || peek() == 'E') && exponentHasDigits) {
+                type = TokenType::realLiteral;
+                advance();  // e
+                if(peek() == '+' || peek() == '-') {
+                    advance();
+                }
+                readDigitsWithSeparators(false);
+            }
         }
 
-        if(peek() == 'e' || peek() == 'E') {
-            isReal = true;
-            advance();
-            if(peek() == '+' || peek() == '-') {
+        // SQLite never splits a numeric literal followed directly by identifier characters into a
+        // number plus an identifier: the whole run becomes one unrecognized token, which is how
+        // `1a`, `0x_1f` and `100_abc` are rejected.
+        if(!atEnd() && isIdentifierChar(peek())) {
+            while(!atEnd() && isIdentifierChar(peek())) {
                 advance();
             }
-            if(!std::isdigit(static_cast<unsigned char>(peek()))) {
-                throw TokenizeError("invalid numeric literal: expected digit after exponent", location);
-            }
-            readDigitsWithSeparators(false);
+            throw unrecognizedToken(this->sql.substr(start, this->position - start), location);
         }
 
-        auto type = isReal ? TokenType::realLiteral : TokenType::integerLiteral;
-        return Token{type, this->sql.substr(start, this->position - start), location};
+        auto text = this->sql.substr(start, this->position - start);
+        if(hasMisplacedDigitSeparator(text, hexadecimal)) {
+            throw unrecognizedToken(text, location);
+        }
+        return Token{type, text, location};
     }
 
     Token Tokenizer::readBlobLiteral(SourceLocation location) {

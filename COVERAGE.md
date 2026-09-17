@@ -32,7 +32,7 @@ Statuses:
 ### Literals
 - [x] numeric-literal (integer)
 - [x] numeric-literal (real / float)
-- [x] numeric-literal `_` digit separators (SQLite 3.46+) — `1_000_000` → `1'000'000`, `0x1_ffff` → `0x1'ffff`
+- [x] numeric-literal `_` digit separators (SQLite 3.46+) — `1_000_000` → `1'000'000`, `0x1_ffff` → `0x1'ffff`; a misplaced separator (`100_`, `1__0`, `0x_1f`) is an unrecognized token, as in SQLite
 - [x] string-literal
 - [x] blob-literal
 - [x] NULL

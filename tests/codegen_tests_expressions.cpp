@@ -99,6 +99,14 @@ TEST_CASE("codegen: hexadecimal literal in the unsigned int range keeps its sign
     REQUIRE(generate("0xFFFFFFFF") == "static_cast<int64_t>(0xFFFFFFFF)");
     REQUIRE(generate("0X8000_0000") == "static_cast<int64_t>(0X8000'0000)");
     REQUIRE(generate("0x0080000000") == "static_cast<int64_t>(0x0080000000)");
+    REQUIRE(generate("0xdeadbeef") == "static_cast<int64_t>(0xdeadbeef)");
+    // Neither a separator nor a leading zero is one of the eight digits that overflow an `int`,
+    // so `0x8000_000` is the seven-digit 134217728 and stays signed in C++ as it is in SQLite.
+    REQUIRE(generate("0x8000_000") == "0x8000'000");
+    // A ninth digit takes the literal past an `unsigned int` and back to a signed C++ type, so
+    // the leading 8 of `0x800000000` means nothing here: it is 34359738368, a `long`.
+    REQUIRE(generate("0x800000000") == "0x800000000");
+    REQUIRE(generate("0xFFFFFFFFFFFFFFF") == "0xFFFFFFFFFFFFFFF");
     REQUIRE(generate("0x100000000") == "0x100000000");
     REQUIRE(generate("0x1FFFFFFFF") == "0x1FFFFFFFF");
     REQUIRE(generate("SELECT x > 0xDEADBEEF;") ==

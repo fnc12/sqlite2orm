@@ -741,6 +741,22 @@ TEST_CASE("codegen: prefix - inferred int64_t from a hexadecimal literal beyond 
     REQUIRE(prefixFor("x > 0xFFFFFFFF7FFFFFFF") == "struct User {\n    int64_t x = 0;\n};");
     REQUIRE(prefixFor("x > 0xFFFFFFFF80000000") == "struct User {\n    int x = 0;\n};");
     REQUIRE(prefixFor("x > 0xffffffffffffffff") == "struct User {\n    int x = 0;\n};");
+    // Nine to fifteen digits sit past `0xFFFFFFFF` and short of the wrap-around, so the value is
+    // positive and out of reach of an int32 whatever the digits are: `0x100000000` is 4294967296
+    // and `0xFFFFFFFFFFFFFFF` is 1152921504606846975.
+    REQUIRE(prefixFor("x > 0x100000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 0xFFFFFFFFFFFFFFF") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// Neither the leading zeros nor the `_` separators SQLite allows carry any value, so the digits
+// that decide the width are the significant ones: `00000000000005` and `0x00000000000000000005`
+// are both 5, and `0x0000000080000000` is the 2147483648 of `0x80000000`.
+TEST_CASE("codegen: prefix - the width of a literal follows its significant digits") {
+    REQUIRE(prefixFor("x > 00000000000005") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > 0x00000000000000000005") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > 0x0000000080000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 0_2147483647") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > 21474_83648") == "struct User {\n    int64_t x = 0;\n};");
 }
 
 // A sign does not bring the value back into an int32, and the operand of a unary plus or minus

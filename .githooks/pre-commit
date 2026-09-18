@@ -26,24 +26,44 @@ if ! clang_format=$(find_clang_format); then
     exit 0
 fi
 
-staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(h|hpp|cpp)$' || true)
-[ -n "$staged" ] || exit 0
-
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# The staged content is what the commit records, which is not always what is on disk.
+staged=$tmp/staged-names
+# -z prints every path verbatim. The default output quotes a path that is not plain ASCII, as
+# "\320\277\320\273\320\276\321\205\320\276\320\271.cpp", and the trailing quote hides such a
+# file from the extension test below, so an unformatted source would commit unchecked.
+git diff --cached --name-only -z --diff-filter=ACMR > "$staged"
+[ -s "$staged" ] || exit 0
+
+# A NUL never survives a shell word, so the list cannot be read into one: xargs splits it instead
+# and the check itself runs in the child. The staged content is what the commit records, which is
+# not always what is on disk. The child runs under set -e on purpose: a git or clang-format that
+# fails on a staged file is a reason to refuse the commit, never a reason to report nothing.
 status=0
-IFS='
-'
-for file in $staged; do
-    git show ":$file" > "$tmp/staged"
-    "$clang_format" --style=file --assume-filename="$file" < "$tmp/staged" > "$tmp/formatted"
-    if ! cmp -s "$tmp/staged" "$tmp/formatted"; then
-        echo "pre-commit: $file is not formatted according to .clang-format." >&2
-        status=1
-    fi
-done
+xargs -0 sh -c '
+    set -e
+    clang_format=$1
+    tmp=$2
+    shift 2
+    status=0
+    for file in "$@"; do
+        case $file in
+            *.h | *.hpp | *.cpp) ;;
+            *) continue ;;
+        esac
+        # :0: names stage 0 of this exact path. A bare :$file is read as :<stage>:<path> first,
+        # so a staged 0:x.cpp would hand back the index entry for x.cpp instead, and an
+        # unformatted file would commit unchecked.
+        git show ":0:$file" > "$tmp/staged"
+        "$clang_format" --style=file --assume-filename="$file" < "$tmp/staged" > "$tmp/formatted"
+        if ! cmp -s "$tmp/staged" "$tmp/formatted"; then
+            echo "pre-commit: $file is not formatted according to .clang-format." >&2
+            status=1
+        fi
+    done
+    exit "$status"
+' pre-commit "$clang_format" "$tmp" < "$staged" || status=1
 
 if [ "$status" -ne 0 ]; then
     echo "pre-commit: run clang-format 19 with -i on those files and stage them again." >&2

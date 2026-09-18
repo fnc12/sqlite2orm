@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -64,12 +65,14 @@ namespace {
     }
 
     /**
-     *  Builds a program around the generated INSERT statements for a `t(x INTEGER)` table, compiles
-     *  and links it against sqlite_orm, runs it and returns `typeof(x)|x` for every row, the way
-     *  SQLite reports what it stored. An insert that carries its value through the struct field
-     *  converts it on the way in, so only running the code shows which value reached the database.
+     *  Builds a program around the generated INSERT statements for a one-column `t` table whose
+     *  field is `std::optional<fieldType>`, compiles and links it against sqlite_orm, runs it and
+     *  returns `typeof(x)|x` for every row, the way SQLite reports what it stored. An insert that
+     *  carries its value through the struct field converts it on the way in, so only running the
+     *  code shows which value reached the database.
      */
-    std::vector<std::string> insertedIntegerColumnRows(const std::vector<std::string>& insertStatements) {
+    std::vector<std::string> insertedColumnRows(const std::vector<std::string>& insertStatements,
+                                                std::string_view fieldType) {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <cstdint>\n"
@@ -77,7 +80,9 @@ namespace {
                    "#include <optional>\n"
                    "\n"
                    "struct T {\n"
-                   "    std::optional<int64_t> x;\n"
+                   "    std::optional<"
+                << fieldType
+                << "> x;\n"
                    "};\n"
                    "\n"
                    "int main() {\n"
@@ -197,6 +202,27 @@ TEST_CASE("runtime: an INSERT value out of reach of its column field keeps the v
                 "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1.5)));",
                 "storage.insert(T{-9223372036854775808.0});",
             });
-    REQUIRE(insertedIntegerColumnRows(statements) ==
+    REQUIRE(insertedColumnRows(statements, "int64_t") ==
             std::vector<std::string>{"real|1.0e+20", "real|1.5", "integer|-9223372036854775808"});
+}
+
+// The `bool` field of a BOOLEAN column reaches even less far: the object form made every one of
+// these values 1. sqlite3 3.51 stores `real|1.0e+20`, `real|1.5` and `integer|2` for the same
+// statements over `t(x BOOLEAN)`, and the same three rows for `t(x INTEGER)` — both affinities
+// leave a value they cannot hold losslessly a REAL — which is what sqlite_orm declares a `bool`
+// field as.
+TEST_CASE("runtime: an INSERT value out of reach of a bool field keeps the value SQLite stores") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (99999999999999999999);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1.5);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (2.0);").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(99999999999999999999.0)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1.5)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(2.0)));",
+            });
+    REQUIRE(insertedColumnRows(statements, "bool") ==
+            std::vector<std::string>{"real|1.0e+20", "real|1.5", "integer|2"});
 }

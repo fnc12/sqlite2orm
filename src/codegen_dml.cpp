@@ -11,9 +11,13 @@ namespace sqlite2orm {
 
     namespace {
 
-        /** The C++ field types a column of INTEGER affinity maps to, which hold whole numbers only. */
-        bool isIntegerFieldType(std::string_view cppType) {
-            return cppType == "int64_t" || cppType == "int";
+        /**
+         *  The C++ field types that hold whole numbers only, so a value SQLite keeps a REAL reaches
+         *  the database converted. `bool`, which a BOOLEAN column maps to, holds no whole number
+         *  besides 0 and 1 and belongs here all the more.
+         */
+        bool isWholeNumberFieldType(std::string_view cppType) {
+            return cppType == "int64_t" || cppType == "int" || cppType == "bool";
         }
 
     }  // namespace
@@ -49,7 +53,7 @@ namespace sqlite2orm {
             for(size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
                 const SourceTableColumn& column = *columns[columnIndex];
                 const AstNode& value = *row[columnIndex];
-                if(!isIntegerFieldType(column.cppType) || integerFieldCarriesValue(value)) {
+                if(!isWholeNumberFieldType(column.cppType) || integerFieldCarriesValue(value)) {
                     continue;
                 }
                 columnListForced = true;

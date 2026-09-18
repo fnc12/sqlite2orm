@@ -414,6 +414,42 @@ TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range beside a gene
     REQUIRE(result.errors.empty());
 }
 
+// A BOOLEAN column maps to a `bool` field, which holds no whole number besides 0 and 1, so a value
+// SQLite keeps a REAL is out of its reach the same way: sqlite3 3.51 stores `real|1.0e+20` here,
+// while the object form would send the value through the field and store `integer|1`.
+TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into a BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (99999999999999999999);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(99999999999999999999.0)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"INSERT into column 'x' of table 't' uses 99999999999999999999, past the signed 64-bit integer "
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the bool field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{1, 50},
+                 20}});
+    REQUIRE(result.errors.empty());
+}
+
+// sqlite3 3.51 stores `real|1.5` in a BOOLEAN column, and `integer|2` for `2.0`; the `bool` field
+// would make both of them 1.
+TEST_CASE("codegen: INSERT VALUES - a fractional literal into a BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1.5);");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1.5)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// An integer a `bool` field cannot hold either is a separate story: the object form writes 1 where
+// SQLite stores 5, and the fix for that belongs with the literal the field carries, not here.
+TEST_CASE("codegen: INSERT VALUES - a whole number into a BOOLEAN column keeps the object form") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (5);");
+    REQUIRE(result.code == "storage.insert(T{5});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
 // A table this batch never declared says nothing about the type of the field a value reaches, so
 // the statement is generated the way it always was.
 TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into an unknown table") {

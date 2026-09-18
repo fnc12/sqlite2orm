@@ -10,7 +10,7 @@
 namespace sqlite2orm {
 
     bool policyEquals(const CodeGenPolicy* policy, std::string_view category, std::string_view value) {
-        if(!policy) {
+        if (!policy) {
             return false;
         }
         const auto it = policy->chosenAlternativeValueByCategory.find(std::string(category));
@@ -19,7 +19,7 @@ namespace sqlite2orm {
 
     CodeGenPolicy policyWithOverride(const CodeGenPolicy* base, std::string_view category, std::string_view value) {
         CodeGenPolicy result;
-        if(base) {
+        if (base) {
             result = *base;
         }
         result.chosenAlternativeValueByCategory[std::string(category)] = std::string(value);
@@ -36,10 +36,10 @@ namespace sqlite2orm {
 
     std::string savepointGuardVariableName(std::string_view savepointName) {
         std::string variableName;
-        for(const char c : stripIdentifierQuotes(savepointName)) {
+        for (const char c: stripIdentifierQuotes(savepointName)) {
             variableName += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
         }
-        if(variableName.empty() || std::isdigit(static_cast<unsigned char>(variableName.front()))) {
+        if (variableName.empty() || std::isdigit(static_cast<unsigned char>(variableName.front()))) {
             variableName.insert(variableName.begin(), '_');
         }
         return variableName + "_savepoint";
@@ -47,25 +47,32 @@ namespace sqlite2orm {
 
     std::string colaliasBuiltinSlot(size_t slotIndex) {
         static constexpr std::array<std::string_view, 9> kBuiltinSlots = {
-            "colalias_a{}", "colalias_b{}", "colalias_c{}", "colalias_d{}", "colalias_e{}",
-            "colalias_f{}", "colalias_g{}", "colalias_h{}", "colalias_i{}",
+            "colalias_a{}",
+            "colalias_b{}",
+            "colalias_c{}",
+            "colalias_d{}",
+            "colalias_e{}",
+            "colalias_f{}",
+            "colalias_g{}",
+            "colalias_h{}",
+            "colalias_i{}",
         };
-        if(slotIndex < kBuiltinSlots.size()) {
+        if (slotIndex < kBuiltinSlots.size()) {
             return std::string(kBuiltinSlots[slotIndex]);
         }
         char letter = static_cast<char>('a' + slotIndex);
-        if(letter > 'z') {
+        if (letter > 'z') {
             letter = 'a';
         }
         return "sqlite_orm::internal::column_alias<'" + std::string(1, letter) + "'>{}";
     }
 
     std::string stripIdentifierQuotes(std::string_view identifier) {
-        if(identifier.size() >= 2) {
+        if (identifier.size() >= 2) {
             char first = identifier.front();
             char last = identifier.back();
-            if((first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '`' && last == '`') ||
-               (first == '[' && last == ']')) {
+            if ((first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '`' && last == '`') ||
+                (first == '[' && last == ']')) {
                 return std::string(identifier.substr(1, identifier.size() - 2));
             }
         }
@@ -76,14 +83,14 @@ namespace sqlite2orm {
         auto stripped = stripIdentifierQuotes(sqlName);
         std::string result;
         result.reserve(stripped.size());
-        for(char character : stripped) {
-            if(std::isalnum(static_cast<unsigned char>(character)) || character == '_') {
+        for (char character: stripped) {
+            if (std::isalnum(static_cast<unsigned char>(character)) || character == '_') {
                 result += character;
             } else {
                 result += '_';
             }
         }
-        if(!result.empty() && std::isdigit(static_cast<unsigned char>(result[0]))) {
+        if (!result.empty() && std::isdigit(static_cast<unsigned char>(result[0]))) {
             result = "_" + result;
         }
         return result;
@@ -92,16 +99,16 @@ namespace sqlite2orm {
     std::string identifierToCppStringLiteral(std::string_view sqlIdentifier) {
         auto body = stripIdentifierQuotes(sqlIdentifier);
         std::string result = "\"";
-        for(char character : body) {
-            if(character == '\\') {
+        for (char character: body) {
+            if (character == '\\') {
                 result += "\\\\";
-            } else if(character == '"') {
+            } else if (character == '"') {
                 result += "\\\"";
-            } else if(character == '\n') {
+            } else if (character == '\n') {
                 result += "\\n";
-            } else if(character == '\r') {
+            } else if (character == '\r') {
                 result += "\\r";
-            } else if(character == '\t') {
+            } else if (character == '\t') {
                 result += "\\t";
             } else {
                 result += character;
@@ -114,20 +121,20 @@ namespace sqlite2orm {
     std::string sqlStringToCpp(std::string_view sqlString) {
         auto content = sqlString.substr(1, sqlString.size() - 2);
         std::string result = "\"";
-        for(size_t index = 0; index < content.size(); ++index) {
+        for (size_t index = 0; index < content.size(); ++index) {
             char character = content[index];
-            if(character == '\'' && index + 1 < content.size() && content[index + 1] == '\'') {
+            if (character == '\'' && index + 1 < content.size() && content[index + 1] == '\'') {
                 result += '\'';
                 ++index;
-            } else if(character == '\\') {
+            } else if (character == '\\') {
                 result += "\\\\";
-            } else if(character == '"') {
+            } else if (character == '"') {
                 result += "\\\"";
-            } else if(character == '\n') {
+            } else if (character == '\n') {
                 result += "\\n";
-            } else if(character == '\r') {
+            } else if (character == '\r') {
                 result += "\\r";
-            } else if(character == '\t') {
+            } else if (character == '\t') {
                 result += "\\t";
             } else {
                 result += character;
@@ -138,11 +145,11 @@ namespace sqlite2orm {
     }
 
     std::string stripColumnAliasQuotes(std::string_view alias) {
-        if(alias.size() >= 2) {
+        if (alias.size() >= 2) {
             char first = alias.front();
             char last = alias.back();
-            if((first == '\'' && last == '\'') || (first == '"' && last == '"') || (first == '`' && last == '`') ||
-               (first == '[' && last == ']')) {
+            if ((first == '\'' && last == '\'') || (first == '"' && last == '"') || (first == '`' && last == '`') ||
+                (first == '[' && last == ']')) {
                 return std::string(alias.substr(1, alias.size() - 2));
             }
         }
@@ -155,11 +162,11 @@ namespace sqlite2orm {
 
     std::string columnAliasTypeName(std::string_view rawAlias) {
         std::string stripped = stripColumnAliasQuotes(rawAlias);
-        if(isBuiltinColalias(stripped)) {
+        if (isBuiltinColalias(stripped)) {
             return "colalias_" + stripped;
         }
         std::string name = toCppIdentifier(stripped);
-        if(!name.empty() && std::islower(static_cast<unsigned char>(name[0]))) {
+        if (!name.empty() && std::islower(static_cast<unsigned char>(name[0]))) {
             name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
         }
         return name + "Alias";
@@ -173,25 +180,28 @@ namespace sqlite2orm {
     std::string generateColumnAliasPreamble(const std::vector<SelectColumn>& columns) {
         std::string preamble;
         std::vector<std::string> emitted;
-        for(const auto& column : columns) {
-            if(column.alias.empty()) continue;
-            if(!needsCustomAliasStruct(column.alias)) continue;
+        for (const auto& column: columns) {
+            if (column.alias.empty())
+                continue;
+            if (!needsCustomAliasStruct(column.alias))
+                continue;
             std::string typeName = columnAliasTypeName(column.alias);
             bool alreadyEmitted = false;
-            for(const auto& existing : emitted) {
-                if(existing == typeName) {
+            for (const auto& existing: emitted) {
+                if (existing == typeName) {
                     alreadyEmitted = true;
                     break;
                 }
             }
-            if(alreadyEmitted) continue;
+            if (alreadyEmitted)
+                continue;
             emitted.push_back(typeName);
             std::string displayName = stripColumnAliasQuotes(column.alias);
             std::string escaped;
-            for(char character : displayName) {
-                if(character == '\\')
+            for (char character: displayName) {
+                if (character == '\\')
                     escaped += "\\\\";
-                else if(character == '"')
+                else if (character == '"')
                     escaped += "\\\"";
                 else
                     escaped += character;
@@ -216,17 +226,19 @@ namespace sqlite2orm {
     std::string generateCpp20ColumnAliasPreamble(const std::vector<SelectColumn>& columns) {
         std::string body;
         std::vector<std::string> emittedVars;
-        for(const auto& column : columns) {
-            if(column.alias.empty()) continue;
+        for (const auto& column: columns) {
+            if (column.alias.empty())
+                continue;
             std::string variableName = columnAliasCpp20VarName(column.alias);
             bool already = false;
-            for(const auto& existing : emittedVars) {
-                if(existing == variableName) {
+            for (const auto& existing: emittedVars) {
+                if (existing == variableName) {
                     already = true;
                     break;
                 }
             }
-            if(already) continue;
+            if (already)
+                continue;
             emittedVars.push_back(variableName);
             std::string literal = identifierToCppStringLiteral(stripColumnAliasQuotes(column.alias));
             body += "constexpr orm_column_alias auto " + variableName + " = " + literal + "_col;\n";
@@ -235,16 +247,18 @@ namespace sqlite2orm {
     }
 
     std::string wrapWithColumnAlias(const std::string& expressionCode, const std::string& rawAlias, bool cpp20Style) {
-        if(rawAlias.empty()) return expressionCode;
-        if(cpp20Style) {
+        if (rawAlias.empty())
+            return expressionCode;
+        if (cpp20Style) {
             return "as<" + columnAliasCpp20VarName(rawAlias) + ">(" + expressionCode + ")";
         }
         return "as<" + columnAliasTypeName(rawAlias) + ">(" + expressionCode + ")";
     }
 
     bool hasAnyColumnAlias(const std::vector<SelectColumn>& columns) {
-        for(const auto& column : columns) {
-            if(!column.alias.empty()) return true;
+        for (const auto& column: columns) {
+            if (!column.alias.empty())
+                return true;
         }
         return false;
     }
@@ -259,16 +273,15 @@ namespace sqlite2orm {
     std::string defaultCppTypeForSyntheticColumn(std::string_view cppIdentifier) {
         const std::string lower = toLowerAscii(cppIdentifier);
         static constexpr std::array<std::string_view, 44> kLikelyText{{
-            "address",   "author",    "body",      "caption",   "city",       "comment",    "comments",
-            "company",   "country",   "currency",  "department", "description", "domain",    "email",
-            "firstname", "headline",  "hostname",  "iban",      "label",      "language",   "lastname",
-            "locale",    "login",     "message",   "name",      "nickname",   "notes",      "path",
-            "phone",     "referrer",  "region",    "signature", "slug",       "street",     "subtitle",
-            "surname",   "swift",     "timezone",  "title",     "uri",        "url",        "user_agent",
-            "uuid",      "zip",
+            "address",  "author",     "body",       "caption",     "city",     "comment",  "comments",  "company",
+            "country",  "currency",   "department", "description", "domain",   "email",    "firstname", "headline",
+            "hostname", "iban",       "label",      "language",    "lastname", "locale",   "login",     "message",
+            "name",     "nickname",   "notes",      "path",        "phone",    "referrer", "region",    "signature",
+            "slug",     "street",     "subtitle",   "surname",     "swift",    "timezone", "title",     "uri",
+            "url",      "user_agent", "uuid",       "zip",
         }};
-        for(std::string_view hint : kLikelyText) {
-            if(lower == hint) {
+        for (std::string_view hint: kLikelyText) {
+            if (lower == hint) {
                 return "std::string";
             }
         }
@@ -283,9 +296,8 @@ namespace sqlite2orm {
 
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable) {
         std::vector<SourceTableColumn> columns;
-        for(const ColumnDef& column : createTable.columns) {
-            const auto cppType =
-                column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+        for (const ColumnDef& column: createTable.columns) {
+            const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
             const bool nullable = !column.primaryKey && !column.notNull;
             columns.push_back(SourceTableColumn{stripIdentifierQuotes(column.name), cppType, nullable});
         }
@@ -304,99 +316,141 @@ namespace sqlite2orm {
         "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile.";
 
     void appendUniqueStrings(std::vector<std::string>& destination, const std::vector<std::string>& source) {
-        for(const auto& value : source) {
+        for (const auto& value: source) {
             bool dupe = false;
-            for(const auto& existing : destination) {
-                if(existing == value) {
+            for (const auto& existing: destination) {
+                if (existing == value) {
                     dupe = true;
                     break;
                 }
             }
-            if(!dupe) {
+            if (!dupe) {
                 destination.push_back(value);
             }
         }
     }
 
-    void appendUniqueWarnings(std::vector<CodegenWarning>& destination,
-                              const std::vector<CodegenWarning>& source) {
-        for(const auto& warning : source) {
+    void appendUniqueWarnings(std::vector<CodegenWarning>& destination, const std::vector<CodegenWarning>& source) {
+        for (const auto& warning: source) {
             bool dupe = false;
-            for(const auto& existing : destination) {
-                if(existing.message == warning.message) {
+            for (const auto& existing: destination) {
+                if (existing.message == warning.message) {
                     dupe = true;
                     break;
                 }
             }
-            if(!dupe) {
+            if (!dupe) {
                 destination.push_back(warning);
             }
         }
     }
 
     void appendUniqueString(std::vector<std::string>& destination, const std::string& value) {
-        for(const auto& existing : destination) {
-            if(existing == value) return;
+        for (const auto& existing: destination) {
+            if (existing == value)
+                return;
         }
         destination.push_back(value);
     }
 
     std::string_view binaryOperatorString(BinaryOperator binaryOperator) {
-        switch(binaryOperator) {
-            case BinaryOperator::logicalOr:          return " or ";
-            case BinaryOperator::logicalAnd:         return " and ";
-            case BinaryOperator::equals:             return " == ";
-            case BinaryOperator::notEquals:          return " != ";
-            case BinaryOperator::lessThan:           return " < ";
-            case BinaryOperator::lessOrEqual:        return " <= ";
-            case BinaryOperator::greaterThan:        return " > ";
-            case BinaryOperator::greaterOrEqual:     return " >= ";
-            case BinaryOperator::add:                return " + ";
-            case BinaryOperator::subtract:           return " - ";
-            case BinaryOperator::multiply:           return " * ";
-            case BinaryOperator::divide:             return " / ";
-            case BinaryOperator::modulo:             return " % ";
-            case BinaryOperator::concatenate:        return " || ";
-            case BinaryOperator::bitwiseAnd:         return " & ";
-            case BinaryOperator::bitwiseOr:          return " | ";
-            case BinaryOperator::shiftLeft:          return " << ";
-            case BinaryOperator::shiftRight:         return " >> ";
+        switch (binaryOperator) {
+            case BinaryOperator::logicalOr:
+                return " or ";
+            case BinaryOperator::logicalAnd:
+                return " and ";
+            case BinaryOperator::equals:
+                return " == ";
+            case BinaryOperator::notEquals:
+                return " != ";
+            case BinaryOperator::lessThan:
+                return " < ";
+            case BinaryOperator::lessOrEqual:
+                return " <= ";
+            case BinaryOperator::greaterThan:
+                return " > ";
+            case BinaryOperator::greaterOrEqual:
+                return " >= ";
+            case BinaryOperator::add:
+                return " + ";
+            case BinaryOperator::subtract:
+                return " - ";
+            case BinaryOperator::multiply:
+                return " * ";
+            case BinaryOperator::divide:
+                return " / ";
+            case BinaryOperator::modulo:
+                return " % ";
+            case BinaryOperator::concatenate:
+                return " || ";
+            case BinaryOperator::bitwiseAnd:
+                return " & ";
+            case BinaryOperator::bitwiseOr:
+                return " | ";
+            case BinaryOperator::shiftLeft:
+                return " << ";
+            case BinaryOperator::shiftRight:
+                return " >> ";
             case BinaryOperator::isOp:
             case BinaryOperator::isNot:
             case BinaryOperator::isDistinctFrom:
-            case BinaryOperator::isNotDistinctFrom:  return {};
-            case BinaryOperator::jsonArrow:          return " -> ";
-            case BinaryOperator::jsonArrow2:         return " ->> ";
+            case BinaryOperator::isNotDistinctFrom:
+                return {};
+            case BinaryOperator::jsonArrow:
+                return " -> ";
+            case BinaryOperator::jsonArrow2:
+                return " ->> ";
         }
         return {};
     }
 
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {
-        switch(binaryOperator) {
-            case BinaryOperator::logicalOr:          return "or_";
-            case BinaryOperator::logicalAnd:         return "and_";
-            case BinaryOperator::equals:             return "is_equal";
-            case BinaryOperator::notEquals:          return "is_not_equal";
-            case BinaryOperator::lessThan:           return "lesser_than";
-            case BinaryOperator::lessOrEqual:        return "lesser_or_equal";
-            case BinaryOperator::greaterThan:        return "greater_than";
-            case BinaryOperator::greaterOrEqual:     return "greater_or_equal";
-            case BinaryOperator::add:                return "add";
-            case BinaryOperator::subtract:           return "sub";
-            case BinaryOperator::multiply:           return "mul";
-            case BinaryOperator::divide:             return "div";
-            case BinaryOperator::modulo:             return "mod";
-            case BinaryOperator::concatenate:        return "conc";
-            case BinaryOperator::bitwiseAnd:         return "bitwise_and";
-            case BinaryOperator::bitwiseOr:          return "bitwise_or";
-            case BinaryOperator::shiftLeft:          return "bitwise_shift_left";
-            case BinaryOperator::shiftRight:         return "bitwise_shift_right";
+        switch (binaryOperator) {
+            case BinaryOperator::logicalOr:
+                return "or_";
+            case BinaryOperator::logicalAnd:
+                return "and_";
+            case BinaryOperator::equals:
+                return "is_equal";
+            case BinaryOperator::notEquals:
+                return "is_not_equal";
+            case BinaryOperator::lessThan:
+                return "lesser_than";
+            case BinaryOperator::lessOrEqual:
+                return "lesser_or_equal";
+            case BinaryOperator::greaterThan:
+                return "greater_than";
+            case BinaryOperator::greaterOrEqual:
+                return "greater_or_equal";
+            case BinaryOperator::add:
+                return "add";
+            case BinaryOperator::subtract:
+                return "sub";
+            case BinaryOperator::multiply:
+                return "mul";
+            case BinaryOperator::divide:
+                return "div";
+            case BinaryOperator::modulo:
+                return "mod";
+            case BinaryOperator::concatenate:
+                return "conc";
+            case BinaryOperator::bitwiseAnd:
+                return "bitwise_and";
+            case BinaryOperator::bitwiseOr:
+                return "bitwise_or";
+            case BinaryOperator::shiftLeft:
+                return "bitwise_shift_left";
+            case BinaryOperator::shiftRight:
+                return "bitwise_shift_right";
             case BinaryOperator::isOp:
             case BinaryOperator::isNot:
             case BinaryOperator::isDistinctFrom:
-            case BinaryOperator::isNotDistinctFrom:  return {};
-            case BinaryOperator::jsonArrow:          return "json_extract";
-            case BinaryOperator::jsonArrow2:         return "json_extract";
+            case BinaryOperator::isNotDistinctFrom:
+                return {};
+            case BinaryOperator::jsonArrow:
+                return "json_extract";
+            case BinaryOperator::jsonArrow2:
+                return "json_extract";
         }
         return {};
     }
@@ -409,10 +463,9 @@ namespace sqlite2orm {
         return text.size() >= suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
     }
 
-    std::optional<std::string> extractStorageSelectArgument(std::string_view generated,
-                                                            std::string_view variableName) {
+    std::optional<std::string> extractStorageSelectArgument(std::string_view generated, std::string_view variableName) {
         const std::string prefix = "auto " + std::string(variableName) + " = storage.select(";
-        if(generated.size() <= prefix.size() + 2 || !generated.starts_with(prefix) || !endsWith(generated, ");")) {
+        if (generated.size() <= prefix.size() + 2 || !generated.starts_with(prefix) || !endsWith(generated, ");")) {
             return std::nullopt;
         }
         return std::string(generated.substr(prefix.size(), generated.size() - prefix.size() - 2));
@@ -420,16 +473,16 @@ namespace sqlite2orm {
 
     std::string stripStoragePrefixAndTrailingSemicolon(std::string code) {
         static constexpr std::string_view kStoragePrefix = "storage.";
-        if(code.size() >= kStoragePrefix.size() && code.compare(0, kStoragePrefix.size(), kStoragePrefix) == 0) {
+        if (code.size() >= kStoragePrefix.size() && code.compare(0, kStoragePrefix.size(), kStoragePrefix) == 0) {
             code.erase(0, kStoragePrefix.size());
         }
-        while(!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
+        while (!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
             code.pop_back();
         }
-        if(!code.empty() && code.back() == ';') {
+        if (!code.empty() && code.back() == ';') {
             code.pop_back();
         }
-        while(!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
+        while (!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
             code.pop_back();
         }
         return code;
@@ -437,15 +490,17 @@ namespace sqlite2orm {
 
     std::string blobToCpp(std::string_view blobLiteral) {
         auto hex = blobLiteral.substr(2, blobLiteral.size() - 3);
-        if(hex.empty()) {
+        if (hex.empty()) {
             return "std::vector<char>{}";
         }
         std::string result = "std::vector<char>{";
-        for(size_t index = 0; index < hex.size(); index += 2) {
-            if(index > 0) result += ", ";
+        for (size_t index = 0; index < hex.size(); index += 2) {
+            if (index > 0)
+                result += ", ";
             result += "'\\x";
             result += hex[index];
-            if(index + 1 < hex.size()) result += hex[index + 1];
+            if (index + 1 < hex.size())
+                result += hex[index + 1];
             result += "'";
         }
         result += "}";
@@ -455,7 +510,7 @@ namespace sqlite2orm {
     std::string numericLiteralToCpp(std::string_view numericLiteral) {
         std::string result;
         result.reserve(numericLiteral.size());
-        for(char character: numericLiteral) {
+        for (char character: numericLiteral) {
             result += character == '_' ? '\'' : character;
         }
         return result;
@@ -473,8 +528,8 @@ namespace sqlite2orm {
         std::string significantDigits(std::string_view digits) {
             std::string result;
             result.reserve(digits.size());
-            for(char character: digits) {
-                if(character != '_' && (character != '0' || !result.empty())) {
+            for (char character: digits) {
+                if (character != '_' && (character != '0' || !result.empty())) {
                     result += character;
                 }
             }
@@ -499,7 +554,7 @@ namespace sqlite2orm {
     }
 
     bool integerLiteralExceedsInt64(std::string_view integerLiteral) {
-        if(isHexadecimalLiteral(integerLiteral)) {
+        if (isHexadecimalLiteral(integerLiteral)) {
             // A hex literal never leaves the range: SQLite wraps it around, and the one that
             // would need a seventeenth digit is `hexLiteralExceedsInt64`, refused before this.
             return false;
@@ -515,20 +570,20 @@ namespace sqlite2orm {
         // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not
         // compile at all. The separators standing between those zeros go away with them, so that
         // `0_9` becomes `9` rather than the octal constant `0'9`.
-        if(isHexadecimalLiteral(integerLiteral)) {
+        if (isHexadecimalLiteral(integerLiteral)) {
             // Where C++ picks an unsigned type for the literal the two languages part ways again:
             // `0xFFFFFFFFFFFFFFFF` means -1 to SQLite and 18446744073709551615 to C++, and even
             // where the value itself survives, as it does for `0xDEADBEEF`, an unsigned operand
             // drags the rest of the expression along with it, so that `-1 > 0xDEADBEEF` is true in
             // C++ and false in SQLite. The cast restores the type SQLite gives the literal.
-            if(hexLiteralIsUnsignedInCpp(integerLiteral)) {
+            if (hexLiteralIsUnsignedInCpp(integerLiteral)) {
                 return "static_cast<int64_t>(" + numericLiteralToCpp(integerLiteral) + ")";
             }
             return numericLiteralToCpp(integerLiteral);
         }
         size_t firstSignificant = 0;
-        while(firstSignificant + 1 < integerLiteral.size() &&
-              (integerLiteral[firstSignificant] == '0' || integerLiteral[firstSignificant] == '_')) {
+        while (firstSignificant + 1 < integerLiteral.size() &&
+               (integerLiteral[firstSignificant] == '0' || integerLiteral[firstSignificant] == '_')) {
             ++firstSignificant;
         }
         const std::string_view significant = integerLiteral.substr(firstSignificant);
@@ -536,15 +591,14 @@ namespace sqlite2orm {
         // `9223372036854775808` back as 9.22337203685478e+18. C++ would make that spelling an
         // unsigned constant, and `99999999999999999999` does not fit in any integer type at all,
         // so the fractional part turns it into the double SQLite computes.
-        if(integerLiteralExceedsInt64(significant)) {
+        if (integerLiteralExceedsInt64(significant)) {
             return numericLiteralToCpp(significant) + ".0";
         }
         return numericLiteralToCpp(significant);
     }
 
     bool isNumericLiteral(const AstNode& astNode) {
-        return dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
-               dynamic_cast<const RealLiteralNode*>(&astNode);
+        return dynamic_cast<const IntegerLiteralNode*>(&astNode) || dynamic_cast<const RealLiteralNode*>(&astNode);
     }
 
     bool numericLiteralRejectsFoldedSign(const AstNode& astNode) {
@@ -558,29 +612,29 @@ namespace sqlite2orm {
         // `~x` — is a term SQLite reads as one unit. These predicates are the exception: they come
         // out bare and bind looser than `-`, so `0 - a BETWEEN 1 AND 9` would read as
         // `(0 - a) BETWEEN 1 AND 9` rather than as the negation it stands for.
-        if(dynamic_cast<const InNode*>(&astNode)) {
+        if (dynamic_cast<const InNode*>(&astNode)) {
             return "IN";
         }
-        if(dynamic_cast<const BetweenNode*>(&astNode)) {
+        if (dynamic_cast<const BetweenNode*>(&astNode)) {
             return "BETWEEN";
         }
-        if(dynamic_cast<const LikeNode*>(&astNode)) {
+        if (dynamic_cast<const LikeNode*>(&astNode)) {
             return "LIKE";
         }
-        if(dynamic_cast<const GlobNode*>(&astNode)) {
+        if (dynamic_cast<const GlobNode*>(&astNode)) {
             return "GLOB";
         }
-        if(dynamic_cast<const MatchNode*>(&astNode)) {
+        if (dynamic_cast<const MatchNode*>(&astNode)) {
             return "MATCH";
         }
-        if(dynamic_cast<const IsNullNode*>(&astNode)) {
+        if (dynamic_cast<const IsNullNode*>(&astNode)) {
             return "IS NULL";
         }
-        if(dynamic_cast<const IsNotNullNode*>(&astNode)) {
+        if (dynamic_cast<const IsNotNullNode*>(&astNode)) {
             return "IS NOT NULL";
         }
-        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
-            if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+        if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            if (unaryOp->unaryOperator == UnaryOperator::logicalNot) {
                 return "NOT";
             }
         }
@@ -588,11 +642,11 @@ namespace sqlite2orm {
     }
 
     NegationForm negationFormFor(const AstNode& operand) {
-        if(isNumericLiteral(operand)) {
+        if (isNumericLiteral(operand)) {
             return numericLiteralRejectsFoldedSign(operand) ? NegationForm::zeroMinusSubtraction
                                                             : NegationForm::foldedIntoConstant;
         }
-        if(generatesFoldedNegation(operand)) {
+        if (generatesFoldedNegation(operand)) {
             // The operand is itself a constant with a sign already folded in, so C++ folds this
             // sign too: `- - -3` is the constant `-(-(-3))`.
             return NegationForm::foldedIntoConstant;
@@ -605,7 +659,7 @@ namespace sqlite2orm {
         /** The form a node's own negation takes, for a node that is not a negation at all. */
         std::optional<NegationForm> formOfNegationNode(const AstNode& astNode) {
             auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
-            if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
+            if (!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
                 return std::nullopt;
             }
             return negationFormFor(*unaryOp->operand);
@@ -621,20 +675,14 @@ namespace sqlite2orm {
     }
 
     bool isLeafNode(const AstNode& astNode) {
-        return generatesFoldedNegation(astNode) ||
-               dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
-               dynamic_cast<const RealLiteralNode*>(&astNode) ||
-               dynamic_cast<const StringLiteralNode*>(&astNode) ||
-               dynamic_cast<const NullLiteralNode*>(&astNode) ||
-               dynamic_cast<const BoolLiteralNode*>(&astNode) ||
+        return generatesFoldedNegation(astNode) || dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
+               dynamic_cast<const RealLiteralNode*>(&astNode) || dynamic_cast<const StringLiteralNode*>(&astNode) ||
+               dynamic_cast<const NullLiteralNode*>(&astNode) || dynamic_cast<const BoolLiteralNode*>(&astNode) ||
                dynamic_cast<const BlobLiteralNode*>(&astNode) ||
                dynamic_cast<const CurrentDatetimeLiteralNode*>(&astNode) ||
-               dynamic_cast<const ColumnRefNode*>(&astNode) ||
-               dynamic_cast<const QualifiedColumnRefNode*>(&astNode) ||
-               dynamic_cast<const NewRefNode*>(&astNode) ||
-               dynamic_cast<const OldRefNode*>(&astNode) ||
-               dynamic_cast<const ExcludedRefNode*>(&astNode) ||
-               dynamic_cast<const RaiseNode*>(&astNode);
+               dynamic_cast<const ColumnRefNode*>(&astNode) || dynamic_cast<const QualifiedColumnRefNode*>(&astNode) ||
+               dynamic_cast<const NewRefNode*>(&astNode) || dynamic_cast<const OldRefNode*>(&astNode) ||
+               dynamic_cast<const ExcludedRefNode*>(&astNode) || dynamic_cast<const RaiseNode*>(&astNode);
     }
 
     std::string wrap(std::string_view code) {
@@ -643,22 +691,28 @@ namespace sqlite2orm {
 
     std::string sqliteTypeToCpp(std::string_view typeName) {
         std::string lower = toLowerAscii(typeName);
-        if(lower.find("bool") != std::string::npos) return "bool";
-        if(lower.find("int") != std::string::npos) return "int64_t";
-        if(lower.find("char") != std::string::npos || lower.find("clob") != std::string::npos ||
-           lower.find("text") != std::string::npos)
+        if (lower.find("bool") != std::string::npos)
+            return "bool";
+        if (lower.find("int") != std::string::npos)
+            return "int64_t";
+        if (lower.find("char") != std::string::npos || lower.find("clob") != std::string::npos ||
+            lower.find("text") != std::string::npos)
             return "std::string";
-        if(lower.find("blob") != std::string::npos || lower.empty()) return "std::vector<char>";
-        if(lower.find("real") != std::string::npos || lower.find("floa") != std::string::npos ||
-           lower.find("doub") != std::string::npos)
+        if (lower.find("blob") != std::string::npos || lower.empty())
+            return "std::vector<char>";
+        if (lower.find("real") != std::string::npos || lower.find("floa") != std::string::npos ||
+            lower.find("doub") != std::string::npos)
             return "double";
         return "double";
     }
 
     std::string defaultInitializer(std::string_view cppType) {
-        if(cppType == "int" || cppType == "int64_t") return " = 0";
-        if(cppType == "double") return " = 0.0";
-        if(cppType == "bool") return " = false";
+        if (cppType == "int" || cppType == "int64_t")
+            return " = 0";
+        if (cppType == "double")
+            return " = 0.0";
+        if (cppType == "bool")
+            return " = false";
         return "";
     }
 
@@ -667,93 +721,118 @@ namespace sqlite2orm {
         std::string result;
         result.reserve(base.size());
         bool atWordStart = true;
-        for(char character : base) {
-            if(character == '_') {
+        for (char character: base) {
+            if (character == '_') {
                 atWordStart = true;
                 continue;
             }
-            if(atWordStart) {
+            if (atWordStart) {
                 result += static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
                 atWordStart = false;
             } else {
                 result += static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
             }
         }
-        if(result.empty() && !base.empty()) {
+        if (result.empty() && !base.empty()) {
             return base;
         }
         return result;
     }
 
     std::string_view joinSqliteOrmApiName(JoinKind joinKind) {
-        switch(joinKind) {
-            case JoinKind::crossJoin:        return "cross_join";
-            case JoinKind::innerJoin:        return "inner_join";
-            case JoinKind::leftJoin:         return "left_join";
-            case JoinKind::leftOuterJoin:    return "left_outer_join";
-            case JoinKind::joinPlain:        return "join";
-            case JoinKind::naturalInnerJoin: return "natural_join";
-            default:                         return "inner_join";
+        switch (joinKind) {
+            case JoinKind::crossJoin:
+                return "cross_join";
+            case JoinKind::innerJoin:
+                return "inner_join";
+            case JoinKind::leftJoin:
+                return "left_join";
+            case JoinKind::leftOuterJoin:
+                return "left_outer_join";
+            case JoinKind::joinPlain:
+                return "join";
+            case JoinKind::naturalInnerJoin:
+                return "natural_join";
+            default:
+                return "inner_join";
         }
     }
 
     std::string_view compoundSelectApi(CompoundSelectOperator compoundOperator) {
-        switch(compoundOperator) {
-            case CompoundSelectOperator::unionDistinct: return "union_";
-            case CompoundSelectOperator::unionAll:      return "union_all";
-            case CompoundSelectOperator::intersect:     return "intersect";
-            case CompoundSelectOperator::except:        return "except";
+        switch (compoundOperator) {
+            case CompoundSelectOperator::unionDistinct:
+                return "union_";
+            case CompoundSelectOperator::unionAll:
+                return "union_all";
+            case CompoundSelectOperator::intersect:
+                return "intersect";
+            case CompoundSelectOperator::except:
+                return "except";
         }
         return "union_";
     }
 
     std::string dmlInsertOrPrefix(ConflictClause conflictClause) {
-        switch(conflictClause) {
-            case ConflictClause::rollback: return "or_rollback(), ";
-            case ConflictClause::abort:    return "or_abort(), ";
-            case ConflictClause::fail:     return "or_fail(), ";
-            case ConflictClause::ignore:   return "or_ignore(), ";
-            case ConflictClause::replace:  return "or_replace(), ";
-            default:                       return "";
+        switch (conflictClause) {
+            case ConflictClause::rollback:
+                return "or_rollback(), ";
+            case ConflictClause::abort:
+                return "or_abort(), ";
+            case ConflictClause::fail:
+                return "or_fail(), ";
+            case ConflictClause::ignore:
+                return "or_ignore(), ";
+            case ConflictClause::replace:
+                return "or_replace(), ";
+            default:
+                return "";
         }
     }
 
     std::optional<std::string> journalModeSqlTokenToCppEnum(std::string_view token) {
         const std::string lower = toLowerAscii(stripIdentifierQuotes(token));
-        if(lower == "delete") return std::string{"sqlite_orm::journal_mode::DELETE"};
-        if(lower == "truncate") return std::string{"sqlite_orm::journal_mode::TRUNCATE"};
-        if(lower == "persist") return std::string{"sqlite_orm::journal_mode::PERSIST"};
-        if(lower == "memory") return std::string{"sqlite_orm::journal_mode::MEMORY"};
-        if(lower == "wal") return std::string{"sqlite_orm::journal_mode::WAL"};
-        if(lower == "off") return std::string{"sqlite_orm::journal_mode::OFF"};
+        if (lower == "delete")
+            return std::string{"sqlite_orm::journal_mode::DELETE"};
+        if (lower == "truncate")
+            return std::string{"sqlite_orm::journal_mode::TRUNCATE"};
+        if (lower == "persist")
+            return std::string{"sqlite_orm::journal_mode::PERSIST"};
+        if (lower == "memory")
+            return std::string{"sqlite_orm::journal_mode::MEMORY"};
+        if (lower == "wal")
+            return std::string{"sqlite_orm::journal_mode::WAL"};
+        if (lower == "off")
+            return std::string{"sqlite_orm::journal_mode::OFF"};
         return std::nullopt;
     }
 
     std::optional<std::string> lockingModeSqlTokenToCppEnum(std::string_view token) {
         const std::string lower = toLowerAscii(stripIdentifierQuotes(token));
-        if(lower == "normal") return std::string{"sqlite_orm::locking_mode::NORMAL"};
-        if(lower == "exclusive") return std::string{"sqlite_orm::locking_mode::EXCLUSIVE"};
+        if (lower == "normal")
+            return std::string{"sqlite_orm::locking_mode::NORMAL"};
+        if (lower == "exclusive")
+            return std::string{"sqlite_orm::locking_mode::EXCLUSIVE"};
         return std::nullopt;
     }
 
     std::optional<std::string> pragmaTableNameLiteral(const AstNode& valueNode) {
-        if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
+        if (const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return sqlStringToCpp(stringLiteral->value);
         }
-        if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
+        if (const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return identifierToCppStringLiteral(columnRef->columnName);
         }
         return std::nullopt;
     }
 
     std::optional<std::string> pragmaJournalOrLockingValueToken(const AstNode& valueNode) {
-        if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
-            if(stringLiteral->value.size() >= 2 && stringLiteral->value.front() == '\'' &&
-               stringLiteral->value.back() == '\'') {
+        if (const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
+            if (stringLiteral->value.size() >= 2 && stringLiteral->value.front() == '\'' &&
+                stringLiteral->value.back() == '\'') {
                 return std::string(stringLiteral->value.substr(1, stringLiteral->value.size() - 2));
             }
         }
-        if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
+        if (const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return std::string(columnRef->columnName);
         }
         return std::nullopt;
@@ -775,15 +854,15 @@ namespace sqlite2orm {
 
         /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
         std::string sqlStringLiteralText(std::string_view literal) {
-            if(literal.size() < 2) {
+            if (literal.size() < 2) {
                 return std::string(literal);
             }
             const char quote = literal.front();
             const std::string_view content = literal.substr(1, literal.size() - 2);
             std::string result;
             result.reserve(content.size());
-            for(size_t index = 0; index < content.size(); ++index) {
-                if(content[index] == quote && index + 1 < content.size() && content[index + 1] == quote) {
+            for (size_t index = 0; index < content.size(); ++index) {
+                if (content[index] == quote && index + 1 < content.size() && content[index + 1] == quote) {
                     ++index;
                 }
                 result += content[index];
@@ -798,31 +877,31 @@ namespace sqlite2orm {
          *  `PRAGMA recursive_triggers = 2147483648` is false in SQLite while `= 2147483647` is true.
          */
         int sqliteTextToInt32(std::string_view text) {
-            if(text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') && isHexDigit(text[2])) {
+            if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') && isHexDigit(text[2])) {
                 size_t index = 2;
-                while(index < text.size() && text[index] == '0') {
+                while (index < text.size() && text[index] == '0') {
                     ++index;
                 }
                 std::uint32_t value = 0;
                 size_t digitCount = 0;
-                for(; index < text.size() && digitCount < 8 && isHexDigit(text[index]); ++index, ++digitCount) {
+                for (; index < text.size() && digitCount < 8 && isHexDigit(text[index]); ++index, ++digitCount) {
                     value = value * 16 + static_cast<std::uint32_t>(hexDigitValue(text[index]));
                 }
-                if((value & 0x80000000u) != 0 || (index < text.size() && isHexDigit(text[index]))) {
+                if ((value & 0x80000000u) != 0 || (index < text.size() && isHexDigit(text[index]))) {
                     return 0;
                 }
                 return static_cast<int>(value);
             }
             size_t index = 0;
-            while(index < text.size() && text[index] == '0') {
+            while (index < text.size() && text[index] == '0') {
                 ++index;
             }
             std::int64_t value = 0;
             size_t digitCount = 0;
-            for(; index < text.size() && digitCount < 11 && isDigit(text[index]); ++index, ++digitCount) {
+            for (; index < text.size() && digitCount < 11 && isDigit(text[index]); ++index, ++digitCount) {
                 value = value * 10 + (text[index] - '0');
             }
-            if(digitCount > 10 || value > 2147483647) {
+            if (digitCount > 10 || value > 2147483647) {
                 return 0;
             }
             return static_cast<int>(value);
@@ -831,7 +910,7 @@ namespace sqlite2orm {
     }  // namespace
 
     bool sqlitePragmaBoolean(std::string_view valueText) {
-        if(!valueText.empty() && isDigit(valueText.front())) {
+        if (!valueText.empty() && isDigit(valueText.front())) {
             // SQLite's `getSafetyLevel()` returns a u8, so the int32 loses everything above its low
             // byte before the `!= 0` test: `256` and `65536` are false while `255` and `257` are true.
             return (sqliteTextToInt32(valueText) & 0xFF) != 0;
@@ -841,7 +920,7 @@ namespace sqlite2orm {
     }
 
     bool isCanonicalPragmaBooleanText(std::string_view valueText) {
-        if(valueText == "0" || valueText == "1") {
+        if (valueText == "0" || valueText == "1") {
             return true;
         }
         const std::string lower = toLowerAscii(valueText);
@@ -850,27 +929,27 @@ namespace sqlite2orm {
     }
 
     std::optional<PragmaValue> pragmaValue(const AstNode& valueNode) {
-        if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
+        if (const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
             return PragmaValue{std::string(integerLiteral->value), std::string(integerLiteral->value)};
         }
-        if(const auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&valueNode)) {
+        if (const auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&valueNode)) {
             return PragmaValue{std::string(realLiteral->value), std::string(realLiteral->value)};
         }
-        if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
+        if (const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
             const std::string written = boolLiteral->value ? "true" : "false";
             return PragmaValue{written, written};
         }
-        if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
+        if (const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value)};
         }
-        if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
+        if (const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName)};
         }
-        if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
+        if (const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             const bool numericOperand =
                 unaryOperator->operand && (dynamic_cast<const IntegerLiteralNode*>(unaryOperator->operand.get()) ||
                                            dynamic_cast<const RealLiteralNode*>(unaryOperator->operand.get()));
-            if(unaryOperator->unaryOperator == UnaryOperator::minus && numericOperand) {
+            if (unaryOperator->unaryOperator == UnaryOperator::minus && numericOperand) {
                 const PragmaValue operand = *pragmaValue(*unaryOperator->operand);
                 return PragmaValue{"-" + operand.text, "-" + operand.sqlText};
             }

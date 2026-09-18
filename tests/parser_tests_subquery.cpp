@@ -8,7 +8,10 @@ TEST_CASE("parser: IN with subquery") {
     auto subSelect = std::make_unique<SelectNode>(SourceLocation{});
     subSelect->columns = {SelectColumn{makeSharedNode<ColumnRefNode>("id"), ""}};
     subSelect->fromClause = fromOne("users");
-    InNode expected(makeNode<ColumnRefNode>("a"), std::vector<AstNodePointer>{}, std::move(subSelect), false,
+    InNode expected(makeNode<ColumnRefNode>("a"),
+                    std::vector<AstNodePointer>{},
+                    std::move(subSelect),
+                    false,
                     SourceLocation{});
     REQUIRE(requireNode<InNode>(parseResult) == expected);
 }
@@ -18,7 +21,10 @@ TEST_CASE("parser: NOT IN with subquery") {
     REQUIRE(parseResult);
     auto subSelect = std::make_unique<SelectNode>(SourceLocation{});
     subSelect->columns = {SelectColumn{makeSharedNode<IntegerLiteralNode>("1"), ""}};
-    InNode expected(makeNode<ColumnRefNode>("a"), std::vector<AstNodePointer>{}, std::move(subSelect), true,
+    InNode expected(makeNode<ColumnRefNode>("a"),
+                    std::vector<AstNodePointer>{},
+                    std::move(subSelect),
+                    true,
                     SourceLocation{});
     REQUIRE(requireNode<InNode>(parseResult) == expected);
 }
@@ -67,7 +73,8 @@ TEST_CASE("parser: comparison to scalar subquery") {
         subSelect->columns = {SelectColumn{std::shared_ptr<AstNode>(std::move(maxCall)), ""}};
     }
     subSelect->fromClause = fromOne("t");
-    BinaryOperatorNode expected(BinaryOperator::greaterThan, makeNode<ColumnRefNode>("id"),
+    BinaryOperatorNode expected(BinaryOperator::greaterThan,
+                                makeNode<ColumnRefNode>("id"),
                                 std::make_unique<SubqueryNode>(std::move(subSelect), SourceLocation{}),
                                 SourceLocation{});
     REQUIRE(requireNode<BinaryOperatorNode>(parseResult) == expected);

@@ -189,28 +189,42 @@ TEST_CASE("codegen: concatenation") {
     }
     SECTION("chained: (a || b) || c") {
         auto result = generateFull("a || b || c");
-        REQUIRE(result == CodeGenResult{
-            "c(&User::a) || &User::b || &User::c",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                columnRefStyleDp(2, "&User::b"),
-                DecisionPoint{3, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b",
-                    {
-                        Option{"operator_wrap_left", "c(&User::a) || &User::b", "wrap left operand"},
-                        Option{"operator_wrap_right", "&User::a || c(&User::b)", "wrap right operand"},
-                        Option{"functional", "conc(&User::a, &User::b)", "functional style"},
-                        Option{"operator_wrap_both", "c(&User::a) || c(&User::b)", "wrap both operands", true},
-                    }},
-                columnRefStyleDp(4, "&User::c"),
-                DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b || &User::c",
-                    {
-                        Option{"operator_wrap_left", "c(&User::a) || &User::b || &User::c", "wrap left operand"},
-                        Option{"operator_wrap_right", "c(&User::a) || &User::b || c(&User::c)", "wrap right operand"},
-                        Option{"functional", "conc(c(&User::a) || &User::b, &User::c)", "functional style"},
-                        Option{"operator_wrap_both", "c(&User::a) || &User::b || c(&User::c)", "wrap both operands", true},
-                    }},
-            }
-        });
+        REQUIRE(
+            result ==
+            CodeGenResult{
+                "c(&User::a) || &User::b || &User::c",
+                {
+                    columnRefStyleDp(1, "&User::a"),
+                    columnRefStyleDp(2, "&User::b"),
+                    DecisionPoint{
+                        3,
+                        "expr_style",
+                        "operator_wrap_left",
+                        "c(&User::a) || &User::b",
+                        {
+                            Option{"operator_wrap_left", "c(&User::a) || &User::b", "wrap left operand"},
+                            Option{"operator_wrap_right", "&User::a || c(&User::b)", "wrap right operand"},
+                            Option{"functional", "conc(&User::a, &User::b)", "functional style"},
+                            Option{"operator_wrap_both", "c(&User::a) || c(&User::b)", "wrap both operands", true},
+                        }},
+                    columnRefStyleDp(4, "&User::c"),
+                    DecisionPoint{
+                        5,
+                        "expr_style",
+                        "operator_wrap_left",
+                        "c(&User::a) || &User::b || &User::c",
+                        {
+                            Option{"operator_wrap_left", "c(&User::a) || &User::b || &User::c", "wrap left operand"},
+                            Option{"operator_wrap_right",
+                                   "c(&User::a) || &User::b || c(&User::c)",
+                                   "wrap right operand"},
+                            Option{"functional", "conc(c(&User::a) || &User::b, &User::c)", "functional style"},
+                            Option{"operator_wrap_both",
+                                   "c(&User::a) || &User::b || c(&User::c)",
+                                   "wrap both operands",
+                                   true},
+                        }},
+                }});
     }
 }
 
@@ -247,16 +261,20 @@ TEST_CASE("codegen: unary minus") {
     }
     SECTION("-a") {
         auto result = generateFull("-a");
-        REQUIRE(result == CodeGenResult{"(c(0) - c(&User::a))",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
-                              {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
-                               Option{"functional", "sub(0, &User::a)", "functional style"}}},
-            },
-            {},
-            {},
-            {kZeroMinusComment}});
+        REQUIRE(result ==
+                CodeGenResult{"(c(0) - c(&User::a))",
+                              {
+                                  columnRefStyleDp(1, "&User::a"),
+                                  DecisionPoint{2,
+                                                "expr_style",
+                                                "operator",
+                                                "(c(0) - c(&User::a))",
+                                                {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                                                 Option{"functional", "sub(0, &User::a)", "functional style"}}},
+                              },
+                              {},
+                              {},
+                              {kZeroMinusComment}});
     }
 }
 
@@ -299,15 +317,13 @@ TEST_CASE("codegen: the sign of INT64_MIN is not folded into the hex literal") {
             std::vector<CodegenWarning>{
                 {"hex literal too big: -0x08000000000000000; SQLite refuses this expression wherever "
                  "it is used, so the generated subtraction from zero does not reproduce it",
-                 SourceLocation{1, 1}, 1}});
+                 SourceLocation{1, 1},
+                 1}});
     // Every neighbouring value stays folded: sqlite3 3.51 gives 9223372036854775807 and 1 for these.
-    REQUIRE(generateFull("-0x8000000000000001") ==
-            CodeGenResult{"-static_cast<int64_t>(0x8000000000000001)", {}});
-    REQUIRE(generateFull("-0xFFFFFFFFFFFFFFFF") ==
-            CodeGenResult{"-static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)", {}});
+    REQUIRE(generateFull("-0x8000000000000001") == CodeGenResult{"-static_cast<int64_t>(0x8000000000000001)", {}});
+    REQUIRE(generateFull("-0xFFFFFFFFFFFFFFFF") == CodeGenResult{"-static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)", {}});
     // The literal on its own is -9223372036854775808 in SQLite and needs no guard.
-    REQUIRE(generateFull("0x8000000000000000") ==
-            CodeGenResult{"static_cast<int64_t>(0x8000000000000000)", {}});
+    REQUIRE(generateFull("0x8000000000000000") == CodeGenResult{"static_cast<int64_t>(0x8000000000000000)", {}});
 }
 
 TEST_CASE("codegen: unary plus is no-op") {
@@ -320,20 +336,27 @@ TEST_CASE("codegen: unary plus is no-op") {
 TEST_CASE("codegen: bitwise not") {
     SECTION("~5") {
         auto result = generateFull("~5");
-        REQUIRE(result == CodeGenResult{"~c(5)", {DecisionPoint{1, "expr_style", "operator", "~c(5)",
-            {Option{"operator", "~c(5)", "operator style"},
-             Option{"functional", "bitwise_not(5)", "functional style"}}
-        }}});
+        REQUIRE(result == CodeGenResult{"~c(5)",
+                                        {DecisionPoint{1,
+                                                       "expr_style",
+                                                       "operator",
+                                                       "~c(5)",
+                                                       {Option{"operator", "~c(5)", "operator style"},
+                                                        Option{"functional", "bitwise_not(5)", "functional style"}}}}});
     }
     SECTION("~a") {
         auto result = generateFull("~a");
-        REQUIRE(result == CodeGenResult{"~c(&User::a)",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "~c(&User::a)",
-                              {Option{"operator", "~c(&User::a)", "operator style"},
-                               Option{"functional", "bitwise_not(&User::a)", "functional style"}}},
-            }});
+        REQUIRE(result ==
+                CodeGenResult{"~c(&User::a)",
+                              {
+                                  columnRefStyleDp(1, "&User::a"),
+                                  DecisionPoint{2,
+                                                "expr_style",
+                                                "operator",
+                                                "~c(&User::a)",
+                                                {Option{"operator", "~c(&User::a)", "operator style"},
+                                                 Option{"functional", "bitwise_not(&User::a)", "functional style"}}},
+                              }});
     }
 }
 
@@ -348,7 +371,11 @@ TEST_CASE("codegen: logical AND") {
         std::vector<DecisionPoint> expectedDps;
         expectedDps.insert(expectedDps.end(), leftEq.decisionPoints.begin(), leftEq.decisionPoints.end());
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
-        expectedDps.push_back(DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) == 1 and c(&User::b) == 2",
+        expectedDps.push_back(DecisionPoint{
+            5,
+            "expr_style",
+            "operator_wrap_left",
+            "c(&User::a) == 1 and c(&User::b) == 2",
             {
                 Option{"operator_wrap_left", "c(&User::a) == 1 and c(&User::b) == 2", "wrap left operand"},
                 Option{"operator_wrap_right", "c(&User::a) == 1 and c(&User::b) == 2", "wrap right operand"},
@@ -370,7 +397,11 @@ TEST_CASE("codegen: logical OR") {
         std::vector<DecisionPoint> expectedDps;
         expectedDps.insert(expectedDps.end(), leftEq.decisionPoints.begin(), leftEq.decisionPoints.end());
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
-        expectedDps.push_back(DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) == 1 or c(&User::b) == 2",
+        expectedDps.push_back(DecisionPoint{
+            5,
+            "expr_style",
+            "operator_wrap_left",
+            "c(&User::a) == 1 or c(&User::b) == 2",
             {
                 Option{"operator_wrap_left", "c(&User::a) == 1 or c(&User::b) == 2", "wrap left operand"},
                 Option{"operator_wrap_right", "c(&User::a) == 1 or c(&User::b) == 2", "wrap right operand"},
@@ -384,55 +415,70 @@ TEST_CASE("codegen: logical OR") {
 TEST_CASE("codegen: logical NOT") {
     SECTION("leaf operand") {
         auto result = generateFull("NOT a");
-        REQUIRE(result == CodeGenResult{"not c(&User::a)",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "not c(&User::a)",
+        REQUIRE(result ==
+                CodeGenResult{"not c(&User::a)",
                               {
-                                  Option{"operator", "not c(&User::a)", "operator style"},
-                                  Option{"operator_excl", "!c(&User::a)", "use ! instead of not"},
-                              }},
-            }});
+                                  columnRefStyleDp(1, "&User::a"),
+                                  DecisionPoint{2,
+                                                "expr_style",
+                                                "operator",
+                                                "not c(&User::a)",
+                                                {
+                                                    Option{"operator", "not c(&User::a)", "operator style"},
+                                                    Option{"operator_excl", "!c(&User::a)", "use ! instead of not"},
+                                                }},
+                              }});
     }
     SECTION("compound operand: NOT -a") {
         auto result = generateFull("NOT -a");
-        REQUIRE(result == CodeGenResult{
-            "not (c(0) - c(&User::a))",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
-                              {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
-                               Option{"functional", "sub(0, &User::a)", "functional style"}}},
-                DecisionPoint{3, "expr_style", "operator", "not (c(0) - c(&User::a))",
-                              {
-                                  Option{"operator", "not (c(0) - c(&User::a))", "operator style"},
-                                  Option{"operator_excl", "!(c(0) - c(&User::a))", "use ! instead of not"},
-                              }},
-            },
-            {},
-            {},
-            {kZeroMinusComment}
-        });
+        REQUIRE(result ==
+                CodeGenResult{
+                    "not (c(0) - c(&User::a))",
+                    {
+                        columnRefStyleDp(1, "&User::a"),
+                        DecisionPoint{2,
+                                      "expr_style",
+                                      "operator",
+                                      "(c(0) - c(&User::a))",
+                                      {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                                       Option{"functional", "sub(0, &User::a)", "functional style"}}},
+                        DecisionPoint{3,
+                                      "expr_style",
+                                      "operator",
+                                      "not (c(0) - c(&User::a))",
+                                      {
+                                          Option{"operator", "not (c(0) - c(&User::a))", "operator style"},
+                                          Option{"operator_excl", "!(c(0) - c(&User::a))", "use ! instead of not"},
+                                      }},
+                    },
+                    {},
+                    {},
+                    {kZeroMinusComment}});
     }
 }
 
 TEST_CASE("codegen: double unary minus parenthesized") {
     auto result = generateFull("- -a");
-    REQUIRE(result == CodeGenResult{
-        "(c(0) - (c(0) - c(&User::a)))",
-        {
-            columnRefStyleDp(1, "&User::a"),
-            DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
-                          {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
-                           Option{"functional", "sub(0, &User::a)", "functional style"}}},
-            DecisionPoint{3, "expr_style", "operator", "(c(0) - (c(0) - c(&User::a)))",
-                          {Option{"operator", "(c(0) - (c(0) - c(&User::a)))", "operator style"},
-                           Option{"functional", "sub(0, (c(0) - c(&User::a)))", "functional style"}}},
-        },
-        {},
-        {},
-        {kZeroMinusComment}
-    });
+    REQUIRE(result ==
+            CodeGenResult{"(c(0) - (c(0) - c(&User::a)))",
+                          {
+                              columnRefStyleDp(1, "&User::a"),
+                              DecisionPoint{2,
+                                            "expr_style",
+                                            "operator",
+                                            "(c(0) - c(&User::a))",
+                                            {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                                             Option{"functional", "sub(0, &User::a)", "functional style"}}},
+                              DecisionPoint{3,
+                                            "expr_style",
+                                            "operator",
+                                            "(c(0) - (c(0) - c(&User::a)))",
+                                            {Option{"operator", "(c(0) - (c(0) - c(&User::a)))", "operator style"},
+                                             Option{"functional", "sub(0, (c(0) - c(&User::a)))", "functional style"}}},
+                          },
+                          {},
+                          {},
+                          {kZeroMinusComment}});
 }
 
 // sqlite_orm has no working unary minus, so a negation of anything but a numeric constant is
@@ -443,12 +489,10 @@ TEST_CASE("codegen: unary minus over a general operand becomes a subtraction fro
     REQUIRE(generate("SELECT -(2+3);") == "auto rows = storage.select((c(0) - (c(2) + 3)));");
     REQUIRE(generate("SELECT - ~2;") == "auto rows = storage.select((c(0) - (~c(2))));");
     REQUIRE(generate("SELECT -length('abc');") == "auto rows = storage.select((c(0) - (length(\"abc\"))));");
-    REQUIRE(generate("SELECT -x'31';") ==
-            "auto rows = storage.select((c(0) - c(std::vector<char>{'\\x31'})));");
+    REQUIRE(generate("SELECT -x'31';") == "auto rows = storage.select((c(0) - c(std::vector<char>{'\\x31'})));");
     REQUIRE(generate("SELECT -(SELECT 1);") == "auto rows = storage.select((c(0) - (select(1))));");
     REQUIRE(generate("SELECT -a FROM users;") == "auto rows = storage.select((c(0) - c(&Users::a)));");
-    REQUIRE(generate("SELECT -(a+1) FROM users;") ==
-            "auto rows = storage.select((c(0) - (c(&Users::a) + 1)));");
+    REQUIRE(generate("SELECT -(a+1) FROM users;") == "auto rows = storage.select((c(0) - (c(&Users::a) + 1)));");
     REQUIRE(generate("SELECT -CAST(a AS INTEGER) FROM users;") ==
             "auto rows = storage.select((c(0) - (cast<int64_t>(&Users::a))));");
     // The subtraction carries its own parentheses, so it survives as one operand of another operator
@@ -466,8 +510,7 @@ TEST_CASE("codegen: unary minus under the functional expression style") {
     policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
     REQUIRE(generateWithPolicy("SELECT -a FROM users;", policy).code ==
             "auto rows = storage.select(sub(0, &Users::a));");
-    REQUIRE(generateWithPolicy("SELECT -(2+3);", policy).code ==
-            "auto rows = storage.select(sub(0, add(2, 3)));");
+    REQUIRE(generateWithPolicy("SELECT -(2+3);", policy).code == "auto rows = storage.select(sub(0, add(2, 3)));");
 }
 
 // A predicate is the one operand the subtraction cannot carry: sqlite_orm serializes
@@ -482,21 +525,18 @@ TEST_CASE("codegen: unary minus over a predicate warns instead") {
                     {"unary minus over a predicate (" + predicate +
                          ") has no working sqlite_orm form; the generated negation does not reproduce "
                          "what SQLite computes and does not compile",
-                     SourceLocation{1, 8}, 1}});
+                     SourceLocation{1, 8},
+                     1}});
     };
     check("SELECT -(a IN (1,2)) FROM users;", "auto rows = storage.select(-(in(&Users::a, {1, 2})));", "IN");
     check("SELECT -(a BETWEEN 1 AND 9) FROM users;",
-          "auto rows = storage.select(-(between(&Users::a, 1, 9)));", "BETWEEN");
-    check("SELECT -(a LIKE 'x') FROM users;", "auto rows = storage.select(-(like(&Users::a, \"x\")));",
-          "LIKE");
-    check("SELECT -(a GLOB 'x') FROM users;", "auto rows = storage.select(-(glob(&Users::a, \"x\")));",
-          "GLOB");
-    check("SELECT -(a MATCH 'x') FROM users;", "auto rows = storage.select(-(match(&Users::a, \"x\")));",
-          "MATCH");
-    check("SELECT -(a IS NULL) FROM users;", "auto rows = storage.select(-(is_null(&Users::a)));",
-          "IS NULL");
-    check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));",
-          "IS NOT NULL");
+          "auto rows = storage.select(-(between(&Users::a, 1, 9)));",
+          "BETWEEN");
+    check("SELECT -(a LIKE 'x') FROM users;", "auto rows = storage.select(-(like(&Users::a, \"x\")));", "LIKE");
+    check("SELECT -(a GLOB 'x') FROM users;", "auto rows = storage.select(-(glob(&Users::a, \"x\")));", "GLOB");
+    check("SELECT -(a MATCH 'x') FROM users;", "auto rows = storage.select(-(match(&Users::a, \"x\")));", "MATCH");
+    check("SELECT -(a IS NULL) FROM users;", "auto rows = storage.select(-(is_null(&Users::a)));", "IS NULL");
+    check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));", "IS NOT NULL");
     check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not c(&Users::a)));", "NOT");
 }
 
@@ -526,18 +566,17 @@ TEST_CASE("codegen: IN") {
 
 TEST_CASE("codegen: NOT IN") {
     REQUIRE(generateFull("a NOT IN (1, 2)") ==
-            CodeGenResult{
-                "not_in(&User::a, {1, 2})",
-                {
-                    columnRefStyleDp(1, "&User::a"),
-                    DecisionPoint{2,
-                                  "negation_style",
-                                  "not_in",
-                                  "not_in(&User::a, {1, 2})",
-                                  {Option{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"},
-                                   Option{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}},
-                },
-                {}});
+            CodeGenResult{"not_in(&User::a, {1, 2})",
+                          {
+                              columnRefStyleDp(1, "&User::a"),
+                              DecisionPoint{2,
+                                            "negation_style",
+                                            "not_in",
+                                            "not_in(&User::a, {1, 2})",
+                                            {Option{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"},
+                                             Option{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}},
+                          },
+                          {}});
 }
 
 TEST_CASE("codegen: NOT IN with the operator_excl negation policy") {
@@ -751,49 +790,56 @@ TEST_CASE("codegen: prefix - CASE with int return type") {
 }
 
 TEST_CASE("codegen: IS expr returns error") {
-    REQUIRE(generateFull("SELECT 1 IS 2 FROM users;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+    REQUIRE(generateFull("SELECT 1 IS 2 FROM users;") == CodeGenResult{{},
+                                                                       {},
+                                                                       {},
+                                                                       {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                                                                        "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS NOT expr returns error") {
     REQUIRE(generateFull("SELECT 1 IS NOT 2 FROM users;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                           "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS DISTINCT FROM returns error") {
     REQUIRE(generateFull("SELECT a IS DISTINCT FROM b FROM t;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                           "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS NOT DISTINCT FROM returns error") {
     REQUIRE(generateFull("SELECT a IS NOT DISTINCT FROM b FROM t;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                           "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: JSON -> operator") {
     REQUIRE(generateFull("SELECT data -> '$.name' FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                      {columnRefStyleDp(1, "&Users::data"),
-                       DecisionPoint{2, "expr_style", "functional",
-                          "json_extract(&Users::data, \"$.name\")",
-                          {Option{"operator_wrap_left",
-                              "c(&Users::data) -> \"$.name\"", "wrap left operand"},
-                           Option{"operator_wrap_right",
-                              "&Users::data -> c(\"$.name\")", "wrap right operand"},
-                           Option{"functional",
-                              "json_extract(&Users::data, \"$.name\")", "functional style"},
-                           Option{"operator_wrap_both",
-                              "c(&Users::data) -> c(\"$.name\")", "wrap both operands", true}}}},
-                      {"JSON -> / ->> operator is mapped to json_extract() "
-                       "— return type may differ from sqlite"}});
+            CodeGenResult{
+                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
+                {columnRefStyleDp(1, "&Users::data"),
+                 DecisionPoint{
+                     2,
+                     "expr_style",
+                     "functional",
+                     "json_extract(&Users::data, \"$.name\")",
+                     {Option{"operator_wrap_left", "c(&Users::data) -> \"$.name\"", "wrap left operand"},
+                      Option{"operator_wrap_right", "&Users::data -> c(\"$.name\")", "wrap right operand"},
+                      Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"},
+                      Option{"operator_wrap_both", "c(&Users::data) -> c(\"$.name\")", "wrap both operands", true}}}},
+                {"JSON -> / ->> operator is mapped to json_extract() "
+                 "— return type may differ from sqlite"}});
 }
 
 TEST_CASE("codegen: column_ref_style options list every variant without duplicating the chosen") {
@@ -808,8 +854,8 @@ TEST_CASE("codegen: column_ref_style options list every variant without duplicat
         REQUIRE(dp.options[1].value == "column_pointer");
         // The chosen value appears in options exactly once (never duplicated).
         int chosenCount = 0;
-        for(const auto& option : dp.options) {
-            if(option.value == dp.chosenValue) {
+        for (const auto& option: dp.options) {
+            if (option.value == dp.chosenValue) {
                 ++chosenCount;
             }
         }
@@ -824,49 +870,50 @@ TEST_CASE("codegen: column_ref_style options list every variant without duplicat
 
 TEST_CASE("codegen: JSON ->> operator") {
     REQUIRE(generateFull("SELECT data ->> '$.name' FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                      {columnRefStyleDp(1, "&Users::data"),
-                       DecisionPoint{2, "expr_style", "functional",
-                          "json_extract(&Users::data, \"$.name\")",
-                          {Option{"operator_wrap_left",
-                              "c(&Users::data) ->> \"$.name\"", "wrap left operand"},
-                           Option{"operator_wrap_right",
-                              "&Users::data ->> c(\"$.name\")", "wrap right operand"},
-                           Option{"functional",
-                              "json_extract(&Users::data, \"$.name\")", "functional style"},
-                           Option{"operator_wrap_both",
-                              "c(&Users::data) ->> c(\"$.name\")", "wrap both operands", true}}}},
-                      {"JSON -> / ->> operator is mapped to json_extract() "
-                       "— return type may differ from sqlite"}});
+            CodeGenResult{
+                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
+                {columnRefStyleDp(1, "&Users::data"),
+                 DecisionPoint{
+                     2,
+                     "expr_style",
+                     "functional",
+                     "json_extract(&Users::data, \"$.name\")",
+                     {Option{"operator_wrap_left", "c(&Users::data) ->> \"$.name\"", "wrap left operand"},
+                      Option{"operator_wrap_right", "&Users::data ->> c(\"$.name\")", "wrap right operand"},
+                      Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"},
+                      Option{"operator_wrap_both", "c(&Users::data) ->> c(\"$.name\")", "wrap both operands", true}}}},
+                {"JSON -> / ->> operator is mapped to json_extract() "
+                 "— return type may differ from sqlite"}});
 }
 
 TEST_CASE("codegen: bind parameter anonymous") {
     REQUIRE(generateFull("SELECT ? FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(bindParam1);",
-                      {},
-                      {"bind parameter ? -> C++ variable 'bindParam1'; "
-                       "for prepared statements use storage.prepare() + get<N>(stmt)"}});
+            CodeGenResult{"auto rows = storage.select(bindParam1);",
+                          {},
+                          {"bind parameter ? -> C++ variable 'bindParam1'; "
+                           "for prepared statements use storage.prepare() + get<N>(stmt)"}});
 }
 
 TEST_CASE("codegen: bind parameter named") {
     REQUIRE(generateFull("SELECT :userId FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(userId);",
-                      {},
-                      {"bind parameter :userId -> C++ variable 'userId'; "
-                       "for prepared statements use storage.prepare() + get<N>(stmt)"}});
+            CodeGenResult{"auto rows = storage.select(userId);",
+                          {},
+                          {"bind parameter :userId -> C++ variable 'userId'; "
+                           "for prepared statements use storage.prepare() + get<N>(stmt)"}});
 }
 
 TEST_CASE("codegen: expr COLLATE warning") {
     REQUIRE(generateFull("SELECT name COLLATE NOCASE FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(&Users::name);",
-                      {columnRefStyleDp(1, "&Users::name")},
-                      {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
+            CodeGenResult{"auto rows = storage.select(&Users::name);",
+                          {columnRefStyleDp(1, "&Users::name")},
+                          {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
 }
 
 namespace {
     const sqlite2orm::DecisionPoint* findDp(const sqlite2orm::CodeGenResult& result, std::string_view category) {
-        for(const auto& dp : result.decisionPoints) {
-            if(dp.category == category) return &dp;
+        for (const auto& dp: result.decisionPoints) {
+            if (dp.category == category)
+                return &dp;
         }
         return nullptr;
     }

@@ -3,22 +3,22 @@
 
 namespace sqlite2orm {
 
-    SelectParser::SelectParser(Parser& parser, TokenStream& tokenStream)
-        : parser(parser), tokenStream(tokenStream) {}
+    SelectParser::SelectParser(Parser& parser, TokenStream& tokenStream) : parser(parser), tokenStream(tokenStream) {}
 
     bool SelectParser::isFromTableItemStart() const {
-        return isColumnNameToken() ||
-               (check(TokenType::leftParen) && peekToken(1).type == TokenType::kwSelect);
+        return isColumnNameToken() || (check(TokenType::leftParen) && peekToken(1).type == TokenType::kwSelect);
     }
 
     bool SelectParser::isFromTableItemStartOrParen() const {
-        if(isFromTableItemStart()) return true;
-        if(check(TokenType::leftParen) && isColumnNameTokenAt(1)) return true;
+        if (isFromTableItemStart())
+            return true;
+        if (check(TokenType::leftParen) && isColumnNameTokenAt(1))
+            return true;
         return false;
     }
 
     AstNodePointer SelectParser::parseSelectCore() {
-        if(!check(TokenType::kwSelect)) {
+        if (!check(TokenType::kwSelect)) {
             return nullptr;
         }
         auto location = current().location;
@@ -26,100 +26,102 @@ namespace sqlite2orm {
 
         auto node = std::make_unique<SelectNode>(location);
 
-        if(match(TokenType::kwDistinct)) {
+        if (match(TokenType::kwDistinct)) {
             node->distinct = true;
-        } else if(match(TokenType::kwAll)) {
+        } else if (match(TokenType::kwAll)) {
             node->selectAll = true;
         }
 
         node->columns.push_back(parseSelectResultColumn());
-        while(match(TokenType::comma)) {
+        while (match(TokenType::comma)) {
             node->columns.push_back(parseSelectResultColumn());
         }
 
-        if(match(TokenType::kwFrom)) {
+        if (match(TokenType::kwFrom)) {
             node->fromClause = parseFromClause();
         }
 
-        if(match(TokenType::kwWhere)) {
+        if (match(TokenType::kwWhere)) {
             node->whereClause = this->parser.parseExpression();
         }
 
-        if(check(TokenType::kwGroup)) {
+        if (check(TokenType::kwGroup)) {
             advanceToken();
             match(TokenType::kwBy);
             GroupByClause groupByClause;
             groupByClause.expressions.push_back(this->parser.parseExpression());
-            while(match(TokenType::comma)) {
+            while (match(TokenType::comma)) {
                 groupByClause.expressions.push_back(this->parser.parseExpression());
             }
-            if(match(TokenType::kwHaving)) {
+            if (match(TokenType::kwHaving)) {
                 groupByClause.having = this->parser.parseExpression();
             }
             node->groupBy = std::move(groupByClause);
         }
 
-        if(match(TokenType::kwWindow)) {
+        if (match(TokenType::kwWindow)) {
             do {
-                if(!isColumnNameToken()) {
+                if (!isColumnNameToken()) {
                     return nullptr;
                 }
                 NamedWindowDefinition winDef;
                 winDef.name = std::string(current().value);
                 advanceToken();
-                if(!match(TokenType::kwAs)) {
+                if (!match(TokenType::kwAs)) {
                     return nullptr;
                 }
-                if(!match(TokenType::leftParen)) {
+                if (!match(TokenType::leftParen)) {
                     return nullptr;
                 }
                 winDef.definition = std::make_unique<OverClause>();
-                if(!this->parser.parseOverClauseParenContents(*winDef.definition, true)) {
+                if (!this->parser.parseOverClauseParenContents(*winDef.definition, true)) {
                     return nullptr;
                 }
-                if(!match(TokenType::rightParen)) {
+                if (!match(TokenType::rightParen)) {
                     return nullptr;
                 }
                 node->namedWindows.push_back(std::move(winDef));
-            } while(match(TokenType::comma));
+            } while (match(TokenType::comma));
         }
 
-        if(check(TokenType::kwOrder)) {
+        if (check(TokenType::kwOrder)) {
             advanceToken();
             match(TokenType::kwBy);
             do {
                 auto expr = this->parser.parseExpression();
-                if(!expr) return nullptr;
+                if (!expr)
+                    return nullptr;
                 std::string collation;
-                if(auto* collateExpr = dynamic_cast<CollateNode*>(expr.get())) {
+                if (auto* collateExpr = dynamic_cast<CollateNode*>(expr.get())) {
                     collation = collateExpr->collationName;
                     expr = std::move(collateExpr->operand);
                 }
                 SortDirection direction = SortDirection::none;
-                if(match(TokenType::kwAsc)) {
+                if (match(TokenType::kwAsc)) {
                     direction = SortDirection::asc;
-                } else if(match(TokenType::kwDesc)) {
+                } else if (match(TokenType::kwDesc)) {
                     direction = SortDirection::desc;
                 }
                 NullsOrdering nullsOrdering = NullsOrdering::none;
-                if(match(TokenType::kwNulls)) {
-                    if(match(TokenType::kwFirst)) {
+                if (match(TokenType::kwNulls)) {
+                    if (match(TokenType::kwFirst)) {
                         nullsOrdering = NullsOrdering::first;
-                    } else if(match(TokenType::kwLast)) {
+                    } else if (match(TokenType::kwLast)) {
                         nullsOrdering = NullsOrdering::last;
                     }
                 }
-                node->orderBy.push_back(
-                    OrderByTerm{std::move(expr), direction, std::move(collation), nullsOrdering});
-            } while(match(TokenType::comma));
+                node->orderBy.push_back(OrderByTerm{std::move(expr), direction, std::move(collation), nullsOrdering});
+            } while (match(TokenType::comma));
         }
 
-        if(match(TokenType::kwLimit)) {
-            if(!atEnd() && (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
+        if (match(TokenType::kwLimit)) {
+            if (!atEnd() &&
+                (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
                 node->limitValue = this->parser.parsePrimary();
             }
-            if(match(TokenType::kwOffset)) {
-                if(!atEnd() && (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
+            if (match(TokenType::kwOffset)) {
+                if (!atEnd() &&
+                    (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
                     node->offsetValue = this->parser.parsePrimary();
                 }
             }
@@ -129,10 +131,10 @@ namespace sqlite2orm {
     }
 
     AstNodePointer SelectParser::parseCompoundSelectCore() {
-        if(check(TokenType::kwSelect)) {
+        if (check(TokenType::kwSelect)) {
             return parseSelectCore();
         }
-        if(check(TokenType::kwValues)) {
+        if (check(TokenType::kwValues)) {
             return this->parser.parseValuesStatement();
         }
         return nullptr;
@@ -140,7 +142,7 @@ namespace sqlite2orm {
 
     AstNodePointer SelectParser::parseSelectCompoundBody() {
         AstNodePointer firstCore = parseCompoundSelectCore();
-        if(!firstCore) {
+        if (!firstCore) {
             return nullptr;
         }
         std::vector<CompoundSelectOperator> compoundOperators;
@@ -148,106 +150,107 @@ namespace sqlite2orm {
         selectCores.push_back(std::move(firstCore));
         SourceLocation compoundLocation = selectCores.front()->location;
 
-        while(true) {
+        while (true) {
             std::optional<CompoundSelectOperator> compoundOperator;
-            if(match(TokenType::kwUnion)) {
-                if(match(TokenType::kwAll)) {
+            if (match(TokenType::kwUnion)) {
+                if (match(TokenType::kwAll)) {
                     compoundOperator = CompoundSelectOperator::unionAll;
                 } else {
                     compoundOperator = CompoundSelectOperator::unionDistinct;
                 }
-            } else if(match(TokenType::kwIntersect)) {
+            } else if (match(TokenType::kwIntersect)) {
                 compoundOperator = CompoundSelectOperator::intersect;
-            } else if(match(TokenType::kwExcept)) {
+            } else if (match(TokenType::kwExcept)) {
                 compoundOperator = CompoundSelectOperator::except;
             }
-            if(!compoundOperator) {
+            if (!compoundOperator) {
                 break;
             }
             compoundOperators.push_back(*compoundOperator);
             AstNodePointer nextCore = parseCompoundSelectCore();
-            if(!nextCore) {
+            if (!nextCore) {
                 return nullptr;
             }
             selectCores.push_back(std::move(nextCore));
         }
 
-        if(compoundOperators.empty()) {
+        if (compoundOperators.empty()) {
             return std::move(selectCores.at(0));
         }
-        return std::make_unique<CompoundSelectNode>(std::move(selectCores), std::move(compoundOperators),
+        return std::make_unique<CompoundSelectNode>(std::move(selectCores),
+                                                    std::move(compoundOperators),
                                                     compoundLocation);
     }
 
     AstNodePointer SelectParser::parseSelect() {
         SourceLocation withLocation = current().location;
         std::optional<WithClause> withClause;
-        if(check(TokenType::kwWith)) {
+        if (check(TokenType::kwWith)) {
             withLocation = current().location;
             advanceToken();
             WithClause wc;
-            if(match(TokenType::kwRecursive)) {
+            if (match(TokenType::kwRecursive)) {
                 wc.recursive = true;
             }
             do {
                 CommonTableExpression cte;
-                if(!isColumnNameToken()) {
+                if (!isColumnNameToken()) {
                     return nullptr;
                 }
                 cte.cteName = std::string(current().value);
                 advanceToken();
-                if(match(TokenType::leftParen)) {
-                    if(!check(TokenType::rightParen)) {
+                if (match(TokenType::leftParen)) {
+                    if (!check(TokenType::rightParen)) {
                         do {
-                            if(!isColumnNameToken()) {
+                            if (!isColumnNameToken()) {
                                 return nullptr;
                             }
                             cte.columnNames.push_back(std::string(current().value));
                             advanceToken();
-                        } while(match(TokenType::comma));
+                        } while (match(TokenType::comma));
                     }
-                    if(!match(TokenType::rightParen)) {
+                    if (!match(TokenType::rightParen)) {
                         return nullptr;
                     }
                 }
-                if(!match(TokenType::kwAs)) {
+                if (!match(TokenType::kwAs)) {
                     return nullptr;
                 }
-                if(match(TokenType::kwMaterialized)) {
+                if (match(TokenType::kwMaterialized)) {
                     cte.materialization = CteMaterialization::materialized;
-                } else if(match(TokenType::kwNot)) {
-                    if(!match(TokenType::kwMaterialized)) {
+                } else if (match(TokenType::kwNot)) {
+                    if (!match(TokenType::kwMaterialized)) {
                         return nullptr;
                     }
                     cte.materialization = CteMaterialization::notMaterialized;
                 }
-                if(!match(TokenType::leftParen)) {
+                if (!match(TokenType::leftParen)) {
                     return nullptr;
                 }
                 AstNodePointer subq = parseSelect();
-                if(!subq) {
+                if (!subq) {
                     return nullptr;
                 }
-                if(!match(TokenType::rightParen)) {
+                if (!match(TokenType::rightParen)) {
                     return nullptr;
                 }
                 cte.query = std::move(subq);
                 wc.tables.push_back(std::move(cte));
-            } while(match(TokenType::comma));
+            } while (match(TokenType::comma));
             withClause = std::move(wc);
         }
 
         AstNodePointer body;
-        if(withClause) {
-            if(check(TokenType::kwSelect)) {
+        if (withClause) {
+            if (check(TokenType::kwSelect)) {
                 body = parseSelectCompoundBody();
-            } else if(check(TokenType::kwInsert)) {
+            } else if (check(TokenType::kwInsert)) {
                 body = this->parser.parseInsertStatement(false);
-            } else if(check(TokenType::kwReplace) && peekToken(1).type == TokenType::kwInto) {
+            } else if (check(TokenType::kwReplace) && peekToken(1).type == TokenType::kwInto) {
                 body = this->parser.parseInsertStatement(true);
-            } else if(check(TokenType::kwUpdate)) {
+            } else if (check(TokenType::kwUpdate)) {
                 body = this->parser.parseUpdateStatement();
-            } else if(check(TokenType::kwDelete)) {
+            } else if (check(TokenType::kwDelete)) {
                 body = this->parser.parseDeleteStatement();
             } else {
                 return nullptr;
@@ -255,22 +258,22 @@ namespace sqlite2orm {
         } else {
             body = parseSelectCompoundBody();
         }
-        if(!body) {
+        if (!body) {
             return nullptr;
         }
-        if(!withClause) {
+        if (!withClause) {
             return body;
         }
         return std::make_unique<WithQueryNode>(std::move(*withClause), std::move(body), withLocation);
     }
 
     SelectColumn SelectParser::parseSelectResultColumn() {
-        if(check(TokenType::star)) {
+        if (check(TokenType::star)) {
             advanceToken();
             return SelectColumn{nullptr, ""};
         }
-        if(isColumnNameTokenAt(0) && peekToken(1).type == TokenType::dot && isColumnNameTokenAt(2) &&
-           peekToken(3).type == TokenType::dot && peekToken(4).type == TokenType::star) {
+        if (isColumnNameTokenAt(0) && peekToken(1).type == TokenType::dot && isColumnNameTokenAt(2) &&
+            peekToken(3).type == TokenType::dot && peekToken(4).type == TokenType::star) {
             auto location = current().location;
             std::string schemaName = std::string(current().value);
             advanceToken();
@@ -280,10 +283,11 @@ namespace sqlite2orm {
             advanceToken();
             advanceToken();
             return SelectColumn{
-                std::make_shared<QualifiedAsteriskNode>(std::move(schemaName), std::move(tableName), location), ""};
+                std::make_shared<QualifiedAsteriskNode>(std::move(schemaName), std::move(tableName), location),
+                ""};
         }
-        if(isColumnNameToken() && !atEnd() && peekToken(1).type == TokenType::dot &&
-           peekToken(2).type == TokenType::star) {
+        if (isColumnNameToken() && !atEnd() && peekToken(1).type == TokenType::dot &&
+            peekToken(2).type == TokenType::star) {
             std::string tableName = std::string(current().value);
             auto location = current().location;
             advanceToken();
@@ -293,12 +297,12 @@ namespace sqlite2orm {
         }
         auto expr = this->parser.parseExpression();
         std::string alias;
-        if(match(TokenType::kwAs)) {
-            if(!atEnd()) {
+        if (match(TokenType::kwAs)) {
+            if (!atEnd()) {
                 alias = std::string(current().value);
                 advanceToken();
             }
-        } else if(!atEnd() && check(TokenType::identifier)) {
+        } else if (!atEnd() && check(TokenType::identifier)) {
             alias = std::string(current().value);
             advanceToken();
         }
@@ -306,23 +310,23 @@ namespace sqlite2orm {
     }
 
     FromTableClause SelectParser::parseFromTableItem() {
-        if(check(TokenType::leftParen) && peekToken(1).type == TokenType::kwSelect) {
+        if (check(TokenType::leftParen) && peekToken(1).type == TokenType::kwSelect) {
             advanceToken();
             AstNodePointer subquery = parseSelect();
-            if(!subquery) {
+            if (!subquery) {
                 return FromTableClause{};
             }
-            if(!match(TokenType::rightParen)) {
+            if (!match(TokenType::rightParen)) {
                 return FromTableClause{};
             }
             FromTableClause item;
             item.derivedSelect = std::shared_ptr<AstNode>(std::move(subquery));
-            if(match(TokenType::kwAs)) {
-                if(isColumnNameToken()) {
+            if (match(TokenType::kwAs)) {
+                if (isColumnNameToken()) {
                     item.alias = std::string(current().value);
                     advanceToken();
                 }
-            } else if(isColumnNameToken()) {
+            } else if (isColumnNameToken()) {
                 item.alias = std::string(current().value);
                 advanceToken();
             }
@@ -330,34 +334,37 @@ namespace sqlite2orm {
         }
 
         FromTableClause item;
-        if(!isColumnNameToken()) return item;
+        if (!isColumnNameToken())
+            return item;
         std::string first = std::string(current().value);
         advanceToken();
-        if(match(TokenType::dot) && isColumnNameToken()) {
+        if (match(TokenType::dot) && isColumnNameToken()) {
             item.schemaName = std::move(first);
             item.tableName = std::string(current().value);
             advanceToken();
         } else {
             item.tableName = std::move(first);
         }
-        if(check(TokenType::leftParen)) {
+        if (check(TokenType::leftParen)) {
             advanceToken();
-            if(!check(TokenType::rightParen)) {
+            if (!check(TokenType::rightParen)) {
                 auto arg = this->parser.parseExpression();
-                if(arg) item.tableFunctionArgs.push_back(std::shared_ptr<AstNode>(std::move(arg)));
-                while(match(TokenType::comma)) {
+                if (arg)
+                    item.tableFunctionArgs.push_back(std::shared_ptr<AstNode>(std::move(arg)));
+                while (match(TokenType::comma)) {
                     arg = this->parser.parseExpression();
-                    if(arg) item.tableFunctionArgs.push_back(std::shared_ptr<AstNode>(std::move(arg)));
+                    if (arg)
+                        item.tableFunctionArgs.push_back(std::shared_ptr<AstNode>(std::move(arg)));
                 }
             }
             match(TokenType::rightParen);
         }
-        if(match(TokenType::kwAs)) {
-            if(isColumnNameToken()) {
+        if (match(TokenType::kwAs)) {
+            if (isColumnNameToken()) {
                 item.alias = std::string(current().value);
                 advanceToken();
             }
-        } else if(check(TokenType::identifier)) {
+        } else if (check(TokenType::identifier)) {
             item.alias = std::string(current().value);
             advanceToken();
         }
@@ -366,27 +373,28 @@ namespace sqlite2orm {
 
     std::vector<FromClauseItem> SelectParser::parseFromClause() {
         std::vector<FromClauseItem> items;
-        if(!isFromTableItemStartOrParen()) return items;
+        if (!isFromTableItemStartOrParen())
+            return items;
 
         auto parseOneUnit = [&](JoinKind leadingJoin, bool expectConstraint) {
-            if(check(TokenType::leftParen) && !isFromTableItemStart()) {
+            if (check(TokenType::leftParen) && !isFromTableItemStart()) {
                 advanceToken();
                 auto innerItems = parseFromClause();
                 match(TokenType::rightParen);
-                if(!innerItems.empty()) {
+                if (!innerItems.empty()) {
                     innerItems[0].leadingJoin = leadingJoin;
-                    if(expectConstraint) {
+                    if (expectConstraint) {
                         parseJoinConstraint(innerItems[0]);
                     }
                 }
                 items.insert(items.end(),
-                    std::make_move_iterator(innerItems.begin()),
-                    std::make_move_iterator(innerItems.end()));
+                             std::make_move_iterator(innerItems.begin()),
+                             std::make_move_iterator(innerItems.end()));
             } else {
                 FromClauseItem item;
                 item.leadingJoin = leadingJoin;
                 item.table = parseFromTableItem();
-                if(expectConstraint) {
+                if (expectConstraint) {
                     parseJoinConstraint(item);
                 }
                 items.push_back(std::move(item));
@@ -395,30 +403,33 @@ namespace sqlite2orm {
 
         parseOneUnit(JoinKind::none, false);
 
-        while(true) {
-            if(match(TokenType::comma)) {
-                if(!isFromTableItemStartOrParen()) break;
+        while (true) {
+            if (match(TokenType::comma)) {
+                if (!isFromTableItemStartOrParen())
+                    break;
                 parseOneUnit(JoinKind::crossJoin, false);
                 continue;
             }
             JoinKind joinKind = JoinKind::none;
-            if(!consumeJoinOperator(joinKind)) break;
-            if(!isFromTableItemStartOrParen()) break;
+            if (!consumeJoinOperator(joinKind))
+                break;
+            if (!isFromTableItemStartOrParen())
+                break;
             parseOneUnit(joinKind, true);
         }
         return items;
     }
 
     bool SelectParser::consumeJoinOperator(JoinKind& out) {
-        if(check(TokenType::kwCross) && peekToken(1).type == TokenType::kwJoin) {
+        if (check(TokenType::kwCross) && peekToken(1).type == TokenType::kwJoin) {
             advanceToken();
             advanceToken();
             out = JoinKind::crossJoin;
             return true;
         }
-        if(check(TokenType::kwNatural)) {
-            if(peekToken(1).type == TokenType::kwLeft) {
-                if(peekToken(2).type == TokenType::kwOuter && peekToken(3).type == TokenType::kwJoin) {
+        if (check(TokenType::kwNatural)) {
+            if (peekToken(1).type == TokenType::kwLeft) {
+                if (peekToken(2).type == TokenType::kwOuter && peekToken(3).type == TokenType::kwJoin) {
                     advanceToken();
                     advanceToken();
                     advanceToken();
@@ -426,7 +437,7 @@ namespace sqlite2orm {
                     out = JoinKind::naturalLeftJoin;
                     return true;
                 }
-                if(peekToken(2).type == TokenType::kwJoin) {
+                if (peekToken(2).type == TokenType::kwJoin) {
                     advanceToken();
                     advanceToken();
                     advanceToken();
@@ -435,14 +446,14 @@ namespace sqlite2orm {
                 }
                 return false;
             }
-            if(peekToken(1).type == TokenType::kwInner && peekToken(2).type == TokenType::kwJoin) {
+            if (peekToken(1).type == TokenType::kwInner && peekToken(2).type == TokenType::kwJoin) {
                 advanceToken();
                 advanceToken();
                 advanceToken();
                 out = JoinKind::naturalInnerJoin;
                 return true;
             }
-            if(peekToken(1).type == TokenType::kwJoin) {
+            if (peekToken(1).type == TokenType::kwJoin) {
                 advanceToken();
                 advanceToken();
                 out = JoinKind::naturalInnerJoin;
@@ -450,21 +461,21 @@ namespace sqlite2orm {
             }
             return false;
         }
-        if(check(TokenType::kwInner) && peekToken(1).type == TokenType::kwJoin) {
+        if (check(TokenType::kwInner) && peekToken(1).type == TokenType::kwJoin) {
             advanceToken();
             advanceToken();
             out = JoinKind::innerJoin;
             return true;
         }
-        if(check(TokenType::kwLeft)) {
-            if(peekToken(1).type == TokenType::kwOuter && peekToken(2).type == TokenType::kwJoin) {
+        if (check(TokenType::kwLeft)) {
+            if (peekToken(1).type == TokenType::kwOuter && peekToken(2).type == TokenType::kwJoin) {
                 advanceToken();
                 advanceToken();
                 advanceToken();
                 out = JoinKind::leftOuterJoin;
                 return true;
             }
-            if(peekToken(1).type == TokenType::kwJoin) {
+            if (peekToken(1).type == TokenType::kwJoin) {
                 advanceToken();
                 advanceToken();
                 out = JoinKind::leftJoin;
@@ -472,7 +483,7 @@ namespace sqlite2orm {
             }
             return false;
         }
-        if(check(TokenType::kwJoin)) {
+        if (check(TokenType::kwJoin)) {
             advanceToken();
             out = JoinKind::joinPlain;
             return true;
@@ -481,26 +492,26 @@ namespace sqlite2orm {
     }
 
     void SelectParser::parseJoinConstraint(FromClauseItem& item) {
-        switch(item.leadingJoin) {
-        case JoinKind::crossJoin:
-        case JoinKind::naturalInnerJoin:
-        case JoinKind::naturalLeftJoin:
-            return;
-        default:
-            break;
+        switch (item.leadingJoin) {
+            case JoinKind::crossJoin:
+            case JoinKind::naturalInnerJoin:
+            case JoinKind::naturalLeftJoin:
+                return;
+            default:
+                break;
         }
-        if(match(TokenType::kwUsing)) {
-            if(match(TokenType::leftParen)) {
-                while(isColumnNameToken()) {
+        if (match(TokenType::kwUsing)) {
+            if (match(TokenType::leftParen)) {
+                while (isColumnNameToken()) {
                     item.usingColumnNames.push_back(std::string(current().value));
                     advanceToken();
-                    if(!match(TokenType::comma)) {
+                    if (!match(TokenType::comma)) {
                         break;
                     }
                 }
                 match(TokenType::rightParen);
             }
-        } else if(match(TokenType::kwOn)) {
+        } else if (match(TokenType::kwOn)) {
             item.onExpression = this->parser.parseExpression();
         }
     }

@@ -7,7 +7,7 @@
 namespace sqlite2orm {
 
     bool CodeGeneratorContext::useCpp20ColumnAliasStyle() const {
-        if(this->columnAliasStyleOverride) {
+        if (this->columnAliasStyleOverride) {
             // Internal override used to render the C++20 alternative for the options list; ungated.
             return *this->columnAliasStyleOverride == "cpp20_literal";
         }
@@ -16,11 +16,10 @@ namespace sqlite2orm {
     }
 
     bool CodeGeneratorContext::useCpp20TableAliasStyle() const {
-        if(this->withCteCpp20Monikers()) {
+        if (this->withCteCpp20Monikers()) {
             return true;
         }
-        return cpp20Allowed(this->codeGenPolicy) &&
-               policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
+        return cpp20Allowed(this->codeGenPolicy) && policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
     }
 
     bool CodeGeneratorContext::withCteLegacyColalias() const {
@@ -32,43 +31,40 @@ namespace sqlite2orm {
     }
 
     bool CodeGeneratorContext::columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const {
-        if(!this->useCpp20ColumnAliasStyle()) {
+        if (!this->useCpp20ColumnAliasStyle()) {
             return false;
         }
         std::string normalized = toLowerAscii(stripIdentifierQuotes(ref.columnName));
-        return this->activeSelectColumnAliasCpp20Vars.find(normalized) !=
-               this->activeSelectColumnAliasCpp20Vars.end();
+        return this->activeSelectColumnAliasCpp20Vars.find(normalized) != this->activeSelectColumnAliasCpp20Vars.end();
     }
 
     bool CodeGeneratorContext::isExplicitCteColumn(std::string_view cteKeyNorm, std::string_view columnName) const {
         auto it = this->cteColumnNamesByTableKey.find(std::string(cteKeyNorm));
-        if(it == this->cteColumnNamesByTableKey.end()) {
+        if (it == this->cteColumnNamesByTableKey.end()) {
             return false;
         }
         std::string normalizedCol = normalizeSqlIdentifier(columnName);
-        for(const auto& colName : it->second) {
-            if(normalizeSqlIdentifier(colName) == normalizedCol) {
+        for (const auto& colName: it->second) {
+            if (normalizeSqlIdentifier(colName) == normalizedCol) {
                 return true;
             }
         }
         return false;
     }
 
-    void CodeGeneratorContext::registerSourceTable(std::string_view tableName,
-                                                   std::vector<SourceTableColumn> columns) {
+    void CodeGeneratorContext::registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns) {
         this->sourceTableColumnsByNormalizedName[normalizeSqlIdentifier(tableName)] = std::move(columns);
     }
 
     const SourceTableColumn* CodeGeneratorContext::findSourceTableColumn(std::string_view tableName,
                                                                          std::string_view columnName) const {
-        const auto tableIterator =
-            this->sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(tableName));
-        if(tableIterator == this->sourceTableColumnsByNormalizedName.end()) {
+        const auto tableIterator = this->sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(tableName));
+        if (tableIterator == this->sourceTableColumnsByNormalizedName.end()) {
             return nullptr;
         }
         const std::string normalizedColumn = normalizeSqlIdentifier(columnName);
-        for(const SourceTableColumn& sourceTableColumn : tableIterator->second) {
-            if(normalizeSqlIdentifier(sourceTableColumn.sqlName) == normalizedColumn) {
+        for (const SourceTableColumn& sourceTableColumn: tableIterator->second) {
+            if (normalizeSqlIdentifier(sourceTableColumn.sqlName) == normalizedColumn) {
                 return &sourceTableColumn;
             }
         }
@@ -76,20 +72,20 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {
-        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&argument)) {
+        if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(&argument)) {
             // Schema type wins when the column belongs to a known CREATE TABLE in the batch.
             const std::string normalizedColumn = normalizeSqlIdentifier(columnRef->columnName);
-            for(const auto& [tableKey, columns] : this->sourceTableColumnsByNormalizedName) {
+            for (const auto& [tableKey, columns]: this->sourceTableColumnsByNormalizedName) {
                 (void)tableKey;
-                for(const SourceTableColumn& column : columns) {
-                    if(normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
+                for (const SourceTableColumn& column: columns) {
+                    if (normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
                         return column.cppType;
                     }
                 }
             }
             const std::string cppName = toCppIdentifier(columnRef->columnName);
             const auto known = this->columnTypes.find(cppName);
-            if(known != this->columnTypes.end()) {
+            if (known != this->columnTypes.end()) {
                 return known->second;
             }
             return this->syntheticColumnCppType(cppName);  // name heuristic (name → std::string, else int)
@@ -99,13 +95,13 @@ namespace sqlite2orm {
 
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {
         auto [it, inserted] = this->columnTypes.try_emplace(cppName, cppType);
-        if(!inserted && it->second == "int" && cppType != "int") {
+        if (!inserted && it->second == "int" && cppType != "int") {
             it->second = cppType;
         }
     }
 
     void CodeGeneratorContext::registerPrefixColumn(const std::string& cppName, const std::string& cppType) {
-        if(this->implicitSingleSourceCteTypedef) {
+        if (this->implicitSingleSourceCteTypedef) {
             return;
         }
         this->registerColumn(cppName, cppType);
@@ -116,22 +112,25 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::inferTypeFromNode(const AstNode& node) const {
-        if(dynamic_cast<const StringLiteralNode*>(&node)) return "std::string";
-        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&node)) {
+        if (dynamic_cast<const StringLiteralNode*>(&node))
+            return "std::string";
+        if (auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&node)) {
             // An integer literal an int64 cannot hold is a REAL for SQLite, so is the column.
             return integerLiteralExceedsInt64(integerLiteral->value) ? "double" : "int";
         }
-        if(dynamic_cast<const RealLiteralNode*>(&node)) return "double";
-        if(dynamic_cast<const BoolLiteralNode*>(&node)) return "bool";
+        if (dynamic_cast<const RealLiteralNode*>(&node))
+            return "double";
+        if (dynamic_cast<const BoolLiteralNode*>(&node))
+            return "bool";
         return "int";
     }
 
     std::string CodeGeneratorContext::generatePrefix() const {
-        if(this->columnTypes.empty()) {
+        if (this->columnTypes.empty()) {
             return "";
         }
         std::string result = "struct " + this->structName + " {\n";
-        for(const auto& [name, type] : this->columnTypes) {
+        for (const auto& [name, type]: this->columnTypes) {
             result += "    " + type + " " + name + defaultInitializer(type) + ";\n";
         }
         result += "};";
@@ -141,7 +140,7 @@ namespace sqlite2orm {
     std::string CodeGeneratorContext::statementVariableName(std::string_view baseName) {
         const std::string base(baseName);
         auto resolved = this->statementVariableNames.find(base);
-        if(resolved != this->statementVariableNames.end()) {
+        if (resolved != this->statementVariableNames.end()) {
             return resolved->second;
         }
         const int use = ++this->batchVariableUses[base];
@@ -151,8 +150,8 @@ namespace sqlite2orm {
     }
 
     void CodeGeneratorContext::registerCustomFunction(CustomFunctionUse use) {
-        for(const auto& existing : this->customFunctions) {
-            if(existing.structName == use.structName) {
+        for (const auto& existing: this->customFunctions) {
+            if (existing.structName == use.structName) {
                 return;
             }
         }
@@ -169,8 +168,8 @@ namespace sqlite2orm {
     }
 
     std::string_view CodeGeneratorContext::referencedUngeneratableKind() const {
-        for(const std::string& referencedName : this->referencedUngeneratableTables) {
-            if(this->ungeneratableViews.find(referencedName) == this->ungeneratableViews.end()) {
+        for (const std::string& referencedName: this->referencedUngeneratableTables) {
+            if (this->ungeneratableViews.find(referencedName) == this->ungeneratableViews.end()) {
                 return "table";
             }
         }
@@ -182,7 +181,7 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::structNameForTable(std::string_view tableName) {
-        if(this->isUngeneratableTable(tableName)) {
+        if (this->isUngeneratableTable(tableName)) {
             this->referencedUngeneratableTables.insert(normalizeSqlIdentifier(tableName));
         }
         return toStructName(tableName);

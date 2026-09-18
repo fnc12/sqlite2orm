@@ -28,7 +28,7 @@ namespace {
                    "    auto storage = make_storage(\"\", make_table(\"users\", make_column(\"a\", &User::a)));\n"
                    "    storage.sync_schema();\n"
                    "    storage.replace(User{7});\n";
-        for(const auto& statement: selectStatements) {
+        for (const auto& statement: selectStatements) {
             program << "    {\n        " << statement << "\n        std::cout << rows.at(0) << '\\n';\n    }\n";
         }
         program << "    return 0;\n"
@@ -50,11 +50,11 @@ namespace {
         std::vector<std::string> values;
         {
             std::ifstream out(outpath);
-            for(std::string line; std::getline(out, line);) {
+            for (std::string line; std::getline(out, line);) {
                 values.push_back(line);
             }
         }
-        if(exitCode != 0) {
+        if (exitCode != 0) {
             WARN("building the generated selects failed (exit " << exitCode
                                                                 << "); ensure c++, sqlite_orm headers and "
                                                                    "libsqlite3 are usable");
@@ -87,8 +87,7 @@ TEST_CASE("runtime: generated negative literals keep their value") {
                               "auto rows = storage.select(-2.5);",
                               "auto rows = storage.select(c(&User::a) * -2);",
                           });
-    REQUIRE(selectedValues(statements) ==
-            std::vector<std::string>{"-2", "-50", "1", "3", "-3", "-2.5", "-14"});
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"-2", "-50", "1", "3", "-3", "-2.5", "-14"});
 }
 
 // A negation over anything but a numeric constant is generated as a subtraction from zero, which
@@ -116,6 +115,5 @@ TEST_CASE("runtime: a negation over a general operand keeps its value") {
                               "auto rows = storage.select((c(0) - (c(&User::a) + 1)));",
                               "auto rows = storage.select((c(0) - (c(0) - c(&User::a))));",
                           });
-    REQUIRE(selectedValues(statements) ==
-            std::vector<std::string>{"-5", "3", "-3", "-1", "6", "-7", "-8", "7"});
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"-5", "3", "-3", "-1", "6", "-7", "-8", "7"});
 }

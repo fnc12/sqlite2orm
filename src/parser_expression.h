@@ -35,14 +35,30 @@ namespace sqlite2orm {
         Parser& parser;
         TokenStream& tokenStream;
 
-        const Token& current() const { return this->tokenStream.current(); }
-        const Token& peekToken(size_t offset = 0) const { return this->tokenStream.peekToken(offset); }
-        const Token& advanceToken() { return this->tokenStream.advanceToken(); }
-        bool atEnd() const { return this->tokenStream.atEnd(); }
-        bool check(TokenType type) const { return this->tokenStream.check(type); }
-        std::optional<Token> match(TokenType type) { return this->tokenStream.match(type); }
-        bool isColumnNameToken() const { return this->tokenStream.isColumnNameToken(); }
-        bool isColumnNameTokenAt(size_t offset) const { return this->tokenStream.isColumnNameTokenAt(offset); }
+        const Token& current() const {
+            return this->tokenStream.current();
+        }
+        const Token& peekToken(size_t offset = 0) const {
+            return this->tokenStream.peekToken(offset);
+        }
+        const Token& advanceToken() {
+            return this->tokenStream.advanceToken();
+        }
+        bool atEnd() const {
+            return this->tokenStream.atEnd();
+        }
+        bool check(TokenType type) const {
+            return this->tokenStream.check(type);
+        }
+        std::optional<Token> match(TokenType type) {
+            return this->tokenStream.match(type);
+        }
+        bool isColumnNameToken() const {
+            return this->tokenStream.isColumnNameToken();
+        }
+        bool isColumnNameTokenAt(size_t offset) const {
+            return this->tokenStream.isColumnNameTokenAt(offset);
+        }
     };
 
 }  // namespace sqlite2orm

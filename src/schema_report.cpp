@@ -7,45 +7,45 @@
 
 namespace sqlite2orm {
 
-    SchemaReport reportSqliteSchema(const ProcessSqliteSchemaResult& schema, bool jsonOnly,
-                                    const CodeGenPolicy* policy) {
+    SchemaReport
+    reportSqliteSchema(const ProcessSqliteSchemaResult& schema, bool jsonOnly, const CodeGenPolicy* policy) {
         std::ostringstream out;
         std::ostringstream err;
         SchemaReport report;
-        if(jsonOnly) {
+        if (jsonOnly) {
             out << sqliteSchemaResultToJson(schema) << "\n";
         }
-        for(const SchemaStatementResult& statement: schema.statements) {
-            for(const CodegenWarning& warning: statement.pipeline.codegen.warnings) {
+        for (const SchemaStatementResult& statement: schema.statements) {
+            for (const CodegenWarning& warning: statement.pipeline.codegen.warnings) {
                 err << "warning: " << warning.message << "\n";
             }
         }
-        if(!jsonOnly) {
+        if (!jsonOnly) {
             const CodeGenResult header = generateSqliteSchemaHeader(schema, policy);
-            for(const CodegenWarning& warning: header.warnings) {
+            for (const CodegenWarning& warning: header.warnings) {
                 err << "warning: " << warning.message << "\n";
             }
-            if(schema.allOk()) {
+            if (schema.allOk()) {
                 out << header.code;
-                if(!header.code.empty() && header.code.back() != '\n') {
+                if (!header.code.empty() && header.code.back() != '\n') {
                     out << "\n";
                 }
             }
         }
-        if(!schema.allOk()) {
-            for(const SchemaStatementResult& statement: schema.statements) {
-                if(statement.pipeline.ok()) {
+        if (!schema.allOk()) {
+            for (const SchemaStatementResult& statement: schema.statements) {
+                if (statement.pipeline.ok()) {
                     continue;
                 }
                 const std::string where = "[" + statement.meta.type + " " + statement.meta.name + "]";
-                for(const ParseError& error: statement.pipeline.parseResult.errors) {
+                for (const ParseError& error: statement.pipeline.parseResult.errors) {
                     err << "parse error " << where << ": " << error.message << " at " << error.location.line << ":"
                         << error.location.column << "\n";
                 }
-                for(const ValidationError& error: statement.pipeline.validationErrors) {
+                for (const ValidationError& error: statement.pipeline.validationErrors) {
                     err << "validation " << where << ": " << error.message << " (" << error.nodeType << ")\n";
                 }
-                for(const std::string& error: statement.pipeline.codegen.errors) {
+                for (const std::string& error: statement.pipeline.codegen.errors) {
                     err << "codegen error " << where << ": " << error << "\n";
                 }
             }

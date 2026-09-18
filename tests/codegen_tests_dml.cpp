@@ -14,20 +14,18 @@ TEST_CASE("codegen: REPLACE INTO") {
     REQUIRE(generateFull("REPLACE INTO posts (user_id) VALUES (5)") ==
             CodeGenResult{
                 "storage.replace(into<Posts>(), columns(&Posts::user_id), values(std::make_tuple(5)));",
-                {DecisionPoint{
-                    1,
-                    "replace_style",
-                    "replace_call",
-                    "storage.replace(into<Posts>(), columns(&Posts::user_id), values(std::make_tuple(5)));",
-                    {Option{"replace_call",
-                            "storage.replace(into<Posts>(), columns(&Posts::user_id), "
-                            "values(std::make_tuple(5)));",
-                            "storage.replace(into<T>(), ...)"},
-                     Option{
-                        "insert_or_replace",
-                        "storage.insert(or_replace(), into<Posts>(), columns(&Posts::user_id), "
-                        "values(std::make_tuple(5)));",
-                        "same semantics via raw insert(or_replace(), into<T>(), ...)"}}}},
+                {DecisionPoint{1,
+                               "replace_style",
+                               "replace_call",
+                               "storage.replace(into<Posts>(), columns(&Posts::user_id), values(std::make_tuple(5)));",
+                               {Option{"replace_call",
+                                       "storage.replace(into<Posts>(), columns(&Posts::user_id), "
+                                       "values(std::make_tuple(5)));",
+                                       "storage.replace(into<T>(), ...)"},
+                                Option{"insert_or_replace",
+                                       "storage.insert(or_replace(), into<Posts>(), columns(&Posts::user_id), "
+                                       "values(std::make_tuple(5)));",
+                                       "same semantics via raw insert(or_replace(), into<T>(), ...)"}}}},
                 {}});
 }
 
@@ -58,19 +56,17 @@ TEST_CASE("codegen: INSERT ON CONFLICT DO UPDATE SET WHERE") {
 }
 
 TEST_CASE("codegen: INSERT ON CONFLICT target WHERE warns") {
-    REQUIRE(
-        generateFull("INSERT INTO users (id, score) VALUES (1, 2) ON CONFLICT (id) WHERE score > 0 DO NOTHING") ==
-        CodeGenResult{
-            "storage.insert(into<Users>(), columns(&Users::id, &Users::score), values(std::make_tuple(1, 2)), "
-            "on_conflict(&Users::id).do_nothing());",
-            {},
-            {"ON CONFLICT target WHERE is not represented in sqlite_orm on_conflict(); generated code omits that "
-             "predicate"}});
+    REQUIRE(generateFull("INSERT INTO users (id, score) VALUES (1, 2) ON CONFLICT (id) WHERE score > 0 DO NOTHING") ==
+            CodeGenResult{
+                "storage.insert(into<Users>(), columns(&Users::id, &Users::score), values(std::make_tuple(1, 2)), "
+                "on_conflict(&Users::id).do_nothing());",
+                {},
+                {"ON CONFLICT target WHERE is not represented in sqlite_orm on_conflict(); generated code omits that "
+                 "predicate"}});
 }
 
 TEST_CASE("codegen: INSERT DEFAULT VALUES") {
-    REQUIRE(generate("INSERT INTO users DEFAULT VALUES") ==
-            "storage.insert(into<Users>(), default_values());");
+    REQUIRE(generate("INSERT INTO users DEFAULT VALUES") == "storage.insert(into<Users>(), default_values());");
 }
 
 TEST_CASE("codegen: INSERT SELECT") {
@@ -94,43 +90,35 @@ TEST_CASE("codegen: DELETE FROM") {
 }
 
 TEST_CASE("codegen: DELETE WHERE") {
-    REQUIRE(generate("DELETE FROM users WHERE id = 2") ==
-            "storage.remove_all<Users>(where(c(&Users::id) == 2));");
+    REQUIRE(generate("DELETE FROM users WHERE id = 2") == "storage.remove_all<Users>(where(c(&Users::id) == 2));");
 }
 
 TEST_CASE("codegen: UPDATE OR IGNORE warns") {
     REQUIRE(generateFull("UPDATE OR IGNORE users SET a = 1") ==
-            CodeGenResult{
-                "storage.update_all(set(c(&Users::a) = 1));",
-                {},
-                {"UPDATE OR modifier is not represented in sqlite_orm; generated code uses update_all(...) "
-                 "without OR"}});
+            CodeGenResult{"storage.update_all(set(c(&Users::a) = 1));",
+                          {},
+                          {"UPDATE OR modifier is not represented in sqlite_orm; generated code uses update_all(...) "
+                           "without OR"}});
 }
 
 TEST_CASE("codegen: CREATE TRIGGER before delete OLD in WHERE") {
-    REQUIRE(
-        generate(
-            "CREATE TRIGGER tr BEFORE DELETE ON users BEGIN DELETE FROM users WHERE id = OLD.id; END") ==
-        "make_trigger(\"tr\", before().delete_().on<Users>().begin(remove_all<Users>(where(c(&Users::id) == "
-        "old(&Users::id)))));");
+    REQUIRE(generate("CREATE TRIGGER tr BEFORE DELETE ON users BEGIN DELETE FROM users WHERE id = OLD.id; END") ==
+            "make_trigger(\"tr\", before().delete_().on<Users>().begin(remove_all<Users>(where(c(&Users::id) == "
+            "old(&Users::id)))));");
 }
 
 TEST_CASE("codegen: CREATE TRIGGER OLD binds to subject table, not DML target") {
-    REQUIRE(
-        generate(
-            "CREATE TRIGGER tx_delete AFTER DELETE ON transactions BEGIN "
-            "DELETE FROM tx_rtree WHERE id = old.id; END") ==
-        "make_trigger(\"tx_delete\", after().delete_().on<Transactions>().begin(remove_all<TxRtree>("
-        "where(c(&TxRtree::id) == old(&Transactions::id)))));");
+    REQUIRE(generate("CREATE TRIGGER tx_delete AFTER DELETE ON transactions BEGIN "
+                     "DELETE FROM tx_rtree WHERE id = old.id; END") ==
+            "make_trigger(\"tx_delete\", after().delete_().on<Transactions>().begin(remove_all<TxRtree>("
+            "where(c(&TxRtree::id) == old(&Transactions::id)))));");
 }
 
 TEST_CASE("codegen: CREATE TRIGGER NEW binds to subject table, not DML target") {
-    REQUIRE(
-        generate(
-            "CREATE TRIGGER tx_insert AFTER INSERT ON transactions BEGIN "
-            "INSERT INTO audit (tx_id) VALUES (new.id); END") ==
-        "make_trigger(\"tx_insert\", after().insert().on<Transactions>().begin(insert(into<Audit>(), "
-        "columns(&Audit::tx_id), values(std::make_tuple(new_(&Transactions::id))))));");
+    REQUIRE(generate("CREATE TRIGGER tx_insert AFTER INSERT ON transactions BEGIN "
+                     "INSERT INTO audit (tx_id) VALUES (new.id); END") ==
+            "make_trigger(\"tx_insert\", after().insert().on<Transactions>().begin(insert(into<Audit>(), "
+            "columns(&Audit::tx_id), values(std::make_tuple(new_(&Transactions::id))))));");
 }
 
 TEST_CASE("codegen: CREATE TRIGGER after insert") {
@@ -139,17 +127,15 @@ TEST_CASE("codegen: CREATE TRIGGER after insert") {
 }
 
 TEST_CASE("codegen: CREATE TRIGGER update_of when for_each_row") {
-    REQUIRE(
-        generate("CREATE TRIGGER tr BEFORE UPDATE OF score, rank ON users FOR EACH ROW WHEN 1 BEGIN UPDATE users "
-                 "SET score = 0; END") ==
-        "make_trigger(\"tr\", before().update_of(&Users::score, &Users::rank).on<Users>().for_each_row().when(1)."
-        "begin(update_all(set(c(&Users::score) = 0))));");
+    REQUIRE(generate("CREATE TRIGGER tr BEFORE UPDATE OF score, rank ON users FOR EACH ROW WHEN 1 BEGIN UPDATE users "
+                     "SET score = 0; END") ==
+            "make_trigger(\"tr\", before().update_of(&Users::score, &Users::rank).on<Users>().for_each_row().when(1)."
+            "begin(update_all(set(c(&Users::score) = 0))));");
 }
 
 TEST_CASE("codegen: CREATE TRIGGER temp and if not exists warn") {
     REQUIRE(
-        generateFull(
-            "CREATE TEMP TRIGGER IF NOT EXISTS tx BEFORE INSERT ON users BEGIN DELETE FROM users; END") ==
+        generateFull("CREATE TEMP TRIGGER IF NOT EXISTS tx BEFORE INSERT ON users BEGIN DELETE FROM users; END") ==
         CodeGenResult{
             "make_trigger(\"tx\", before().insert().on<Users>().begin(remove_all<Users>()));",
             {},
@@ -161,8 +147,7 @@ TEST_CASE("codegen: CREATE TRIGGER temp and if not exists warn") {
 
 TEST_CASE("codegen: CREATE TRIGGER schema-qualified names warn") {
     REQUIRE(
-        generateFull(
-            "CREATE TRIGGER main.trig AFTER INSERT ON main.users BEGIN DELETE FROM users; END") ==
+        generateFull("CREATE TRIGGER main.trig AFTER INSERT ON main.users BEGIN DELETE FROM users; END") ==
         CodeGenResult{
             "make_trigger(\"trig\", after().insert().on<Users>().begin(remove_all<Users>()));",
             {},
@@ -172,8 +157,7 @@ TEST_CASE("codegen: CREATE TRIGGER schema-qualified names warn") {
 }
 
 TEST_CASE("codegen: CREATE INDEX single column") {
-    REQUIRE(generate("CREATE INDEX idx ON users (id)") ==
-            "make_index(\"idx\", indexed_column(&Users::id));");
+    REQUIRE(generate("CREATE INDEX idx ON users (id)") == "make_index(\"idx\", indexed_column(&Users::id));");
 }
 
 TEST_CASE("codegen: CREATE UNIQUE INDEX two columns") {
@@ -218,8 +202,8 @@ TEST_CASE("codegen: UPDATE FROM warning") {
     const auto result = generateFull("UPDATE t SET a = 1 FROM b WHERE t.id = b.id;");
     REQUIRE_FALSE(result.warnings.empty());
     bool found = false;
-    for(const auto& w: result.warnings) {
-        if(w.message.find("FROM") != std::string::npos) {
+    for (const auto& w: result.warnings) {
+        if (w.message.find("FROM") != std::string::npos) {
             found = true;
             break;
         }
@@ -232,14 +216,13 @@ TEST_CASE("codegen: UPDATE FROM warning") {
 // then fails. C++ has no literal for the value, so the trigger cannot be generated — without
 // failing the statement, so a schema holding it still generates. Checked against sqlite3 3.51.
 TEST_CASE("codegen: CREATE TRIGGER - a hex literal too big leaves the trigger ungenerated") {
-    auto result = generateFull(
-        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET x = 0x10000000000000000; END");
+    auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET x = 0x10000000000000000; END");
     REQUIRE(result.code.empty());
     REQUIRE(result.warnings ==
-        std::vector<CodegenWarning>{
-            {"CREATE TRIGGER tr uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the "
-             "trigger but refuses every statement that fires it, and C++ has no literal for it, so the trigger is "
-             "not generated"}});
+            std::vector<CodegenWarning>{
+                {"CREATE TRIGGER tr uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the "
+                 "trigger but refuses every statement that fires it, and C++ has no literal for it, so the trigger is "
+                 "not generated"}});
     REQUIRE(result.errors.empty());
 }
 

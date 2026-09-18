@@ -22,29 +22,30 @@ namespace sqlite2orm {
             return stripIdentifierQuotes(sqlTableName);
         }
 
-        void collectFkParents(const CreateTableNode& tableNode, std::unordered_set<std::string>& out,
+        void collectFkParents(const CreateTableNode& tableNode,
+                              std::unordered_set<std::string>& out,
                               const std::unordered_set<std::string>& known) {
-            for(const ColumnDef& column : tableNode.columns) {
-                if(column.foreignKey) {
+            for (const ColumnDef& column: tableNode.columns) {
+                if (column.foreignKey) {
                     const std::string ref = normTableName(column.foreignKey->table);
-                    if(known.count(ref)) {
+                    if (known.count(ref)) {
                         out.insert(ref);
                     }
                 }
             }
-            for(const TableForeignKey& tableForeignKey : tableNode.foreignKeys) {
+            for (const TableForeignKey& tableForeignKey: tableNode.foreignKeys) {
                 const std::string ref = normTableName(tableForeignKey.references.table);
-                if(known.count(ref)) {
+                if (known.count(ref)) {
                     out.insert(ref);
                 }
             }
         }
 
-        [[nodiscard]] std::vector<const CreateTableNode*> topoSortTables(
-            const std::vector<const CreateTableNode*>& tables) {
+        [[nodiscard]] std::vector<const CreateTableNode*>
+        topoSortTables(const std::vector<const CreateTableNode*>& tables) {
             std::unordered_map<std::string, const CreateTableNode*> tableByNormalizedName;
             std::unordered_set<std::string> knownNormalizedNames;
-            for(const CreateTableNode* tableNode : tables) {
+            for (const CreateTableNode* tableNode: tables) {
                 const std::string normalizedName = normTableName(tableNode->tableName);
                 tableByNormalizedName[normalizedName] = tableNode;
                 knownNormalizedNames.insert(normalizedName);
@@ -52,14 +53,14 @@ namespace sqlite2orm {
 
             std::unordered_map<std::string, std::vector<std::string>> adjacency;
             std::unordered_map<std::string, size_t> inDegree;
-            for(const CreateTableNode* tableNode : tables) {
+            for (const CreateTableNode* tableNode: tables) {
                 inDegree[normTableName(tableNode->tableName)] = 0;
             }
-            for(const CreateTableNode* tableNode : tables) {
+            for (const CreateTableNode* tableNode: tables) {
                 const std::string selfNormalized = normTableName(tableNode->tableName);
                 std::unordered_set<std::string> parentTables;
                 collectFkParents(*tableNode, parentTables, knownNormalizedNames);
-                for(const std::string& parentTable : parentTables) {
+                for (const std::string& parentTable: parentTables) {
                     adjacency[parentTable].push_back(selfNormalized);
                     inDegree[selfNormalized]++;
                 }
@@ -67,50 +68,51 @@ namespace sqlite2orm {
 
             std::vector<std::string> sortedNames;
             sortedNames.reserve(tables.size());
-            for(const CreateTableNode* tableNode : tables) {
+            for (const CreateTableNode* tableNode: tables) {
                 sortedNames.push_back(normTableName(tableNode->tableName));
             }
-            std::sort(sortedNames.begin(), sortedNames.end(),
-                      [](const std::string& left, const std::string& right) {
-                          return std::lexicographical_compare(
-                              left.begin(), left.end(), right.begin(), right.end(),
-                              [](char leftChar, char rightChar) {
-                                  return std::tolower(static_cast<unsigned char>(leftChar)) <
-                                         std::tolower(static_cast<unsigned char>(rightChar));
-                              });
-                      });
+            std::sort(sortedNames.begin(), sortedNames.end(), [](const std::string& left, const std::string& right) {
+                return std::lexicographical_compare(left.begin(),
+                                                    left.end(),
+                                                    right.begin(),
+                                                    right.end(),
+                                                    [](char leftChar, char rightChar) {
+                                                        return std::tolower(static_cast<unsigned char>(leftChar)) <
+                                                               std::tolower(static_cast<unsigned char>(rightChar));
+                                                    });
+            });
 
             std::queue<std::string> pending;
-            for(const std::string& sortedName : sortedNames) {
-                if(inDegree[sortedName] == 0) {
+            for (const std::string& sortedName: sortedNames) {
+                if (inDegree[sortedName] == 0) {
                     pending.push(sortedName);
                 }
             }
 
             std::vector<const CreateTableNode*> ordered;
             std::unordered_set<std::string> visited;
-            while(!pending.empty()) {
+            while (!pending.empty()) {
                 const std::string currentTable = pending.front();
                 pending.pop();
-                if(visited.count(currentTable)) {
+                if (visited.count(currentTable)) {
                     continue;
                 }
                 visited.insert(currentTable);
                 const auto iterator = tableByNormalizedName.find(currentTable);
-                if(iterator != tableByNormalizedName.end()) {
+                if (iterator != tableByNormalizedName.end()) {
                     ordered.push_back(iterator->second);
                 }
-                for(const std::string& dependentTable : adjacency[currentTable]) {
-                    if(--inDegree[dependentTable] == 0) {
+                for (const std::string& dependentTable: adjacency[currentTable]) {
+                    if (--inDegree[dependentTable] == 0) {
                         pending.push(dependentTable);
                     }
                 }
             }
 
-            for(const std::string& sortedName : sortedNames) {
-                if(!visited.count(sortedName)) {
+            for (const std::string& sortedName: sortedNames) {
+                if (!visited.count(sortedName)) {
                     const auto iterator = tableByNormalizedName.find(sortedName);
-                    if(iterator != tableByNormalizedName.end()) {
+                    if (iterator != tableByNormalizedName.end()) {
                         ordered.push_back(iterator->second);
                     }
                 }
@@ -119,13 +121,13 @@ namespace sqlite2orm {
         }
 
         void trimTrailingSemicolon(std::string& line) {
-            while(!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
+            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
                 line.pop_back();
             }
-            if(!line.empty() && line.back() == ';') {
+            if (!line.empty() && line.back() == ';') {
                 line.pop_back();
             }
-            while(!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
+            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
                 line.pop_back();
             }
         }
@@ -137,12 +139,12 @@ namespace sqlite2orm {
         gen.codeGenPolicy = policy;
 
         std::vector<const CreateTableNode*> tableNodes;
-        for(const SchemaStatementResult& statementResult : schema.statements) {
-            if(!statementResult.pipeline.ok()) {
+        for (const SchemaStatementResult& statementResult: schema.statements) {
+            if (!statementResult.pipeline.ok()) {
                 continue;
             }
-            if(const auto* createTable = dynamic_cast<const CreateTableNode*>(
-                   statementResult.pipeline.parseResult.astNodePointer.get())) {
+            if (const auto* createTable =
+                    dynamic_cast<const CreateTableNode*>(statementResult.pipeline.parseResult.astNodePointer.get())) {
                 tableNodes.push_back(createTable);
             }
         }
@@ -164,7 +166,7 @@ namespace sqlite2orm {
 
         std::vector<CreateTableParts> tableParts;
         tableParts.reserve(sortedTables.size());
-        for(const CreateTableNode* createTableNode : sortedTables) {
+        for (const CreateTableNode* createTableNode: sortedTables) {
             tableParts.push_back(gen.createTableParts(*createTableNode));
         }
 
@@ -172,16 +174,16 @@ namespace sqlite2orm {
         // marks it), and sqlite_orm has no type to name for it, so every foreign key into it and
         // every view, index and trigger resting on it must go too. The tables are generated again
         // once that set is known; without one this costs nothing.
-        if(!gen.context().ungeneratableTables.empty()) {
-            for(size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
+        if (!gen.context().ungeneratableTables.empty()) {
+            for (size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
                 tableParts[tableIndex] = gen.createTableParts(*sortedTables[tableIndex]);
             }
         }
 
-        for(size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
+        for (size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
             const CreateTableParts& parts = tableParts[tableIndex];
             allWarnings.insert(allWarnings.end(), parts.warnings.begin(), parts.warnings.end());
-            if(parts.makeTableExpression.empty()) {
+            if (parts.makeTableExpression.empty()) {
                 allWarnings.push_back("CREATE TABLE `" + stripIdentifierQuotes(sortedTables[tableIndex]->tableName) +
                                       "` is not merged into make_storage()");
                 continue;
@@ -194,15 +196,15 @@ namespace sqlite2orm {
         // ungeneratable table is, so it joins them: a trigger `INSTEAD OF ... ON` it and a view
         // selecting from it go with it. SQLite creates nothing before the view it names, so a
         // dropped view is always marked before anything resting on it is generated.
-        for(const SchemaStatementResult& statementResult : schema.statements) {
-            if(!statementResult.pipeline.ok()) {
+        for (const SchemaStatementResult& statementResult: schema.statements) {
+            if (!statementResult.pipeline.ok()) {
                 continue;
             }
             const AstNode* root = statementResult.pipeline.parseResult.astNodePointer.get();
-            if(dynamic_cast<const CreateTableNode*>(root)) {
+            if (dynamic_cast<const CreateTableNode*>(root)) {
                 continue;
             }
-            if(dynamic_cast<const CreateVirtualTableNode*>(root)) {
+            if (dynamic_cast<const CreateVirtualTableNode*>(root)) {
                 allWarnings.push_back("CREATE VIRTUAL TABLE `" + statementResult.meta.name +
                                       "` is not merged into make_storage(); run sqlite2orm on its SQL separately");
                 continue;
@@ -218,12 +220,12 @@ namespace sqlite2orm {
             // can only be recorded when the set was already non-empty, so the copy is always
             // there when the rollback needs it.
             std::optional<CodeGeneratorContext> contextBeforeStatement;
-            if(!gen.context().ungeneratableTables.empty()) {
+            if (!gen.context().ungeneratableTables.empty()) {
                 contextBeforeStatement = gen.context();
             }
             gen.context().referencedUngeneratableTables.clear();
             const auto restsOnUngeneratableTable = [&]() {
-                if(gen.context().referencedUngeneratableTables.empty()) {
+                if (gen.context().referencedUngeneratableTables.empty()) {
                     return false;
                 }
                 const std::string kind(gen.context().referencedUngeneratableKind());
@@ -234,9 +236,9 @@ namespace sqlite2orm {
                 return true;
             };
 
-            if(auto* createView = dynamic_cast<const CreateViewNode*>(root)) {
+            if (auto* createView = dynamic_cast<const CreateViewNode*>(root)) {
                 CreateViewParts viewParts = gen.createViewParts(*createView);
-                if(restsOnUngeneratableTable()) {
+                if (restsOnUngeneratableTable()) {
                     // The rollback undid every mark the statement made, so a view that also
                     // failed to generate is marked again here, for the one reason that survives.
                     gen.context().markUngeneratableView(createView->viewName);
@@ -244,9 +246,10 @@ namespace sqlite2orm {
                 }
                 allWarnings.insert(allWarnings.end(), viewParts.warnings.begin(), viewParts.warnings.end());
                 appendUniqueStrings(allComments, viewParts.comments);
-                allDecisionPoints.insert(allDecisionPoints.end(), viewParts.decisionPoints.begin(),
+                allDecisionPoints.insert(allDecisionPoints.end(),
+                                         viewParts.decisionPoints.begin(),
                                          viewParts.decisionPoints.end());
-                if(viewParts.makeViewExpression.empty()) {
+                if (viewParts.makeViewExpression.empty()) {
                     // `createViewParts` has already marked the view as ungeneratable.
                     allWarnings.push_back("CREATE VIEW `" + statementResult.meta.name +
                                           "` is not merged into make_storage()");
@@ -257,18 +260,19 @@ namespace sqlite2orm {
                 continue;
             }
 
-            if(dynamic_cast<const CreateIndexNode*>(root) || dynamic_cast<const CreateTriggerNode*>(root)) {
+            if (dynamic_cast<const CreateIndexNode*>(root) || dynamic_cast<const CreateTriggerNode*>(root)) {
                 CodeGenResult fragment = gen.generate(*root);
-                if(restsOnUngeneratableTable()) {
+                if (restsOnUngeneratableTable()) {
                     continue;
                 }
                 allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());
                 appendUniqueStrings(allComments, fragment.comments);
-                allDecisionPoints.insert(allDecisionPoints.end(), fragment.decisionPoints.begin(),
+                allDecisionPoints.insert(allDecisionPoints.end(),
+                                         fragment.decisionPoints.begin(),
                                          fragment.decisionPoints.end());
                 std::string storageArgLine = fragment.code;
                 trimTrailingSemicolon(storageArgLine);
-                if(storageArgLine.empty()) {
+                if (storageArgLine.empty()) {
                     allWarnings.push_back(
                         std::string(dynamic_cast<const CreateIndexNode*>(root) ? "CREATE INDEX" : "CREATE TRIGGER") +
                         " `" + statementResult.meta.name + "` is not merged into make_storage()");
@@ -281,29 +285,29 @@ namespace sqlite2orm {
         oss << "\ninline auto make_sqlite_schema_storage(const std::string& db_path) {\n";
         oss << "    using namespace sqlite_orm;\n";
         oss << "    return make_storage(db_path";
-        for(const std::string& storageArgument : storageArgs) {
+        for (const std::string& storageArgument: storageArgs) {
             oss << ",\n        " << storageArgument;
         }
         oss << ");\n}\n";
 
         std::vector<std::string> dmlStatements;
-        for(const SchemaStatementResult& statementResult : schema.statements) {
-            if(!statementResult.pipeline.ok()) {
+        for (const SchemaStatementResult& statementResult: schema.statements) {
+            if (!statementResult.pipeline.ok()) {
                 continue;
             }
             const AstNode* root = statementResult.pipeline.parseResult.astNodePointer.get();
-            if(dynamic_cast<const CreateTableNode*>(root) || dynamic_cast<const CreateIndexNode*>(root) ||
-               dynamic_cast<const CreateTriggerNode*>(root) || dynamic_cast<const CreateVirtualTableNode*>(root) ||
-               dynamic_cast<const CreateViewNode*>(root)) {
+            if (dynamic_cast<const CreateTableNode*>(root) || dynamic_cast<const CreateIndexNode*>(root) ||
+                dynamic_cast<const CreateTriggerNode*>(root) || dynamic_cast<const CreateVirtualTableNode*>(root) ||
+                dynamic_cast<const CreateViewNode*>(root)) {
                 continue;
             }
             std::optional<CodeGeneratorContext> contextBeforeStatement;
-            if(!gen.context().ungeneratableTables.empty()) {
+            if (!gen.context().ungeneratableTables.empty()) {
                 contextBeforeStatement = gen.context();
             }
             gen.context().referencedUngeneratableTables.clear();
             CodeGenResult fragment = gen.generate(*root);
-            if(!gen.context().referencedUngeneratableTables.empty()) {
+            if (!gen.context().referencedUngeneratableTables.empty()) {
                 const std::string kind(gen.context().referencedUngeneratableKind());
                 gen.context() = *contextBeforeStatement;
                 allWarnings.push_back("`" + statementResult.meta.name + "` rests on a " + kind +
@@ -312,20 +316,24 @@ namespace sqlite2orm {
             }
             allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());
             appendUniqueStrings(allComments, fragment.comments);
-            allDecisionPoints.insert(allDecisionPoints.end(), fragment.decisionPoints.begin(),
+            allDecisionPoints.insert(allDecisionPoints.end(),
+                                     fragment.decisionPoints.begin(),
                                      fragment.decisionPoints.end());
-            if(!fragment.code.empty()) {
+            if (!fragment.code.empty()) {
                 dmlStatements.push_back(fragment.code);
             }
         }
-        if(!dmlStatements.empty()) {
+        if (!dmlStatements.empty()) {
             oss << "\n";
-            for(const std::string& dml : dmlStatements) {
+            for (const std::string& dml: dmlStatements) {
                 oss << dml << "\n";
             }
         }
 
-        return CodeGenResult{oss.str(), std::move(allDecisionPoints), std::move(allWarnings), {},
+        return CodeGenResult{oss.str(),
+                             std::move(allDecisionPoints),
+                             std::move(allWarnings),
+                             {},
                              std::move(allComments)};
     }
 

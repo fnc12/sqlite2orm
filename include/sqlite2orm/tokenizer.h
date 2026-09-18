@@ -13,8 +13,8 @@ namespace sqlite2orm {
     struct TokenizeError : std::runtime_error {
         SourceLocation location;
 
-        TokenizeError(std::string message, SourceLocation loc)
-            : std::runtime_error(std::move(message)), location(loc) {}
+        TokenizeError(std::string message, SourceLocation loc) :
+            std::runtime_error(std::move(message)), location(loc) {}
     };
 
     class Tokenizer {

@@ -78,13 +78,12 @@ namespace codegen_test_helpers {
     }
 
     void appendColumnRefDps(std::vector<DecisionPoint>& out, int& nextId, std::string_view codeStr) {
-        if(looksLikeMemberPointer(codeStr)) {
+        if (looksLikeMemberPointer(codeStr)) {
             out.push_back(columnRefStyleDp(nextId++, codeStr));
         }
     }
 
-    DecisionPoint apiLevelStarSelectDp(int id, const std::string& structName,
-                                           const std::string& trailingArgs) {
+    DecisionPoint apiLevelStarSelectDp(int id, const std::string& structName, const std::string& trailingArgs) {
         std::string code = "auto rows = storage.get_all<" + structName + ">(" + trailingArgs + ");";
         std::string tail = trailingArgs.empty() ? "" : (", " + trailingArgs);
         std::string codeSelectObject = "auto rows = storage.select(object<" + structName + ">()" + tail + ");";
@@ -95,16 +94,15 @@ namespace codegen_test_helpers {
             "get_all",
             code,
             {Option{"get_all", code, "get_all<T>(...) returns full row objects"},
-             Option{"select_object",
-                         codeSelectObject,
-                         "select(object<T>(), ...) returns std::tuple of columns"},
-             Option{"select_asterisk",
-                         codeSelectAsterisk,
-                         "select(asterisk<T>(), ...) returns full row objects"}}};
+             Option{"select_object", codeSelectObject, "select(object<T>(), ...) returns std::tuple of columns"},
+             Option{"select_asterisk", codeSelectAsterisk, "select(asterisk<T>(), ...) returns full row objects"}}};
     }
 
-    CodeGenResult expectedBinaryLeaf(std::string_view leftCode, std::string_view rightCode,
-                                       std::string_view op, std::string_view funcName, int firstId) {
+    CodeGenResult expectedBinaryLeaf(std::string_view leftCode,
+                                     std::string_view rightCode,
+                                     std::string_view op,
+                                     std::string_view funcName,
+                                     int firstId) {
         std::string l(leftCode);
         std::string r(rightCode);
         std::string cl = "c(" + l + ")";
@@ -118,7 +116,10 @@ namespace codegen_test_helpers {
         std::vector<DecisionPoint> dps;
         appendColumnRefDps(dps, nextId, leftCode);
         appendColumnRefDps(dps, nextId, rightCode);
-        dps.push_back(DecisionPoint{nextId, "expr_style", "operator_wrap_left", wrapLeft,
+        dps.push_back(DecisionPoint{nextId,
+                                    "expr_style",
+                                    "operator_wrap_left",
+                                    wrapLeft,
                                     {
                                         Option{"operator_wrap_left", wrapLeft, "wrap left operand"},
                                         Option{"operator_wrap_right", wrapRight, "wrap right operand"},

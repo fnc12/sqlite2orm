@@ -22,9 +22,15 @@ namespace sqlite2orm {
         bool isColumnNameToken() const;
         bool isColumnNameTokenAt(size_t offsetFromCurrent) const;
 
-        const std::vector<Token>& allTokens() const { return this->tokens; }
-        size_t currentPosition() const { return this->position; }
-        void setPosition(size_t newPosition) { this->position = newPosition; }
+        const std::vector<Token>& allTokens() const {
+            return this->tokens;
+        }
+        size_t currentPosition() const {
+            return this->position;
+        }
+        void setPosition(size_t newPosition) {
+            this->position = newPosition;
+        }
 
       private:
         std::vector<Token> tokens;

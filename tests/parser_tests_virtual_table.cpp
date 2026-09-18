@@ -60,8 +60,7 @@ TEST_CASE("parser: CREATE VIRTUAL TABLE rtree with five columns") {
     expected.moduleArguments.push_back(makeNode<ColumnRefNode>("minY"));
     expected.moduleArguments.push_back(makeNode<ColumnRefNode>("maxY"));
 
-    auto parseResult =
-        parse("CREATE VIRTUAL TABLE geo USING rtree(id, minX, maxX, minY, maxY)");
+    auto parseResult = parse("CREATE VIRTUAL TABLE geo USING rtree(id, minX, maxX, minY, maxY)");
     REQUIRE(parseResult);
     REQUIRE(requireNode<CreateVirtualTableNode>(parseResult) == expected);
 }

@@ -8,11 +8,11 @@
 
 namespace sqlite2orm {
 
-    Parser::Parser()
-        : expressionParser(std::make_unique<ExpressionParser>(*this, this->tokenStream)),
-          selectParser(std::make_unique<SelectParser>(*this, this->tokenStream)),
-          dmlParser(std::make_unique<DmlParser>(*this, this->tokenStream)),
-          ddlParser(std::make_unique<DdlParser>(*this, this->tokenStream)) {}
+    Parser::Parser() :
+        expressionParser(std::make_unique<ExpressionParser>(*this, this->tokenStream)),
+        selectParser(std::make_unique<SelectParser>(*this, this->tokenStream)),
+        dmlParser(std::make_unique<DmlParser>(*this, this->tokenStream)),
+        ddlParser(std::make_unique<DdlParser>(*this, this->tokenStream)) {}
 
     Parser::~Parser() = default;
 
@@ -68,64 +68,65 @@ namespace sqlite2orm {
         this->tokenStream.reset(std::move(tokens));
 
         AstNodePointer astNodePointer;
-        if(this->tokenStream.check(TokenType::kwCreate)) {
+        if (this->tokenStream.check(TokenType::kwCreate)) {
             astNodePointer = this->ddlParser->parseCreate();
-        } else if(this->tokenStream.check(TokenType::kwSelect) || this->tokenStream.check(TokenType::kwWith)) {
+        } else if (this->tokenStream.check(TokenType::kwSelect) || this->tokenStream.check(TokenType::kwWith)) {
             astNodePointer = parseSelect();
-        } else if(this->tokenStream.check(TokenType::kwInsert)) {
+        } else if (this->tokenStream.check(TokenType::kwInsert)) {
             astNodePointer = parseInsertStatement(false);
-        } else if(this->tokenStream.check(TokenType::kwReplace) && this->tokenStream.peekToken(1).type == TokenType::kwInto) {
+        } else if (this->tokenStream.check(TokenType::kwReplace) &&
+                   this->tokenStream.peekToken(1).type == TokenType::kwInto) {
             astNodePointer = parseInsertStatement(true);
-        } else if(this->tokenStream.check(TokenType::kwValues)) {
+        } else if (this->tokenStream.check(TokenType::kwValues)) {
             astNodePointer = parseSelectCompoundBody();
-        } else if(this->tokenStream.check(TokenType::kwUpdate)) {
+        } else if (this->tokenStream.check(TokenType::kwUpdate)) {
             astNodePointer = parseUpdateStatement();
-        } else if(this->tokenStream.check(TokenType::kwDelete)) {
+        } else if (this->tokenStream.check(TokenType::kwDelete)) {
             astNodePointer = parseDeleteStatement();
-        } else if(this->tokenStream.check(TokenType::kwBegin) || this->tokenStream.check(TokenType::kwCommit) ||
-                  this->tokenStream.check(TokenType::kwRollback) || this->tokenStream.check(TokenType::kwEnd)) {
+        } else if (this->tokenStream.check(TokenType::kwBegin) || this->tokenStream.check(TokenType::kwCommit) ||
+                   this->tokenStream.check(TokenType::kwRollback) || this->tokenStream.check(TokenType::kwEnd)) {
             astNodePointer = this->ddlParser->parseTransactionControlStatement();
-        } else if(this->tokenStream.check(TokenType::kwVacuum)) {
+        } else if (this->tokenStream.check(TokenType::kwVacuum)) {
             astNodePointer = this->ddlParser->parseVacuumStatement();
-        } else if(this->tokenStream.check(TokenType::kwDrop)) {
+        } else if (this->tokenStream.check(TokenType::kwDrop)) {
             astNodePointer = this->ddlParser->parseDropStatement();
-        } else if(this->tokenStream.check(TokenType::kwAlter)) {
+        } else if (this->tokenStream.check(TokenType::kwAlter)) {
             astNodePointer = this->ddlParser->parseAlterTableStatement();
-        } else if(this->tokenStream.check(TokenType::kwSavepoint)) {
+        } else if (this->tokenStream.check(TokenType::kwSavepoint)) {
             astNodePointer = this->ddlParser->parseSavepointStatement();
-        } else if(this->tokenStream.check(TokenType::kwRelease)) {
+        } else if (this->tokenStream.check(TokenType::kwRelease)) {
             astNodePointer = this->ddlParser->parseReleaseStatement();
-        } else if(this->tokenStream.check(TokenType::kwAttach)) {
+        } else if (this->tokenStream.check(TokenType::kwAttach)) {
             astNodePointer = this->ddlParser->parseAttachStatement();
-        } else if(this->tokenStream.check(TokenType::kwDetach)) {
+        } else if (this->tokenStream.check(TokenType::kwDetach)) {
             astNodePointer = this->ddlParser->parseDetachStatement();
-        } else if(this->tokenStream.check(TokenType::kwAnalyze)) {
+        } else if (this->tokenStream.check(TokenType::kwAnalyze)) {
             astNodePointer = this->ddlParser->parseAnalyzeStatement();
-        } else if(this->tokenStream.check(TokenType::kwReindex)) {
+        } else if (this->tokenStream.check(TokenType::kwReindex)) {
             astNodePointer = this->ddlParser->parseReindexStatement();
-        } else if(this->tokenStream.check(TokenType::kwPragma)) {
+        } else if (this->tokenStream.check(TokenType::kwPragma)) {
             astNodePointer = this->ddlParser->parsePragmaStatement();
-        } else if(this->tokenStream.check(TokenType::kwExplain)) {
+        } else if (this->tokenStream.check(TokenType::kwExplain)) {
             astNodePointer = this->ddlParser->parseExplainStatement();
         } else {
             astNodePointer = parseExpression();
         }
 
-        if(!astNodePointer) {
+        if (!astNodePointer) {
             const Token& token = this->tokenStream.current();
-            return ParseResult{
-                nullptr,
-                {ParseError{"unexpected token: " + std::string(token.value), token.location,
-                            keywordTypoSuggestion(token.value)}}};
+            return ParseResult{nullptr,
+                               {ParseError{"unexpected token: " + std::string(token.value),
+                                           token.location,
+                                           keywordTypoSuggestion(token.value)}}};
         }
 
-        if(!this->tokenStream.atEnd()) {
+        if (!this->tokenStream.atEnd()) {
             const Token& token = this->tokenStream.current();
-            if(token.type != TokenType::semicolon) {
-                return ParseResult{
-                    std::move(astNodePointer),
-                    {ParseError{"unexpected token after statement: " + std::string(token.value), token.location,
-                                keywordTypoSuggestion(token.value)}}};
+            if (token.type != TokenType::semicolon) {
+                return ParseResult{std::move(astNodePointer),
+                                   {ParseError{"unexpected token after statement: " + std::string(token.value),
+                                               token.location,
+                                               keywordTypoSuggestion(token.value)}}};
             }
         }
 
@@ -136,11 +137,11 @@ namespace sqlite2orm {
         this->tokenStream.reset(std::move(tokensInput));
 
         std::vector<ParseResult> results;
-        while(!this->tokenStream.atEnd()) {
-            while(!this->tokenStream.atEnd() && this->tokenStream.current().type == TokenType::semicolon) {
+        while (!this->tokenStream.atEnd()) {
+            while (!this->tokenStream.atEnd() && this->tokenStream.current().type == TokenType::semicolon) {
                 this->tokenStream.advanceToken();
             }
-            if(this->tokenStream.atEnd()) {
+            if (this->tokenStream.atEnd()) {
                 break;
             }
 
@@ -148,12 +149,12 @@ namespace sqlite2orm {
             // between BEGIN and END (the SQLite grammar requires them), so a semicolon ends the
             // whole statement only after the trigger body's END.
             bool isCreateTrigger = false;
-            if(this->tokenStream.check(TokenType::kwCreate)) {
+            if (this->tokenStream.check(TokenType::kwCreate)) {
                 const TokenType afterCreate = this->tokenStream.peekToken(1).type;
-                if(afterCreate == TokenType::kwTrigger) {
+                if (afterCreate == TokenType::kwTrigger) {
                     isCreateTrigger = true;
-                } else if((afterCreate == TokenType::kwTemp || afterCreate == TokenType::kwTemporary) &&
-                          this->tokenStream.peekToken(2).type == TokenType::kwTrigger) {
+                } else if ((afterCreate == TokenType::kwTemp || afterCreate == TokenType::kwTemporary) &&
+                           this->tokenStream.peekToken(2).type == TokenType::kwTrigger) {
                     isCreateTrigger = true;
                 }
             }
@@ -163,35 +164,35 @@ namespace sqlite2orm {
             int caseDepth = 0;
             bool inTriggerBody = false;
             bool triggerBodyClosed = false;
-            while(!this->tokenStream.atEnd()) {
+            while (!this->tokenStream.atEnd()) {
                 const Token& tok = this->tokenStream.current();
-                if(tok.type == TokenType::leftParen) {
+                if (tok.type == TokenType::leftParen) {
                     ++parenDepth;
-                } else if(tok.type == TokenType::rightParen) {
+                } else if (tok.type == TokenType::rightParen) {
                     --parenDepth;
-                } else if(isCreateTrigger && tok.type == TokenType::kwCase) {
+                } else if (isCreateTrigger && tok.type == TokenType::kwCase) {
                     ++caseDepth;
-                } else if(isCreateTrigger && tok.type == TokenType::kwBegin && !inTriggerBody) {
+                } else if (isCreateTrigger && tok.type == TokenType::kwBegin && !inTriggerBody) {
                     inTriggerBody = true;
-                } else if(isCreateTrigger && tok.type == TokenType::kwEnd) {
-                    if(caseDepth > 0) {
+                } else if (isCreateTrigger && tok.type == TokenType::kwEnd) {
+                    if (caseDepth > 0) {
                         --caseDepth;
-                    } else if(inTriggerBody) {
+                    } else if (inTriggerBody) {
                         triggerBodyClosed = true;
                     }
-                } else if(tok.type == TokenType::semicolon && parenDepth <= 0 &&
-                          (!isCreateTrigger || !inTriggerBody || triggerBodyClosed)) {
+                } else if (tok.type == TokenType::semicolon && parenDepth <= 0 &&
+                           (!isCreateTrigger || !inTriggerBody || triggerBodyClosed)) {
                     break;
                 }
                 slice.push_back(tok);
                 this->tokenStream.advanceToken();
             }
-            if(!this->tokenStream.atEnd() && this->tokenStream.current().type == TokenType::semicolon) {
+            if (!this->tokenStream.atEnd() && this->tokenStream.current().type == TokenType::semicolon) {
                 slice.push_back(this->tokenStream.current());
                 this->tokenStream.advanceToken();
             }
 
-            if(slice.empty() || slice.back().type == TokenType::eof) {
+            if (slice.empty() || slice.back().type == TokenType::eof) {
                 continue;
             }
             slice.push_back(Token{TokenType::eof, "", slice.back().location});

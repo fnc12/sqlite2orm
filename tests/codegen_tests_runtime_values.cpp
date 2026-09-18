@@ -230,12 +230,12 @@ TEST_CASE("runtime: a nested operand keeps the value its SQL grouping has") {
     };
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select(c(1) - (c(2) - 3));",
-                              "auto rows = storage.select(c(20) / (c(4) / 2));",
-                              "auto rows = storage.select(c(10) % (c(7) % 4));",
+                              "auto rows = storage.select(as_optional(c(20) / (c(4) / 2)));",
+                              "auto rows = storage.select(as_optional(c(10) % (c(7) % 4)));",
                               "auto rows = storage.select((c(1) + 2) * 3);",
                               "auto rows = storage.select((c(4) & 2) < 3);",
                               "auto rows = storage.select((c(6) | 3) & 5);",
-                              "auto rows = storage.select(c(&User::a) - (c(&User::a) - 1));",
+                              "auto rows = storage.select(as_optional(c(&User::a) - (c(&User::a) - 1)));",
                               "auto rows = storage.select(c(1) - 2 - 3);",
                           });
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"2", "10", "1", "9", "1", "5", "1", "-4"});

@@ -218,10 +218,16 @@ Statuses:
 - [!] NULLS LAST (parsed into `OrderByTerm::nulls`; validator error — not in sqlite_orm)
 
 ### Compound SELECT
-- [x] UNION
-- [x] UNION ALL
-- [x] INTERSECT
-- [x] EXCEPT
+- [~] UNION
+- [~] UNION ALL
+- [~] INTERSECT
+- [~] EXCEPT
+
+Each branch is generated through the subexpression path, which is shared with subqueries, so a
+result column of a compound SELECT is not widened to `as_optional` the way a plain SELECT's is: a
+branch like `SELECT a + 1 FROM users UNION SELECT a FROM users` still reads a NULL row back as 0.
+Widening compiles only if every branch is widened together — sqlite_orm requires the branches to
+share one result type — so it needs a decision taken across the branches at once.
 
 ### WITH (CTE)
 - [x] WITH cte AS (select-stmt)

@@ -129,11 +129,12 @@ namespace {
 
     /**
      *  Builds a program around the generated select statements over a three-row `users` table,
-     *  compiles and links it against sqlite_orm, runs it and returns the number of rows each
-     *  statement came back with. A LIMIT that reaches sqlite_orm as the wrong number — or that the
-     *  generator dropped altogether — shows up as a different row count, nothing else.
+     *  compiles and links it against sqlite_orm, runs it and returns the rows each statement came
+     *  back with, comma separated. The row count alone does not pin an OFFSET down — a dropped
+     *  `offset(...)` leaves `LIMIT 1, 2` with the two rows it should have, just the wrong two — so
+     *  the values are what is compared.
      */
-    std::vector<std::string> selectedRowCounts(const std::vector<std::string>& selectStatements) {
+    std::vector<std::string> selectedRowValues(const std::vector<std::string>& selectStatements) {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <iostream>\n"
@@ -150,7 +151,13 @@ namespace {
                    "    storage.replace(Users{2});\n"
                    "    storage.replace(Users{3});\n";
         for(const auto& statement: selectStatements) {
-            program << "    {\n        " << statement << "\n        std::cout << rows.size() << '\\n';\n    }\n";
+            program << "    {\n        " << statement
+                    << "\n        const char* separator = \"\";\n"
+                       "        for(const auto& row: rows) {\n"
+                       "            std::cout << separator << row;\n"
+                       "            separator = \",\";\n"
+                       "        }\n"
+                       "        std::cout << '\\n';\n    }\n";
         }
         program << "    return 0;\n"
                    "}\n";
@@ -168,11 +175,11 @@ namespace {
         cmd << " 2>&1";
 
         const int exitCode = TempBuildDir::run(cmd.str());
-        std::vector<std::string> counts;
+        std::vector<std::string> rows;
         {
             std::ifstream out(outpath);
             for(std::string line; std::getline(out, line);) {
-                counts.push_back(line);
+                rows.push_back(line);
             }
         }
         if(exitCode != 0) {
@@ -181,7 +188,7 @@ namespace {
                                                                    "libsqlite3 are usable");
         }
         REQUIRE(exitCode == 0);
-        return counts;
+        return rows;
     }
 
 }  // namespace
@@ -322,7 +329,9 @@ TEST_CASE("runtime: a generated LIMIT returns the rows SQLite returns") {
         generate("SELECT a FROM users LIMIT 2;"),
         generate("SELECT a FROM users LIMIT 1 OFFSET -1;"),
         generate("SELECT a FROM users LIMIT -1 OFFSET 2;"),
+        generate("SELECT a FROM users LIMIT 2 OFFSET 1;"),
         generate("SELECT a FROM users LIMIT 1, 2;"),
+        generate("SELECT a FROM users LIMIT 2, 1;"),
         generate("SELECT a FROM users LIMIT 2 * 1;"),
     };
     REQUIRE(statements == std::vector<std::string>{
@@ -331,7 +340,10 @@ TEST_CASE("runtime: a generated LIMIT returns the rows SQLite returns") {
                               "auto rows = storage.select(&Users::a, limit(1, offset(-1)));",
                               "auto rows = storage.select(&Users::a, limit(-1, offset(2)));",
                               "auto rows = storage.select(&Users::a, limit(2, offset(1)));",
+                              "auto rows = storage.select(&Users::a, limit(2, offset(1)));",
+                              "auto rows = storage.select(&Users::a, limit(1, offset(2)));",
                               "auto rows = storage.select(&Users::a, limit(c(2) * 1));",
                           });
-    REQUIRE(selectedRowCounts(statements) == std::vector<std::string>{"3", "2", "1", "1", "2", "2"});
+    REQUIRE(selectedRowValues(statements) ==
+            std::vector<std::string>{"1,2,3", "1,2", "1", "3", "2,3", "2,3", "3", "1,2"});
 }

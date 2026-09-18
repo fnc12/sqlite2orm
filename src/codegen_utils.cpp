@@ -656,21 +656,24 @@ namespace sqlite2orm {
                (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
-    namespace {
-
-        /** `value` with every folded minus sign taken off; `negated` ends up true for an odd count. */
-        const AstNode* withoutFoldedSigns(const AstNode& value, bool& negated) {
-            negated = false;
-            const AstNode* node = &value;
-            while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
-                if(unaryOperator->unaryOperator != UnaryOperator::minus) {
-                    break;
-                }
-                negated = !negated;
-                node = unaryOperator->operand.get();
+    const AstNode* withoutFoldedSigns(const AstNode& value, std::size_t& foldedMinusSigns) {
+        foldedMinusSigns = 0;
+        const AstNode* node = &value;
+        while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
+            const bool sign = unaryOperator->unaryOperator == UnaryOperator::minus ||
+                              unaryOperator->unaryOperator == UnaryOperator::plus;
+            if(!sign || !unaryOperator->operand) {
+                break;
             }
-            return node;
+            if(unaryOperator->unaryOperator == UnaryOperator::minus) {
+                ++foldedMinusSigns;
+            }
+            node = unaryOperator->operand.get();
         }
+        return node;
+    }
+
+    namespace {
 
         /** The source text of a numeric literal node, or an empty view for any other node. */
         std::string_view numericLiteralText(const AstNode& literal) {
@@ -686,23 +689,33 @@ namespace sqlite2orm {
     }  // namespace
 
     bool isIntegerLiteralPastIntegerFieldRange(const AstNode& value) {
-        bool negated = false;
-        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
-        return integerLiteral != nullptr && integerLiteralExceedsInt64(integerLiteral->value, negated);
+        std::size_t foldedSigns = 0;
+        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, foldedSigns));
+        if(integerLiteral == nullptr) {
+            return false;
+        }
+        if(integerLiteralExceedsInt64(integerLiteral->value, foldedSigns % 2 != 0)) {
+            return true;
+        }
+        // Only the innermost sign folds into the literal; SQLite negates the value the rest of
+        // them stand on while it runs the statement, and negating the int64 minimum leaves the
+        // integer range: `SELECT typeof(-9223372036854775808)` is integer, while
+        // `typeof(-(-9223372036854775808))` is real.
+        return foldedSigns > 1 && integerLiteralExceedsInt64(integerLiteral->value);
     }
 
     std::string numericLiteralSqlText(const AstNode& value) {
-        bool negated = false;
-        const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, negated));
+        std::size_t foldedSigns = 0;
+        const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, foldedSigns));
         if(text.empty()) {
             return {};
         }
-        return (negated ? "-" : "") + withoutDigitSeparators(text);
+        return (foldedSigns % 2 != 0 ? "-" : "") + withoutDigitSeparators(text);
     }
 
     CodegenWarning numericLiteralWarning(std::string message, const AstNode& value) {
-        bool negated = false;
-        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        std::size_t foldedSigns = 0;
+        const AstNode& literal = *withoutFoldedSigns(value, foldedSigns);
         const std::string_view text = numericLiteralText(literal);
         if(text.empty()) {
             return CodegenWarning{std::move(message)};
@@ -719,8 +732,8 @@ namespace sqlite2orm {
     }
 
     bool integerFieldCarriesValue(const AstNode& value) {
-        bool negated = false;
-        if(dynamic_cast<const RealLiteralNode*>(withoutFoldedSigns(value, negated))) {
+        std::size_t foldedSigns = 0;
+        if(dynamic_cast<const RealLiteralNode*>(withoutFoldedSigns(value, foldedSigns))) {
             // SQLite turns a REAL into an INTEGER only where the column affinity converts it back
             // and forth without loss, while a C++ field truncates it either way: `1.5` would reach
             // an int64_t field as 1 where SQLite keeps the 1.5 it stored.
@@ -737,8 +750,10 @@ namespace sqlite2orm {
          *  64-bit integer and wraps it around, so `0xFFFFFFFFFFFFFFFF` is -1.
          */
         std::optional<std::int64_t> integerLiteralInt64Value(const AstNode& value) {
-            bool negated = false;
-            const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
+            std::size_t foldedSigns = 0;
+            const auto* integerLiteral =
+                dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, foldedSigns));
+            const bool negated = foldedSigns % 2 != 0;
             if(integerLiteral == nullptr || integerLiteralExceedsInt64(integerLiteral->value, negated)) {
                 return std::nullopt;
             }
@@ -791,8 +806,8 @@ namespace sqlite2orm {
         }
         // A sign folds into a number only; in front of anything else it is an operator SQLite
         // computes, and the generated code spells that operator out rather than a value.
-        bool negated = false;
-        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        std::size_t foldedSigns = 0;
+        const AstNode& literal = *withoutFoldedSigns(value, foldedSigns);
         if(dynamic_cast<const IntegerLiteralNode*>(&literal) || dynamic_cast<const RealLiteralNode*>(&literal)) {
             return ValueStorageClass::numeric;
         }
@@ -814,32 +829,39 @@ namespace sqlite2orm {
         return ValueStorageClass::unknown;
     }
 
-    bool integerLiteralExceedsInt32(std::string_view integerLiteral) {
+    bool integerLiteralExceedsInt32(std::string_view integerLiteral, bool negated) {
         if(isHexadecimalIntegerLiteral(integerLiteral)) {
             // SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the
             // digits alone say which side of the int32 range the value lands on: up to
             // `0x7FFFFFFF` it is a positive int32, from `0xFFFFFFFF80000000` on it has wrapped
             // back into one as a negative number, and everything in between needs an int64.
+            // A folded-in minus sign slides that window by one, the same way it does for a
+            // decimal magnitude: `-0x80000000` is -2147483648 and an int32 holds it, while
+            // `-0xFFFFFFFF80000000` is 2147483648 and one does not.
             static constexpr std::string_view wrappedInt32Min = "ffffffff80000000";
+            static constexpr std::string_view negatedWrappedInt32Max = "ffffffff80000001";
+            static constexpr std::string_view hexInt32MinMagnitude = "80000000";
             const std::string digits = significantDigits(integerLiteral.substr(2));
             if(digits.size() < 8) {
                 return false;
             }
+            const std::string lowered = toLowerAscii(digits);
             if(digits.size() == 8) {
-                return digits.front() >= '8';
+                return negated ? std::string_view(lowered) > hexInt32MinMagnitude : digits.front() >= '8';
             }
             if(digits.size() == 16) {
-                const std::string lowered = toLowerAscii(digits);
-                return std::string_view(lowered) < wrappedInt32Min;
+                return std::string_view(lowered) < (negated ? negatedWrappedInt32Max : wrappedInt32Min);
             }
             // Nine to fifteen digits are past `0xFFFFFFFF`, and a seventeenth one is past an
             // int64 altogether — `hexLiteralExceedsInt64` refuses that where it is compiled.
             return true;
         }
         static constexpr std::string_view int32Max = "2147483647";
+        static constexpr std::string_view int32MinMagnitude = "2147483648";
+        const std::string_view limit = negated ? int32MinMagnitude : int32Max;
         const std::string digits = significantDigits(integerLiteral);
-        return digits.size() > int32Max.size() ||
-               (digits.size() == int32Max.size() && std::string_view(digits) > int32Max);
+        return digits.size() > limit.size() ||
+               (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
     std::string integerLiteralToCpp(std::string_view integerLiteral) {

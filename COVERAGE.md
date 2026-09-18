@@ -53,7 +53,7 @@ Statuses:
 - [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works — the generated code does not compile: codegen warning)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
-- [x] `NOT`
+- [~] `NOT` — `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walk that collects a statement's tables and binds its values stops at such a wrapper. A column under a NOT is therefore generated as `column<T>(&T::x)` — the same SQL, but a form the walk reads, where `not c(&T::x)` came out with no FROM clause and threw `SQL logic error` — and a value as `(c(0) + value)`, because an unbound literal made `NOT 0` answer NULL and `0 + x` is the numeric coercion SQLite applies in a boolean context anyway. A NOT over a NOT (or over the `!predicate` spelling of a negated `BETWEEN` / `LIKE` / `GLOB` / `MATCH`) is generated as `not cast<int64_t>(…)`: sqlite_orm's `negated_condition_t` is neither negatable nor an operator argument, so a second NOT over it does not compile. Partial because a NOT over a concatenation (`NOT (a || 'x')`, and `NOT (a OR b)` while `OR` is generated as `||`) still has no sqlite_orm form: `conc_t` is not negatable either and that code does not compile
 
 ### Binary operators (arithmetic)
 - [x] `+` (add)

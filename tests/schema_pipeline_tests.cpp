@@ -210,6 +210,182 @@ TEST_CASE("generateSqliteSchemaHeader: a view and a trigger SQLite stores but ca
     REQUIRE(header.errors.empty());
 }
 
+// A STORED generated column is stored text too: `sqlite3 blk.db "CREATE TABLE gen(x INTEGER,
+// y AS (x + 0x10000000000000000) STORED)"` succeeds and sqlite_master holds it, while every INSERT
+// into it fails. The table cannot be generated — dropping the as(...) would turn a generated
+// column into an ordinary one — so it is left out of make_storage() whole and its neighbours come
+// through. Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a STORED generated column SQLite stores but cannot compile keeps the schema") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER);"
+            "CREATE TABLE gen (x INTEGER, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE TABLE ok2 (b TEXT);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n"
+            "struct Ok2 {\n"
+            "    std::optional<std::string> b;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a)),\n"
+            "        make_table(\"ok2\",\n"
+            "        make_column(\"b\", &Ok2::b)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
+// Nothing may be left pointing at a table that is not generated: sqlite_orm resolves a foreign
+// key against the table it maps for the referenced type, so `foreign_key(&Child::gid)
+// .references(&Gen::x)` next to no `make_table("gen", ...)` does not compile, and neither does an
+// index, a trigger or a view named on it. Each is left out with its own warning, and what is left
+// compiles and maps the rest of the database.
+TEST_CASE("generateSqliteSchemaHeader: what rests on an ungenerated table is left out too") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gen (x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, gid INTEGER REFERENCES gen(x));"
+            "CREATE INDEX i ON gen (x);"
+            "CREATE TRIGGER tr AFTER INSERT ON child BEGIN DELETE FROM gen; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Child {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> gid;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"child\",\n"
+            "        make_column(\"id\", &Child::id, primary_key()),\n"
+            "        make_column(\"gid\", &Child::gid)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"},
+                {"foreign key on column 'gid' references gen, which is not generated, so the generated table has "
+                 "no foreign_key()"},
+                {"`i` rests on a table that is not generated and is not merged into make_storage()"},
+                {"`tr` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
+// The table-level spelling of the same foreign key goes the same way.
+TEST_CASE("generateSqliteSchemaHeader: a table-level foreign key into an ungenerated table is left out") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gen (x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, gid INTEGER, FOREIGN KEY (gid) REFERENCES gen (x));");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Child {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> gid;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"child\",\n"
+            "        make_column(\"id\", &Child::id, primary_key()),\n"
+            "        make_column(\"gid\", &Child::gid)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"},
+                {"table-level foreign key on column 'gid' references gen, which is not generated, so the "
+                 "generated table has no foreign_key()"}});
+    REQUIRE(header.errors.empty());
+}
+
+// A view reading an ungenerated table has no struct to select from either, so it goes with it.
+TEST_CASE("generateSqliteSchemaHeader: a view over an ungenerated table is left out") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gen (x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE TABLE ok1 (a INTEGER);"
+            "CREATE VIEW vw AS SELECT x FROM gen;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"},
+                {"`vw` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
 TEST_CASE("generateSqliteSchemaHeader: DML after DDL emits seed_data()") {
     auto pipelines = processMultiSql(
         "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"

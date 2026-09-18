@@ -56,6 +56,22 @@ namespace sqlite2orm {
     std::string_view binaryOperatorString(BinaryOperator binaryOperator);
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator);
 
+    /** Precedence of code that is one C++ term already, so no operator around it can regroup it. */
+    inline constexpr int kCppPrecedencePrimary = 0;
+    /**
+     *  Precedence of the C++ operator `binaryOperator` is emitted as, numbered as the C++ grammar
+     *  ranks it: the smaller the number, the tighter it binds. It has little to do with the SQL
+     *  precedence the parser applied — SQL's `||` binds tightest of the binary operators and C++'s
+     *  binds loosest — so the generated grouping has to be spelled out rather than inherited.
+     */
+    int cppOperatorPrecedence(BinaryOperator binaryOperator);
+    /**
+     *  Precedence of the top-level C++ operator the node's generated code carries, or
+     *  `kCppPrecedencePrimary` when that code is a literal, a call, a unary expression or an
+     *  already parenthesized one. Asking the AST is what keeps this out of the generated string.
+     */
+    int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy);
+
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 
     bool endsWith(std::string_view text, std::string_view suffix);

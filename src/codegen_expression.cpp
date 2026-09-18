@@ -392,18 +392,34 @@ namespace sqlite2orm {
                 rightNoWrap = true;
             }
 
+            // The operator spelling puts the operands into a C++ expression, whose grouping is the
+            // C++ precedence and not the SQL one this node was parsed with. An operand that would
+            // regroup there gets parentheses: every operator involved is left-associative, so the
+            // right one needs them at equal precedence too, which is what tells `1 - (2 - 3)` from
+            // `1 - 2 - 3`. The functional spelling passes its operands as arguments and needs none.
+            const int precedence = cppOperatorPrecedence(binaryOp->binaryOperator);
+            auto asOperand = [&](const std::string& code, const AstNode& operandNode, bool rightOperand) {
+                if(precedence == kCppPrecedencePrimary) return code;
+                const int operandPrecedence = generatedCppPrecedence(operandNode, this->context.codeGenPolicy);
+                const bool regroups =
+                    rightOperand ? operandPrecedence >= precedence : operandPrecedence > precedence;
+                return regroups ? "(" + code + ")" : code;
+            };
+            std::string leftOperand = asOperand(leftResult.code, *binaryOp->lhs, false);
+            std::string rightOperand = asOperand(rightResult.code, *binaryOp->rhs, true);
+
             std::string wrappedLeft =
-                (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(binaryOp->lhs.get())) ? wrap(leftResult.code) : leftResult.code;
+                (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(binaryOp->lhs.get())) ? wrap(leftResult.code) : leftOperand;
             std::string wrappedRight =
-                (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(binaryOp->rhs.get())) ? wrap(rightResult.code) : rightResult.code;
+                (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(binaryOp->rhs.get())) ? wrap(rightResult.code) : rightOperand;
 
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
             std::string functionalCode =
                 std::string(funcName) + "(" + leftResult.code + ", " + rightResult.code + ")";
 
             auto op = binaryOperatorString(binaryOp->binaryOperator);
-            std::string wrapLeftCode = wrappedLeft + std::string(op) + rightResult.code;
-            std::string wrapRightCode = leftResult.code + std::string(op) + wrappedRight;
+            std::string wrapLeftCode = wrappedLeft + std::string(op) + rightOperand;
+            std::string wrapRightCode = leftOperand + std::string(op) + wrappedRight;
             std::string wrapBothCode = wrappedLeft + std::string(op) + wrappedRight;
 
             std::string chosenExprVal = "operator_wrap_left";

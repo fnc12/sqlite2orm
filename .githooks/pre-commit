@@ -38,7 +38,8 @@ git diff --cached --name-only -z --diff-filter=ACMR > "$staged"
 
 # A NUL never survives a shell word, so the list cannot be read into one: xargs splits it instead
 # and the check itself runs in the child. The staged content is what the commit records, which is
-# not always what is on disk.
+# not always what is on disk. The child runs under set -e on purpose: a git or clang-format that
+# fails on a staged file is a reason to refuse the commit, never a reason to report nothing.
 status=0
 xargs -0 sh -c '
     set -e
@@ -51,7 +52,10 @@ xargs -0 sh -c '
             *.h | *.hpp | *.cpp) ;;
             *) continue ;;
         esac
-        git show ":$file" > "$tmp/staged"
+        # :0: names stage 0 of this exact path. A bare :$file is read as :<stage>:<path> first,
+        # so a staged 0:x.cpp would hand back the index entry for x.cpp instead, and an
+        # unformatted file would commit unchecked.
+        git show ":0:$file" > "$tmp/staged"
         "$clang_format" --style=file --assume-filename="$file" < "$tmp/staged" > "$tmp/formatted"
         if ! cmp -s "$tmp/staged" "$tmp/formatted"; then
             echo "pre-commit: $file is not formatted according to .clang-format." >&2

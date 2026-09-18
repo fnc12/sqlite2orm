@@ -159,10 +159,25 @@ namespace sqlite2orm {
                     return integerLiteralExceedsInt32(signedLiteral->value, foldedSigns % 2 != 0) ? "int64_t"
                                                                                                  : "int";
                 }
-                // A sign does not otherwise change the width a value needs, so `-(x + 1)` is the
-                // int64_t its operand is. C++ types a constant the same way: `2147483648` is
-                // already wider than an `int` there, and the minus applies to that wider type.
-                return this->inferTypeFromNode(*unaryOperator->operand);
+                // A minus SQLite cannot fold into a literal — a COLLATE between the two stops
+                // the folding — is a negation it computes over 64 bits while it runs the
+                // statement, and that takes a value out of the int32 range as readily as a
+                // folded sign does: `-(-2147483648 COLLATE BINARY)` is the 2147483648 an `int`
+                // does not hold. Negating the int64 minimum leaves the integer range altogether,
+                // the way the sign standing over a folded one already does. A plus SQLite's
+                // parser drops, so it leaves the width of what stands under it alone.
+                const std::string operandType = this->inferTypeFromNode(*unaryOperator->operand);
+                if(unaryOperator->unaryOperator != UnaryOperator::minus) {
+                    return operandType;
+                }
+                std::size_t negatedSigns = 0;
+                auto* negatedLiteral = dynamic_cast<const IntegerLiteralNode*>(
+                    withoutFoldedSigns(generatedOperandNode(*unaryOperator->operand), negatedSigns));
+                if(negatedLiteral != nullptr && negatedSigns % 2 != 0 &&
+                   integerLiteralExceedsInt64(negatedLiteral->value)) {
+                    return "double";
+                }
+                return operandType == "int" ? "int64_t" : operandType;
             }
         }
         if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&valueNode)) {

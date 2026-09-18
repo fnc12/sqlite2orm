@@ -924,6 +924,25 @@ TEST_CASE("codegen: prefix - the width of a literal follows every sign folded in
     REQUIRE(prefixFor("x > -(+(-2147483648))") == "struct User {\n    int64_t x = 0;\n};");
 }
 
+// A COLLATE between a minus and the literal stops SQLite's parser from folding the two together,
+// so the sign left standing over it is a negation SQLite computes over 64 bits while it runs the
+// statement. It takes a value out of the int32 range as readily as a folded sign does, and
+// negating the int64 minimum leaves the integer range altogether:
+// `sqlite3 :memory: "SELECT -(-2147483648 COLLATE BINARY), typeof(-(-9223372036854775808 COLLATE
+// BINARY))"` prints 2147483648 and real.
+TEST_CASE("codegen: prefix - a minus a COLLATE keeps from folding still widens the field") {
+    REQUIRE(prefixFor("x > -(-2147483648 COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-0x80000000 COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-9223372036854775808 COLLATE BINARY)") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > -(-9223372036854775807 COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+    // A COLLATE that does not stand between the sign and the literal leaves the folding alone:
+    // `sqlite3 :memory: "SELECT -2147483648 COLLATE BINARY, -0xFFFFFFFF80000000 COLLATE BINARY"`
+    // prints -2147483648 and 2147483648, the values the signs spell with the literals.
+    REQUIRE(prefixFor("x > -2147483648 COLLATE BINARY") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFF80000000 COLLATE BINARY") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > (-(-2147483648) COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+}
+
 // Only the innermost sign folds into the literal; SQLite negates the value the outer ones stand
 // on while it runs the statement, and negating the int64 minimum leaves the integer range:
 // `sqlite3 :memory: "SELECT typeof(-9223372036854775808), typeof(-(-9223372036854775808)),

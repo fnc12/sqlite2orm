@@ -53,7 +53,9 @@ Statuses:
 - [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works — the generated code does not compile: codegen warning)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
-- [x] `NOT`
+- [x] `NOT` — prefix, and weaker than every binary operator SQLite has bar `AND` and `OR`, so its
+  operand runs down to the `=` level: `NOT a + 1` is `NOT (a + 1)` and `NOT a IN (1, 2)` is
+  `NOT (a IN (1, 2))`
 
 ### Binary operators (arithmetic)
 - [x] `+` (add)

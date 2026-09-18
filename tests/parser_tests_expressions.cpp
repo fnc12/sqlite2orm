@@ -426,6 +426,40 @@ TEST_CASE("parser: NOT binds tighter than AND") {
         {}));
 }
 
+// Prefix NOT is weaker than every binary operator in SQLite, AND and OR aside. Checked against
+// sqlite3 3.51: `SELECT NOT (7 IS NULL) + 1` answers 0 — NOT ((7 IS NULL) + 1) — and
+// `SELECT NOT 1 IN (0, 1)` answers 0 — NOT (1 IN (0, 1)).
+TEST_CASE("parser: NOT is weaker than arithmetic") {
+    auto parseResult = parse("NOT a + 1");
+    REQUIRE(requireNode<UnaryOperatorNode>(parseResult) == UnaryOperatorNode(
+        UnaryOperator::logicalNot,
+        std::make_unique<BinaryOperatorNode>(BinaryOperator::add,
+            makeNode<ColumnRefNode>("a"), makeNode<IntegerLiteralNode>("1"), SourceLocation{}),
+        {}));
+}
+
+TEST_CASE("parser: NOT is weaker than the '=' level") {
+    auto parseResult = parse("NOT (a IS NULL) + 1");
+    REQUIRE(requireNode<UnaryOperatorNode>(parseResult) == UnaryOperatorNode(
+        UnaryOperator::logicalNot,
+        std::make_unique<BinaryOperatorNode>(BinaryOperator::add,
+            std::make_unique<IsNullNode>(makeNode<ColumnRefNode>("a"), SourceLocation{}),
+            makeNode<IntegerLiteralNode>("1"), SourceLocation{}),
+        {}));
+}
+
+TEST_CASE("parser: NOT is weaker than IN") {
+    auto parseResult = parse("NOT a IN (1, 2)");
+    std::vector<AstNodePointer> values;
+    values.push_back(makeNode<IntegerLiteralNode>("1"));
+    values.push_back(makeNode<IntegerLiteralNode>("2"));
+    REQUIRE(requireNode<UnaryOperatorNode>(parseResult) == UnaryOperatorNode(
+        UnaryOperator::logicalNot,
+        std::make_unique<InNode>(makeNode<ColumnRefNode>("a"), std::move(values), nullptr, false,
+                                 SourceLocation{}),
+        {}));
+}
+
 TEST_CASE("parser: IS NULL") {
     auto parseResult = parse("a IS NULL");
     REQUIRE(requireNode<IsNullNode>(parseResult) == IsNullNode(

@@ -749,3 +749,26 @@ TEST_CASE("runtime: an arithmetic result column rounds the int64 it reads back")
     REQUIRE(selectedValues(statements, "int64_t", "9223372036854775807") ==
             std::vector<std::string>{"9.22337e+18", "9.22337e+18", "1.84467e+19"});
 }
+
+// Prefix NOT is weaker than every binary operator in SQLite, AND and OR aside, so `NOT a + 1` is
+// `NOT (a + 1)` and `NOT a IN (1, 2)` is `NOT (a IN (1, 2))`. The parser used to give NOT a primary
+// as its operand, which regrouped all four of these. Expected values checked against sqlite3 3.51
+// over `users(a INTEGER)`: the row a = 7 answers 0, 1, 1, 0 and the row a = NULL answers
+// NULL, NULL, NULL, 0.
+TEST_CASE("runtime: a prefix NOT groups the way SQLite groups it") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT a + 1;"),
+        generate("SELECT NOT a IN (1, 2);"),
+        generate("SELECT NOT a BETWEEN 8 AND 9;"),
+        generate("SELECT NOT (a IS NULL) + 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(not (c(&User::a) + 1)));",
+                              "auto rows = storage.select(as_optional(not (in(&User::a, {1, 2}))));",
+                              "auto rows = storage.select(as_optional(not (between(&User::a, 8, 9))));",
+                              "auto rows = storage.select(not (cast<int64_t>(is_null(&User::a)) + 1));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "1", "1", "0"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "0"});
+}

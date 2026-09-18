@@ -252,7 +252,9 @@ namespace sqlite2orm {
         if(current().type == TokenType::kwNot) {
             auto location = current().location;
             advanceToken();
-            auto operand = parsePrimary();
+            // Prefix NOT is weaker than every binary operator in SQLite (only AND and OR are
+            // weaker still), so its operand swallows everything down to the '=' level.
+            auto operand = parseBinaryExpression(2);
             if(!operand) return nullptr;
             return std::make_unique<UnaryOperatorNode>(UnaryOperator::logicalNot, std::move(operand), location);
         }

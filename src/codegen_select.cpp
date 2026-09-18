@@ -54,7 +54,7 @@ namespace sqlite2orm {
                cteLookup != this->context.activeCteTypedefByTableKey.end()) {
                 return cteLookup->second;
             }
-            return toStructName(tableSqlName);
+            return this->context.structNameForTable(tableSqlName);
         };
         auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
             const auto key = normalizeSqlIdentifier(tableSqlName);
@@ -643,7 +643,7 @@ namespace sqlite2orm {
                cteLookup != this->context.activeCteTypedefByTableKey.end()) {
                 return cteLookup->second;
             }
-            return toStructName(tableSqlName);
+            return this->context.structNameForTable(tableSqlName);
         };
         auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
             const auto key = normalizeSqlIdentifier(tableSqlName);

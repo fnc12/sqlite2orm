@@ -17,7 +17,7 @@ namespace sqlite2orm {
         if(insertNode.schemaName) {
             warnings.push_back("schema-qualified table in INSERT is not represented in sqlite_orm mapping");
         }
-        std::string tableStruct = toStructName(insertNode.tableName);
+        std::string tableStruct = this->context.structNameForTable(insertNode.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
 
@@ -210,7 +210,7 @@ namespace sqlite2orm {
             warnings.push_back("UPDATE ... FROM ... is not supported in sqlite_orm — "
                                "FROM clause is ignored in codegen");
         }
-        std::string tableStruct = toStructName(updateNode.tableName);
+        std::string tableStruct = this->context.structNameForTable(updateNode.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
         std::vector<DecisionPoint> dps;
@@ -250,7 +250,7 @@ namespace sqlite2orm {
         if(deleteNode.schemaName) {
             warnings.push_back("schema-qualified table in DELETE is not represented in sqlite_orm mapping");
         }
-        std::string tableStruct = toStructName(deleteNode.tableName);
+        std::string tableStruct = this->context.structNameForTable(deleteNode.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
         std::vector<DecisionPoint> dps;

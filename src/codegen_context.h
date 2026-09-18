@@ -71,6 +71,13 @@ namespace sqlite2orm {
          *  filled by whoever assembles a whole schema.
          */
         std::set<std::string> ungeneratableTables;
+        /**
+         *  The `ungeneratableTables` entries the statement being generated has turned into a
+         *  struct name. Every table reference reaches its struct through `structNameForTable()`,
+         *  so however deeply a reference is nested — a subquery in a WHERE, a trigger WHEN clause,
+         *  a CTE — it is recorded here, and the caller leaves the whole statement out.
+         */
+        std::set<std::string> referencedUngeneratableTables;
         std::map<std::string, std::string> columnTypes;
         std::map<std::string, std::string> fromTableAliasToStructName;
         std::map<std::string, TableAliasInfo> activeTableAliases;
@@ -143,6 +150,10 @@ namespace sqlite2orm {
 
         /** Whether `tableName` names a table of this batch that is left out of the generated storage. */
         bool isUngeneratableTable(std::string_view tableName) const;
+
+        /** Struct name of a referenced table, recording the reference when the table is not generated. */
+        std::string structNameForTable(std::string_view tableName);
+
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName,
                                                        std::string_view columnName) const;
 

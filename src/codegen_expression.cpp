@@ -252,11 +252,10 @@ namespace sqlite2orm {
                 }
                 return CodeGenResult{std::move(code), {}, std::move(qualWarnings), {}, {}};
             }
-            std::string structForColumn = toStructName(qualifiedRef->tableName);
             auto aliasIt = this->context.fromTableAliasToStructName.find(tableKey);
-            if(aliasIt != this->context.fromTableAliasToStructName.end()) {
-                structForColumn = aliasIt->second;
-            }
+            std::string structForColumn = aliasIt != this->context.fromTableAliasToStructName.end()
+                                              ? aliasIt->second
+                                              : this->context.structNameForTable(qualifiedRef->tableName);
             const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
             this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
             std::string memberPointer = "&" + structForColumn + "::" + toCppIdentifier(qualifiedRef->columnName);
@@ -290,8 +289,9 @@ namespace sqlite2orm {
                 return CodeGenResult{"asterisk<" + tableAliasIt->second.ormAliasType + ">()", {},
                                      std::move(qualifiedAsteriskWarnings)};
             }
-            return CodeGenResult{"asterisk<" + toStructName(qualifiedAsterisk->tableName) + ">()", {},
-                                 std::move(qualifiedAsteriskWarnings)};
+            return CodeGenResult{
+                "asterisk<" + this->context.structNameForTable(qualifiedAsterisk->tableName) + ">()", {},
+                std::move(qualifiedAsteriskWarnings)};
         } else if(auto* newRef = dynamic_cast<const NewRefNode*>(&astNode)) {
             auto cppName = toCppIdentifier(newRef->columnName);
             this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));

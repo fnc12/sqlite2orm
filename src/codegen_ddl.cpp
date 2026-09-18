@@ -41,7 +41,7 @@ namespace sqlite2orm {
                 "schema-qualified ON table in TRIGGER is not represented in sqlite_orm mapping");
         }
 
-        std::string subject = toStructName(createTrigger.tableName);
+        std::string subject = this->context.structNameForTable(createTrigger.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = subject;
 
@@ -136,7 +136,7 @@ namespace sqlite2orm {
                 "from serialized output");
         }
 
-        std::string tableStruct = toStructName(createIndex.tableName);
+        std::string tableStruct = this->context.structNameForTable(createIndex.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
 

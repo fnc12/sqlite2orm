@@ -516,3 +516,65 @@ TEST_CASE("codegen: PRAGMA user_version = a string whose digits stop at an under
                                           "integer, so it sets 1"}},
                           {}});
 }
+
+// QA: `sqlite3GetInt32()` skips any number of leading zeros and only then reads eight hexadecimal
+// digits, so the zeros never count towards that window: `0x0000000007FFFFFFF` is 2147483647 and is
+// generated as written, while `0x000000000080000000` still has the sign bit set and sets 0.
+// Checked against the sqlite3 3.51.0 and 3.45.1 CLIs.
+TEST_CASE("codegen: PRAGMA user_version = a hex literal whose leading zeros precede eight digits") {
+    REQUIRE(generateFull("PRAGMA user_version = 0x0000000007FFFFFFF;") ==
+            CodeGenResult{"storage.pragma.user_version(0x0000000007FFFFFFF);", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA user_version = 0x000000000080000000;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0x000000000080000000: SQLite reads a PRAGMA value "
+                                          "as a 32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// QA: a string is read by the very same rules and nothing is trimmed off it first, so a leading
+// space refuses the whole value where a leading `+` does not, and a string spelling a hexadecimal
+// value takes the hexadecimal branch because no sign shuts it off. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: PRAGMA user_version = a string SQLite reads by its own rules") {
+    REQUIRE(generateFull("PRAGMA user_version = ' 12';") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = ' 12': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = '+12';") ==
+            CodeGenResult{"storage.pragma.user_version(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '+12': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 12"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = '0x10';") ==
+            CodeGenResult{"storage.pragma.user_version(16);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '0x10': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 16"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = '';") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// QA: the digits of a REAL stop at the first character that is not one, exponent included, so
+// `1e3` is 1 rather than 1000 and `0.9` is 0 rather than a rounded 1. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: PRAGMA user_version = a REAL is read by its leading digits only") {
+    REQUIRE(generateFull("PRAGMA user_version = 1e3;") ==
+            CodeGenResult{"storage.pragma.user_version(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 1e3: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 1"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = 0.9;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0.9: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 0"}},
+                          {}});
+}

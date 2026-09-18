@@ -402,11 +402,9 @@ namespace sqlite2orm {
         }
 
         if(selectNode.limitValue) {
-            auto limitResult = this->coordinator.generateNode(*selectNode.limitValue);
-            std::string limitCode = "limit(" + limitResult.code;
+            std::string limitCode = "limit(" + expressionCode(*selectNode.limitValue);
             if(selectNode.offsetValue) {
-                auto offsetResult = this->coordinator.generateNode(*selectNode.offsetValue);
-                limitCode += ", offset(" + offsetResult.code + ")";
+                limitCode += ", offset(" + expressionCode(*selectNode.offsetValue) + ")";
             }
             limitCode += ")";
             appendClause(limitCode);
@@ -946,11 +944,9 @@ namespace sqlite2orm {
             code += part;
         }
         if(selectNode.limitValue) {
-            auto limitResult = this->coordinator.generateNode(*selectNode.limitValue);
-            code += ", limit(" + limitResult.code;
+            code += ", limit(" + expressionCode(*selectNode.limitValue);
             if(selectNode.offsetValue) {
-                auto offsetResult = this->coordinator.generateNode(*selectNode.offsetValue);
-                code += ", offset(" + offsetResult.code + ")";
+                code += ", offset(" + expressionCode(*selectNode.offsetValue) + ")";
             }
             code += ")";
         }

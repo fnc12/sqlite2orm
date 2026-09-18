@@ -129,12 +129,53 @@ namespace sqlite2orm {
         if(dynamic_cast<const RealLiteralNode*>(&node)) return "double";
         if(dynamic_cast<const BoolLiteralNode*>(&node)) return "bool";
         if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&node)) {
-            // A sign does not change the width a value needs, so `-3000000000` is the int64_t its
-            // operand is. C++ types the constant the same way: `2147483648` is already wider than
-            // an `int` there, and the unary minus applies to that wider type.
+            if(unaryOperator->unaryOperator == UnaryOperator::bitwiseNot) {
+                // `~` is a 64-bit complement in SQLite, and it takes a value out of the int32
+                // range as readily as it brings one back in: `~2147483648` is -2147483649. The
+                // field follows the operation rather than the operand, the way it already does
+                // for a view column in `ViewFieldTypeInferrer`.
+                return "int64_t";
+            }
             if(unaryOperator->operand && (unaryOperator->unaryOperator == UnaryOperator::minus ||
                                           unaryOperator->unaryOperator == UnaryOperator::plus)) {
+                // A minus sign belongs to the literal it stands before, so the width follows the
+                // value the two spell together: `0xFFFFFFFF80000000` is the -2147483648 an `int`
+                // holds, while `-0xFFFFFFFF80000000` is the 2147483648 it does not.
+                if(unaryOperator->unaryOperator == UnaryOperator::minus) {
+                    auto* signedLiteral =
+                        dynamic_cast<const IntegerLiteralNode*>(unaryOperator->operand.get());
+                    if(signedLiteral && !integerLiteralExceedsInt64(signedLiteral->value)) {
+                        return integerLiteralExceedsInt32(signedLiteral->value, /*negated*/ true) ? "int64_t"
+                                                                                                 : "int";
+                    }
+                }
+                // A sign does not otherwise change the width a value needs, so `-3000000000` is
+                // the int64_t its operand is. C++ types the constant the same way: `2147483648`
+                // is already wider than an `int` there, and the minus applies to that wider type.
                 return this->inferTypeFromNode(*unaryOperator->operand);
+            }
+        }
+        if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&node)) {
+            // SQLite computes arithmetic and bit operations over 64-bit integers, so the result
+            // leaves the int32 range even where both operands sit inside it: `2147483647 + 1` is
+            // 2147483648. The same widening `ViewFieldTypeInferrer` applies to a view column.
+            switch(binaryOperator->binaryOperator) {
+            case BinaryOperator::add:
+            case BinaryOperator::subtract:
+            case BinaryOperator::multiply:
+            case BinaryOperator::divide:
+            case BinaryOperator::modulo: {
+                const std::string lhsType =
+                    binaryOperator->lhs ? this->inferTypeFromNode(*binaryOperator->lhs) : std::string();
+                const std::string rhsType =
+                    binaryOperator->rhs ? this->inferTypeFromNode(*binaryOperator->rhs) : std::string();
+                return lhsType == "double" || rhsType == "double" ? "double" : "int64_t";
+            }
+            case BinaryOperator::bitwiseAnd:
+            case BinaryOperator::bitwiseOr:
+            case BinaryOperator::shiftLeft:
+            case BinaryOperator::shiftRight: return "int64_t";
+            default: break;
             }
         }
         return "int";

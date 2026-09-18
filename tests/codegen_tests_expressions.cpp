@@ -885,13 +885,58 @@ TEST_CASE("codegen: prefix - the width of a literal follows its significant digi
     REQUIRE(prefixFor("x > 21474_83648") == "struct User {\n    int64_t x = 0;\n};");
 }
 
-// A sign does not bring the value back into an int32, and the operand of a unary plus or minus
-// decides the field on its own.
+// A magnitude past the int32 range stays past it under either sign, and the operand of a unary
+// plus or minus decides the field on its own.
 TEST_CASE("codegen: prefix - inferred type looks through a unary sign") {
     REQUIRE(prefixFor("x > -3000000000") == "struct User {\n    int64_t x = 0;\n};");
     REQUIRE(prefixFor("x > +3000000000") == "struct User {\n    int64_t x = 0;\n};");
     REQUIRE(prefixFor("x > -5") == "struct User {\n    int x = 0;\n};");
     REQUIRE(prefixFor("x > -3.14") == "struct User {\n    double x = 0.0;\n};");
+}
+
+// A minus sign belongs to the literal standing behind it, so the width follows the value the two
+// spell together rather than the magnitude alone. It only shows on the edges of the range, where
+// the sign carries a value across: `sqlite3 :memory: "SELECT -0x80000000, -0xFFFFFFFF80000000"`
+// prints -2147483648, which an `int` holds, and 2147483648, which it does not.
+TEST_CASE("codegen: prefix - the width of a literal follows the sign folded into it") {
+    REQUIRE(prefixFor("x > -2147483648") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -2147483649") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0x80000000") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -0x80000001") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0x100000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFF80000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFF80000001") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFFFFFFFFFF") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > +0xFFFFFFFF80000000") == "struct User {\n    int x = 0;\n};");
+}
+
+// `~` complements over 64 bits, so it takes a value out of the int32 range as readily as it
+// brings one back in: `sqlite3 :memory: "SELECT ~2147483648"` prints -2147483649, which an `int`
+// field reads back as 2147483647.
+TEST_CASE("codegen: prefix - inferred int64_t from a bitwise NOT") {
+    REQUIRE(prefixFor("x = ~2147483648") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = ~5") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = ~0xFFFFFFFF80000000") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// Arithmetic and bit operations are computed over 64-bit integers, so the result leaves the int32
+// range even where both operands sit inside it: `sqlite3 :memory: "SELECT 2147483647 + 1"` prints
+// 2147483648, and `SELECT 3000000000 + 0` prints 3000000000 rather than the -1294967296 an `int`
+// field reads back.
+TEST_CASE("codegen: prefix - inferred int64_t from a binary arithmetic term") {
+    REQUIRE(prefixFor("x = 2147483647 + 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 3000000000 + 0") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 5 - 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 100000 * 100000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 7 / 2") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 7 % 2") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 3 & 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 3 | 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 1 << 40") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 1099511627776 >> 1") == "struct User {\n    int64_t x = 0;\n};");
+    // A real operand makes the whole term a REAL, the way it does for a view column.
+    REQUIRE(prefixFor("x = 3000000000 * 1.5") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x = 1 / 2.0") == "struct User {\n    double x = 0.0;\n};");
 }
 
 // The same inference answers for BETWEEN, for IN and for the result type of a CASE, so a literal

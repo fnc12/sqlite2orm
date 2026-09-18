@@ -127,6 +127,63 @@ namespace {
         return rows;
     }
 
+    /**
+     *  Builds a program around the generated select statements over a three-row `users` table,
+     *  compiles and links it against sqlite_orm, runs it and returns the number of rows each
+     *  statement came back with. A LIMIT that reaches sqlite_orm as the wrong number — or that the
+     *  generator dropped altogether — shows up as a different row count, nothing else.
+     */
+    std::vector<std::string> selectedRowCounts(const std::vector<std::string>& selectStatements) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <iostream>\n"
+                   "\n"
+                   "struct Users {\n"
+                   "    int a = 0;\n"
+                   "};\n"
+                   "\n"
+                   "int main() {\n"
+                   "    using namespace sqlite_orm;\n"
+                   "    auto storage = make_storage(\"\", make_table(\"users\", make_column(\"a\", &Users::a)));\n"
+                   "    storage.sync_schema();\n"
+                   "    storage.replace(Users{1});\n"
+                   "    storage.replace(Users{2});\n"
+                   "    storage.replace(Users{3});\n";
+        for(const auto& statement: selectStatements) {
+            program << "    {\n        " << statement << "\n        std::cout << rows.size() << '\\n';\n    }\n";
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("limits.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("limits");
+        const std::filesystem::path outpath = dir.file("limits.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> counts;
+        {
+            std::ifstream out(outpath);
+            for(std::string line; std::getline(out, line);) {
+                counts.push_back(line);
+            }
+        }
+        if(exitCode != 0) {
+            WARN("building the generated selects failed (exit " << exitCode
+                                                                << "); ensure c++, sqlite_orm headers and "
+                                                                   "libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return counts;
+    }
+
 }  // namespace
 
 // The generated code used to read every negative numeric literal back as 0: the SQL was right, but
@@ -253,4 +310,28 @@ TEST_CASE("runtime: an INSERT value out of reach of a bool field keeps the value
             });
     REQUIRE(insertedColumnRows(statements, "bool") ==
             std::vector<std::string>{"real|1.0e+20", "real|1.5", "integer|2"});
+}
+
+// A LIMIT value is a whole expression in SQLite, and `LIMIT -1` is how it spells "no limit". The
+// generator used to take an unsigned integer literal only, so it reported a parse error on the
+// minus sign and emitted the same statement without any `limit(...)` at all. Expected counts
+// checked against sqlite3 3.51 over the same three rows.
+TEST_CASE("runtime: a generated LIMIT returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT a FROM users LIMIT -1;"),
+        generate("SELECT a FROM users LIMIT 2;"),
+        generate("SELECT a FROM users LIMIT 1 OFFSET -1;"),
+        generate("SELECT a FROM users LIMIT -1 OFFSET 2;"),
+        generate("SELECT a FROM users LIMIT 1, 2;"),
+        generate("SELECT a FROM users LIMIT 2 * 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(&Users::a, limit(-1));",
+                              "auto rows = storage.select(&Users::a, limit(2));",
+                              "auto rows = storage.select(&Users::a, limit(1, offset(-1)));",
+                              "auto rows = storage.select(&Users::a, limit(-1, offset(2)));",
+                              "auto rows = storage.select(&Users::a, limit(2, offset(1)));",
+                              "auto rows = storage.select(&Users::a, limit(c(2) * 1));",
+                          });
+    REQUIRE(selectedRowCounts(statements) == std::vector<std::string>{"3", "2", "1", "1", "2", "2"});
 }

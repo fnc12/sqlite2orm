@@ -44,6 +44,7 @@ namespace sqlite2orm {
 
     extern const std::string kCommentCpp20ColumnAliases;
     extern const std::string kCommentViewReflection;
+    extern const std::string kCommentNegationAsZeroMinus;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -70,8 +71,21 @@ namespace sqlite2orm {
     std::string integerLiteralToCpp(std::string_view integerLiteral);
     /** True when SQLite reads a decimal integer literal as a REAL because an int64 cannot hold it. */
     bool integerLiteralExceedsInt64(std::string_view integerLiteral);
+    /** True for an integer or real literal, the two kinds a minus sign is folded into. */
+    bool isNumericLiteral(const AstNode& astNode);
     /** True for a numeric literal carrying a folded-in minus sign, e.g. `-2` (see `isLeafNode`). */
     bool isNegatedNumericLiteral(const AstNode& astNode);
+    /**
+     *  Name of the SQL predicate a node stands for when sqlite_orm serializes it without
+     *  parentheses and SQLite binds it looser than a binary `-`, empty for every other node.
+     *  Such an operand cannot carry the `0 - expr` spelling of a negation.
+     */
+    std::string_view sqlPredicateLooserThanMinus(const AstNode& astNode);
+    /**
+     *  True for a node generated as the parenthesized `(c(0) - …)` subtraction a negation becomes,
+     *  which is already one C++ term and needs no parentheses of its own around it.
+     */
+    bool generatesZeroMinusSubtraction(const AstNode& astNode);
     /** True for a node that generates a bare C++ value, which `wrap` turns into a sqlite_orm expression. */
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);

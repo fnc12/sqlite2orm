@@ -446,25 +446,29 @@ namespace sqlite2orm {
             auto decisionPoints = std::move(operandResult.decisionPoints);
 
             if(unaryOp->unaryOperator == UnaryOperator::plus) {
-                return CodeGenResult{operandResult.code, std::move(decisionPoints), {}, {},
+                return CodeGenResult{operandResult.code, std::move(decisionPoints),
+                                     std::move(operandResult.warnings), std::move(operandResult.errors),
                                      std::move(operandResult.comments)};
             }
 
-            if(isNegatedNumericLiteral(*unaryOp)) {
-                // SQLite's own parser glues a minus sign onto the numeric literal behind it, and so do
-                // we: sqlite_orm's unary_minus_t reports a wrong result type, so `-c(2)` serializes to
-                // the right SQL but reads the row back as 0.
-                return CodeGenResult{"-" + operandResult.code, std::move(decisionPoints), {}, {},
-                                     std::move(operandResult.comments)};
+            // sqlite_orm's unary_minus_t reports a wrong result type, so `-c(2)` serializes to the
+            // right SQL and still reads the row back as 0. A minus over a numeric constant is folded
+            // into it the way SQLite's own parser does, which is why `-2` is the constant -2 rather
+            // than a negation of 2; C++ folds the second sign of `- -3` just as well.
+            if(unaryOp->unaryOperator == UnaryOperator::minus) {
+                if(isNumericLiteral(*unaryOp->operand)) {
+                    return CodeGenResult{"-" + operandResult.code, std::move(decisionPoints),
+                                         std::move(operandResult.warnings), std::move(operandResult.errors),
+                                         std::move(operandResult.comments)};
+                }
+                if(isNegatedNumericLiteral(*unaryOp->operand)) {
+                    return CodeGenResult{"-(" + operandResult.code + ")", std::move(decisionPoints),
+                                         std::move(operandResult.warnings), std::move(operandResult.errors),
+                                         std::move(operandResult.comments)};
+                }
             }
 
             bool operandLeaf = isLeafNode(*unaryOp->operand);
-            if(unaryOp->unaryOperator == UnaryOperator::minus &&
-               isNegatedNumericLiteral(*unaryOp->operand)) {
-                // A second minus over an already signed literal: parenthesize instead of wrapping, so
-                // that `c(-2)` does not become the unary_minus_t the fold above avoids.
-                operandLeaf = false;
-            }
             bool operandNoWrap = false;
             if(auto* opCol = dynamic_cast<const ColumnRefNode*>(unaryOp->operand.get())) {
                 operandNoWrap = this->context.columnRefIsSelectAliasNoWrap(*opCol);
@@ -488,10 +492,31 @@ namespace sqlite2orm {
             std::string operandStr;
             if(operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(unaryOp->operand.get())) {
                 operandStr = wrap(operandResult.code);
-            } else if(!operandLeaf) {
+            } else if(!operandLeaf && !generatesZeroMinusSubtraction(*unaryOp->operand)) {
                 operandStr = "(" + operandResult.code + ")";
             } else {
                 operandStr = operandResult.code;
+            }
+
+            // An operand that is not a numeric constant keeps its negation as a subtraction from zero.
+            // SQLite computes `0 - x` exactly like `-x` — same value and same typeof for every operand
+            // kind — and sqlite_orm serializes and reads that back correctly, where its unary_minus_t
+            // hands the caller 0 and throws over a column. The one operand this cannot carry is a
+            // predicate: sqlite_orm leaves `a BETWEEN 1 AND 9` unparenthesized and SQLite binds it
+            // looser than a binary `-`, so `0 - a BETWEEN 1 AND 9` would regroup the expression.
+            bool negationAsSubtraction = false;
+            if(unaryOp->unaryOperator == UnaryOperator::minus) {
+                const std::string_view predicate = sqlPredicateLooserThanMinus(*unaryOp->operand);
+                if(predicate.empty()) {
+                    negationAsSubtraction = true;
+                    appendUniqueString(operandResult.comments, kCommentNegationAsZeroMinus);
+                } else {
+                    operandResult.warnings.push_back(CodegenWarning{
+                        "unary minus over a predicate (" + std::string(predicate) +
+                            ") has no working sqlite_orm form; the generated negation does not "
+                            "reproduce what SQLite computes and may not compile",
+                        unaryOp->location, 1});
+                }
             }
 
             std::string_view unaryFuncName;
@@ -508,6 +533,12 @@ namespace sqlite2orm {
             }
             std::string operatorCode = std::string(opStr) + operandStr;
             std::string functionalCode = std::string(unaryFuncName) + "(" + operandResult.code + ")";
+            if(negationAsSubtraction) {
+                // `~` and `not` bind tighter than every binary operator C++ gives them, a subtraction
+                // does not, so the operator spelling carries its own parentheses to stay one operand.
+                operatorCode = "(c(0) - " + operandStr + ")";
+                functionalCode = "sub(0, " + operandResult.code + ")";
+            }
 
             std::string chosenUnaryVal = "operator";
             std::string emittedUnary = operatorCode;
@@ -535,7 +566,8 @@ namespace sqlite2orm {
                 DecisionPoint{this->context.nextDecisionPointId++, "expr_style", chosenUnaryVal, emittedUnary,
                               std::move(options)});
 
-            return CodeGenResult{std::move(emittedUnary), std::move(decisionPoints), {}, {},
+            return CodeGenResult{std::move(emittedUnary), std::move(decisionPoints),
+                                 std::move(operandResult.warnings), std::move(operandResult.errors),
                                  std::move(operandResult.comments)};
         } else if(auto* isNullNode = dynamic_cast<const IsNullNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*isNullNode->operand);

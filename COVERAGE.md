@@ -49,7 +49,7 @@ Statuses:
 - [x] schema-name.table-name.column-name
 
 ### Unary operators
-- [x] `-` (unary minus — folded into the literal it precedes, as SQLite's own parser does)
+- [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works: codegen warning)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
 - [x] `NOT`
@@ -612,6 +612,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] NULLS FIRST / NULLS LAST
 - [!] RETURNING clause
 - [!] Unary plus (`+expr`)
+- [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-` (codegen warning)
 - [x] DROP TABLE — `storage.drop_table("name")` / `storage.drop_table_if_exists("name")`
 - [x] DROP INDEX — `storage.drop_index("name")` / `storage.drop_index_if_exists("name")`
 - [x] DROP TRIGGER — `storage.drop_trigger("name")` / `storage.drop_trigger_if_exists("name")`

@@ -1,5 +1,16 @@
 #include "codegen_tests_common.hpp"
 
+namespace {
+
+    // The hint attached to every negation generated as a subtraction from zero; spelled out once
+    // here and asserted on its own in "codegen: unary minus carries the zero-subtraction comment".
+    const std::string kZeroMinusComment =
+        "Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong result "
+        "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
+        "computes for `-expr` — same value and same typeof for every operand kind.";
+
+}  // namespace
+
 TEST_CASE("codegen: integer literal") {
     REQUIRE(generate("42") == "42");
     REQUIRE(generate("0") == "0");
@@ -236,13 +247,16 @@ TEST_CASE("codegen: unary minus") {
     }
     SECTION("-a") {
         auto result = generateFull("-a");
-        REQUIRE(result == CodeGenResult{"-c(&User::a)",
+        REQUIRE(result == CodeGenResult{"(c(0) - c(&User::a))",
             {
                 columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
-                              {Option{"operator", "-c(&User::a)", "operator style"},
-                               Option{"functional", "minus(&User::a)", "functional style"}}},
-            }});
+                DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
+                              {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                               Option{"functional", "sub(0, &User::a)", "functional style"}}},
+            },
+            {},
+            {},
+            {kZeroMinusComment}});
     }
 }
 
@@ -260,10 +274,7 @@ TEST_CASE("codegen: negative literal as an operand") {
 // rebuild the unary_minus_t the fold exists to avoid. `SELECT - -3` is 3 in sqlite3 3.51.
 TEST_CASE("codegen: double unary minus on a literal") {
     auto result = generateFull("- -3");
-    REQUIRE(result == CodeGenResult{"-(-3)", {DecisionPoint{1, "expr_style", "operator", "-(-3)",
-        {Option{"operator", "-(-3)", "operator style"},
-         Option{"functional", "minus(-3)", "functional style"}}
-    }}});
+    REQUIRE(result == CodeGenResult{"-(-3)", {}});
 }
 
 TEST_CASE("codegen: unary plus is no-op") {
@@ -353,18 +364,21 @@ TEST_CASE("codegen: logical NOT") {
     SECTION("compound operand: NOT -a") {
         auto result = generateFull("NOT -a");
         REQUIRE(result == CodeGenResult{
-            "not (-c(&User::a))",
+            "not (c(0) - c(&User::a))",
             {
                 columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
-                              {Option{"operator", "-c(&User::a)", "operator style"},
-                               Option{"functional", "minus(&User::a)", "functional style"}}},
-                DecisionPoint{3, "expr_style", "operator", "not (-c(&User::a))",
+                DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
+                              {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                               Option{"functional", "sub(0, &User::a)", "functional style"}}},
+                DecisionPoint{3, "expr_style", "operator", "not (c(0) - c(&User::a))",
                               {
-                                  Option{"operator", "not (-c(&User::a))", "operator style"},
-                                  Option{"operator_excl", "!(-c(&User::a))", "use ! instead of not"},
+                                  Option{"operator", "not (c(0) - c(&User::a))", "operator style"},
+                                  Option{"operator_excl", "!(c(0) - c(&User::a))", "use ! instead of not"},
                               }},
-            }
+            },
+            {},
+            {},
+            {kZeroMinusComment}
         });
     }
 }
@@ -372,17 +386,85 @@ TEST_CASE("codegen: logical NOT") {
 TEST_CASE("codegen: double unary minus parenthesized") {
     auto result = generateFull("- -a");
     REQUIRE(result == CodeGenResult{
-        "-(-c(&User::a))",
+        "(c(0) - (c(0) - c(&User::a)))",
         {
             columnRefStyleDp(1, "&User::a"),
-            DecisionPoint{2, "expr_style", "operator", "-c(&User::a)",
-                          {Option{"operator", "-c(&User::a)", "operator style"},
-                           Option{"functional", "minus(&User::a)", "functional style"}}},
-            DecisionPoint{3, "expr_style", "operator", "-(-c(&User::a))",
-                          {Option{"operator", "-(-c(&User::a))", "operator style"},
-                           Option{"functional", "minus(-c(&User::a))", "functional style"}}},
-        }
+            DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
+                          {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                           Option{"functional", "sub(0, &User::a)", "functional style"}}},
+            DecisionPoint{3, "expr_style", "operator", "(c(0) - (c(0) - c(&User::a)))",
+                          {Option{"operator", "(c(0) - (c(0) - c(&User::a)))", "operator style"},
+                           Option{"functional", "sub(0, (c(0) - c(&User::a)))", "functional style"}}},
+        },
+        {},
+        {},
+        {kZeroMinusComment}
     });
+}
+
+// sqlite_orm has no working unary minus, so a negation of anything but a numeric constant is
+// generated as a subtraction from zero: SQLite computes `0 - x` exactly like `-x` for every operand
+// kind, value and typeof alike. Values checked against sqlite3 3.51 in
+// "runtime: a negation over a general operand keeps its value".
+TEST_CASE("codegen: unary minus over a general operand becomes a subtraction from zero") {
+    REQUIRE(generate("SELECT -(2+3);") == "auto rows = storage.select((c(0) - (c(2) + 3)));");
+    REQUIRE(generate("SELECT - ~2;") == "auto rows = storage.select((c(0) - (~c(2))));");
+    REQUIRE(generate("SELECT -length('abc');") == "auto rows = storage.select((c(0) - (length(\"abc\"))));");
+    REQUIRE(generate("SELECT -x'31';") ==
+            "auto rows = storage.select((c(0) - c(std::vector<char>{'\\x31'})));");
+    REQUIRE(generate("SELECT -(SELECT 1);") == "auto rows = storage.select((c(0) - (select(1))));");
+    REQUIRE(generate("SELECT -a FROM users;") == "auto rows = storage.select((c(0) - c(&Users::a)));");
+    REQUIRE(generate("SELECT -(a+1) FROM users;") ==
+            "auto rows = storage.select((c(0) - (c(&Users::a) + 1)));");
+    REQUIRE(generate("SELECT -CAST(a AS INTEGER) FROM users;") ==
+            "auto rows = storage.select((c(0) - (cast<int64_t>(&Users::a))));");
+    // The subtraction carries its own parentheses, so it survives as one operand of another operator
+    // where `c(1) - c(0) - (c(2) + 3)` would regroup into `(1 - 0) - 5`.
+    REQUIRE(generate("SELECT 1 - -(2+3);") == "auto rows = storage.select(c(1) - (c(0) - (c(2) + 3)));");
+}
+
+TEST_CASE("codegen: unary minus carries the zero-subtraction comment") {
+    auto result = generateFull("SELECT -a FROM users;");
+    REQUIRE(result.comments == std::vector<std::string>{kZeroMinusComment});
+}
+
+TEST_CASE("codegen: unary minus under the functional expression style") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
+    REQUIRE(generateWithPolicy("SELECT -a FROM users;", policy).code ==
+            "auto rows = storage.select(sub(0, &Users::a));");
+    REQUIRE(generateWithPolicy("SELECT -(2+3);", policy).code ==
+            "auto rows = storage.select(sub(0, add(2, 3)));");
+}
+
+// A predicate is the one operand the subtraction cannot carry: sqlite_orm serializes
+// `a BETWEEN 1 AND 9` without parentheses and SQLite binds it looser than a binary `-`, so
+// `0 - a BETWEEN 1 AND 9` would read as `(0 - a) BETWEEN 1 AND 9`. The unary form stays and warns.
+TEST_CASE("codegen: unary minus over a predicate warns instead") {
+    auto check = [](std::string_view sql, const std::string& code, const std::string& predicate) {
+        auto result = generateFull(sql);
+        REQUIRE(result.code == code);
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"unary minus over a predicate (" + predicate +
+                         ") has no working sqlite_orm form; the generated negation does not reproduce "
+                         "what SQLite computes and may not compile",
+                     SourceLocation{1, 8}, 1}});
+    };
+    check("SELECT -(a IN (1,2)) FROM users;", "auto rows = storage.select(-(in(&Users::a, {1, 2})));", "IN");
+    check("SELECT -(a BETWEEN 1 AND 9) FROM users;",
+          "auto rows = storage.select(-(between(&Users::a, 1, 9)));", "BETWEEN");
+    check("SELECT -(a LIKE 'x') FROM users;", "auto rows = storage.select(-(like(&Users::a, \"x\")));",
+          "LIKE");
+    check("SELECT -(a GLOB 'x') FROM users;", "auto rows = storage.select(-(glob(&Users::a, \"x\")));",
+          "GLOB");
+    check("SELECT -(a MATCH 'x') FROM users;", "auto rows = storage.select(-(match(&Users::a, \"x\")));",
+          "MATCH");
+    check("SELECT -(a IS NULL) FROM users;", "auto rows = storage.select(-(is_null(&Users::a)));",
+          "IS NULL");
+    check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));",
+          "IS NOT NULL");
+    check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not c(&Users::a)));", "NOT");
 }
 
 TEST_CASE("codegen: IS NULL") {

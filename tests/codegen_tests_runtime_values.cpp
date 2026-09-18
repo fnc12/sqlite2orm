@@ -118,3 +118,32 @@ TEST_CASE("runtime: generated negative literals keep their value") {
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"-2", "-50", "1", "3", "-2.5", "-14"});
 }
+
+// A negation over anything but a numeric constant is generated as a subtraction from zero, which
+// SQLite computes exactly like the negation. Expected values checked against sqlite3 3.51 (the
+// single row holds a = 7), where the unary form these replace reads every one of them back as 0
+// and throws outright over a column.
+TEST_CASE("runtime: a negation over a general operand keeps its value") {
+    const std::vector<std::string> statements{
+        generate("SELECT -(2+3);"),
+        generate("SELECT - ~2;"),
+        generate("SELECT -length('abc');"),
+        generate("SELECT -CAST(1 AS INTEGER);"),
+        generate("SELECT 1 - -(2+3);"),
+        generate("SELECT -a;"),
+        generate("SELECT -(a+1);"),
+        generate("SELECT - -a;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select((c(0) - (c(2) + 3)));",
+                              "auto rows = storage.select((c(0) - (~c(2))));",
+                              "auto rows = storage.select((c(0) - (length(\"abc\"))));",
+                              "auto rows = storage.select((c(0) - (cast<int64_t>(1))));",
+                              "auto rows = storage.select(c(1) - (c(0) - (c(2) + 3)));",
+                              "auto rows = storage.select((c(0) - c(&User::a)));",
+                              "auto rows = storage.select((c(0) - (c(&User::a) + 1)));",
+                              "auto rows = storage.select((c(0) - (c(0) - c(&User::a))));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"-5", "3", "-3", "-1", "6", "-7", "-8", "7"});
+}

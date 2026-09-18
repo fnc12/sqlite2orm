@@ -292,6 +292,11 @@ namespace sqlite2orm {
         return columns;
     }
 
+    const std::string kCommentNegationAsZeroMinus =
+        "Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong result "
+        "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
+        "computes for `-expr` — same value and same typeof for every operand kind.";
+
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
         "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
@@ -533,13 +538,63 @@ namespace sqlite2orm {
         return numericLiteralToCpp(significant);
     }
 
+    bool isNumericLiteral(const AstNode& astNode) {
+        return dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
+               dynamic_cast<const RealLiteralNode*>(&astNode);
+    }
+
     bool isNegatedNumericLiteral(const AstNode& astNode) {
         auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
         if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
             return false;
         }
-        return dynamic_cast<const IntegerLiteralNode*>(unaryOp->operand.get()) ||
-               dynamic_cast<const RealLiteralNode*>(unaryOp->operand.get());
+        return isNumericLiteral(*unaryOp->operand);
+    }
+
+    std::string_view sqlPredicateLooserThanMinus(const AstNode& astNode) {
+        // sqlite_orm parenthesizes the operands of a binary operator it serializes, and everything
+        // else an expression can be — a literal, a column, a function call, CAST, CASE, a subquery,
+        // `~x` — is a term SQLite reads as one unit. These predicates are the exception: they come
+        // out bare and bind looser than `-`, so `0 - a BETWEEN 1 AND 9` would read as
+        // `(0 - a) BETWEEN 1 AND 9` rather than as the negation it stands for.
+        if(dynamic_cast<const InNode*>(&astNode)) {
+            return "IN";
+        }
+        if(dynamic_cast<const BetweenNode*>(&astNode)) {
+            return "BETWEEN";
+        }
+        if(dynamic_cast<const LikeNode*>(&astNode)) {
+            return "LIKE";
+        }
+        if(dynamic_cast<const GlobNode*>(&astNode)) {
+            return "GLOB";
+        }
+        if(dynamic_cast<const MatchNode*>(&astNode)) {
+            return "MATCH";
+        }
+        if(dynamic_cast<const IsNullNode*>(&astNode)) {
+            return "IS NULL";
+        }
+        if(dynamic_cast<const IsNotNullNode*>(&astNode)) {
+            return "IS NOT NULL";
+        }
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+                return "NOT";
+            }
+        }
+        return {};
+    }
+
+    bool generatesZeroMinusSubtraction(const AstNode& astNode) {
+        auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
+        if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
+            return false;
+        }
+        if(isNumericLiteral(*unaryOp->operand) || isNegatedNumericLiteral(*unaryOp->operand)) {
+            return false;
+        }
+        return sqlPredicateLooserThanMinus(*unaryOp->operand).empty();
     }
 
     bool isLeafNode(const AstNode& astNode) {

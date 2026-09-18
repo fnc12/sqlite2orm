@@ -472,3 +472,215 @@ TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into an unkno
     REQUIRE(result.warnings.empty());
     REQUIRE(result.errors.empty());
 }
+
+// A column with no type has BLOB affinity and maps to a `std::vector<char>` field, which no number
+// initializes: `storage.insert(Ch{1})` did not compile at all. SQLite stores whatever the value is
+// in such a column — `CREATE TABLE ch(x); INSERT INTO ch VALUES (1)` is `integer|1` in sqlite3 3.51
+// — so the column list is spelled out, where the value is bound as itself.
+TEST_CASE("codegen: INSERT VALUES - a number into a column with no type") {
+    auto result = generateLastOfBatch("CREATE TABLE ch(x); INSERT INTO ch VALUES (1);");
+    REQUIRE(result.code == "storage.insert(into<Ch>(), columns(&Ch::x), values(std::make_tuple(1)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A blob literal is the one kind a `std::vector<char>` field does carry, so it keeps the object
+// form. sqlite3 3.51 stores `blob|A` for this row.
+TEST_CASE("codegen: INSERT VALUES - a blob literal into a column with no type keeps the object form") {
+    auto result = generateLastOfBatch("CREATE TABLE ch(x); INSERT INTO ch VALUES (X'41');");
+    REQUIRE(result.code == "storage.insert(Ch{std::vector<char>{'\\x41'}});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// The same mismatch the other way round: a `std::string` field takes no number, and a numeric field
+// takes no text. SQLite applies the column affinity to the value it typed, storing `text|1` and
+// `text|a` for these two rows in sqlite3 3.51, which is what binding the value reproduces.
+TEST_CASE("codegen: INSERT VALUES - a number into a TEXT column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES (1);");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: INSERT VALUES - a string into an INTEGER column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES ('a');");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(\"a\")));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A blob literal reaches neither of them. sqlite3 3.51 stores `blob|A` in a REAL column, a blob
+// being the one storage class no affinity converts.
+TEST_CASE("codegen: INSERT VALUES - a blob literal into a REAL column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x REAL); INSERT INTO t VALUES (X'41');");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(std::vector<char>{'\\x41'})));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A `bool` field is the one that takes a string without a word from the compiler: the pointer
+// turns into `true` and the row gets 1, where sqlite3 3.51 stores `text|a`.
+TEST_CASE("codegen: INSERT VALUES - a string into a BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES ('a');");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(\"a\")));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A string literal is what a `std::string` field carries, so a TEXT column keeps the object form.
+TEST_CASE("codegen: INSERT VALUES - a string into a TEXT column keeps the object form") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES ('a');");
+    REQUIRE(result.code == "storage.insert(T{\"a\"});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// Only SQLite knows what an expression comes out as, so no field carries it: the object form put
+// the generated sqlite_orm expression into the struct, which does not compile for any field type.
+// sqlite3 3.51 stores `integer|2` for this row, and so does the bound expression.
+TEST_CASE("codegen: INSERT VALUES - an expression value") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (1+1);");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(c(1) + 1)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A NOT NULL column has a bare field rather than an optional one, and `std::nullopt` initializes
+// neither it nor the `int64_t` behind it. SQLite prepares the statement and refuses the row when it
+// runs it ("NOT NULL constraint failed: t.x"), which the bound `nullptr` reproduces.
+TEST_CASE("codegen: INSERT VALUES - NULL into a NOT NULL column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER NOT NULL); INSERT INTO t VALUES (NULL);");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(nullptr)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A nullable column has the optional field `std::nullopt` initializes, so NULL keeps the object form.
+TEST_CASE("codegen: INSERT VALUES - NULL into a nullable column keeps the object form") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (NULL);");
+    REQUIRE(result.code == "storage.insert(T{std::nullopt});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// One value out of reach of its field spells the whole column list out, and the rest of the row
+// goes along with it.
+TEST_CASE("codegen: INSERT VALUES - a number beside a string in a two-column table") {
+    auto result =
+        generateLastOfBatch("CREATE TABLE t(x, y TEXT); INSERT INTO t VALUES (1, 'a'), (X'41', 'b');");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x, &T::y), "
+                           "values(std::make_tuple(1, \"a\"), std::make_tuple(std::vector<char>{'\\x41'}, \"b\")));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A table this batch never declared says nothing about the field a value reaches, here either.
+TEST_CASE("codegen: INSERT VALUES - a string into an unknown table") {
+    auto result = generateFull("INSERT INTO t VALUES ('a');");
+    REQUIRE(result.code == "storage.insert(T{\"a\"});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A NOT NULL REAL column has a bare `double` field, and the object form brace-initializes it: a
+// braced initializer refuses an integer constant no `double` holds exactly, so
+// `storage.insert(T{9223372036854775807})` did not compile. The column list binds the integer and
+// leaves the REAL affinity to SQLite, which stores `real|9.22337203685478e+18` in sqlite3 3.51 —
+// the very value the field would have held.
+TEST_CASE("codegen: INSERT VALUES - a whole number no double holds into a NOT NULL REAL column") {
+    auto result =
+        generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (9223372036854775807);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775807)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// The first whole number a `double` rounds is 2^53 + 1; 2^53 itself survives the round trip and
+// keeps the object form.
+TEST_CASE("codegen: INSERT VALUES - the first whole number a double rounds into a REAL column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (9007199254740993);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9007199254740993)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: INSERT VALUES - a whole number a double holds keeps the object form") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (9007199254740992);");
+    REQUIRE(result.code == "storage.insert(T{9007199254740992});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// SQLite reads a hexadecimal literal as a signed 64-bit integer, so the sign bit decides which
+// number a `double` is asked to hold: `0xFFFFFFFFFFFFFFFF` is -1 and fits, `0x7FFFFFFFFFFFFFFF` is
+// the int64 maximum and does not.
+TEST_CASE("codegen: INSERT VALUES - a hex literal into a NOT NULL REAL column") {
+    auto wrapped = generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (0xFFFFFFFFFFFFFFFF);");
+    REQUIRE(wrapped.code == "storage.insert(T{static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)});");
+    REQUIRE(wrapped.warnings.empty());
+    REQUIRE(wrapped.errors.empty());
+
+    auto rounded = generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (0x7FFFFFFFFFFFFFFF);");
+    REQUIRE(rounded.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(0x7FFFFFFFFFFFFFFF)));");
+    REQUIRE(rounded.warnings.empty());
+    REQUIRE(rounded.errors.empty());
+}
+
+// A literal past the int64 range is generated as a REAL, which initializes a `double` field as
+// itself, so it keeps the object form even though a whole number of that size never round-trips.
+TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into a NOT NULL REAL column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (99999999999999999999);");
+    REQUIRE(result.code == "storage.insert(T{99999999999999999999.0});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A nullable REAL column reaches the same field through `std::optional`, whose constructor converts
+// rather than narrows, but the value it would store is the rounded one, not the integer SQLite
+// binds, so the column list is spelled out there too.
+TEST_CASE("codegen: INSERT VALUES - a whole number no double holds into a nullable REAL column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x REAL); INSERT INTO t VALUES (9223372036854775807);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775807)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A NUMERIC column maps to the same `double` field and takes the same route. What the generated
+// storage then stores for it is a REAL rather than the `integer|9223372036854775807` sqlite3 3.51
+// stores in a NUMERIC column, because the field declares the column REAL — a separate bug, and the
+// only one left between the two once the value is bound rather than narrowed.
+TEST_CASE("codegen: INSERT VALUES - a whole number no double holds into a NUMERIC column") {
+    auto result =
+        generateLastOfBatch("CREATE TABLE t(x NUMERIC NOT NULL); INSERT INTO t VALUES (9223372036854775807);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775807)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// The past-range warning belongs to the field that holds whole numbers only, where the column list
+// writes a different number than the struct would have. A TEXT or a BLOB column reaches the same
+// literal through a field of another storage class, so the column list is spelled out for the
+// storage class alone and the literal itself costs nothing: SQLite stores `text|1.0e+20` and
+// `real|1.0e+20` for these two rows in sqlite3 3.51, which is what binding the value reproduces.
+// Dropping the field-type guard on the warning makes both of these warn about an `std::string` or
+// an `std::vector<char>` field that "cannot hold" the value, which is not what decided the form.
+TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into a column of another storage class") {
+    auto text = generateLastOfBatch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES (99999999999999999999);");
+    REQUIRE(text.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(99999999999999999999.0)));");
+    REQUIRE(text.warnings.empty());
+    REQUIRE(text.errors.empty());
+
+    auto blob = generateLastOfBatch("CREATE TABLE t(x BLOB); INSERT INTO t VALUES (99999999999999999999);");
+    REQUIRE(blob.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(99999999999999999999.0)));");
+    REQUIRE(blob.warnings.empty());
+    REQUIRE(blob.errors.empty());
+}

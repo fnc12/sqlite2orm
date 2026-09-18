@@ -294,8 +294,7 @@ TEST_CASE("codegen: PRAGMA user_version = a hex literal too big for an int64") {
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0x10000000000000000: SQLite reads a PRAGMA value "
-                                          "as a 32-bit integer and this hex literal does not fit one, so it sets "
-                                          "0"}},
+                                          "as a 32-bit integer and cannot read this one, so it sets 0"}},
                           {}});
     REQUIRE(generateFull("PRAGMA max_page_count = 0x1_0000_0000_0000_0000;") ==
             CodeGenResult{"storage.pragma.max_page_count(0);",
@@ -313,7 +312,7 @@ TEST_CASE("codegen: PRAGMA integrity_check = a hex literal too big for an int64"
             CodeGenResult{{},
                           {},
                           {},
-                          {"PRAGMA integrity_check = 0x10000000000000000: SQLite cannot read this hex literal as a "
+                          {"PRAGMA integrity_check = 0x10000000000000000: SQLite cannot read this literal as a "
                            "32-bit integer and refuses it as a table name"},
                           {}});
 }
@@ -375,4 +374,256 @@ TEST_CASE("codegen: PRAGMA locking_mode = EXCLUSIVE") {
 TEST_CASE("codegen: PRAGMA table_info of a table named after a keyword") {
     REQUIRE(generateFull("PRAGMA table_info(row);") ==
             CodeGenResult{R"(storage.pragma.table_info("row");)", {}, {}, {}});
+}
+
+// SQLite reads a PRAGMA value with `sqlite3GetInt32()`, which refuses every hexadecimal value with
+// the sign bit set, so `PRAGMA user_version = 0x80000000` assigns 0 — checked against sqlite3
+// 3.51.0 and 3.45.1: `user_version = 42` followed by `user_version = 0x80000000` reads back 0.
+TEST_CASE("codegen: PRAGMA user_version = a hex literal past the int32 range sets 0, like SQLite") {
+    REQUIRE(generateFull("PRAGMA user_version = 0x80000000;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0x80000000: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = 0xFFFFFFFF;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0xFFFFFFFF: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = 0x100000000;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0x100000000: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// The decimal half of the same range: eleven digits, or ten digits above 2147483647.
+TEST_CASE("codegen: PRAGMA user_version = a decimal literal past the int32 range sets 0, like SQLite") {
+    REQUIRE(generateFull("PRAGMA user_version = 2147483648;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 2147483648: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = 4294967296;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 4294967296: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = -2147483649;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = -2147483649: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// The edges themselves are generated as they are written, warning and all left out: SQLite reads
+// `2147483647` and `-2147483648` back unchanged, and `0x7FFFFFFF` is the last hex literal it takes.
+TEST_CASE("codegen: PRAGMA user_version at the int32 edges is generated as written") {
+    REQUIRE(generateFull("PRAGMA user_version = 2147483647;") ==
+            CodeGenResult{"storage.pragma.user_version(2147483647);", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA user_version = -2147483648;") ==
+            CodeGenResult{"storage.pragma.user_version(-2147483648);", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA user_version = 0x7FFFFFFF;") ==
+            CodeGenResult{"storage.pragma.user_version(0x7FFFFFFF);", {}, {}, {}});
+}
+
+// `sqlite3GetInt32()` takes the sign off before it looks for a `0x` prefix, so a minus sign sends a
+// hexadecimal value down the decimal branch, which stops at the `x`: SQLite sets 0, not -16.
+TEST_CASE("codegen: PRAGMA user_version = a negated hex literal sets 0, like SQLite") {
+    REQUIRE(generateFull("PRAGMA user_version = -0x10;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = -0x10: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 0"}},
+                          {}});
+}
+
+// A PRAGMA value is text, never an expression, so SQLite reads a string, a name and a REAL with the
+// same `sqlite3GetInt32()`: `'12'` is 12, `1.5` is 1 — the digits stop at the dot — and a name is 0.
+TEST_CASE("codegen: PRAGMA user_version = a value that is not an integer literal") {
+    REQUIRE(generateFull("PRAGMA user_version = 1.5;") ==
+            CodeGenResult{"storage.pragma.user_version(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 1.5: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 1"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = '12';") ==
+            CodeGenResult{"storage.pragma.user_version(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '12': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 12"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = abc;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = abc: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// SQLite's grammar takes a number or a name after `PRAGMA name =`, and nothing else: `= NULL` is
+// `near "NULL": syntax error`.
+TEST_CASE("codegen: PRAGMA user_version = NULL is an error, not nullptr") {
+    REQUIRE(generateFull("PRAGMA user_version = NULL;") ==
+            CodeGenResult{"",
+                          {},
+                          {},
+                          {"PRAGMA user_version = …: expected a number, a string or a name"},
+                          {}});
+}
+
+// `application_id` and `busy_timeout` reach `sqlite3Atoi()` the same way `user_version` does, so
+// the fold is theirs too; `busy_timeout` then takes the int32 as milliseconds.
+TEST_CASE("codegen: the other sqlite3Atoi PRAGMAs fold a value past the int32 range the same way") {
+    REQUIRE(generateFull("PRAGMA application_id = 2147483648;") ==
+            CodeGenResult{"storage.pragma.application_id(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA application_id = 2147483648: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA busy_timeout = 0x80000000;") ==
+            CodeGenResult{"storage.pragma.busy_timeout(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA busy_timeout = 0x80000000: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// The three PRAGMAs that do not reach `sqlite3Atoi()` keep their value: `getSafetyLevel()` answers
+// its default 1 for a value that does not start with a digit, so `synchronous = -0x10` is 1 and not
+// 0; `getAutoVacuum()` reads the name `incremental` as 2; and `max_page_count` reads the whole text
+// as an int64, so `= 0x80000000` really does set 2147483648. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: the PRAGMAs with a reader of their own keep a value past the int32 range") {
+    REQUIRE(generateFull("PRAGMA max_page_count = 0x80000000;") ==
+            CodeGenResult{"storage.pragma.max_page_count(static_cast<int64_t>(0x80000000));", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = 2147483648;") ==
+            CodeGenResult{"storage.pragma.max_page_count(2147483648);", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA synchronous = -0x10;") ==
+            CodeGenResult{"storage.pragma.synchronous(-0x10);", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA auto_vacuum = 4294967296;") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(4294967296);", {}, {}, {}});
+}
+
+// The value `PRAGMA integrity_check` cannot read as an int32 is the one it falls back to reading as
+// a table name, so the whole int32 range behaves like the too-big hex literal already did.
+TEST_CASE("codegen: PRAGMA integrity_check = a literal past the int32 range is an error") {
+    REQUIRE(generateFull("PRAGMA integrity_check = 2147483648;") ==
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"PRAGMA integrity_check = 2147483648: SQLite cannot read this literal as a 32-bit "
+                           "integer and refuses it as a table name"},
+                          {}});
+    REQUIRE(generateFull("PRAGMA integrity_check = 0x80000000;") ==
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"PRAGMA integrity_check = 0x80000000: SQLite cannot read this literal as a 32-bit "
+                           "integer and refuses it as a table name"},
+                          {}});
+    REQUIRE(generateFull("PRAGMA integrity_check = 0x7FFFFFFF;") ==
+            CodeGenResult{"storage.pragma.integrity_check(0x7FFFFFFF);", {}, {}, {}});
+}
+
+// A `_` digit separator inside a PRAGMA value is a syntax error to SQLite, which lexes such a value
+// by its own rules — a standing difference of its own — but it must not make the int32 rule read a
+// different literal than the generated C++ does: `0x8_0000000` is `0x80000000` to both.
+TEST_CASE("codegen: PRAGMA user_version = a separated hex literal past the int32 range sets 0") {
+    REQUIRE(generateFull("PRAGMA user_version = 0x8_0000000;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0x8_0000000: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = 2_147_483_648;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 2_147_483_648: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA integrity_check = 0x8_0000000;") ==
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"PRAGMA integrity_check = 0x80000000: SQLite cannot read this literal as a 32-bit "
+                           "integer and refuses it as a table name"},
+                          {}});
+}
+
+// A string is read with its separators: `sqlite3Atoi('1_2')` stops at the `_` and answers 1.
+TEST_CASE("codegen: PRAGMA user_version = a string whose digits stop at an underscore") {
+    REQUIRE(generateFull("PRAGMA user_version = '1_2';") ==
+            CodeGenResult{"storage.pragma.user_version(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '1_2': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 1"}},
+                          {}});
+}
+
+// QA: `sqlite3GetInt32()` skips any number of leading zeros and only then reads eight hexadecimal
+// digits, so the zeros never count towards that window: `0x0000000007FFFFFFF` is 2147483647 and is
+// generated as written, while `0x000000000080000000` still has the sign bit set and sets 0.
+// Checked against the sqlite3 3.51.0 and 3.45.1 CLIs.
+TEST_CASE("codegen: PRAGMA user_version = a hex literal whose leading zeros precede eight digits") {
+    REQUIRE(generateFull("PRAGMA user_version = 0x0000000007FFFFFFF;") ==
+            CodeGenResult{"storage.pragma.user_version(0x0000000007FFFFFFF);", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA user_version = 0x000000000080000000;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0x000000000080000000: SQLite reads a PRAGMA value "
+                                          "as a 32-bit integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// QA: a string is read by the very same rules and nothing is trimmed off it first, so a leading
+// space refuses the whole value where a leading `+` does not, and a string spelling a hexadecimal
+// value takes the hexadecimal branch because no sign shuts it off. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: PRAGMA user_version = a string SQLite reads by its own rules") {
+    REQUIRE(generateFull("PRAGMA user_version = ' 12';") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = ' 12': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = '+12';") ==
+            CodeGenResult{"storage.pragma.user_version(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '+12': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 12"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = '0x10';") ==
+            CodeGenResult{"storage.pragma.user_version(16);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '0x10': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 16"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = '';") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = '': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0"}},
+                          {}});
+}
+
+// QA: the digits of a REAL stop at the first character that is not one, exponent included, so
+// `1e3` is 1 rather than 1000 and `0.9` is 0 rather than a rounded 1. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: PRAGMA user_version = a REAL is read by its leading digits only") {
+    REQUIRE(generateFull("PRAGMA user_version = 1e3;") ==
+            CodeGenResult{"storage.pragma.user_version(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 1e3: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 1"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = 0.9;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0.9: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer, so it sets 0"}},
+                          {}});
 }

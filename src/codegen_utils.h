@@ -4,6 +4,7 @@
 #include <sqlite2orm/codegen_policy.h>
 #include <sqlite2orm/codegen_result.h>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -105,6 +106,32 @@ namespace sqlite2orm {
      */
     bool integerFieldCarriesValue(const AstNode& value);
     /**
+     *  True when a `double` field is known to hold exactly the value SQLite gives `value`: false
+     *  for an integer literal inside the int64 range that no `double` holds exactly, because the
+     *  object form brace-initializes the field and a braced initializer refuses a constant it
+     *  would narrow, true for anything else.
+     */
+    bool doubleFieldCarriesValue(const AstNode& value);
+    /**
+     *  The storage class SQLite gives a value before it applies any column affinity, as far as the
+     *  SQL spells it out. A value that is not a literal is an expression SQLite computes while it
+     *  runs the statement, and `unknown` stands for it.
+     */
+    enum class ValueStorageClass {
+        null,
+        numeric,
+        text,
+        blob,
+        unknown,
+    };
+    /** The storage class the literal `value` denotes; folded minus signs belong to the number. */
+    ValueStorageClass valueStorageClass(const AstNode& value);
+    /**
+     *  The storage class a C++ field of `cppType` can be initialized from, for the types
+     *  `sqliteTypeToCpp` gives a table column; `unknown` for any other type.
+     */
+    ValueStorageClass fieldTypeStorageClass(std::string_view cppType);
+    /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.
      */
@@ -128,6 +155,8 @@ namespace sqlite2orm {
      *  expression, so only the statements that never compile one accept it.
      */
     bool hexLiteralExceedsInt64(std::string_view integerLiteral);
+    /** True for an integer literal written with SQLite's `0x` prefix rather than in decimal. */
+    bool isHexadecimalIntegerLiteral(std::string_view integerLiteral);
     /** True for an integer or real literal, the two kinds a minus sign is folded into. */
     bool isNumericLiteral(const AstNode& astNode);
     /**
@@ -204,6 +233,17 @@ namespace sqlite2orm {
 
     /** The value of `PRAGMA name = <value>`, or nullopt for a node SQLite does not accept there. */
     std::optional<PragmaValue> pragmaValue(const AstNode& valueNode);
+    /**
+     *  SQLite's `sqlite3GetInt32()`, which is how a PRAGMA value reaches every PRAGMA that takes a
+     *  number: the leading decimal — or `0x…` hexadecimal — digits of `valueText` as an int32.
+     *  Nullopt where SQLite refuses the text, which `sqlite3Atoi()` turns into 0 for `user_version`
+     *  and friends and `PRAGMA integrity_check` takes for a table name. A hexadecimal value with
+     *  the sign bit set is refused, and so is a decimal one of more than ten digits or above
+     *  2147483647, which is why `PRAGMA user_version = 0x80000000` and `= 2147483648` both set 0.
+     *  A sign shuts the hexadecimal branch off, the way it does in SQLite, so `-0x10` is 0 — though
+     *  a PRAGMA value never reaches here with a leading `+`, which SQLite's grammar drops.
+     */
+    std::optional<std::int32_t> sqlitePragmaInt32(std::string_view valueText);
     /**
      *  SQLite's `sqlite3GetBoolean()`: `on`/`yes`/`true` are true, and so is a number whose int32
      *  value has a non-zero low byte — `getSafetyLevel()` returns a u8, so `256` is false where

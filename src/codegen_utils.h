@@ -45,6 +45,7 @@ namespace sqlite2orm {
     extern const std::string kCommentCpp20ColumnAliases;
     extern const std::string kCommentViewReflection;
     extern const std::string kCommentNegationAsZeroMinus;
+    extern const std::string kCommentPredicateGroupingCast;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -71,6 +72,25 @@ namespace sqlite2orm {
      *  already parenthesized one. Asking the AST is what keeps this out of the generated string.
      */
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy);
+
+    /** Precedence of SQL that already reads as one term: parenthesized, a literal, a call, a column. */
+    inline constexpr int kSqlPrecedenceTerm = 0;
+    /** Precedence SQLite gives `=` and the predicates that share its rank (`IN`, `LIKE`, `IS NULL`, …). */
+    inline constexpr int kSqlPrecedencePredicate = 6;
+    /** Precedence SQLite gives `NOT expr`, one rank looser than the predicates. */
+    inline constexpr int kSqlPrecedenceNot = 7;
+    /**
+     *  Precedence SQLite parses `binaryOperator` with, numbered as its own operator table ranks it:
+     *  the smaller the number, the tighter it binds. This is the SQL the serialized statement is
+     *  read back with, where `cppOperatorPrecedence` is the C++ the generated code is compiled with.
+     */
+    int sqlOperatorPrecedence(BinaryOperator binaryOperator);
+    /**
+     *  Precedence of the SQL sqlite_orm serializes the node's generated code into, or
+     *  `kSqlPrecedenceTerm` when that SQL reads as one term. Only the predicates sqlite_orm leaves
+     *  unparenthesized — the ones `sqlPredicateLooserThanMinus` names — answer anything else.
+     */
+    int serializedSqlPrecedence(const AstNode& astNode);
 
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 

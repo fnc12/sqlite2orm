@@ -503,7 +503,8 @@ TEST_CASE("runtime: a result column that can be NULL reads the NULL back") {
 
 // The widening rule leaves an operator over a NULL test alone, and it is right to: sqlite3 3.45.1
 // answers `NOT (a IS NULL)` with 0 over a NULL row and 1 over `a = 7`, never with a NULL. (The
-// arithmetic forms of the same rule — `(a IS NULL) + 1` — have no sqlite_orm overload to run.)
+// arithmetic forms of the same rule are run in
+// "runtime: a predicate under an operator keeps the grouping it was written with".)
 TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its value") {
     const std::vector<std::string> statements{
         generate("SELECT NOT (a IS NULL);"),
@@ -514,4 +515,32 @@ TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its v
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
             std::vector<std::string>{"0"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"1"});
+}
+
+// sqlite_orm serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses,
+// and SQLite binds those looser than the operator around them, so `c(1) - is_null(&User::a)` was
+// read back as `(1 - a) IS NULL` — one C++ term, another SQL expression, and no complaint from
+// either. The CAST the generator now spells out restores the grouping. Both expected rows checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL first and 7 second; on master
+// the `a = 7` row answers 0, 1, 0, 0, and the arithmetic over a left-hand predicate does not
+// compile at all.
+TEST_CASE("runtime: a predicate under an operator keeps the grouping it was written with") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 - (a IS NULL);"),
+        generate("SELECT 1 - (a NOT NULL);"),
+        generate("SELECT 1 - (a IN (1,2,3));"),
+        generate("SELECT 1 = (a IS NULL);"),
+        generate("SELECT (a IS NULL) + 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(c(1) - cast<int64_t>(is_null(&User::a)));",
+                              "auto rows = storage.select(c(1) - cast<int64_t>(is_not_null(&User::a)));",
+                              "auto rows = storage.select(as_optional(c(1) - cast<int64_t>(in(&User::a, {1, 2, 3}))));",
+                              "auto rows = storage.select(c(1) == cast<int64_t>(is_null(&User::a)));",
+                              "auto rows = storage.select(cast<int64_t>(is_null(&User::a)) + 1);",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"0", "1", "NULL", "1", "2"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"1", "0", "1", "0", "1"});
 }

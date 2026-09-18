@@ -4,18 +4,16 @@
 #include <sqlite2orm/schema_process.h>
 #include <sqlite2orm/schema_reader.h>
 
+#include "temp_build_dir.hpp"
+
 #include <catch2/catch_all.hpp>
 #include <sqlite3.h>
 
-#include <cstdlib>
 #include <cstring>
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <sys/wait.h>
-#endif
 #include <filesystem>
-#include <fstream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -178,46 +176,17 @@ TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    namespace fs = std::filesystem;
-    static thread_local std::mt19937 gen{std::random_device{}()};
-    std::uniform_int_distribution<std::uint64_t> dist{};
-    const fs::path dir = fs::temp_directory_path() / ("sqlite2orm_rt_" + std::to_string(dist(gen)));
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    REQUIRE_FALSE(ec);
-
-    const fs::path hpath = dir / "gen.hpp";
-    const fs::path cpppath = dir / "check.cpp";
-    {
-        std::ofstream h(hpath);
-        REQUIRE(h);
-        h << header.code;
-    }
-    {
-        std::ofstream c(cpppath);
-        REQUIRE(c);
-        c << "#include \"gen.hpp\"\n";
-    }
+    const codegen_test_helpers::TempBuildDir dir;
+    dir.write("gen.hpp", header.code);
+    const std::filesystem::path cpppath = dir.write("check.cpp", "#include \"gen.hpp\"\n");
 
     std::ostringstream cmd;
-    cmd << "c++ -std=c++20 -fsyntax-only";
-#if defined(__APPLE__)
-    cmd << " -stdlib=libc++";
-#endif
-    cmd << " -I" << SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE;
-    cmd << " -I" << dir.string();
+    cmd << codegen_test_helpers::TempBuildDir::compilerCommand() << " -fsyntax-only";
+    cmd << " -I" << dir.path().string();
     cmd << ' ' << cpppath.string();
     cmd << " 2>&1";
 
-    const int rawStatus = std::system(cmd.str().c_str());
-    fs::remove_all(dir, ec);
-
-    int exitCode = rawStatus;
-#if defined(__unix__) || defined(__APPLE__)
-    if(rawStatus != -1) {
-        exitCode = WEXITSTATUS(rawStatus);
-    }
-#endif
+    const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
     if(exitCode != 0) {
         WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
     }

@@ -132,9 +132,18 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/process_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp
+        tests/temp_build_dir.cpp
     )
+    # A probe that runs the generated code needs the same libsqlite3 the library links, which is not
+    # always the one a bare `-lsqlite3` finds.
+    if(SQLite3_LIBRARIES)
+        set(sqlite2orm_test_sqlite3_link "${SQLite3_LIBRARIES}")
+    else()
+        set(sqlite2orm_test_sqlite3_link "-lsqlite3")
+    endif()
     target_compile_definitions(sqlite2orm_tests PRIVATE
-        SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE="${sqlite_orm_headers_SOURCE_DIR}/include")
+        SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE="${sqlite_orm_headers_SOURCE_DIR}/include"
+        SQLITE2ORM_TEST_SQLITE3_LINK="${sqlite2orm_test_sqlite3_link}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)
     add_test(NAME sqlite2orm_tests COMMAND sqlite2orm_tests)
 

@@ -1,20 +1,12 @@
 #include "codegen_tests_common.hpp"
+#include "temp_build_dir.hpp"
 
-#include <cstdlib>
-
-#if defined(__unix__) || defined(__APPLE__)
-#include <sys/wait.h>
-#endif
-#include <filesystem>
 #include <fstream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
-
-    namespace fs = std::filesystem;
 
     /**
      *  Builds a program around the generated select statements, compiles and links it against
@@ -42,40 +34,19 @@ namespace {
         program << "    return 0;\n"
                    "}\n";
 
-        static thread_local std::mt19937 gen{std::random_device{}()};
-        std::uniform_int_distribution<std::uint64_t> dist{};
-        const fs::path dir = fs::temp_directory_path() / ("sqlite2orm_values_" + std::to_string(dist(gen)));
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        REQUIRE_FALSE(ec);
-
-        const fs::path cpppath = dir / "check.cpp";
-        const fs::path binpath = dir / "check";
-        const fs::path outpath = dir / "check.out";
-        {
-            std::ofstream c(cpppath);
-            REQUIRE(c);
-            c << program.str();
-        }
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("check");
+        const std::filesystem::path outpath = dir.file("check.out");
 
         std::ostringstream cmd;
-        cmd << "c++ -std=c++20";
-#if defined(__APPLE__)
-        cmd << " -stdlib=libc++";
-#endif
-        cmd << " -I" << SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE;
+        cmd << TempBuildDir::compilerCommand();
         cmd << ' ' << cpppath.string();
-        cmd << " -lsqlite3 -o " << binpath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
         cmd << " && " << binpath.string() << " > " << outpath.string();
         cmd << " 2>&1";
 
-        const int rawStatus = std::system(cmd.str().c_str());
-        int exitCode = rawStatus;
-#if defined(__unix__) || defined(__APPLE__)
-        if(rawStatus != -1) {
-            exitCode = WEXITSTATUS(rawStatus);
-        }
-#endif
+        const int exitCode = TempBuildDir::run(cmd.str());
         std::vector<std::string> values;
         {
             std::ifstream out(outpath);
@@ -83,7 +54,6 @@ namespace {
                 values.push_back(line);
             }
         }
-        fs::remove_all(dir, ec);
         if(exitCode != 0) {
             WARN("building the generated selects failed (exit " << exitCode
                                                                 << "); ensure c++, sqlite_orm headers and "

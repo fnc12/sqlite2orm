@@ -725,6 +725,17 @@ namespace sqlite2orm {
     }  // namespace
 
     CreateViewParts DdlCodeGenerator::createViewParts(const CreateViewNode& node) {
+        CreateViewParts parts = this->viewParts(node);
+        if(parts.makeViewExpression.empty()) {
+            // A view sqlite_orm has no make_view() for is a name it has no type for either, so
+            // whatever rests on the view — a trigger INSTEAD OF it, a view selecting from it —
+            // has to go with it, exactly as it does for a table left out of the storage.
+            this->context.markUngeneratableView(node.viewName);
+        }
+        return parts;
+    }
+
+    CreateViewParts DdlCodeGenerator::viewParts(const CreateViewNode& node) {
         CreateViewParts parts;
         const std::string displayName = viewDisplayName(node);
         if(!node.selectQuery) {
@@ -1213,6 +1224,9 @@ namespace sqlite2orm {
         }
 
         if(!tableIsGeneratable) {
+            // Nothing sqlite_orm can map this table to, so every statement naming it is left out
+            // by whoever assembles the batch; the mark is what tells them which name that is.
+            this->context.markUngeneratableTable(createTable.tableName);
             return CreateTableParts{{}, {}, std::move(warnings)};
         }
         return CreateTableParts{std::move(structDeclaration), std::move(makeExpression), std::move(warnings)};

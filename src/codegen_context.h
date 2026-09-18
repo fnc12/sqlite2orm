@@ -72,6 +72,12 @@ namespace sqlite2orm {
          */
         std::set<std::string> ungeneratableTables;
         /**
+         *  The `ungeneratableTables` entries that name a view rather than a table. A view left out
+         *  of the storage is a name sqlite_orm has no type for exactly as an ungeneratable table
+         *  is, so it joins them; this set only tells the two apart when a warning names the kind.
+         */
+        std::set<std::string> ungeneratableViews;
+        /**
          *  The `ungeneratableTables` entries the statement being generated has turned into a
          *  struct name. Every table reference reaches its struct through `structNameForTable()`,
          *  so however deeply a reference is nested — a subquery in a WHERE, a trigger WHEN clause,
@@ -148,8 +154,14 @@ namespace sqlite2orm {
         /** Records that `tableName` is left out of the generated storage. */
         void markUngeneratableTable(std::string_view tableName);
 
+        /** Records that `viewName`, a view, is left out of the generated storage. */
+        void markUngeneratableView(std::string_view viewName);
+
         /** Whether `tableName` names a table of this batch that is left out of the generated storage. */
         bool isUngeneratableTable(std::string_view tableName) const;
+
+        /** `view` when every name the last statement referenced is a view, `table` otherwise. */
+        std::string_view referencedUngeneratableKind() const;
 
         /** Struct name of a referenced table, recording the reference when the table is not generated. */
         std::string structNameForTable(std::string_view tableName);

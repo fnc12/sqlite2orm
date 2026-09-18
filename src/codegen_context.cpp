@@ -76,7 +76,9 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {
-        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&argument)) {
+        // The argument a COLLATE or a unary plus stands over is the one the call is handed.
+        const AstNode& valueNode = generatedOperandNode(argument);
+        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             // Schema type wins when the column belongs to a known CREATE TABLE in the batch.
             const std::string normalizedColumn = normalizeSqlIdentifier(columnRef->columnName);
             for(const auto& [tableKey, columns] : this->sourceTableColumnsByNormalizedName) {
@@ -94,7 +96,7 @@ namespace sqlite2orm {
             }
             return this->syntheticColumnCppType(cppName);  // name heuristic (name → std::string, else int)
         }
-        return this->inferTypeFromNode(argument);
+        return this->inferTypeFromNode(valueNode);
     }
 
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {

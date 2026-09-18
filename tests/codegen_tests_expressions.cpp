@@ -1091,6 +1091,49 @@ TEST_CASE("codegen: a COLLATE'd operand keeps the grouping and the field of what
     REQUIRE(prefixFor("SELECT a = ('x' COLLATE NOCASE);") == "struct User {\n    std::string a;\n};");
 }
 
+// The bound side of a comparison is not the only thing that says what a column holds: the operand of
+// BETWEEN / IN / LIKE / GLOB / MATCH and the first argument of a scalar function that reads text say
+// it too, and so does an argument handed to a user-defined function. All of them are the node under
+// a dropped COLLATE, so `(a COLLATE NOCASE) LIKE 'x%'` has to reach the same field `a LIKE 'x%'`
+// does; it used to leave `a` an `int` the pattern is never compared against.
+TEST_CASE("codegen: a column under a dropped COLLATE is still the operand of the predicate") {
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) BETWEEN 'x' AND 'y';") ==
+            "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT a BETWEEN 'x' AND 'y';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) IN ('x', 'y');") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) LIKE 'x%';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) GLOB 'x*';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) MATCH 'x';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT upper(a COLLATE NOCASE);") == "struct User {\n    std::string a;\n};");
+}
+
+// A user-defined function is generated from the arguments the call hands it, and a COLLATE over one
+// of them changes neither the value nor the column it comes from: the parameter keeps the name and
+// the type it has without the COLLATE. It used to fall back to the `arg0` / `int` a call over an
+// expression gets.
+TEST_CASE("codegen: an argument under a dropped COLLATE keeps its name and type") {
+    REQUIRE(generate("SELECT myfunc(a COLLATE NOCASE) FROM users;") ==
+            "struct Myfunc {\n"
+            "    // TODO: implement this user-defined scalar function\n"
+            "    int operator()(int a) const { return {}; }\n"
+            "    static const char *name() { return \"myfunc\"; }\n"
+            "};\n"
+            "\n"
+            "storage.create_scalar_function<Myfunc>();\n"
+            "\n"
+            "auto rows = storage.select(func<Myfunc>(&Users::a));");
+    REQUIRE(generate("SELECT myfunc(a) FROM users;") ==
+            "struct Myfunc {\n"
+            "    // TODO: implement this user-defined scalar function\n"
+            "    int operator()(int a) const { return {}; }\n"
+            "    static const char *name() { return \"myfunc\"; }\n"
+            "};\n"
+            "\n"
+            "storage.create_scalar_function<Myfunc>();\n"
+            "\n"
+            "auto rows = storage.select(func<Myfunc>(&Users::a));");
+}
+
 // SQLite's parser folds a minus into the literal it stands over through parentheses but not through
 // a COLLATE: it refuses `-(0x8000000000000000)` with `hex literal too big` and answers
 // `-(0x8000000000000000 COLLATE BINARY)` with 9.22337203685478e+18, which is what `0 - x` is.

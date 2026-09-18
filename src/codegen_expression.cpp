@@ -669,7 +669,9 @@ namespace sqlite2orm {
             auto lowResult = this->coordinator.generateNode(*betweenNode->low);
             auto highResult = this->coordinator.generateNode(*betweenNode->high);
 
-            if(auto* col = dynamic_cast<const ColumnRefNode*>(betweenNode->operand.get())) {
+            // A COLLATE and a unary plus emit their operand and nothing else, so the column this
+            // is compared against is the one standing under them.
+            if(auto* col = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*betweenNode->operand))) {
                 // Both bounds are compared against the column, so both have a say in its type:
                 // registering the wider one after the narrower one widens the field to hold it.
                 const std::string cppName = toCppIdentifier(col->columnName);
@@ -818,7 +820,7 @@ namespace sqlite2orm {
             auto operandResult = this->coordinator.generateNode(*inNode->operand);
             auto decisionPoints = std::move(operandResult.decisionPoints);
 
-            if(auto* col = dynamic_cast<const ColumnRefNode*>(inNode->operand.get())) {
+            if(auto* col = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*inNode->operand))) {
                 // Every value of the list is compared against the column, not just the first one,
                 // so the field has to hold the widest of them.
                 const std::string cppName = toCppIdentifier(col->columnName);
@@ -858,7 +860,7 @@ namespace sqlite2orm {
             auto operandResult = this->coordinator.generateNode(*likeNode->operand);
             auto patternResult = this->coordinator.generateNode(*likeNode->pattern);
 
-            if(auto* col = dynamic_cast<const ColumnRefNode*>(likeNode->operand.get())) {
+            if(auto* col = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*likeNode->operand))) {
                 this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
             }
 
@@ -883,7 +885,7 @@ namespace sqlite2orm {
             auto operandResult = this->coordinator.generateNode(*globNode->operand);
             auto patternResult = this->coordinator.generateNode(*globNode->pattern);
 
-            if(auto* col = dynamic_cast<const ColumnRefNode*>(globNode->operand.get())) {
+            if(auto* col = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*globNode->operand))) {
                 this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
             }
 
@@ -916,7 +918,7 @@ namespace sqlite2orm {
             }
             if(lhsCode.empty()) {
                 auto operandResult = this->coordinator.generateNode(*matchNode->operand);
-                if(auto* col = dynamic_cast<const ColumnRefNode*>(matchNode->operand.get())) {
+                if(auto* col = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*matchNode->operand))) {
                     this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
                 }
                 decisionPoints = std::move(operandResult.decisionPoints);
@@ -1033,7 +1035,7 @@ namespace sqlite2orm {
                     argList += argResult.code;
                     if(customFunction) {
                         customUse.argTypes.push_back(this->context.customFunctionArgType(argNode));
-                        if(auto* col = dynamic_cast<const ColumnRefNode*>(&argNode)) {
+                        if(auto* col = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(argNode))) {
                             customUse.argNames.push_back(toCppIdentifier(col->columnName));
                         } else {
                             customUse.argNames.push_back("arg" + std::to_string(argIndex));
@@ -1042,7 +1044,8 @@ namespace sqlite2orm {
                 }
                 if(!funcCall->star && !funcCall->arguments.empty() &&
                    sqliteScalarFirstArgTextContext(funcName)) {
-                    if(auto* col = dynamic_cast<const ColumnRefNode*>(funcCall->arguments.at(0).get())) {
+                    if(auto* col =
+                           dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*funcCall->arguments.at(0)))) {
                         this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
                     }
                 }

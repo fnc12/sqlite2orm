@@ -682,3 +682,23 @@ TEST_CASE("runtime: an operand under a dropped COLLATE keeps its value") {
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"ab", "8", "16", "-5"});
 }
 
+// The sqlite_orm node a result column comes out as is the node under a dropped COLLATE, and so is
+// the type the row is read back into: without the widening the NULL row came back as 0 and as "",
+// where sqlite3 3.51 answers NULL for all three of these. Checked against it over `users(a INTEGER)`
+// holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a result column under a dropped COLLATE reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT (a + 1) COLLATE BINARY;"),
+        generate("SELECT (a || 'x') COLLATE NOCASE;"),
+        generate("SELECT (-a) COLLATE BINARY;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(c(&User::a) + 1));",
+                              "auto rows = storage.select(as_optional(c(&User::a) || \"x\"));",
+                              "auto rows = storage.select(as_optional((c(0) - c(&User::a))));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"8", "7x", "-7"});
+}

@@ -141,6 +141,27 @@ TEST_CASE("validator: validates function arguments recursively") {
     });
 }
 
+// LIMIT and OFFSET hold whole expressions, so the same rules apply there as in any other clause.
+TEST_CASE("validator: validates the LIMIT expression") {
+    REQUIRE(validate("SELECT a FROM users LIMIT +1") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 27}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("SELECT a FROM users LIMIT 5, +1") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 30}, "UnaryOperatorNode"}
+    });
+}
+
+TEST_CASE("validator: validates the OFFSET expression") {
+    REQUIRE(validate("SELECT a FROM users LIMIT 1 OFFSET +2") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 36}, "UnaryOperatorNode"}
+    });
+}
+
+TEST_CASE("validator: an expression LIMIT is valid") {
+    REQUIRE(validate("SELECT a FROM users LIMIT -1").empty());
+    REQUIRE(validate("SELECT a FROM users LIMIT 2 * 3 OFFSET -1").empty());
+}
+
 // --- Phase 9: CREATE TABLE ---
 
 TEST_CASE("validator: CREATE TABLE is valid") {

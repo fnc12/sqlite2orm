@@ -297,6 +297,91 @@ TEST_CASE("parser: SELECT with LIMIT OFFSET") {
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
+// Real sqlite3 (3.51) accepts `LIMIT -1` (it means "no limit"), so the clause takes a whole
+// expression, not an unsigned integer literal.
+TEST_CASE("parser: SELECT with negative LIMIT") {
+    auto parseResult = parse("SELECT * FROM users LIMIT -1");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}};
+    expected.fromClause = fromOne("users");
+    expected.limitValue =
+        makeNode<UnaryOperatorNode>(UnaryOperator::minus, makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: SELECT with negative OFFSET") {
+    auto parseResult = parse("SELECT * FROM users LIMIT 10 OFFSET -1");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}};
+    expected.fromClause = fromOne("users");
+    expected.limitValue = makeNode<IntegerLiteralNode>("10");
+    expected.offsetValue =
+        makeNode<UnaryOperatorNode>(UnaryOperator::minus, makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: SELECT with negative LIMIT and OFFSET") {
+    auto parseResult = parse("SELECT * FROM users LIMIT -1 OFFSET 2");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}};
+    expected.fromClause = fromOne("users");
+    expected.limitValue =
+        makeNode<UnaryOperatorNode>(UnaryOperator::minus, makeNode<IntegerLiteralNode>("1"));
+    expected.offsetValue = makeNode<IntegerLiteralNode>("2");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: SELECT with unary plus LIMIT") {
+    auto parseResult = parse("SELECT * FROM users LIMIT +10");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}};
+    expected.fromClause = fromOne("users");
+    expected.limitValue =
+        makeNode<UnaryOperatorNode>(UnaryOperator::plus, makeNode<IntegerLiteralNode>("10"));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: SELECT with computed LIMIT") {
+    auto parseResult = parse("SELECT * FROM users LIMIT 2 * 3");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}};
+    expected.fromClause = fromOne("users");
+    expected.limitValue = makeNode<BinaryOperatorNode>(
+        BinaryOperator::multiply, makeNode<IntegerLiteralNode>("2"), makeNode<IntegerLiteralNode>("3"));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+// `LIMIT <offset>, <count>` is SQLite's comma form: the first expression is the offset.
+TEST_CASE("parser: SELECT with LIMIT offset comma count") {
+    auto parseResult = parse("SELECT * FROM users LIMIT 5, 10");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}};
+    expected.fromClause = fromOne("users");
+    expected.limitValue = makeNode<IntegerLiteralNode>("10");
+    expected.offsetValue = makeNode<IntegerLiteralNode>("5");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+// sqlite3 rejects a LIMIT without a value; dropping the clause silently would generate code for a
+// different query than the one that was asked for.
+TEST_CASE("parser: error on LIMIT without a value") {
+    auto parseResult = parse("SELECT * FROM users LIMIT");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on OFFSET without a value") {
+    auto parseResult = parse("SELECT * FROM users LIMIT 10 OFFSET");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
 // --- GROUP BY ---
 
 TEST_CASE("parser: SELECT with GROUP BY") {

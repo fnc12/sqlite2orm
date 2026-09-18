@@ -114,14 +114,19 @@ namespace sqlite2orm {
             } while(match(TokenType::comma));
         }
 
+        // SQLite's grammar is `LIMIT expr ((OFFSET | ,) expr)?`, so both values are arbitrary
+        // expressions (`LIMIT -1`, `LIMIT 2 * 3`), not just unsigned integer literals. In the
+        // `LIMIT <offset>, <count>` form the first expression is the offset, not the count.
         if(match(TokenType::kwLimit)) {
-            if(!atEnd() && (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
-                node->limitValue = this->parser.parsePrimary();
-            }
+            node->limitValue = this->parser.parseExpression();
+            if(!node->limitValue) return nullptr;
             if(match(TokenType::kwOffset)) {
-                if(!atEnd() && (current().type == TokenType::integerLiteral || current().type == TokenType::bindParameter)) {
-                    node->offsetValue = this->parser.parsePrimary();
-                }
+                node->offsetValue = this->parser.parseExpression();
+                if(!node->offsetValue) return nullptr;
+            } else if(match(TokenType::comma)) {
+                node->offsetValue = std::move(node->limitValue);
+                node->limitValue = this->parser.parseExpression();
+                if(!node->limitValue) return nullptr;
             }
         }
 

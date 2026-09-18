@@ -154,7 +154,7 @@ TEST_CASE("parser: CREATE TABLE - DEFAULT real") {
 TEST_CASE("parser: CREATE TABLE - DEFAULT TRUE") {
     auto parseResult = parse("CREATE TABLE t (x INTEGER DEFAULT TRUE)");
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
-        "t", {columnWithDefault("x", "INTEGER", makeSharedNode<BoolLiteralNode>(true))}, false, {}));
+        "t", {columnWithDefault("x", "INTEGER", makeSharedNode<BoolLiteralNode>(true, "TRUE"))}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT NULL") {

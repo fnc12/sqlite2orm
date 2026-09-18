@@ -61,11 +61,15 @@ TEST_CASE("parser: null literal") {
 TEST_CASE("parser: bool literal") {
     SECTION("true") {
         auto parseResult = parse("TRUE");
-        REQUIRE(requireNode<BoolLiteralNode>(parseResult) == BoolLiteralNode(true, {}));
+        REQUIRE(requireNode<BoolLiteralNode>(parseResult) == BoolLiteralNode(true, "TRUE", {}));
     }
     SECTION("false") {
         auto parseResult = parse("FALSE");
-        REQUIRE(requireNode<BoolLiteralNode>(parseResult) == BoolLiteralNode(false, {}));
+        REQUIRE(requireNode<BoolLiteralNode>(parseResult) == BoolLiteralNode(false, "FALSE", {}));
+    }
+    SECTION("on") {
+        auto parseResult = parse("on");
+        REQUIRE(requireNode<BoolLiteralNode>(parseResult) == BoolLiteralNode(true, "on", {}));
     }
 }
 

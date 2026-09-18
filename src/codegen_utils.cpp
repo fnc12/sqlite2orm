@@ -1559,10 +1559,10 @@ namespace sqlite2orm {
                                realLiteral->location, realLiteral->value.size()};
         }
         if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
-            // TRUE and FALSE are the only two spellings the value has, so the text SQLite reads is
-            // as long as the one the user wrote whichever case it is in.
+            // `ON` is a bool literal too, and it is shorter than the `true` the message spells
+            // back, so the underline is measured on the keyword the user wrote.
             const std::string written = boolLiteral->value ? "true" : "false";
-            return PragmaValue{written, written, boolLiteral->location, written.size()};
+            return PragmaValue{written, written, boolLiteral->location, boolLiteral->spelling.size()};
         }
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value),

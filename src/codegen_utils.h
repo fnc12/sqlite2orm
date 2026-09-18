@@ -298,7 +298,10 @@ namespace sqlite2orm {
         std::string sqlText;
         /** Start of the value in the source SQL, so a warning about it can be underlined. */
         SourceLocation location;
-        /** Characters the value occupies from `location`, its quotes and its minus sign included. */
+        /**
+         *  Characters the value occupies from `location`: the value as written, its quotes and
+         *  its minus sign included, which `ON` spells shorter than `text` reads it back as.
+         */
         size_t length = 0;
     };
 

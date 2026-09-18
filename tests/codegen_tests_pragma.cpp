@@ -731,3 +731,48 @@ TEST_CASE("codegen: a PRAGMA value warning is anchored at the value as written")
                                           SourceLocation{2, 5}, 10}},
                           {}});
 }
+
+TEST_CASE("codegen: a PRAGMA value the message spells back longer is underlined as written") {
+    // `ON` is a bool literal to the parser, and the message spells it back as the `true` SQLite
+    // reads: the underline is two characters wide all the same, or it would cover `ON;` and run
+    // one character past the end of the line.
+    REQUIRE(generateFull("PRAGMA user_version = ON;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = true: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 23}, 2}},
+                          {}});
+    // The case the keyword came in does not change what is underlined.
+    REQUIRE(generateFull("PRAGMA busy_timeout = On;") ==
+            CodeGenResult{"storage.pragma.busy_timeout(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA busy_timeout = true: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 23}, 2}},
+                          {}});
+    // TRUE and FALSE are the same bool literal node, and they are as long as the text the message
+    // spells back.
+    REQUIRE(generateFull("PRAGMA user_version = TRUE;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = true: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 23}, 4}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA user_version = FALSE;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = false: SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 23}, 5}},
+                          {}});
+    // The argument of `PRAGMA integrity_check` takes its anchor from the same value.
+    REQUIRE(generateFull("PRAGMA integrity_check(on);") ==
+            CodeGenResult{"storage.pragma.integrity_check(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA integrity_check argument is emitted via subexpression codegen; "
+                                          "ensure it matches sqlite_orm::pragma_t::integrity_check overloads",
+                                          SourceLocation{1, 24}, 2}},
+                          {}});
+}

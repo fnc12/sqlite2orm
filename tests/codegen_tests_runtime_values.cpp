@@ -515,3 +515,23 @@ TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its v
             std::vector<std::string>{"0"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"1"});
 }
+
+// A dropped COLLATE used to take the `c(…)` wrap of the operand under it with it, and the operand
+// then landed in a plain C++ expression: `('a' COLLATE NOCASE) || 'b'` was two `const char*` under
+// C++'s own `||`, so `storage.dump` printed `SELECT 1` and the row came back as 1. Values checked
+// against sqlite3 3.51, which answers `ab`, 8, 16 and -5 for these four.
+TEST_CASE("runtime: an operand under a dropped COLLATE keeps its value") {
+    const std::vector<std::string> statements{
+        generate("SELECT ('a' COLLATE NOCASE) || 'b';"),
+        generate("SELECT (a COLLATE BINARY) + 1;"),
+        generate("SELECT 2 * ((a + 1) COLLATE BINARY);"),
+        generate("SELECT -(5 COLLATE BINARY);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(c(\"a\") || \"b\");",
+                              "auto rows = storage.select(as_optional(c(&User::a) + 1));",
+                              "auto rows = storage.select(as_optional(c(2) * (c(&User::a) + 1)));",
+                              "auto rows = storage.select((c(0) - c(5)));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"ab", "8", "16", "-5"});
+}

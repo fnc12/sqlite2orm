@@ -342,13 +342,18 @@ namespace sqlite2orm {
             auto leftResult = this->coordinator.generateNode(*binaryOp->lhs);
             auto rightResult = this->coordinator.generateNode(*binaryOp->rhs);
 
-            if(auto* leftCol = dynamic_cast<const ColumnRefNode*>(binaryOp->lhs.get())) {
+            // A COLLATE and a unary plus generate their operand and nothing else, so an operand
+            // standing under one is the operand this node really puts into the C++ expression.
+            const AstNode& leftNode = generatedOperandNode(*binaryOp->lhs);
+            const AstNode& rightNode = generatedOperandNode(*binaryOp->rhs);
+
+            if(auto* leftCol = dynamic_cast<const ColumnRefNode*>(&leftNode)) {
                 this->context.registerPrefixColumn(toCppIdentifier(leftCol->columnName),
-                                                   this->context.inferTypeFromNode(*binaryOp->rhs));
+                                                   this->context.inferTypeFromNode(rightNode));
             }
-            if(auto* rightCol = dynamic_cast<const ColumnRefNode*>(binaryOp->rhs.get())) {
+            if(auto* rightCol = dynamic_cast<const ColumnRefNode*>(&rightNode)) {
                 this->context.registerPrefixColumn(toCppIdentifier(rightCol->columnName),
-                                                   this->context.inferTypeFromNode(*binaryOp->lhs));
+                                                   this->context.inferTypeFromNode(leftNode));
             }
 
             auto decisionPoints = std::move(leftResult.decisionPoints);
@@ -356,8 +361,8 @@ namespace sqlite2orm {
                                   std::make_move_iterator(rightResult.decisionPoints.begin()),
                                   std::make_move_iterator(rightResult.decisionPoints.end()));
 
-            bool leftLeaf = isLeafNode(*binaryOp->lhs);
-            bool rightLeaf = isLeafNode(*binaryOp->rhs);
+            bool leftLeaf = isLeafNode(leftNode);
+            bool rightLeaf = isLeafNode(rightNode);
 
             auto nodeIsNoWrapRef = [&](const AstNode* node) -> bool {
                 if(auto* qr = dynamic_cast<const QualifiedColumnRefNode*>(node)) {
@@ -378,17 +383,17 @@ namespace sqlite2orm {
                 return false;
             };
             bool leftNoWrap = false;
-            if(auto* leftCol = dynamic_cast<const ColumnRefNode*>(binaryOp->lhs.get())) {
+            if(auto* leftCol = dynamic_cast<const ColumnRefNode*>(&leftNode)) {
                 leftNoWrap = this->context.columnRefIsSelectAliasNoWrap(*leftCol);
             }
-            if(nodeIsNoWrapRef(binaryOp->lhs.get())) {
+            if(nodeIsNoWrapRef(&leftNode)) {
                 leftNoWrap = true;
             }
             bool rightNoWrap = false;
-            if(auto* rightCol = dynamic_cast<const ColumnRefNode*>(binaryOp->rhs.get())) {
+            if(auto* rightCol = dynamic_cast<const ColumnRefNode*>(&rightNode)) {
                 rightNoWrap = this->context.columnRefIsSelectAliasNoWrap(*rightCol);
             }
-            if(nodeIsNoWrapRef(binaryOp->rhs.get())) {
+            if(nodeIsNoWrapRef(&rightNode)) {
                 rightNoWrap = true;
             }
 
@@ -405,13 +410,13 @@ namespace sqlite2orm {
                     rightOperand ? operandPrecedence >= precedence : operandPrecedence > precedence;
                 return regroups ? "(" + code + ")" : code;
             };
-            std::string leftOperand = asOperand(leftResult.code, *binaryOp->lhs, false);
-            std::string rightOperand = asOperand(rightResult.code, *binaryOp->rhs, true);
+            std::string leftOperand = asOperand(leftResult.code, leftNode, false);
+            std::string rightOperand = asOperand(rightResult.code, rightNode, true);
 
             std::string wrappedLeft =
-                (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(binaryOp->lhs.get())) ? wrap(leftResult.code) : leftOperand;
+                (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(&leftNode)) ? wrap(leftResult.code) : leftOperand;
             std::string wrappedRight =
-                (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(binaryOp->rhs.get())) ? wrap(rightResult.code) : rightOperand;
+                (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(&rightNode)) ? wrap(rightResult.code) : rightOperand;
 
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
             std::string functionalCode =
@@ -481,6 +486,13 @@ namespace sqlite2orm {
                                      std::move(operandResult.comments)};
             }
 
+            // A COLLATE generates its operand and nothing else, so the operand standing under one
+            // is the operand this unary operator really applies to in the generated code. The sign
+            // a minus folds into a literal is the exception — SQLite's parser does not read one
+            // through a COLLATE either, which is why `negationFormFor` is asked about the operand
+            // as written.
+            const AstNode& operandNode = generatedOperandNode(*unaryOp->operand);
+
             // sqlite_orm's unary_minus_t reports a wrong result type, so `-c(2)` serializes to the
             // right SQL and still reads the row back as 0. A minus over a numeric constant is folded
             // into it the way SQLite's own parser does, which is why `-2` is the constant -2 rather
@@ -499,15 +511,15 @@ namespace sqlite2orm {
                                      std::move(operandResult.comments)};
             }
 
-            bool operandLeaf = isLeafNode(*unaryOp->operand);
+            bool operandLeaf = isLeafNode(operandNode);
             bool operandNoWrap = false;
-            if(auto* opCol = dynamic_cast<const ColumnRefNode*>(unaryOp->operand.get())) {
+            if(auto* opCol = dynamic_cast<const ColumnRefNode*>(&operandNode)) {
                 operandNoWrap = this->context.columnRefIsSelectAliasNoWrap(*opCol);
                 if(this->context.withCteCpp20Monikers() && this->context.implicitSingleSourceCteTypedef) {
                     operandNoWrap = true;
                 }
             }
-            if(auto* opQCol = dynamic_cast<const QualifiedColumnRefNode*>(unaryOp->operand.get())) {
+            if(auto* opQCol = dynamic_cast<const QualifiedColumnRefNode*>(&operandNode)) {
                 if(this->context.activeTableAliases.find(std::string(opQCol->tableName)) !=
                    this->context.activeTableAliases.end()) {
                     operandNoWrap = true;
@@ -521,9 +533,9 @@ namespace sqlite2orm {
                 }
             }
             std::string operandStr;
-            if(operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(unaryOp->operand.get())) {
+            if(operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(&operandNode)) {
                 operandStr = wrap(operandResult.code);
-            } else if(!operandLeaf && !generatesZeroMinusSubtraction(*unaryOp->operand)) {
+            } else if(!operandLeaf && !generatesZeroMinusSubtraction(operandNode)) {
                 operandStr = "(" + operandResult.code + ")";
             } else {
                 operandStr = operandResult.code;
@@ -543,7 +555,7 @@ namespace sqlite2orm {
                 } else {
                     operandResult.warnings.push_back(CodegenWarning{
                         "unary minus over a predicate (" +
-                            std::string(sqlPredicateLooserThanMinus(*unaryOp->operand)) +
+                            std::string(sqlPredicateLooserThanMinus(operandNode)) +
                             ") has no working sqlite_orm form; the generated negation does not "
                             "reproduce what SQLite computes and does not compile",
                         unaryOp->location, 1});

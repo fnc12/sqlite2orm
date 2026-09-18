@@ -648,6 +648,43 @@ namespace sqlite2orm {
         return !isIntegerLiteralPastIntegerFieldRange(value);
     }
 
+    ValueStorageClass valueStorageClass(const AstNode& value) {
+        // A sign folds into a number only; in front of anything else it is an operator SQLite
+        // computes, and the generated code spells that operator out rather than a value.
+        if(dynamic_cast<const NullLiteralNode*>(&value)) {
+            return ValueStorageClass::null;
+        }
+        if(dynamic_cast<const StringLiteralNode*>(&value)) {
+            return ValueStorageClass::text;
+        }
+        if(dynamic_cast<const BlobLiteralNode*>(&value)) {
+            return ValueStorageClass::blob;
+        }
+        if(dynamic_cast<const BoolLiteralNode*>(&value)) {
+            // SQLite reads TRUE and FALSE as the integers 1 and 0.
+            return ValueStorageClass::numeric;
+        }
+        bool negated = false;
+        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        if(dynamic_cast<const IntegerLiteralNode*>(&literal) || dynamic_cast<const RealLiteralNode*>(&literal)) {
+            return ValueStorageClass::numeric;
+        }
+        return ValueStorageClass::unknown;
+    }
+
+    ValueStorageClass fieldTypeStorageClass(std::string_view cppType) {
+        if(cppType == "int64_t" || cppType == "int" || cppType == "double" || cppType == "bool") {
+            return ValueStorageClass::numeric;
+        }
+        if(cppType == "std::string") {
+            return ValueStorageClass::text;
+        }
+        if(cppType == "std::vector<char>") {
+            return ValueStorageClass::blob;
+        }
+        return ValueStorageClass::unknown;
+    }
+
     std::string integerLiteralToCpp(std::string_view integerLiteral) {
         // A hexadecimal literal denotes the same number in both languages, but a decimal one with
         // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not

@@ -105,6 +105,25 @@ namespace sqlite2orm {
      */
     bool integerFieldCarriesValue(const AstNode& value);
     /**
+     *  The storage class SQLite gives a value before it applies any column affinity, as far as the
+     *  SQL spells it out. A value that is not a literal is an expression SQLite computes while it
+     *  runs the statement, and `unknown` stands for it.
+     */
+    enum class ValueStorageClass {
+        null,
+        numeric,
+        text,
+        blob,
+        unknown,
+    };
+    /** The storage class the literal `value` denotes; folded minus signs belong to the number. */
+    ValueStorageClass valueStorageClass(const AstNode& value);
+    /**
+     *  The storage class a C++ field of `cppType` can be initialized from, for the types
+     *  `sqliteTypeToCpp` gives a table column; `unknown` for any other type.
+     */
+    ValueStorageClass fieldTypeStorageClass(std::string_view cppType);
+    /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.
      */

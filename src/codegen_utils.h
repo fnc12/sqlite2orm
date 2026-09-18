@@ -85,8 +85,37 @@ namespace sqlite2orm {
     std::string numericLiteralToCpp(std::string_view numericLiteral);
     /** Same for an integer literal, whose leading zeros C++ would read as an octal prefix (`010` is 10 in SQLite, 8 in C++). */
     std::string integerLiteralToCpp(std::string_view integerLiteral);
-    /** True when SQLite reads a decimal integer literal as a REAL because an int64 cannot hold it. */
-    bool integerLiteralExceedsInt64(std::string_view integerLiteral);
+    /**
+     *  True when SQLite reads a decimal integer literal as a REAL because an int64 cannot hold it.
+     *  `negated` tells whether a minus sign is folded into the literal, which moves the limit by
+     *  one: SQLite gives `-9223372036854775808` an INTEGER and `9223372036854775808` a REAL.
+     */
+    bool integerLiteralExceedsInt64(std::string_view integerLiteral, bool negated = false);
+    /**
+     *  True when `value` denotes a decimal integer literal SQLite keeps a REAL — one past the int64
+     *  range, any folded minus signs counted in. SQLite types a value by itself and applies column
+     *  affinity only afterwards, so such a literal stays a REAL even in an INTEGER column, where a
+     *  C++ `int64_t` field would convert it.
+     */
+    bool isIntegerLiteralPastIntegerFieldRange(const AstNode& value);
+    /**
+     *  True when an `int64_t` field is known to hold exactly the value SQLite gives `value`: false
+     *  for a decimal integer literal past the int64 range and for every REAL literal, whose storage
+     *  class depends on an affinity conversion SQLite alone decides, true for anything else.
+     */
+    bool integerFieldCarriesValue(const AstNode& value);
+    /**
+     *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
+     *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.
+     */
+    std::string numericLiteralSqlText(const AstNode& value);
+    /**
+     *  `message` anchored at the numeric literal `value` denotes: the underline covers the literal
+     *  token together with the minus signs folded into it, which `numericLiteralSqlText` quotes
+     *  along with the digits, as far as they share the literal's line. Unanchored for anything
+     *  else.
+     */
+    CodegenWarning numericLiteralWarning(std::string message, const AstNode& value);
     /**
      *  True when a signed 64-bit integer cannot hold a hex literal, i.e. it needs a seventeenth
      *  significant digit. SQLite refuses such a literal in `codeInteger()`, when it compiles an

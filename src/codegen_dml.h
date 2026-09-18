@@ -4,6 +4,7 @@
 #include <sqlite2orm/codegen_result.h>
 
 #include <string>
+#include <vector>
 
 namespace sqlite2orm {
 
@@ -21,6 +22,15 @@ namespace sqlite2orm {
         CodeGenResult generateTriggerStep(const AstNode& statement, const std::string& subjectTableStruct);
 
       private:
+        /**
+         *  The column names an `INSERT INTO t VALUES (...)` has to spell out because the object
+         *  form cannot carry one of its values: every value passes through a struct field there,
+         *  and an `int64_t` field converts a value SQLite keeps a REAL. Empty when the object form
+         *  carries the whole statement, which is every ordinary one.
+         */
+        std::vector<std::string> columnListForcedByFieldTypes(const InsertNode& insertNode,
+                                                              std::vector<CodegenWarning>& warnings) const;
+
         CodeGenerator& coordinator;
         CodeGeneratorContext& context;
     };

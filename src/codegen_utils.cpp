@@ -814,32 +814,39 @@ namespace sqlite2orm {
         return ValueStorageClass::unknown;
     }
 
-    bool integerLiteralExceedsInt32(std::string_view integerLiteral) {
+    bool integerLiteralExceedsInt32(std::string_view integerLiteral, bool negated) {
         if(isHexadecimalIntegerLiteral(integerLiteral)) {
             // SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the
             // digits alone say which side of the int32 range the value lands on: up to
             // `0x7FFFFFFF` it is a positive int32, from `0xFFFFFFFF80000000` on it has wrapped
             // back into one as a negative number, and everything in between needs an int64.
+            // A folded-in minus sign slides that window by one, the same way it does for a
+            // decimal magnitude: `-0x80000000` is -2147483648 and an int32 holds it, while
+            // `-0xFFFFFFFF80000000` is 2147483648 and one does not.
             static constexpr std::string_view wrappedInt32Min = "ffffffff80000000";
+            static constexpr std::string_view negatedWrappedInt32Max = "ffffffff80000001";
+            static constexpr std::string_view hexInt32MinMagnitude = "80000000";
             const std::string digits = significantDigits(integerLiteral.substr(2));
             if(digits.size() < 8) {
                 return false;
             }
+            const std::string lowered = toLowerAscii(digits);
             if(digits.size() == 8) {
-                return digits.front() >= '8';
+                return negated ? std::string_view(lowered) > hexInt32MinMagnitude : digits.front() >= '8';
             }
             if(digits.size() == 16) {
-                const std::string lowered = toLowerAscii(digits);
-                return std::string_view(lowered) < wrappedInt32Min;
+                return std::string_view(lowered) < (negated ? negatedWrappedInt32Max : wrappedInt32Min);
             }
             // Nine to fifteen digits are past `0xFFFFFFFF`, and a seventeenth one is past an
             // int64 altogether — `hexLiteralExceedsInt64` refuses that where it is compiled.
             return true;
         }
         static constexpr std::string_view int32Max = "2147483647";
+        static constexpr std::string_view int32MinMagnitude = "2147483648";
+        const std::string_view limit = negated ? int32MinMagnitude : int32Max;
         const std::string digits = significantDigits(integerLiteral);
-        return digits.size() > int32Max.size() ||
-               (digits.size() == int32Max.size() && std::string_view(digits) > int32Max);
+        return digits.size() > limit.size() ||
+               (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
     std::string integerLiteralToCpp(std::string_view integerLiteral) {

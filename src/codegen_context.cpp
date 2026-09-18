@@ -159,8 +159,39 @@ namespace sqlite2orm {
         this->customFunctions.push_back(std::move(use));
     }
 
+    void CodeGeneratorContext::markUngeneratableTable(std::string_view tableName) {
+        this->ungeneratableTables.insert(normalizeSqlIdentifier(tableName));
+    }
+
+    void CodeGeneratorContext::markUngeneratableView(std::string_view viewName) {
+        this->markUngeneratableTable(viewName);
+        this->ungeneratableViews.insert(normalizeSqlIdentifier(viewName));
+    }
+
+    std::string_view CodeGeneratorContext::referencedUngeneratableKind() const {
+        for(const std::string& referencedName : this->referencedUngeneratableTables) {
+            if(this->ungeneratableViews.find(referencedName) == this->ungeneratableViews.end()) {
+                return "table";
+            }
+        }
+        return "view";
+    }
+
+    bool CodeGeneratorContext::isUngeneratableTable(std::string_view tableName) const {
+        return this->ungeneratableTables.find(normalizeSqlIdentifier(tableName)) != this->ungeneratableTables.end();
+    }
+
+    std::string CodeGeneratorContext::structNameForTable(std::string_view tableName) {
+        if(this->isUngeneratableTable(tableName)) {
+            this->referencedUngeneratableTables.insert(normalizeSqlIdentifier(tableName));
+        }
+        return toStructName(tableName);
+    }
+
     void CodeGeneratorContext::resetForGeneration() {
         this->accumulatedErrors.clear();
+        this->storedExpression = false;
+        this->storedHexLiteralsTooBig.clear();
         this->customFunctions.clear();
     }
 

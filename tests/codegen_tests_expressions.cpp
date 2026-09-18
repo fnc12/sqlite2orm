@@ -923,3 +923,22 @@ TEST_CASE("codegen: known functions are not turned into custom functions") {
     CHECK(findDp(result, "custom_function") == nullptr);
     CHECK(result.code.find("abs(&T::day)") != std::string::npos);
 }
+
+// SQLite raises `hex literal too big` in codeInteger(), so an expression it compiles is refused
+// whole: `SELECT 0x10000000000000000` and `SELECT * FROM t LIMIT 0x10000000000000000` are both
+// `Error: in prepare, hex literal too big`. Checked against sqlite3 3.51.
+TEST_CASE("codegen: a hex literal past the int64 range is refused in a compiled expression") {
+    REQUIRE(generateFull("SELECT 0x10000000000000000;") ==
+            CodeGenResult{{}, {}, {}, {"hex literal too big: 0x10000000000000000"}, {}});
+    REQUIRE(generateFull("SELECT * FROM t WHERE x > 0x00001FFFFFFFFFFFFFFFF;") ==
+            CodeGenResult{{}, {}, {}, {"hex literal too big: 0x00001FFFFFFFFFFFFFFFF"}, {}});
+    // SQLite names the literal with the digit separators taken out, the leading zeros left in.
+    REQUIRE(generateFull("SELECT 0x1_FF_FF_FF_FF_FF_FF_FF_FF;") ==
+            CodeGenResult{{}, {}, {}, {"hex literal too big: 0x1FFFFFFFFFFFFFFFF"}, {}});
+}
+
+// Sixteen significant digits are the most an int64 holds, and leading zeros do not count.
+TEST_CASE("codegen: the sixteen-digit hex literals around the boundary still generate") {
+    REQUIRE(generate("0xFFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)");
+    REQUIRE(generate("0x0000FFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0x0000FFFFFFFFFFFFFFFF)");
+}

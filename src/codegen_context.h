@@ -6,6 +6,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,6 +50,40 @@ namespace sqlite2orm {
         int nextDecisionPointId = 1;
         int nextBindParamIndex = 0;
         std::vector<std::string> accumulatedErrors;
+        /**
+         *  Set while generating an expression the statement only stores the text of: a column
+         *  DEFAULT, a CHECK, a view or a trigger body. SQLite raises `hex literal too big` in
+         *  `codeInteger()`, when it compiles an expression, so such a statement is accepted with
+         *  a hex literal no compiled expression may hold — and that C++ cannot spell either.
+         */
+        bool storedExpression = false;
+        /**
+         *  The hex literals past the int64 range met since the last `generateStoredExpression()`,
+         *  as SQLite names them. The generator that owns the clause leaves it out of the generated
+         *  code with a warning instead of failing the whole statement.
+         */
+        std::vector<std::string> storedHexLiteralsTooBig;
+        /**
+         *  The tables of the current batch that cannot be mapped at all — a STORED generated
+         *  column holding such a hex literal leaves the whole table out, because a column that
+         *  lost its `as(...)` would be an ordinary column. sqlite_orm cannot reference a type it
+         *  does not map, so a foreign key naming one of these is left out too. Normalized names,
+         *  filled by whoever assembles a whole schema.
+         */
+        std::set<std::string> ungeneratableTables;
+        /**
+         *  The `ungeneratableTables` entries that name a view rather than a table. A view left out
+         *  of the storage is a name sqlite_orm has no type for exactly as an ungeneratable table
+         *  is, so it joins them; this set only tells the two apart when a warning names the kind.
+         */
+        std::set<std::string> ungeneratableViews;
+        /**
+         *  The `ungeneratableTables` entries the statement being generated has turned into a
+         *  struct name. Every table reference reaches its struct through `structNameForTable()`,
+         *  so however deeply a reference is nested — a subquery in a WHERE, a trigger WHEN clause,
+         *  a CTE — it is recorded here, and the caller leaves the whole statement out.
+         */
+        std::set<std::string> referencedUngeneratableTables;
         std::map<std::string, std::string> columnTypes;
         std::map<std::string, std::string> fromTableAliasToStructName;
         std::map<std::string, TableAliasInfo> activeTableAliases;
@@ -115,6 +150,22 @@ namespace sqlite2orm {
         bool isExplicitCteColumn(std::string_view cteKeyNorm, std::string_view columnName) const;
 
         void registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns);
+
+        /** Records that `tableName` is left out of the generated storage. */
+        void markUngeneratableTable(std::string_view tableName);
+
+        /** Records that `viewName`, a view, is left out of the generated storage. */
+        void markUngeneratableView(std::string_view viewName);
+
+        /** Whether `tableName` names a table of this batch that is left out of the generated storage. */
+        bool isUngeneratableTable(std::string_view tableName) const;
+
+        /** `view` when every name the last statement referenced is a view, `table` otherwise. */
+        std::string_view referencedUngeneratableKind() const;
+
+        /** Struct name of a referenced table, recording the reference when the table is not generated. */
+        std::string structNameForTable(std::string_view tableName);
+
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName,
                                                        std::string_view columnName) const;
 

@@ -256,11 +256,12 @@ TEST_CASE("tokenizer: digit separators in numeric literals") {
     }
 }
 
-// A hex literal stands for a signed 64-bit integer, so SQLite rejects one with more than the 16
-// hex digits that fit in it. Leading zeros and digit separators are not digits it counts, and the
-// message names the literal with the separators already taken out. Checked against sqlite3 3.51.
+// A hex literal a signed 64-bit integer cannot hold is still a valid token: SQLite raises
+// `hex literal too big` in codeInteger(), when it compiles an expression, so the statements that
+// never compile the value keep it — `CREATE TABLE t(x DEFAULT 0x10000000000000000)` and
+// `PRAGMA user_version = 0x10000000000000000` are both accepted. Checked against sqlite3 3.51.
 TEST_CASE("tokenizer: hex literal beyond the int64 range") {
-    SECTION("sixteen significant digits still fit") {
+    SECTION("sixteen significant digits") {
         REQUIRE(tokenize("0xFFFFFFFFFFFFFFFF") == std::vector<Token>{
             {TokenType::integerLiteral, "0xFFFFFFFFFFFFFFFF"},
             {TokenType::eof},
@@ -274,21 +275,24 @@ TEST_CASE("tokenizer: hex literal beyond the int64 range") {
             {TokenType::eof},
         });
     }
-    SECTION("a seventeenth one does not") {
-        REQUIRE(tokenizeError("0x10000000000000000") == "hex literal too big: 0x10000000000000000");
-        REQUIRE(tokenizeError("0xFFFFFFFFFFFFFFFFF") == "hex literal too big: 0xFFFFFFFFFFFFFFFFF");
-        REQUIRE(tokenizeError("0x00001FFFFFFFFFFFFFFFF") == "hex literal too big: 0x00001FFFFFFFFFFFFFFFF");
-        REQUIRE(tokenizeError("0x1_FF_FF_FF_FF_FF_FF_FF_FF") == "hex literal too big: 0x1FFFFFFFFFFFFFFFF");
+    SECTION("a seventeenth one is a token all the same") {
+        REQUIRE(tokenize("0x10000000000000000") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x10000000000000000"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0x00001FFFFFFFFFFFFFFFF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x00001FFFFFFFFFFFFFFFF"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenize("0x1_FF_FF_FF_FF_FF_FF_FF_FF") == std::vector<Token>{
+            {TokenType::integerLiteral, "0x1_FF_FF_FF_FF_FF_FF_FF_FF"},
+            {TokenType::eof},
+        });
+        REQUIRE(tokenizeError("SELECT 0x10000000000000000;") == "no error");
     }
-    SECTION("rejected literal reports its position") {
-        try {
-            tokenize("SELECT 0x10000000000000000;");
-            FAIL("expected a TokenizeError");
-        } catch(const TokenizeError& error) {
-            REQUIRE(std::string(error.what()) == "hex literal too big: 0x10000000000000000");
-            REQUIRE(error.location.line == 1);
-            REQUIRE(error.location.column == 8);
-        }
+    SECTION("the digit separator rules still apply to it") {
+        REQUIRE(tokenizeError("0x_10000000000000000") == "unrecognized token '0x_10000000000000000'");
+        REQUIRE(tokenizeError("0x10000000000000000_") == "unrecognized token '0x10000000000000000_'");
     }
 }
 

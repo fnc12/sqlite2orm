@@ -214,6 +214,149 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT hexadecimal past the int64 range") {
         "        make_column(\"x\", &T::x, default_value(static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)))));");
 }
 
+// SQLite raises `hex literal too big` in codeInteger(), when it compiles an expression, and a
+// DEFAULT is stored without ever being compiled: `CREATE TABLE weird(x INTEGER DEFAULT
+// 0x10000000000000000)` is accepted and kept in sqlite_master, and only `INSERT INTO weird
+// DEFAULT VALUES` fails with it. C++ has no literal for the value either, so the column stays and
+// the default goes. Checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT hex literal too big for an int64") {
+    auto result = generateFull("CREATE TABLE weird (x INTEGER DEFAULT 0x10000000000000000)");
+    REQUIRE(result.code ==
+        "struct Weird {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"weird\",\n"
+        "        make_column(\"x\", &Weird::x)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite stores it "
+             "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
+             "default_value()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// The literal is just as stored inside a parenthesized DEFAULT expression, and the separators are
+// taken out of the diagnostic the way SQLite takes them out of its own.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT expression holding a hex literal too big") {
+    auto result = generateFull("CREATE TABLE t (x INTEGER DEFAULT (0x1_0000_0000_0000_0000 + 1))");
+    REQUIRE(result.code ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite stores it "
+             "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
+             "default_value()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// A CHECK is stored the same way, and SQLite refuses it only once a row goes in.
+TEST_CASE("codegen: CREATE TABLE - column CHECK holding a hex literal too big") {
+    auto result = generateFull("CREATE TABLE t (x INTEGER CHECK (x <> 0x10000000000000000))");
+    REQUIRE(result.code ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"CHECK on column 'x' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores it "
+             "but refuses every use of the constraint, and C++ has no literal for it, so the generated column has "
+             "no check()"}});
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - table-level CHECK holding a hex literal too big") {
+    auto result = generateFull("CREATE TABLE t (a INTEGER, CHECK (a <> 0x10000000000000000))");
+    REQUIRE(result.code ==
+        "struct T {\n"
+        "    std::optional<int64_t> a;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"table CHECK uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores it but "
+             "refuses every use of the constraint, and C++ has no literal for it, so the generated table has no "
+             "check()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// Only a STORED generated column is stored text. SQLite compiles it when a row is written, so
+// `sqlite3 s.db "CREATE TABLE g(x INTEGER, y AS (x + 0x10000000000000000) STORED)"` succeeds and
+// sqlite_master holds the table, while every INSERT into it is `hex literal too big`. C++ has no
+// literal for the value, and a column that lost its as(...) would be an ordinary column rather
+// than a generated one, so the table is left out whole instead of being reshaped — the statement
+// is not an error and the rest of a schema holding it still generates. On its own it generates a
+// placeholder comment rather than nothing, the way an unsupported CREATE VIEW does. Checked
+// against sqlite3 3.51.
+TEST_CASE("codegen: CREATE TABLE - STORED generated column holding a hex literal too big") {
+    auto result = generateFull("CREATE TABLE g (x INTEGER, y AS (x + 0x10000000000000000) STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE g — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "
+             "stores the table but refuses every row written to it, and C++ has no literal for it, so the table "
+             "is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// The GENERATED ALWAYS spelling of the same column is stored by SQLite just the same.
+TEST_CASE("codegen: CREATE TABLE - GENERATED ALWAYS STORED column holding a hex literal too big") {
+    auto result =
+        generateFull("CREATE TABLE g (x INTEGER, y GENERATED ALWAYS AS (x + 0x1_0000_0000_0000_0000) STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE g — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "
+             "stores the table but refuses every row written to it, and C++ has no literal for it, so the table "
+             "is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// A VIRTUAL generated column is the opposite: SQLite compiles it at CREATE TABLE time and refuses
+// the statement outright — `Error: stepping, hex literal too big` — so the table never reaches
+// sqlite_master and an error here is what matches. The bare `AS (...)` spelling is VIRTUAL too.
+TEST_CASE("codegen: CREATE TABLE - VIRTUAL generated column holding a hex literal too big is an error") {
+    auto result = generateFull("CREATE TABLE g (x INTEGER, y AS (x + 0x10000000000000000) VIRTUAL)");
+    REQUIRE(result.errors == std::vector<std::string>{"hex literal too big: 0x10000000000000000"});
+    REQUIRE(result.warnings.empty());
+
+    auto bare = generateFull("CREATE TABLE g (x INTEGER, y AS (x + 0x10000000000000000))");
+    REQUIRE(bare.errors == std::vector<std::string>{"hex literal too big: 0x10000000000000000"});
+    REQUIRE(bare.warnings.empty());
+}
+
+// The boundary is unmoved: 0xFFFFFFFFFFFFFFFF is the largest hex literal SQLite reads, so a STORED
+// generated column holding it is generated as it always was.
+TEST_CASE("codegen: CREATE TABLE - STORED generated column at the top of the int64 range") {
+    auto result = generateFull("CREATE TABLE g (x INTEGER, y AS (x + 0xFFFFFFFFFFFFFFFF) STORED)");
+    REQUIRE(result.code ==
+        "struct G {\n"
+        "    std::optional<int64_t> x;\n"
+        "    std::optional<std::vector<char>> y;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"g\",\n"
+        "        make_column(\"x\", &G::x),\n"
+        "        make_column(\"y\", &G::y, as(c(&G::x) + static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)).stored())));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
 TEST_CASE("codegen: CREATE TABLE - DEFAULT string") {
     auto result = generate("CREATE TABLE t (x TEXT DEFAULT 'hello')");
     REQUIRE(result ==

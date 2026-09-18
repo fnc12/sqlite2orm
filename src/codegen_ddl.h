@@ -27,6 +27,9 @@ namespace sqlite2orm {
         CreateViewParts createViewParts(const CreateViewNode& node);
 
       private:
+        /** `createViewParts` without the bookkeeping that marks a view it could not generate. */
+        CreateViewParts viewParts(const CreateViewNode& node);
+
         CodeGenerator& coordinator;
         CodeGeneratorContext& context;
     };

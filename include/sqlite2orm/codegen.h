@@ -48,6 +48,14 @@ namespace sqlite2orm {
 
         CodeGenResult generateNode(const AstNode& astNode);
 
+        /**
+         *  Generates an expression the statement only stores the text of, as a column DEFAULT, a
+         *  CHECK or a view body does. The caller then checks `context().storedHexLiteralsTooBig`
+         *  and leaves its clause out with a warning when it is not empty: SQLite keeps a hex
+         *  literal past the int64 range there, and C++ has no literal for it.
+         */
+        CodeGenResult generateStoredExpression(const AstNode& astNode);
+
         CodeGenResult tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode);
         CodeGenResult tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode);
         CodeGenResult tryCodegenSelectLikeSubquery(const AstNode& node);

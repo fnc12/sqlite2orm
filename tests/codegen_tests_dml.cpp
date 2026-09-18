@@ -226,3 +226,25 @@ TEST_CASE("codegen: UPDATE FROM warning") {
     }
     REQUIRE(found);
 }
+
+// A trigger body is stored and compiled only when the trigger fires, so SQLite accepts a hex
+// literal in it that it refuses in a statement of its own, and every INSERT on the subject table
+// then fails. C++ has no literal for the value, so the trigger cannot be generated — without
+// failing the statement, so a schema holding it still generates. Checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE TRIGGER - a hex literal too big leaves the trigger ungenerated") {
+    auto result = generateFull(
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET x = 0x10000000000000000; END");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"CREATE TRIGGER tr uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the "
+             "trigger but refuses every statement that fires it, and C++ has no literal for it, so the trigger is "
+             "not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// An INSERT compiles its values, so there SQLite refuses the same literal outright.
+TEST_CASE("codegen: INSERT with a hex literal too big is refused") {
+    REQUIRE(generateFull("INSERT INTO t VALUES (0x10000000000000000);") ==
+            CodeGenResult{{}, {}, {}, {"hex literal too big: 0x10000000000000000"}, {}});
+}

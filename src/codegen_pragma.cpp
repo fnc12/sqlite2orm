@@ -7,6 +7,19 @@
 
 namespace sqlite2orm {
 
+    namespace {
+
+        /** The hex literal of `PRAGMA name = <value>`, as SQLite names it, when an int64 cannot hold it. */
+        std::optional<std::string> pragmaValueHexLiteralTooBig(const AstNode& valueNode) {
+            const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode);
+            if(integerLiteral && hexLiteralExceedsInt64(integerLiteral->value)) {
+                return withoutDigitSeparators(integerLiteral->value);
+            }
+            return std::nullopt;
+        }
+
+    }  // namespace
+
     PragmaCodeGenerator::PragmaCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
         coordinator(coordinator),
         context(context) {}
@@ -59,6 +72,14 @@ namespace sqlite2orm {
                 return CodeGenResult{"storage.pragma.integrity_check();", {}, {}};
             }
             if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(node.value.get())) {
+                if(auto tooBig = pragmaValueHexLiteralTooBig(*node.value)) {
+                    // SQLite reads the value with `sqlite3GetInt32()` and takes it for a table name
+                    // when it does not fit one, so this is `no such table: 0x10000000000000000`.
+                    this->context.accumulatedErrors.push_back(
+                        "PRAGMA integrity_check = " + *tooBig +
+                        ": SQLite cannot read this hex literal as a 32-bit integer and refuses it as a table name");
+                    return CodeGenResult{"/* PRAGMA integrity_check */"};
+                }
                 return CodeGenResult{
                     "storage.pragma.integrity_check(" + integerLiteralToCpp(integerLiteral->value) + ");", {}, {}};
             }
@@ -77,6 +98,15 @@ namespace sqlite2orm {
            name == "auto_vacuum" || name == "max_page_count") {
             if(!node.value) {
                 return CodeGenResult{"storage.pragma." + name + "();", {}, {}};
+            }
+            // A PRAGMA value is not an expression: SQLite never compiles it, so it accepts a hex
+            // literal it refuses in a query and reads it with `sqlite3GetInt32()`, which answers 0
+            // for one that does not fit an int32.
+            if(auto tooBig = pragmaValueHexLiteralTooBig(*node.value)) {
+                warnings.push_back("PRAGMA " + name + " = " + *tooBig +
+                                   ": SQLite reads a PRAGMA value as a 32-bit integer and this hex literal does "
+                                   "not fit one, so it sets 0");
+                return CodeGenResult{"storage.pragma." + name + "(0);", {}, std::move(warnings)};
             }
             std::string arg = mergeSub(this->coordinator.generateNode(*node.value));
             return CodeGenResult{

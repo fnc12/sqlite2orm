@@ -175,7 +175,7 @@ namespace sqlite2orm {
                 auto fromKey = normalizeSqlIdentifier(firstFrom.tableName);
                 if(this->context.activeCteTypedefByTableKey.find(fromKey) ==
                    this->context.activeCteTypedefByTableKey.end()) {
-                    this->context.cteBaseStructByKey[cteKey] = toStructName(firstFrom.tableName);
+                    this->context.cteBaseStructByKey[cteKey] = this->context.structNameForTable(firstFrom.tableName);
                 }
             }
         }

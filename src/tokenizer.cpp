@@ -205,18 +205,6 @@ namespace sqlite2orm {
             return TokenizeError("unrecognized token '" + std::string(text) + "'", location);
         }
 
-        // Neither the `_` separators nor the leading zeros count towards the 16 hex digits an
-        // int64 holds, so `0x0000FFFFFFFFFFFFFFFF` and `0xFF_FF_FF_FF_FF_FF_FF_FF` both still fit.
-        size_t significantHexDigitCount(std::string_view hexLiteral) {
-            size_t count = 0;
-            for(char character: hexLiteral.substr(2)) {
-                if(character != '_' && (character != '0' || count > 0)) {
-                    ++count;
-                }
-            }
-            return count;
-        }
-
         std::string toLower(std::string_view sv) {
             std::string result(sv);
             std::transform(result.begin(), result.end(), result.begin(),
@@ -463,12 +451,11 @@ namespace sqlite2orm {
             throw unrecognizedToken(text, location);
         }
 
-        // A hex literal stands for a signed 64-bit integer, and SQLite refuses one that does not
-        // fit: `SELECT 0x10000000000000000` is `hex literal too big`. It names the literal with
-        // the separators already taken out of it, the leading zeros still in.
-        if(hexadecimal && significantHexDigitCount(text) > 16) {
-            throw TokenizeError("hex literal too big: " + withoutDigitSeparators(text), location);
-        }
+        // A hex literal a signed 64-bit integer cannot hold is not the lexer's business: SQLite
+        // raises `hex literal too big` in codeInteger(), when it compiles an expression, so
+        // `CREATE TABLE t(x DEFAULT 0x10000000000000000)` and `PRAGMA user_version =
+        // 0x10000000000000000` — neither of which ever compiles the value — are accepted whole.
+        // Codegen refuses the literal where SQLite does; see `hexLiteralExceedsInt64`.
         return Token{type, text, location};
     }
 

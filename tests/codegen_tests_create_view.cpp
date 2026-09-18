@@ -179,3 +179,17 @@ TEST_CASE("codegen: targeting C++26 drops the reflection-not-supported view warn
                 {"view v: type of column `id` could not be inferred; defaulting to int",
                  SourceLocation{1, 25}, 2}});
 }
+
+// A view body is stored, not compiled, so SQLite accepts a hex literal in it that it refuses in a
+// query of its own; `SELECT * FROM v` is then `Error: in prepare, hex literal too big`. C++ has no
+// literal for the value, so the view cannot be generated — but the statement is not an error, and
+// the rest of a schema holding it still generates. Checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE VIEW - a hex literal too big leaves the view ungenerated") {
+    auto result = generateFull("CREATE VIEW v AS SELECT 0x10000000000000000;");
+    REQUIRE(result.code == "/* CREATE VIEW v — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"CREATE VIEW v uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the view "
+             "but refuses every query against it, and C++ has no literal for it, so the view is not generated"}});
+    REQUIRE(result.errors.empty());
+}

@@ -48,6 +48,21 @@ namespace sqlite2orm {
                     "UnaryOperatorNode"
                 });
             }
+            if(unaryOp->unaryOperator == UnaryOperator::minus) {
+                if(auto* literal = dynamic_cast<const IntegerLiteralNode*>(unaryOp->operand.get())) {
+                    // `0x8000000000000000` is INT64_MIN, so negating it leaves the range an integer
+                    // literal lives in and SQLite refuses the statement: `SELECT -0x8000000000000000`
+                    // is `hex literal too big`, while the literal on its own is accepted. SQLite
+                    // reads the sign through parentheses too, and so does the AST here.
+                    if(hexLiteralIsInt64Min(literal->value)) {
+                        errors.push_back(ValidationError{
+                            "hex literal too big: -" + withoutDigitSeparators(literal->value),
+                            unaryOp->location,
+                            "UnaryOperatorNode"
+                        });
+                    }
+                }
+            }
             auto operandErrors = validate(*unaryOp->operand);
             errors.insert(errors.end(), operandErrors.begin(), operandErrors.end());
         } else if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {

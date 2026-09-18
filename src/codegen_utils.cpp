@@ -287,7 +287,10 @@ namespace sqlite2orm {
             const auto cppType =
                 column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
             const bool nullable = !column.primaryKey && !column.notNull;
-            const bool generated = column.generatedStorage != ColumnDef::GeneratedStorage::none;
+            // The expression is what makes a column generated; `generatedStorage` only tells
+            // VIRTUAL from STORED, and stays `none` for the bare `AS (...)` spelling SQLite
+            // documents as the default.
+            const bool generated = column.generatedExpression != nullptr;
             columns.push_back(
                 SourceTableColumn{stripIdentifierQuotes(column.name), cppType, nullable, generated});
         }

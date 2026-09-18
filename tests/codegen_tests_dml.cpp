@@ -388,15 +388,29 @@ TEST_CASE("codegen: INSERT VALUES - an ordinary value keeps the object form") {
 }
 
 // SQLite computes a generated column, so a VALUES row never holds one and the spelled-out column
-// list leaves it out. `CREATE TABLE t(x INTEGER, y AS (x+1) STORED); INSERT INTO t VALUES
+// list leaves it out. `CREATE TABLE t(x INTEGER, y AS (x+1)); INSERT INTO t VALUES
 // (99999999999999999999);` stores `real|1.0e+20` in both columns in sqlite3 3.51, and so does the
-// generated code.
+// generated code. A bare `AS (...)`, the spelling SQLite documents as the default, carries no
+// storage keyword, so what makes the column generated is its expression rather than the keyword.
 TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range beside a generated column") {
-    auto result = generateLastOfBatch(
-        "CREATE TABLE t(x INTEGER, y AS (x+1) STORED); INSERT INTO t VALUES (99999999999999999999);");
+    const std::string generatedColumn = GENERATE("y AS (x+1)",
+                                                 "y AS (x+1) VIRTUAL",
+                                                 "y AS (x+1) STORED",
+                                                 "y GENERATED ALWAYS AS (x+1)",
+                                                 "y GENERATED ALWAYS AS (x+1) STORED");
+    INFO(generatedColumn);
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER, " + generatedColumn +
+                                      ");\nINSERT INTO t VALUES (99999999999999999999);");
     REQUIRE(result.code ==
             "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(99999999999999999999.0)));");
-    REQUIRE(result.warnings.size() == 1u);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"INSERT into column 'x' of table 't' uses 99999999999999999999, past the signed 64-bit integer "
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{2, 23},
+                 20}});
     REQUIRE(result.errors.empty());
 }
 

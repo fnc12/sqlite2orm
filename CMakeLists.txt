@@ -201,6 +201,10 @@ if(SQLITE2ORM_BUILD_TESTS)
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/clang_format_check.sh"
                         "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
             add_test(
+                NAME sqlite2orm_clang_format_report
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/clang_format_report_test.sh"
+                        "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
+            add_test(
                 NAME sqlite2orm_git_hooks
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/git_hooks_test.sh"
                         "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")

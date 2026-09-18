@@ -14,8 +14,12 @@ find include src tests examples \
     \( -name '*.h' -o -name '*.hpp' -o -name '*.cpp' \) -print > "$dir/files.txt"
 test -s "$dir/files.txt"
 
-xargs "$clang_format" --style=file --dry-run -Werror < "$dir/files.txt" > "$dir/out.txt" 2>&1
+# Keep the status rather than letting `set -e` abort here: the diff below is what tells a
+# contributor which file is wrong, and it never runs if xargs takes the script down with it.
+status=0
+xargs "$clang_format" --style=file --dry-run -Werror < "$dir/files.txt" > "$dir/out.txt" 2>&1 || status=$?
 
 # A clean tree produces no diagnostics at all.
 : > "$dir/expected.txt"
 diff "$dir/expected.txt" "$dir/out.txt"
+test "$status" -eq 0

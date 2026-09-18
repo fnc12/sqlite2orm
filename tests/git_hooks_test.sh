@@ -65,9 +65,45 @@ git commit -q -m "formatted" > "$dir/out3.txt" 2> "$dir/err3.txt"
 test ! -s "$dir/err3.txt"
 test "$(git rev-list --count --all)" -eq 1
 
+# The hook owns headers too: .h is a third of this repository's C++ sources.
+cat > bad.h <<'EOF'
+inline int f() {
+    if(1) {
+        return 0;
+    }
+    return 1;
+}
+EOF
+cat > bad.hpp <<'EOF'
+inline int g() {
+    if(1) {
+        return 0;
+    }
+    return 1;
+}
+EOF
+git add bad.h bad.hpp
+
+status=0
+git commit -q -m "headers" > "$dir/out5.txt" 2> "$dir/err5.txt" || status=$?
+test "$status" -eq 1
+cat > "$dir/err5.expected" <<'EOF'
+pre-commit: bad.h is not formatted according to .clang-format.
+pre-commit: bad.hpp is not formatted according to .clang-format.
+pre-commit: run clang-format 19 with -i on those files and stage them again.
+EOF
+diff "$dir/err5.expected" "$dir/err5.txt"
+test "$(git rev-list --count --all)" -eq 1
+
+"$clang_format" --style=file -i bad.h bad.hpp
+git add bad.h bad.hpp
+git commit -q -m "headers" > "$dir/out6.txt" 2> "$dir/err6.txt"
+test ! -s "$dir/err6.txt"
+test "$(git rev-list --count --all)" -eq 2
+
 # Files the hook does not own are none of its business.
 printf 'not   formatted C++\n' > notes.txt
 git add notes.txt
 git commit -q -m "notes" > "$dir/out4.txt" 2> "$dir/err4.txt"
 test ! -s "$dir/err4.txt"
-test "$(git rev-list --count --all)" -eq 2
+test "$(git rev-list --count --all)" -eq 3

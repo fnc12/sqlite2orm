@@ -11,6 +11,9 @@ namespace sqlite2orm {
 
     CodeGenResult DdlCodeGenerator::generateCreateTable(const CreateTableNode& createTable) {
         const CreateTableParts parts = this->createTableParts(createTable);
+        if(parts.makeTableExpression.empty()) {
+            return CodeGenResult{{}, {}, std::vector<CodegenWarning>(parts.warnings)};
+        }
         std::string code = parts.structDeclaration + "\nauto storage = make_storage(\"\",\n    " +
                            parts.makeTableExpression + ");";
         return CodeGenResult{std::move(code), {}, std::vector<CodegenWarning>(parts.warnings)};
@@ -74,6 +77,7 @@ namespace sqlite2orm {
         // Like a view body, a trigger body is stored and compiled only when the trigger fires, so
         // SQLite accepts a hex literal in it that it refuses in a query of its own.
         this->context.storedHexLiteralsTooBig.clear();
+        const bool triggerWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
         if(createTrigger.whenClause) {
             auto whenResult = this->coordinator.generateNode(*createTrigger.whenClause);
@@ -97,7 +101,7 @@ namespace sqlite2orm {
             stepsJoined += stepResult.code;
         }
 
-        this->context.storedExpression = false;
+        this->context.storedExpression = triggerWasStoredExpression;
         this->context.structName = savedStruct;
         if(!this->context.storedHexLiteralsTooBig.empty()) {
             for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
@@ -734,9 +738,10 @@ namespace sqlite2orm {
         // A view body is stored, never compiled, so SQLite accepts a hex literal in it that it
         // refuses in a query; C++ has no literal for one, so the view cannot be generated.
         this->context.storedHexLiteralsTooBig.clear();
+        const bool viewWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
         CodeGenResult selectExpression = this->coordinator.tryCodegenSelectLikeSubquery(*node.selectQuery);
-        this->context.storedExpression = false;
+        this->context.storedExpression = viewWasStoredExpression;
         for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
             parts.warnings.push_back("CREATE VIEW " + displayName + " uses " + literal +
                                      ", too big for a signed 64-bit integer: SQLite stores the view but refuses "
@@ -933,6 +938,7 @@ namespace sqlite2orm {
         this->context.structName = structName;
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
         std::vector<CodegenWarning> warnings;
+        bool tableIsGeneratable = true;
 
         std::string structDeclaration = "struct " + structName + " {\n";
         for(const auto& column : createTable.columns) {
@@ -1016,16 +1022,34 @@ namespace sqlite2orm {
                 }
             }
             if(column.generatedExpression) {
-                const auto expressionCode = this->coordinator.generateNode(*column.generatedExpression).code;
-                if(column.generatedAlways) {
-                    makeExpression += ", generated_always_as(" + expressionCode + ")";
+                // Only a STORED generated column is stored text: SQLite compiles it when a row is
+                // written, so it keeps a hex literal past the int64 range that it refuses in a
+                // VIRTUAL one (the default) already at CREATE TABLE time. C++ has no literal for
+                // it, and a column that lost its as(...) would be an ordinary column instead of a
+                // generated one, so the whole table is left out rather than reshaped.
+                const bool storedGenerated = column.generatedStorage == ColumnDef::GeneratedStorage::stored;
+                const auto expressionCode =
+                    storedGenerated ? this->coordinator.generateStoredExpression(*column.generatedExpression).code
+                                    : this->coordinator.generateNode(*column.generatedExpression).code;
+                if(storedGenerated && !this->context.storedHexLiteralsTooBig.empty()) {
+                    for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
+                        warnings.push_back("STORED generated column '" + rawColumnName + "' uses " + literal +
+                                           ", too big for a signed 64-bit integer: SQLite stores the table but "
+                                           "refuses every row written to it, and C++ has no literal for it, so "
+                                           "the table is not generated");
+                    }
+                    tableIsGeneratable = false;
                 } else {
-                    makeExpression += ", as(" + expressionCode + ")";
-                }
-                if(column.generatedStorage == ColumnDef::GeneratedStorage::stored) {
-                    makeExpression += ".stored()";
-                } else if(column.generatedStorage == ColumnDef::GeneratedStorage::virtual_) {
-                    makeExpression += ".virtual_()";
+                    if(column.generatedAlways) {
+                        makeExpression += ", generated_always_as(" + expressionCode + ")";
+                    } else {
+                        makeExpression += ", as(" + expressionCode + ")";
+                    }
+                    if(column.generatedStorage == ColumnDef::GeneratedStorage::stored) {
+                        makeExpression += ".stored()";
+                    } else if(column.generatedStorage == ColumnDef::GeneratedStorage::virtual_) {
+                        makeExpression += ".virtual_()";
+                    }
                 }
             }
             makeExpression += ")";
@@ -1049,6 +1073,14 @@ namespace sqlite2orm {
             }
             auto& foreignKey = *column.foreignKey;
             const auto cppName = toCppIdentifier(column.name);
+            // sqlite_orm resolves a foreign key against the table it maps for the referenced
+            // type, so a key into a table this batch cannot map would not compile at all.
+            if(this->context.isUngeneratableTable(foreignKey.table)) {
+                warnings.push_back("foreign key on column '" + stripIdentifierQuotes(column.name) +
+                                   "' references " + stripIdentifierQuotes(foreignKey.table) +
+                                   ", which is not generated, so the generated table has no foreign_key()");
+                continue;
+            }
             const auto referencedStructName = toStructName(foreignKey.table);
             std::string referencedColumnName;
             if(!foreignKey.column.empty()) {
@@ -1088,6 +1120,13 @@ namespace sqlite2orm {
         }
         for(const auto& tableForeignKey : createTable.foreignKeys) {
             const auto cppName = toCppIdentifier(tableForeignKey.column);
+            if(this->context.isUngeneratableTable(tableForeignKey.references.table)) {
+                warnings.push_back("table-level foreign key on column '" +
+                                   stripIdentifierQuotes(tableForeignKey.column) + "' references " +
+                                   stripIdentifierQuotes(tableForeignKey.references.table) +
+                                   ", which is not generated, so the generated table has no foreign_key()");
+                continue;
+            }
             const auto referencedStructName = toStructName(tableForeignKey.references.table);
             std::string referencedColumnName;
             if(!tableForeignKey.references.column.empty()) {
@@ -1171,6 +1210,9 @@ namespace sqlite2orm {
                                " (converted as a regular table)");
         }
 
+        if(!tableIsGeneratable) {
+            return CreateTableParts{{}, {}, std::move(warnings)};
+        }
         return CreateTableParts{std::move(structDeclaration), std::move(makeExpression), std::move(warnings)};
     }
 

@@ -6,6 +6,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,6 +63,14 @@ namespace sqlite2orm {
          *  code with a warning instead of failing the whole statement.
          */
         std::vector<std::string> storedHexLiteralsTooBig;
+        /**
+         *  The tables of the current batch that cannot be mapped at all — a STORED generated
+         *  column holding such a hex literal leaves the whole table out, because a column that
+         *  lost its `as(...)` would be an ordinary column. sqlite_orm cannot reference a type it
+         *  does not map, so a foreign key naming one of these is left out too. Normalized names,
+         *  filled by whoever assembles a whole schema.
+         */
+        std::set<std::string> ungeneratableTables;
         std::map<std::string, std::string> columnTypes;
         std::map<std::string, std::string> fromTableAliasToStructName;
         std::map<std::string, TableAliasInfo> activeTableAliases;
@@ -128,6 +137,12 @@ namespace sqlite2orm {
         bool isExplicitCteColumn(std::string_view cteKeyNorm, std::string_view columnName) const;
 
         void registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns);
+
+        /** Records that `tableName` is left out of the generated storage. */
+        void markUngeneratableTable(std::string_view tableName);
+
+        /** Whether `tableName` names a table of this batch that is left out of the generated storage. */
+        bool isUngeneratableTable(std::string_view tableName) const;
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName,
                                                        std::string_view columnName) const;
 

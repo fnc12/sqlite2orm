@@ -74,6 +74,7 @@ TEST_CASE("runtime: generated negative literals keep their value") {
         generate("SELECT 100 / -2;"),
         generate("SELECT -2 + 3;"),
         generate("SELECT - -3;"),
+        generate("SELECT - - -3;"),
         generate("SELECT -2.5;"),
         generate("SELECT a * -2;"),
     };
@@ -82,11 +83,12 @@ TEST_CASE("runtime: generated negative literals keep their value") {
                               "auto rows = storage.select(c(100) / -2);",
                               "auto rows = storage.select(c(-2) + 3);",
                               "auto rows = storage.select(-(-3));",
+                              "auto rows = storage.select(-(-(-3)));",
                               "auto rows = storage.select(-2.5);",
                               "auto rows = storage.select(c(&User::a) * -2);",
                           });
     REQUIRE(selectedValues(statements) ==
-            std::vector<std::string>{"-2", "-50", "1", "3", "-2.5", "-14"});
+            std::vector<std::string>{"-2", "-50", "1", "3", "-3", "-2.5", "-14"});
 }
 
 // A negation over anything but a numeric constant is generated as a subtraction from zero, which

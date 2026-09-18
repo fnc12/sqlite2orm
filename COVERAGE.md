@@ -31,7 +31,7 @@ Statuses:
 
 ### Literals
 - [x] numeric-literal (integer) — leading zeros (and the separators between them) are dropped so the C++ literal stays decimal like SQLite (`010` → `10`, `0009` → `9`, `0_9` → `9`); `0x0FF` and reals keep their spelling
-- [x] numeric-literal (integer) beyond int64 — SQLite reads it as a REAL, so the C++ literal gets a fractional part (`9223372036854775808` → `9223372036854775808.0`); a hex literal wraps around instead (`0xFFFFFFFFFFFFFFFF` → `static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)`, i.e. -1) and more than 16 significant hex digits are `hex literal too big`, as in SQLite, and so is a negated `0x8000000000000000`, whose value leaves the int64 range once the sign is folded in (validator error)
+- [x] numeric-literal (integer) beyond int64 — SQLite reads it as a REAL, so the C++ literal gets a fractional part (`9223372036854775808` → `9223372036854775808.0`); a hex literal wraps around instead (`0xFFFFFFFFFFFFFFFF` → `static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)`, i.e. -1) and more than 16 significant hex digits are `hex literal too big`, as in SQLite, and so is a negated `0x8000000000000000`, whose value leaves the int64 range (validator error; a DDL clause SQLite stores without compiling reaches codegen instead, where the sign is kept out of the C++ constant that could not hold it and the clause carries a warning)
 - [x] numeric-literal (real / float)
 - [x] numeric-literal `_` digit separators (SQLite 3.46+) — `1_000_000` → `1'000'000`, `0x1_ffff` → `0x1'ffff`; a misplaced separator (`100_`, `1__0`, `0x_1f`) is an unrecognized token, as in SQLite
 - [x] string-literal
@@ -49,7 +49,7 @@ Statuses:
 - [x] schema-name.table-name.column-name
 
 ### Unary operators
-- [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works: codegen warning)
+- [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works — the generated code does not compile: codegen warning)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
 - [x] `NOT`
@@ -612,7 +612,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] NULLS FIRST / NULLS LAST
 - [!] RETURNING clause
 - [!] Unary plus (`+expr`)
-- [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-` (codegen warning)
+- [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-`; the generated negation does not compile (codegen warning)
 - [x] DROP TABLE — `storage.drop_table("name")` / `storage.drop_table_if_exists("name")`
 - [x] DROP INDEX — `storage.drop_index("name")` / `storage.drop_index_if_exists("name")`
 - [x] DROP TRIGGER — `storage.drop_trigger("name")` / `storage.drop_trigger_if_exists("name")`

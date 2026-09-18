@@ -168,6 +168,75 @@ TEST_CASE("sqliteSchemaResultToJson: shape") {
             R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})");
 }
 
+// A DEFAULT or a STORED generated-column expression is stored by SQLite without being compiled, so
+// a real database carries `-0x8000000000000000` and codegen sees it where the validator never does.
+// Folding that sign into the C++ constant would emit `-static_cast<int64_t>(0x8000000000000000)`,
+// which overflows int64_t — a warning with `-Woverflow` and a hard error in a constant expression —
+// so the sign stays out of the constant and the clause carries a warning instead. A CHECK reaches
+// the same codegen path on sqlite3 3.51, but the libsqlite3 these tests link (3.45.1) compiles CHECK
+// expressions at CREATE TABLE time and refuses that one, so the two clauses every version stores are
+// what this goes through; "codegen: the sign of INT64_MIN is not folded into the hex literal" pins
+// the expression itself.
+TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C++ constant") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE neg_t (a INT, b INT DEFAULT (-0x8000000000000000), "
+                       "g AS (-0x8000000000000000) STORED);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    const std::string tooBig =
+        "hex literal too big: -0x8000000000000000; SQLite refuses this expression wherever it is "
+        "used, so the generated subtraction from zero does not reproduce it";
+    const CodeGenResult expected{
+        std::string("#pragma once\n\n"
+                    "#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n\n"
+                    "struct NegT {\n"
+                    "    std::optional<int64_t> a;\n"
+                    "    std::optional<int64_t> b;\n"
+                    "    std::optional<std::vector<char>> g;\n"
+                    "};\n\n\n"
+                    "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                    "    using namespace sqlite_orm;\n"
+                    "    return make_storage(db_path,\n"
+                    "        make_table(\"neg_t\",\n"
+                    "        make_column(\"a\", &NegT::a),\n"
+                    "        make_column(\"b\", &NegT::b, "
+                    "default_value((c(0) - c(static_cast<int64_t>(0x8000000000000000))))),\n"
+                    "        make_column(\"g\", &NegT::g, "
+                    "as((c(0) - c(static_cast<int64_t>(0x8000000000000000)))).stored())));\n"
+                    "}\n"),
+        {},
+        {{tooBig, SourceLocation{1, 43}, 1}, {tooBig, SourceLocation{1, 71}, 1}}};
+
+    REQUIRE(header == expected);
+
+    // `-Woverflow` is the diagnostic the folded constant would raise, and nothing else in the
+    // generated header or in sqlite_orm raises it, so it is the one warning worth failing on.
+    const codegen_test_helpers::TempBuildDir dir;
+    dir.write("gen.hpp", header.code);
+    const std::filesystem::path cpppath = dir.write("check.cpp", "#include \"gen.hpp\"\n");
+
+    std::ostringstream cmd;
+    cmd << codegen_test_helpers::TempBuildDir::compilerCommand() << " -fsyntax-only -Werror=overflow";
+    cmd << " -I" << dir.path().string();
+    cmd << ' ' << cpppath.string();
+    cmd << " 2>&1";
+
+    const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
+    if(exitCode != 0) {
+        WARN("compiling the generated header failed (exit " << exitCode
+                                                            << "); ensure c++ and sqlite_orm headers are usable");
+    }
+    REQUIRE(exitCode == 0);
+}
+
 TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE round_t (id INTEGER PRIMARY KEY, name TEXT);");

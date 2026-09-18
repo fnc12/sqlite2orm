@@ -271,10 +271,43 @@ TEST_CASE("codegen: negative literal as an operand") {
 }
 
 // A second minus has no literal to fold into; parenthesizing keeps it out of `c()`, which would
-// rebuild the unary_minus_t the fold exists to avoid. `SELECT - -3` is 3 in sqlite3 3.51.
+// rebuild the unary_minus_t the fold exists to avoid. The constant it folds into stays a constant,
+// so a third sign folds in too. `SELECT - -3` is 3 and `SELECT - - -3` is -3 in sqlite3 3.51.
 TEST_CASE("codegen: double unary minus on a literal") {
-    auto result = generateFull("- -3");
-    REQUIRE(result == CodeGenResult{"-(-3)", {}});
+    REQUIRE(generateFull("- -3") == CodeGenResult{"-(-3)", {}});
+    REQUIRE(generateFull("- - -3") == CodeGenResult{"-(-(-3))", {}});
+    REQUIRE(generateFull("- - - -3") == CodeGenResult{"-(-(-(-3)))", {}});
+}
+
+// `0x8000000000000000` is INT64_MIN, so the sign cannot be folded into the C++ constant the literal
+// generates — `-static_cast<int64_t>(0x8000000000000000)` overflows int64_t, which gcc rejects
+// outright in a constant expression. SQLite has no value for the SQL either: it refuses every
+// statement that uses the expression with `hex literal too big` (checked on sqlite3 3.51), so the
+// subtraction the other operands get carries a warning here. Only a DDL clause reaches codegen with
+// this expression at all; the validator rejects the statements SQLite compiles.
+TEST_CASE("codegen: the sign of INT64_MIN is not folded into the hex literal") {
+    const std::string tooBig =
+        "hex literal too big: -0x8000000000000000; SQLite refuses this expression wherever it is "
+        "used, so the generated subtraction from zero does not reproduce it";
+    auto result = generateFull("-0x8000000000000000");
+    REQUIRE(result.code == "(c(0) - c(static_cast<int64_t>(0x8000000000000000)))");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{{tooBig, SourceLocation{1, 1}, 1}});
+    // The separators and the leading zeros name the same value, and SQLite spells the separators out.
+    auto separated = generateFull("-0x0_8000_0000_0000_0000");
+    REQUIRE(separated.code == "(c(0) - c(static_cast<int64_t>(0x0'8000'0000'0000'0000)))");
+    REQUIRE(separated.warnings ==
+            std::vector<CodegenWarning>{
+                {"hex literal too big: -0x08000000000000000; SQLite refuses this expression wherever "
+                 "it is used, so the generated subtraction from zero does not reproduce it",
+                 SourceLocation{1, 1}, 1}});
+    // Every neighbouring value stays folded: sqlite3 3.51 gives 9223372036854775807 and 1 for these.
+    REQUIRE(generateFull("-0x8000000000000001") ==
+            CodeGenResult{"-static_cast<int64_t>(0x8000000000000001)", {}});
+    REQUIRE(generateFull("-0xFFFFFFFFFFFFFFFF") ==
+            CodeGenResult{"-static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)", {}});
+    // The literal on its own is -9223372036854775808 in SQLite and needs no guard.
+    REQUIRE(generateFull("0x8000000000000000") ==
+            CodeGenResult{"static_cast<int64_t>(0x8000000000000000)", {}});
 }
 
 TEST_CASE("codegen: unary plus is no-op") {
@@ -448,7 +481,7 @@ TEST_CASE("codegen: unary minus over a predicate warns instead") {
                 std::vector<CodegenWarning>{
                     {"unary minus over a predicate (" + predicate +
                          ") has no working sqlite_orm form; the generated negation does not reproduce "
-                         "what SQLite computes and may not compile",
+                         "what SQLite computes and does not compile",
                      SourceLocation{1, 8}, 1}});
     };
     check("SELECT -(a IN (1,2)) FROM users;", "auto rows = storage.select(-(in(&Users::a, {1, 2})));", "IN");

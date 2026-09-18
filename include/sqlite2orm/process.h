@@ -20,7 +20,9 @@ namespace sqlite2orm {
         std::vector<ValidationError> validationErrors;
         CodeGenResult codegen;
 
-        bool ok() const { return static_cast<bool>(parseResult) && validationErrors.empty(); }
+        bool ok() const {
+            return static_cast<bool>(parseResult) && validationErrors.empty() && codegen.errors.empty();
+        }
 
         bool operator==(const ProcessSqlResult& other) const = default;
     };

@@ -34,15 +34,253 @@ TEST_CASE("codegen: PRAGMA table_info") {
 
 TEST_CASE("codegen: PRAGMA recursive_triggers = 01") {
     REQUIRE(generateFull("PRAGMA recursive_triggers = 01;") ==
-            CodeGenResult{"storage.pragma.recursive_triggers(true);", {}, {}, {}});
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 01: SQLite reads this as true; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
 }
 
 TEST_CASE("codegen: PRAGMA recursive_triggers = 00") {
     REQUIRE(generateFull("PRAGMA recursive_triggers = 00;") ==
-            CodeGenResult{"storage.pragma.recursive_triggers(false);", {}, {}, {}});
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 00: SQLite reads this as false; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
 }
 
 TEST_CASE("codegen: PRAGMA recursive_triggers = ON") {
     REQUIRE(generateFull("PRAGMA recursive_triggers = ON;") ==
             CodeGenResult{"storage.pragma.recursive_triggers(true);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 'yes'") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 'yes';") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 2 is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 2;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 2: SQLite reads this as true; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 010 is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 010;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 010: SQLite reads this as true; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 1.5 is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 1.5;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 1.5: SQLite reads this as true; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0x7FFFFFFF is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x7FFFFFFF;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x7FFFFFFF: SQLite reads this as true; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0x80000000 is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x80000000;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x80000000: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 2147483648 is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 2147483648;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 2147483648: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = -1 is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = -1;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = -1: SQLite reads this as false; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = an unknown name is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = blah;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = blah: SQLite reads this as false; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = '2abc' is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = '2abc';") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = '2abc': SQLite reads this as true; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 255 is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 255;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 255: SQLite reads this as true; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 256 is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 256;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 256: SQLite reads this as false; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 257 is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 257;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 257: SQLite reads this as true; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 511 is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 511;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 511: SQLite reads this as true; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0x100 is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x100;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x100: SQLite reads this as false; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 65536 is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 65536;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 65536: SQLite reads this as false; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 2147483392 is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 2147483392;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 2147483392: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = '256' is false, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = '256';") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = '256': SQLite reads this as false; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = '  1' warns about the value as written") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = '  1';") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = '  1': SQLite reads this as false; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = '' warns about the value as written") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = '';") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = '': SQLite reads this as false; spell it 0/1, "
+                                          "TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = a double-quoted 256 warns about the value as written") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = \"256\";") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = \"256\": SQLite reads this as false; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = NULL is an error, not silence") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = NULL;") ==
+            CodeGenResult{"",
+                          {},
+                          {},
+                          {"PRAGMA recursive_triggers = …: expected a number or a name, as in 0/1, TRUE/FALSE or "
+                           "ON/OFF"}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 2147483649 is false, like SQLite") {
+    // Past int32 the value reads as 0 before the low byte is taken, so the low byte of the
+    // number itself (1) must not leak through.
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 2147483649;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 2147483649: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0x1FFFFFFFF is false, like SQLite") {
+    // A ninth hexadecimal digit makes the whole value read as 0, where the first eight digits
+    // alone (0x1FFFFFFF) would have been true.
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x1FFFFFFFF;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x1FFFFFFFF: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = 0x1FFFFFFF is true, like SQLite") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x1FFFFFFF;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(true);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x1FFFFFFF: SQLite reads this as true; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
 }

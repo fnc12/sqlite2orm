@@ -9,6 +9,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 using namespace sqlite2orm;
 
@@ -87,6 +88,15 @@ TEST_CASE("processSql: CREATE VIEW generates make_view") {
 TEST_CASE("processSql: PRAGMA user_version maps to storage.pragma") {
     const ProcessSqlResult expected = expectedFromPipeline("PRAGMA user_version=1;");
     REQUIRE(processSql("PRAGMA user_version=1;") == expected);
+}
+
+TEST_CASE("processSql: a codegen error is not an ok result") {
+    const ProcessSqlResult result = processSql("PRAGMA recursive_triggers = NULL;");
+    REQUIRE(result.codegen.code == "");
+    REQUIRE(result.codegen.errors ==
+            std::vector<std::string>{
+                "PRAGMA recursive_triggers = …: expected a number or a name, as in 0/1, TRUE/FALSE or ON/OFF"});
+    REQUIRE(result.ok() == false);
 }
 
 TEST_CASE("processSql: WITH … SELECT pipeline") {

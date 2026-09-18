@@ -87,12 +87,19 @@ namespace sqlite2orm {
             if(!node.value) {
                 return CodeGenResult{"storage.pragma.recursive_triggers();", {}, {}};
             }
-            if(auto boolValue = pragmaRecursiveTriggersBool(*node.value)) {
+            if(auto value = pragmaValue(*node.value)) {
+                const bool boolValue = sqlitePragmaBoolean(value->text);
+                if(!isCanonicalPragmaBooleanText(value->text)) {
+                    warnings.push_back("PRAGMA recursive_triggers = " + value->sqlText + ": SQLite reads this as " +
+                                       (boolValue ? "true" : "false") +
+                                       "; spell it 0/1, TRUE/FALSE or ON/OFF instead");
+                }
                 return CodeGenResult{
-                    std::string("storage.pragma.recursive_triggers(") + (*boolValue ? "true" : "false") + ");", {}, {}};
+                    std::string("storage.pragma.recursive_triggers(") + (boolValue ? "true" : "false") + ");", {},
+                    std::move(warnings)};
             }
             this->context.accumulatedErrors.push_back(
-                "PRAGMA recursive_triggers = …: use 0/1, TRUE/FALSE, ON/OFF, or a string literal");
+                "PRAGMA recursive_triggers = …: expected a number or a name, as in 0/1, TRUE/FALSE or ON/OFF");
             return CodeGenResult{"/* PRAGMA recursive_triggers */"};
         }
         if(name == "journal_mode") {

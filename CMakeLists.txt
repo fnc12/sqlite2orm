@@ -134,6 +134,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp
         tests/schema_report_tests.cpp
+        tests/readme_tests.cpp
         tests/temp_build_dir.cpp
     )
     # A probe that runs the generated code needs the same libsqlite3 the library links, which is not
@@ -145,7 +146,8 @@ if(SQLITE2ORM_BUILD_TESTS)
     endif()
     target_compile_definitions(sqlite2orm_tests PRIVATE
         SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE="${sqlite_orm_headers_SOURCE_DIR}/include"
-        SQLITE2ORM_TEST_SQLITE3_LINK="${sqlite2orm_test_sqlite3_link}")
+        SQLITE2ORM_TEST_SQLITE3_LINK="${sqlite2orm_test_sqlite3_link}"
+        SQLITE2ORM_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)
     add_test(NAME sqlite2orm_tests COMMAND sqlite2orm_tests)
 

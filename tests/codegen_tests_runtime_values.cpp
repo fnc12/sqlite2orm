@@ -95,13 +95,17 @@ namespace {
 
     /**
      *  Builds a program around the generated INSERT statements for a one-column `t` table whose
-     *  field is `std::optional<fieldType>`, compiles and links it against sqlite_orm, runs it and
-     *  returns `typeof(x)|x` for every row, the way SQLite reports what it stored. An insert that
-     *  carries its value through the struct field converts it on the way in, so only running the
-     *  code shows which value reached the database.
+     *  field is `std::optional<fieldType>`, or a bare `fieldType` for the NOT NULL column
+     *  `nullable` stands for, compiles and links it against sqlite_orm, runs it and returns
+     *  `typeof(x)|x` for every row, the way SQLite reports what it stored. An insert that carries
+     *  its value through the struct field converts it on the way in, so only running the code
+     *  shows which value reached the database.
      */
     std::vector<std::string> insertedColumnRows(const std::vector<std::string>& insertStatements,
-                                                std::string_view fieldType) {
+                                                std::string_view fieldType,
+                                                bool nullable = true) {
+        const std::string fieldDeclaration =
+            nullable ? "std::optional<" + std::string(fieldType) + "> x;" : std::string(fieldType) + " x{};";
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <cstdint>\n"
@@ -109,9 +113,9 @@ namespace {
                    "#include <optional>\n"
                    "\n"
                    "struct T {\n"
-                   "    std::optional<"
-                << fieldType
-                << "> x;\n"
+                   "    "
+                << fieldDeclaration
+                << "\n"
                    "};\n"
                    "\n"
                    "int main() {\n"
@@ -366,6 +370,74 @@ TEST_CASE("runtime: an INSERT value out of reach of a bool field keeps the value
             });
     REQUIRE(insertedColumnRows(statements, "bool") ==
             std::vector<std::string>{"real|1.0e+20", "real|1.5", "integer|2"});
+}
+
+// A column with no type maps to a `std::vector<char>` field, which only a blob literal initializes:
+// `CREATE TABLE ch(x); INSERT INTO ch VALUES (1);` generated `Ch{1}`, and a compiler said
+// "could not convert '1' from 'int' to 'std::optional<std::vector<char> >'". SQLite stores a value
+// of any storage class in such a column, so the column list is spelled out and the value bound as
+// itself. Expected rows checked against sqlite3 3.51 with the same five INSERT statements.
+TEST_CASE("runtime: an INSERT into a column with no type stores what SQLite stores") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x); INSERT INTO t VALUES (1);").code,
+        generateLastOfBatch("CREATE TABLE t(x); INSERT INTO t VALUES (1.5);").code,
+        generateLastOfBatch("CREATE TABLE t(x); INSERT INTO t VALUES ('a');").code,
+        generateLastOfBatch("CREATE TABLE t(x); INSERT INTO t VALUES (X'41');").code,
+        generateLastOfBatch("CREATE TABLE t(x); INSERT INTO t VALUES (1+1);").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1.5)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(\"a\")));",
+                "storage.insert(T{std::vector<char>{'\\x41'}});",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(c(1) + 1)));",
+            });
+    REQUIRE(insertedColumnRows(statements, "std::vector<char>") ==
+            std::vector<std::string>{"integer|1", "real|1.5", "text|a", "blob|A", "integer|2"});
+}
+
+// The same mismatch the other way round: a number and a blob literal reach a `std::string` field
+// only through the column list, where SQLite applies the TEXT affinity to the value it typed.
+// Expected rows checked against sqlite3 3.51 with the same three INSERT statements.
+TEST_CASE("runtime: an INSERT of a number into a TEXT column stores what SQLite stores") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES (1);").code,
+        generateLastOfBatch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES (1.5);").code,
+        generateLastOfBatch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES (X'41');").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1.5)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(std::vector<char>{'\\x41'})));",
+            });
+    REQUIRE(insertedColumnRows(statements, "std::string") ==
+            std::vector<std::string>{"text|1", "text|1.5", "blob|A"});
+}
+
+// A NOT NULL REAL column has a bare `double` field, which the object form brace-initializes, and a
+// braced initializer refuses an integer constant the `double` would round: `storage.insert(T{
+// 9223372036854775807})` answered "narrowing conversion of '9223372036854775807' from 'long long
+// int' to 'double'". Such a value goes through the column list, where SQLite applies the REAL
+// affinity to the integer it typed. Expected rows checked against sqlite3 3.51 with the same four
+// INSERT statements.
+TEST_CASE("runtime: an INSERT of a whole number into a NOT NULL REAL column stores what SQLite stores") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (9223372036854775807);").code,
+        generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (9007199254740993);").code,
+        generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (1);").code,
+        generateLastOfBatch("CREATE TABLE t(x REAL NOT NULL); INSERT INTO t VALUES (1.5);").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775807)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9007199254740993)));",
+                "storage.insert(T{1});",
+                "storage.insert(T{1.5});",
+            });
+    REQUIRE(insertedColumnRows(statements, "double", false) ==
+            std::vector<std::string>{"real|9.22337203685478e+18", "real|9.00719925474099e+15", "real|1.0", "real|1.5"});
 }
 
 // A LIMIT value is a whole expression in SQLite, and `LIMIT -1` is how it spells "no limit". The

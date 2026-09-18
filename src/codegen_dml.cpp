@@ -20,6 +20,36 @@ namespace sqlite2orm {
             return cppType == "int64_t" || cppType == "int" || cppType == "bool";
         }
 
+        /**
+         *  True when the object form of an insert hands `column` exactly the value SQLite gives
+         *  `value`. The form sends every value through a struct field, which holds one storage
+         *  class: a text or blob literal does not even initialize a numeric field — `CREATE TABLE
+         *  ch(x); INSERT INTO ch VALUES (1)` generated `Ch{1}` for a `std::vector<char>` field,
+         *  which does not compile — and an expression, whose value only SQLite knows, initializes
+         *  no field at all. A field of the right storage class still has a range: a braced
+         *  initializer refuses a whole number past the int64 range, and a `double` one refuses
+         *  every integer constant it would round.
+         */
+        bool objectFormCarriesValue(const SourceTableColumn& column, const AstNode& value) {
+            const ValueStorageClass fieldClass = fieldTypeStorageClass(column.cppType);
+            if(fieldClass == ValueStorageClass::unknown) {
+                // A field type this rule knows nothing about: leave the statement the way it was.
+                return true;
+            }
+            const ValueStorageClass storageClass = valueStorageClass(value);
+            if(storageClass == ValueStorageClass::null) {
+                // `std::nullopt` initializes an optional field; a NOT NULL column has a bare one.
+                return column.nullable;
+            }
+            if(storageClass != fieldClass) {
+                return false;
+            }
+            if(isWholeNumberFieldType(column.cppType)) {
+                return integerFieldCarriesValue(value);
+            }
+            return column.cppType != "double" || doubleFieldCarriesValue(value);
+        }
+
     }  // namespace
 
     DmlCodeGenerator::DmlCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context)
@@ -53,11 +83,11 @@ namespace sqlite2orm {
             for(size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
                 const SourceTableColumn& column = *columns[columnIndex];
                 const AstNode& value = *row[columnIndex];
-                if(!isWholeNumberFieldType(column.cppType) || integerFieldCarriesValue(value)) {
+                if(objectFormCarriesValue(column, value)) {
                     continue;
                 }
                 columnListForced = true;
-                if(isIntegerLiteralPastIntegerFieldRange(value)) {
+                if(isWholeNumberFieldType(column.cppType) && isIntegerLiteralPastIntegerFieldRange(value)) {
                     pastRangeWarnings.push_back(numericLiteralWarning(
                         "INSERT into column '" + column.sqlName + "' of table '" + insertNode.tableName +
                             "' uses " + numericLiteralSqlText(value) +

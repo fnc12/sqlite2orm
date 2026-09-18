@@ -904,6 +904,16 @@ namespace sqlite2orm {
         this->context.structName = structName;
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
         std::vector<CodegenWarning> warnings;
+        // A DEFAULT / CHECK / generated-column expression is the one place an expression clause
+        // reaches codegen without going through the validator, so its warnings are the only word a
+        // user gets about it — `-0x8000000000000000` is refused by SQLite wherever it is used, and a
+        // negated predicate has no sqlite_orm form at all.
+        auto clauseExpressionCode = [this, &warnings](const AstNode& expression) {
+            auto result = this->coordinator.generateNode(expression);
+            warnings.insert(warnings.end(), std::make_move_iterator(result.warnings.begin()),
+                            std::make_move_iterator(result.warnings.end()));
+            return std::move(result.code);
+        };
 
         std::string structDeclaration = "struct " + structName + " {\n";
         for(const auto& column : createTable.columns) {
@@ -941,7 +951,7 @@ namespace sqlite2orm {
                 makeExpression += ", " + primaryKey;
             }
             if(column.defaultValue) {
-                const auto defaultCode = this->coordinator.generateNode(*column.defaultValue).code;
+                const auto defaultCode = clauseExpressionCode(*column.defaultValue);
                 makeExpression += ", default_value(" + defaultCode + ")";
             }
             if(column.unique) {
@@ -952,7 +962,7 @@ namespace sqlite2orm {
                 }
             }
             if(column.checkExpression) {
-                const auto checkCode = this->coordinator.generateNode(*column.checkExpression).code;
+                const auto checkCode = clauseExpressionCode(*column.checkExpression);
                 makeExpression += ", check(" + checkCode + ")";
             }
             if(!column.collation.empty()) {
@@ -969,7 +979,7 @@ namespace sqlite2orm {
                 }
             }
             if(column.generatedExpression) {
-                const auto expressionCode = this->coordinator.generateNode(*column.generatedExpression).code;
+                const auto expressionCode = clauseExpressionCode(*column.generatedExpression);
                 if(column.generatedAlways) {
                     makeExpression += ", generated_always_as(" + expressionCode + ")";
                 } else {
@@ -1101,7 +1111,7 @@ namespace sqlite2orm {
         }
         for(const auto& tableCheck : createTable.checks) {
             if(tableCheck.expression) {
-                const auto checkCode = this->coordinator.generateNode(*tableCheck.expression).code;
+                const auto checkCode = clauseExpressionCode(*tableCheck.expression);
                 makeExpression += ",\n        check(" + checkCode + ")";
             }
         }

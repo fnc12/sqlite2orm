@@ -4,18 +4,16 @@
 #include <sqlite2orm/schema_process.h>
 #include <sqlite2orm/schema_reader.h>
 
+#include "temp_build_dir.hpp"
+
 #include <catch2/catch_all.hpp>
 #include <sqlite3.h>
 
-#include <cstdlib>
 #include <cstring>
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <sys/wait.h>
-#endif
 #include <filesystem>
-#include <fstream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -170,6 +168,75 @@ TEST_CASE("sqliteSchemaResultToJson: shape") {
             R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})");
 }
 
+// A DEFAULT or a STORED generated-column expression is stored by SQLite without being compiled, so
+// a real database carries `-0x8000000000000000` and codegen sees it where the validator never does.
+// Folding that sign into the C++ constant would emit `-static_cast<int64_t>(0x8000000000000000)`,
+// which overflows int64_t — a warning with `-Woverflow` and a hard error in a constant expression —
+// so the sign stays out of the constant and the clause carries a warning instead. A CHECK reaches
+// the same codegen path on sqlite3 3.51, but the libsqlite3 these tests link (3.45.1) compiles CHECK
+// expressions at CREATE TABLE time and refuses that one, so the two clauses every version stores are
+// what this goes through; "codegen: the sign of INT64_MIN is not folded into the hex literal" pins
+// the expression itself.
+TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C++ constant") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE neg_t (a INT, b INT DEFAULT (-0x8000000000000000), "
+                       "g AS (-0x8000000000000000) STORED);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    const std::string tooBig =
+        "hex literal too big: -0x8000000000000000; SQLite refuses this expression wherever it is "
+        "used, so the generated subtraction from zero does not reproduce it";
+    const CodeGenResult expected{
+        std::string("#pragma once\n\n"
+                    "#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n\n"
+                    "struct NegT {\n"
+                    "    std::optional<int64_t> a;\n"
+                    "    std::optional<int64_t> b;\n"
+                    "    std::optional<std::vector<char>> g;\n"
+                    "};\n\n\n"
+                    "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                    "    using namespace sqlite_orm;\n"
+                    "    return make_storage(db_path,\n"
+                    "        make_table(\"neg_t\",\n"
+                    "        make_column(\"a\", &NegT::a),\n"
+                    "        make_column(\"b\", &NegT::b, "
+                    "default_value((c(0) - c(static_cast<int64_t>(0x8000000000000000))))),\n"
+                    "        make_column(\"g\", &NegT::g, "
+                    "as((c(0) - c(static_cast<int64_t>(0x8000000000000000)))).stored())));\n"
+                    "}\n"),
+        {},
+        {{tooBig, SourceLocation{1, 43}, 1}, {tooBig, SourceLocation{1, 71}, 1}}};
+
+    REQUIRE(header == expected);
+
+    // `-Woverflow` is the diagnostic the folded constant would raise, and nothing else in the
+    // generated header or in sqlite_orm raises it, so it is the one warning worth failing on.
+    const codegen_test_helpers::TempBuildDir dir;
+    dir.write("gen.hpp", header.code);
+    const std::filesystem::path cpppath = dir.write("check.cpp", "#include \"gen.hpp\"\n");
+
+    std::ostringstream cmd;
+    cmd << codegen_test_helpers::TempBuildDir::compilerCommand() << " -fsyntax-only -Werror=overflow";
+    cmd << " -I" << dir.path().string();
+    cmd << ' ' << cpppath.string();
+    cmd << " 2>&1";
+
+    const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
+    if(exitCode != 0) {
+        WARN("compiling the generated header failed (exit " << exitCode
+                                                            << "); ensure c++ and sqlite_orm headers are usable");
+    }
+    REQUIRE(exitCode == 0);
+}
+
 TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE round_t (id INTEGER PRIMARY KEY, name TEXT);");
@@ -178,46 +245,17 @@ TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    namespace fs = std::filesystem;
-    static thread_local std::mt19937 gen{std::random_device{}()};
-    std::uniform_int_distribution<std::uint64_t> dist{};
-    const fs::path dir = fs::temp_directory_path() / ("sqlite2orm_rt_" + std::to_string(dist(gen)));
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    REQUIRE_FALSE(ec);
-
-    const fs::path hpath = dir / "gen.hpp";
-    const fs::path cpppath = dir / "check.cpp";
-    {
-        std::ofstream h(hpath);
-        REQUIRE(h);
-        h << header.code;
-    }
-    {
-        std::ofstream c(cpppath);
-        REQUIRE(c);
-        c << "#include \"gen.hpp\"\n";
-    }
+    const codegen_test_helpers::TempBuildDir dir;
+    dir.write("gen.hpp", header.code);
+    const std::filesystem::path cpppath = dir.write("check.cpp", "#include \"gen.hpp\"\n");
 
     std::ostringstream cmd;
-    cmd << "c++ -std=c++20 -fsyntax-only";
-#if defined(__APPLE__)
-    cmd << " -stdlib=libc++";
-#endif
-    cmd << " -I" << SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE;
-    cmd << " -I" << dir.string();
+    cmd << codegen_test_helpers::TempBuildDir::compilerCommand() << " -fsyntax-only";
+    cmd << " -I" << dir.path().string();
     cmd << ' ' << cpppath.string();
     cmd << " 2>&1";
 
-    const int rawStatus = std::system(cmd.str().c_str());
-    fs::remove_all(dir, ec);
-
-    int exitCode = rawStatus;
-#if defined(__unix__) || defined(__APPLE__)
-    if(rawStatus != -1) {
-        exitCode = WEXITSTATUS(rawStatus);
-    }
-#endif
+    const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
     if(exitCode != 0) {
         WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
     }

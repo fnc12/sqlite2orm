@@ -1,4 +1,5 @@
 #include <sqlite2orm/tokenizer.h>
+#include <sqlite2orm/utils.h>
 
 #include <algorithm>
 #include <cctype>
@@ -202,17 +203,6 @@ namespace sqlite2orm {
 
         TokenizeError unrecognizedToken(std::string_view text, SourceLocation location) {
             return TokenizeError("unrecognized token '" + std::string(text) + "'", location);
-        }
-
-        std::string withoutDigitSeparators(std::string_view numericLiteral) {
-            std::string result;
-            result.reserve(numericLiteral.size());
-            for(char character: numericLiteral) {
-                if(character != '_') {
-                    result += character;
-                }
-            }
-            return result;
         }
 
         // Neither the `_` separators nor the leading zeros count towards the 16 hex digits an

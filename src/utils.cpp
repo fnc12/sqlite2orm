@@ -49,4 +49,31 @@ namespace sqlite2orm {
         return {};
     }
 
+    std::string withoutDigitSeparators(std::string_view numericLiteral) {
+        std::string result;
+        result.reserve(numericLiteral.size());
+        for(char character : numericLiteral) {
+            if(character != '_') {
+                result += character;
+            }
+        }
+        return result;
+    }
+
+    bool hexLiteralIsInt64Min(std::string_view integerLiteral) {
+        if(integerLiteral.size() < 3 || integerLiteral.front() != '0' ||
+           (integerLiteral[1] != 'x' && integerLiteral[1] != 'X')) {
+            return false;
+        }
+        // Neither the separators nor the leading zeros carry any value, so `0x0_8000_0000_0000_0000`
+        // names INT64_MIN just as `0x8000000000000000` does.
+        std::string digits;
+        for(char character : integerLiteral.substr(2)) {
+            if(character != '_' && (character != '0' || !digits.empty())) {
+                digits += character;
+            }
+        }
+        return digits == "8000000000000000";
+    }
+
 }  // namespace sqlite2orm

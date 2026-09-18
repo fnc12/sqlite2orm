@@ -237,6 +237,34 @@ TEST_CASE("codegen: SELECT with LIMIT OFFSET") {
     REQUIRE(result == "auto rows = storage.get_all<Users>(limit(10, offset(5)));");
 }
 
+// `LIMIT -1` is how SQLite spells "no limit"; it used to leave `limit(...)` out of the generated
+// code altogether while reporting a parse error on the minus sign.
+TEST_CASE("codegen: SELECT with negative LIMIT") {
+    auto result = generate("SELECT * FROM users LIMIT -1");
+    REQUIRE(result == "auto rows = storage.get_all<Users>(limit(-1));");
+}
+
+TEST_CASE("codegen: SELECT with negative OFFSET") {
+    auto result = generate("SELECT * FROM users LIMIT 10 OFFSET -1");
+    REQUIRE(result == "auto rows = storage.get_all<Users>(limit(10, offset(-1)));");
+}
+
+TEST_CASE("codegen: SELECT with negative LIMIT and OFFSET") {
+    auto result = generate("SELECT * FROM users LIMIT -1 OFFSET 2");
+    REQUIRE(result == "auto rows = storage.get_all<Users>(limit(-1, offset(2)));");
+}
+
+TEST_CASE("codegen: SELECT with computed LIMIT") {
+    auto result = generate("SELECT * FROM users LIMIT 2 * 3");
+    REQUIRE(result == "auto rows = storage.get_all<Users>(limit(c(2) * 3));");
+}
+
+// SQLite's `LIMIT <offset>, <count>` maps to sqlite_orm's explicit offset form.
+TEST_CASE("codegen: SELECT with LIMIT offset comma count") {
+    auto result = generate("SELECT * FROM users LIMIT 5, 10");
+    REQUIRE(result == "auto rows = storage.get_all<Users>(limit(10, offset(5)));");
+}
+
 TEST_CASE("codegen: SELECT with GROUP BY") {
     auto result = generate("SELECT name, count(*) FROM users GROUP BY name");
     REQUIRE(result == "auto rows = storage.select(columns(&Users::name, count<Users>()), group_by(&Users::name));");

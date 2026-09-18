@@ -340,6 +340,17 @@ namespace sqlite2orm {
                 auto oErrors = validate(*term.expression);
                 errors.insert(errors.end(), oErrors.begin(), oErrors.end());
             }
+            // LIMIT and OFFSET hold arbitrary expressions, so they carry the same rules as any
+            // other clause: without this walk `LIMIT +1` reaches codegen while `WHERE a = +1`
+            // is refused.
+            if(selectNode->limitValue) {
+                auto lErrors = validate(*selectNode->limitValue);
+                errors.insert(errors.end(), lErrors.begin(), lErrors.end());
+            }
+            if(selectNode->offsetValue) {
+                auto oErrors = validate(*selectNode->offsetValue);
+                errors.insert(errors.end(), oErrors.begin(), oErrors.end());
+            }
         } else if(auto* insertNode = dynamic_cast<const InsertNode*>(&astNode)) {
             for(const auto& row : insertNode->valueRows) {
                 for(const auto& cell : row) {

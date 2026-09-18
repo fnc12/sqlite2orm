@@ -11,26 +11,55 @@ namespace {
 
     /**
      *  Builds a program around the generated select statements, compiles and links it against
-     *  sqlite_orm, runs it and returns one line per statement with the value of its first row.
+     *  sqlite_orm, runs it and returns one line per statement with the value of its first row —
+     *  `NULL` for a row the result type can hold a NULL in and does. The single row of `users`
+     *  holds `a = rowValue`, and `a` is declared `fieldType`.
      *  Generated code that compiles can still hand the caller a wrong value — sqlite_orm reports the
      *  result type of an expression on its own — so only running it pins down what a user sees.
      */
-    std::vector<std::string> selectedValues(const std::vector<std::string>& selectStatements) {
+    std::vector<std::string> selectedValues(const std::vector<std::string>& selectStatements,
+                                            std::string_view fieldType = "int",
+                                            std::string_view rowValue = "7") {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <iostream>\n"
+                   "#include <memory>\n"
+                   "#include <optional>\n"
                    "\n"
                    "struct User {\n"
-                   "    int a = 0;\n"
+                   "    "
+                << fieldType
+                << " a{};\n"
                    "};\n"
+                   "\n"
+                   "void printValue(std::nullptr_t) {\n"
+                   "    std::cout << \"NULL\" << '\\n';\n"
+                   "}\n"
+                   "\n"
+                   "template<class T>\n"
+                   "void printValue(const T& value) {\n"
+                   "    std::cout << value << '\\n';\n"
+                   "}\n"
+                   "\n"
+                   "template<class T>\n"
+                   "void printValue(const std::optional<T>& value) {\n"
+                   "    value ? printValue(*value) : printValue(nullptr);\n"
+                   "}\n"
+                   "\n"
+                   "template<class T>\n"
+                   "void printValue(const std::unique_ptr<T>& value) {\n"
+                   "    value ? printValue(*value) : printValue(nullptr);\n"
+                   "}\n"
                    "\n"
                    "int main() {\n"
                    "    using namespace sqlite_orm;\n"
                    "    auto storage = make_storage(\"\", make_table(\"users\", make_column(\"a\", &User::a)));\n"
                    "    storage.sync_schema();\n"
-                   "    storage.replace(User{7});\n";
+                   "    storage.replace(User{"
+                << rowValue
+                << "});\n";
         for(const auto& statement: selectStatements) {
-            program << "    {\n        " << statement << "\n        std::cout << rows.at(0) << '\\n';\n    }\n";
+            program << "    {\n        " << statement << "\n        printValue(rows.at(0));\n    }\n";
         }
         program << "    return 0;\n"
                    "}\n";
@@ -208,12 +237,12 @@ TEST_CASE("runtime: generated negative literals keep their value") {
     };
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select(-2);",
-                              "auto rows = storage.select(c(100) / -2);",
+                              "auto rows = storage.select(as_optional(c(100) / -2));",
                               "auto rows = storage.select(c(-2) + 3);",
                               "auto rows = storage.select(-(-3));",
                               "auto rows = storage.select(-(-(-3)));",
                               "auto rows = storage.select(-2.5);",
-                              "auto rows = storage.select(c(&User::a) * -2);",
+                              "auto rows = storage.select(as_optional(c(&User::a) * -2));",
                           });
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"-2", "-50", "1", "3", "-3", "-2.5", "-14"});
@@ -237,15 +266,35 @@ TEST_CASE("runtime: a negation over a general operand keeps its value") {
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select((c(0) - (c(2) + 3)));",
                               "auto rows = storage.select((c(0) - (~c(2))));",
-                              "auto rows = storage.select((c(0) - (length(\"abc\"))));",
-                              "auto rows = storage.select((c(0) - (cast<int64_t>(1))));",
+                              "auto rows = storage.select(as_optional((c(0) - (length(\"abc\")))));",
+                              "auto rows = storage.select(as_optional((c(0) - (cast<int64_t>(1)))));",
                               "auto rows = storage.select(c(1) - (c(0) - (c(2) + 3)));",
-                              "auto rows = storage.select((c(0) - c(&User::a)));",
-                              "auto rows = storage.select((c(0) - (c(&User::a) + 1)));",
-                              "auto rows = storage.select((c(0) - (c(0) - c(&User::a))));",
+                              "auto rows = storage.select(as_optional((c(0) - c(&User::a))));",
+                              "auto rows = storage.select(as_optional((c(0) - (c(&User::a) + 1))));",
+                              "auto rows = storage.select(as_optional((c(0) - (c(0) - c(&User::a)))));",
                           });
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"-5", "3", "-3", "-1", "6", "-7", "-8", "7"});
+}
+
+// `case_<int>()` truncates the branch value the way the field inferred for it would: the result
+// type the CASE is generated with comes from the same inference. Expected values checked against
+// sqlite3 3.51 (the single row holds a = 7).
+TEST_CASE("runtime: a CASE branch beyond int32 keeps its value") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a > 0 THEN 3000000000 ELSE 0 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN -3000000000 ELSE 0 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN 9223372036854775807 ELSE 0 END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) > 0, then(3000000000)).else_(0).end());",
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) > 0, then(-3000000000)).else_(0).end());",
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) > 0, "
+                "then(9223372036854775807)).else_(0).end());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"3000000000", "-3000000000", "9223372036854775807"});
 }
 
 // C++ groups the emitted operators by its own precedence, so a nested operand that would regroup
@@ -265,12 +314,12 @@ TEST_CASE("runtime: a nested operand keeps the value its SQL grouping has") {
     };
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select(c(1) - (c(2) - 3));",
-                              "auto rows = storage.select(c(20) / (c(4) / 2));",
-                              "auto rows = storage.select(c(10) % (c(7) % 4));",
+                              "auto rows = storage.select(as_optional(c(20) / (c(4) / 2)));",
+                              "auto rows = storage.select(as_optional(c(10) % (c(7) % 4)));",
                               "auto rows = storage.select((c(1) + 2) * 3);",
                               "auto rows = storage.select((c(4) & 2) < 3);",
                               "auto rows = storage.select((c(6) | 3) & 5);",
-                              "auto rows = storage.select(c(&User::a) - (c(&User::a) - 1));",
+                              "auto rows = storage.select(as_optional(c(&User::a) - (c(&User::a) - 1)));",
                               "auto rows = storage.select(c(1) - 2 - 3);",
                           });
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"2", "10", "1", "9", "1", "5", "1", "-4"});
@@ -346,4 +395,51 @@ TEST_CASE("runtime: a generated LIMIT returns the rows SQLite returns") {
                           });
     REQUIRE(selectedRowValues(statements) ==
             std::vector<std::string>{"1,2,3", "1,2", "1", "3", "2,3", "2,3", "3", "1,2"});
+}
+
+// sqlite_orm reports the result type of a binary operator from the operator alone — `double` for
+// the arithmetic ones, `bool` for a comparison, `std::string` for `||` — so a NULL row reached the
+// caller as 0 / false / "" whatever the SQL said. `as_optional` keeps the SQL and widens the type.
+// Both expected rows checked against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL
+// first and 7 second; on master every value of the NULL row reads back as 0.
+TEST_CASE("runtime: a result column that can be NULL reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 1;"),
+        generate("SELECT a * 2;"),
+        generate("SELECT a % 2;"),
+        generate("SELECT 0 - a;"),
+        generate("SELECT -a;"),
+        generate("SELECT a > 0;"),
+        generate("SELECT NULL + 1;"),
+        generate("SELECT 1 / 0;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(c(&User::a) + 1));",
+                              "auto rows = storage.select(as_optional(c(&User::a) * 2));",
+                              "auto rows = storage.select(as_optional(c(&User::a) % 2));",
+                              "auto rows = storage.select(as_optional(c(0) - &User::a));",
+                              "auto rows = storage.select(as_optional((c(0) - c(&User::a))));",
+                              "auto rows = storage.select(as_optional(c(&User::a) > 0));",
+                              "auto rows = storage.select(as_optional(c(nullptr) + 1));",
+                              "auto rows = storage.select(as_optional(c(1) / 0));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"8", "14", "1", "-7", "-7", "1", "NULL", "NULL"});
+}
+
+// The widening rule leaves an operator over a NULL test alone, and it is right to: sqlite3 3.45.1
+// answers `NOT (a IS NULL)` with 0 over a NULL row and 1 over `a = 7`, never with a NULL. (The
+// arithmetic forms of the same rule — `(a IS NULL) + 1` — have no sqlite_orm overload to run.)
+TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its value") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a IS NULL);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(not (is_null(&User::a)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"0"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"1"});
 }

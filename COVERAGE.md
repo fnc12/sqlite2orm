@@ -102,12 +102,12 @@ Statuses:
 - [!] `IS NOT DISTINCT FROM expr` — not supported in sqlite_orm; validator error
 
 ### Special operators
-- [x] `BETWEEN expr AND expr`
-- [x] `NOT BETWEEN expr AND expr`
-- [x] `IN (expr-list)`
+- [~] `BETWEEN expr AND expr` — generated as `between(operand, low, high)`, and sqlite_orm declares it `between(A, T, T)`: both bounds have to reach C++ as one type, so `x BETWEEN 1 AND 3000000000` (an `int` next to a `long`) does not compile, and neither does an integer bound next to a real, a string, a column or a nested expression. Independent of the field the prefix infers for the column, which widens to the wider bound
+- [~] `NOT BETWEEN expr AND expr` — the same bounds rule
+- [~] `IN (expr-list)` — generated as `in(operand, {...})`, one braced-init-list, so every value has to reach C++ as one type: `x IN (1, 3000000000)` does not compile, nor does a list mixing an integer with a real, a string, a column or a nested expression. Independent of the field the prefix infers, which widens to the widest value
 - [x] `IN (select-stmt)`
 - [!] `IN table-name` (table-valued IN — not in sqlite_orm; validator error)
-- [x] `NOT IN (expr-list)`
+- [~] `NOT IN (expr-list)` — the same list rule
 - [x] `NOT IN (select-stmt)` (via `InNode` + subquery)
 - [x] `EXISTS (select-stmt)`
 - [x] `NOT EXISTS (select-stmt)`
@@ -186,6 +186,7 @@ Statuses:
 - [x] `schema.table.*` → parsed; codegen `asterisk<Struct>()` + warning (schema qualifier not represented in sqlite_orm mapping)
 - [x] expr → `select(expr)` / `select(columns(...))`
 - [x] expr AS alias (parsed, alias stored in AST)
+- [x] expr whose value can be NULL → `select(as_optional(expr))`, so the row reads back as a `std::optional`. sqlite_orm types an operator expression from the operator alone — `double` for the arithmetic ones, `std::string` for `||`, `bool` for a comparison — and a NULL row would come back as 0 / "" / false. Only an operator expression is widened, and only when SQLite can answer it with NULL: a literal cannot, a column already carries its field's type, `abs(...)` is a `std::unique_ptr` and NULL itself a `std::nullptr_t`. A `/` or `%` counts whatever its operands are, because SQLite answers a division by zero with NULL. The SQL is unchanged — `as_optional` serializes to its argument — and a WHERE / ORDER BY / GROUP BY expression, which is not read back, is left alone
 
 ### Table or subquery
 - [x] table-name
@@ -218,10 +219,16 @@ Statuses:
 - [!] NULLS LAST (parsed into `OrderByTerm::nulls`; validator error — not in sqlite_orm)
 
 ### Compound SELECT
-- [x] UNION
-- [x] UNION ALL
-- [x] INTERSECT
-- [x] EXCEPT
+- [~] UNION
+- [~] UNION ALL
+- [~] INTERSECT
+- [~] EXCEPT
+
+Each branch is generated through the subexpression path, which is shared with subqueries, so a
+result column of a compound SELECT is not widened to `as_optional` the way a plain SELECT's is: a
+branch like `SELECT a + 1 FROM users UNION SELECT a FROM users` still reads a NULL row back as 0.
+Widening compiles only if every branch is widened together — sqlite_orm requires the branches to
+share one result type — so it needs a decision taken across the branches at once.
 
 ### WITH (CTE)
 - [x] WITH cte AS (select-stmt)

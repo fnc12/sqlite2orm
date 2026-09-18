@@ -117,6 +117,12 @@ namespace sqlite2orm {
      */
     CodegenWarning numericLiteralWarning(std::string message, const AstNode& value);
     /**
+     *  True when a 32-bit int cannot hold the value SQLite gives an integer literal, i.e. the field
+     *  standing for it has to be an int64_t. A hex literal is measured after the wrap-around SQLite
+     *  applies to it, so that `0xFFFFFFFFFFFFFFFF`, which is -1, still fits.
+     */
+    bool integerLiteralExceedsInt32(std::string_view integerLiteral);
+    /**
      *  True when a signed 64-bit integer cannot hold a hex literal, i.e. it needs a seventeenth
      *  significant digit. SQLite refuses such a literal in `codeInteger()`, when it compiles an
      *  expression, so only the statements that never compile one accept it.
@@ -157,6 +163,24 @@ namespace sqlite2orm {
     /** True for a node that generates a bare C++ value, which `wrap` turns into a sqlite_orm expression. */
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);
+
+    /**
+     *  Whether SQLite can answer `astNode` with NULL. Conservative: only a node whose value is
+     *  spelled out in the SQL — a literal, or an operator over such operands — is ruled out, and
+     *  everything SQLite computes at runtime counts as nullable. `/` and `%` count whatever their
+     *  operands are, because SQLite answers a division by zero with NULL rather than an error.
+     */
+    bool expressionMayBeNull(const AstNode& astNode);
+    /**
+     *  Whether a SELECT result column has to be generated as `as_optional(...)` for a NULL row to
+     *  survive the round trip. sqlite_orm types a binary operator by the operator alone — `double`
+     *  for the arithmetic ones, `std::string` for `||`, `bool` for a comparison — none of which can
+     *  hold a NULL, so such a row is read back as 0 / "" / false. `as_optional` leaves the SQL
+     *  untouched and yields `std::optional<T>` instead. Every other expression sqlite_orm already
+     *  types nullably where it has to (a column carries its field's type, `abs(...)` is a
+     *  `std::unique_ptr`, NULL itself is a `std::nullptr_t`).
+     */
+    bool selectResultNeedsAsOptional(const AstNode& astNode);
 
     std::string sqliteTypeToCpp(std::string_view typeName);
     std::string defaultInitializer(std::string_view cppType);

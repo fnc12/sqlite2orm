@@ -649,3 +649,93 @@ TEST_CASE("codegen: explicit C++20 table_alias policy is overridden by targetCpp
     CHECK(dp->chosenValue == "pre_cpp20");
     CHECK_FALSE(hasOptionValue(*dp, "cpp20"));
 }
+
+// sqlite_orm types a binary operator from the operator alone — `double` for the arithmetic ones,
+// `bool` for a comparison, `std::string` for `||` — and none of those can hold a NULL, so a NULL
+// row used to reach the caller as 0 / false / "". `as_optional` leaves the SQL untouched and hands
+// back a `std::optional` instead. A unary operator is typed the same way, whether it keeps its
+// shape (`~x`) or becomes the subtraction `(c(0) - x)` a negation is generated as. Values checked
+// against sqlite3 3.51 in "runtime: a result column that can be NULL reads the NULL back".
+TEST_CASE("codegen: a result column that can be NULL is generated as as_optional") {
+    REQUIRE(generate("SELECT a + 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
+    REQUIRE(generate("SELECT a * 2 FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) * 2));");
+    REQUIRE(generate("SELECT 0 - a FROM users;") ==
+            "auto rows = storage.select(as_optional(c(0) - &Users::a));");
+    REQUIRE(generate("SELECT -a FROM users;") ==
+            "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
+    REQUIRE(generate("SELECT ~a FROM users;") == "auto rows = storage.select(as_optional(~c(&Users::a)));");
+    REQUIRE(generate("SELECT a > 0 FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) > 0));");
+    REQUIRE(generate("SELECT a AND 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) and 1));");
+    REQUIRE(generate("SELECT a || 'x' FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) || \"x\"));");
+    REQUIRE(generate("SELECT NULL + 1;") == "auto rows = storage.select(as_optional(c(nullptr) + 1));");
+    // SQLite answers a division by zero with NULL rather than an error, so even an expression whose
+    // operands are both spelled out in the SQL can come back NULL.
+    REQUIRE(generate("SELECT 1 / 0;") == "auto rows = storage.select(as_optional(c(1) / 0));");
+    REQUIRE(generate("SELECT 1 % 0;") == "auto rows = storage.select(as_optional(c(1) % 0));");
+}
+
+// Only what sqlite_orm cannot type nullably on its own is widened: a column carries its field's
+// type, `abs(...)` is a `std::unique_ptr`, NULL itself is a `std::nullptr_t`, `IS NULL` is the test
+// for a NULL and never is one, and an operator over literals alone has no NULL to report.
+TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_orm gives it") {
+    REQUIRE(generate("SELECT 1 + 2;") == "auto rows = storage.select(c(1) + 2);");
+    REQUIRE(generate("SELECT 'a' || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
+    REQUIRE(generate("SELECT a FROM users;") == "auto rows = storage.select(&Users::a);");
+    REQUIRE(generate("SELECT NULL;") == "auto rows = storage.select(nullptr);");
+    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");
+    REQUIRE(generate("SELECT a IS NULL FROM users;") == "auto rows = storage.select(is_null(&Users::a));");
+}
+
+// A NULL test and an EXISTS answer over a NULL operand too, so an operator built on one of them has
+// no NULL to report either and keeps the type sqlite_orm gives it. Checked against sqlite3 3.45.1
+// over `users(a INTEGER)` holding one NULL row: 2, 1, 0, 2, '1x', -2 — no NULL among them. (Only
+// the `not` form has a sqlite_orm overload today; arithmetic over a NULL test does not compile,
+// which is a separate gap and not what this widening rule decides.)
+TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
+    REQUIRE(generate("SELECT (a IS NULL) + 1 FROM users;") ==
+            "auto rows = storage.select(is_null(&Users::a) + 1);");
+    REQUIRE(generate("SELECT (a IS NOT NULL) + 1 FROM users;") ==
+            "auto rows = storage.select(is_not_null(&Users::a) + 1);");
+    REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") ==
+            "auto rows = storage.select(not (is_null(&Users::a)));");
+    REQUIRE(generate("SELECT EXISTS(SELECT 1) + 1 FROM users;") ==
+            "auto rows = storage.select(exists(select(1)) + 1);");
+    REQUIRE(generate("SELECT (a IS NULL) || 'x' FROM users;") ==
+            "auto rows = storage.select(is_null(&Users::a) || \"x\");");
+    REQUIRE(generate("SELECT ~(a IS NULL) FROM users;") ==
+            "auto rows = storage.select(~(is_null(&Users::a)));");
+}
+
+// A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the
+// result column of a select is widened.
+TEST_CASE("codegen: as_optional is confined to the result columns of a select") {
+    REQUIRE(generate("SELECT * FROM users WHERE a + 1 > 2;") ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::a) + 1 > 2));");
+    REQUIRE(generate("SELECT id FROM users ORDER BY a + 1;") ==
+            "auto rows = storage.select(&Users::id, order_by(c(&Users::a) + 1));");
+    REQUIRE(generate("a + 1") == "c(&User::a) + 1");
+}
+
+TEST_CASE("codegen: as_optional reaches every form a result column is generated in") {
+    REQUIRE(generate("SELECT a + 1 AS total FROM users;") ==
+            "struct TotalAlias : sqlite_orm::alias_tag {\n"
+            "    static const std::string& get() {\n"
+            "        static const std::string res = \"total\";\n"
+            "        return res;\n"
+            "    }\n"
+            "};\n"
+            "auto rows = storage.select(as<TotalAlias>(as_optional(c(&Users::a) + 1)));");
+    REQUIRE(generate("SELECT DISTINCT a + 1 FROM users;") ==
+            "auto rows = storage.select(distinct(as_optional(c(&Users::a) + 1)));");
+    REQUIRE(generate("SELECT a + 1, a * 2 FROM users;") ==
+            "auto rows = storage.select(columns(as_optional(c(&Users::a) + 1), "
+            "as_optional(c(&Users::a) * 2)));");
+    REQUIRE(generate("SELECT DISTINCT a + 1, a * 2 FROM users;") ==
+            "auto rows = storage.select(distinct(columns(as_optional(c(&Users::a) + 1), "
+            "as_optional(c(&Users::a) * 2))));");
+}

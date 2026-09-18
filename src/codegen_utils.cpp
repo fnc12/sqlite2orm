@@ -309,6 +309,20 @@ namespace sqlite2orm {
         "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
         "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentNotColumnPointer =
+        "A column under a NOT is generated as `column<T>(&T::x)`: `operator!` is the one sqlite_orm "
+        "operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walker "
+        "that collects the tables a statement reads stops at such a wrapper — `select(not c(&T::x))` "
+        "comes out with no FROM clause at all and throws `SQL logic error`. The column pointer names "
+        "the same column and serializes to the same SQL.";
+
+    const std::string kCommentNegatedConditionCast =
+        "A NOT over a NOT is generated as `not cast<int64_t>(not …)`: sqlite_orm's `negated_condition_t` "
+        "— what a NOT and the `!predicate` spelling of a negated BETWEEN, LIKE, GLOB and MATCH produce — "
+        "is neither negatable nor an operator argument, so a second NOT over it does not compile. The "
+        "CAST leaves what the inner NOT stands for alone: it is 0, 1 or NULL, and a CAST to INTEGER "
+        "keeps all three.";
+
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
         "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
@@ -979,6 +993,26 @@ namespace sqlite2orm {
 
     bool generatesZeroMinusSubtraction(const AstNode& astNode) {
         return formOfNegationNode(astNode) == NegationForm::zeroMinusSubtraction;
+    }
+
+    bool generatesNegatedCondition(const AstNode& astNode) {
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            return unaryOp->unaryOperator == UnaryOperator::logicalNot;
+        }
+        if(auto* between = dynamic_cast<const BetweenNode*>(&generatedNode)) {
+            return between->negated;
+        }
+        if(auto* like = dynamic_cast<const LikeNode*>(&generatedNode)) {
+            return like->negated;
+        }
+        if(auto* glob = dynamic_cast<const GlobNode*>(&generatedNode)) {
+            return glob->negated;
+        }
+        if(auto* match = dynamic_cast<const MatchNode*>(&generatedNode)) {
+            return match->negated;
+        }
+        return false;
     }
 
     bool isLeafNode(const AstNode& astNode) {

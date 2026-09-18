@@ -702,3 +702,52 @@ TEST_CASE("runtime: a result column under a dropped COLLATE reads the NULL back"
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
             std::vector<std::string>{"8", "7x", "-7"});
 }
+
+// `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of
+// unwrapping it, and the walker that collects the tables a statement reads stops at such a wrapper.
+// A column a NOT is the only mention of was invisible to it: `select(not c(&User::a))` serialized to
+// `SELECT NOT "users"."a"` with no FROM clause at all and threw `SQL logic error` before any value
+// reached the caller. The column-pointer form names the same column and the walker reads it. A
+// second NOT did not even compile — `negated_condition_t` is neither negatable nor an operator
+// argument — which the CAST that delimits it fixes. Values checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a NOT over a column returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT a;"),
+        generate("SELECT NOT NOT a;"),
+        generate("SELECT NOT (a NOT BETWEEN 1 AND 9);"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(not column<User>(&User::a)));",
+                "auto rows = storage.select(as_optional(not cast<int64_t>(not column<User>(&User::a))));",
+                "auto rows = storage.select(as_optional(not cast<int64_t>(!between(&User::a, 1, 9))));",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"0", "1", "1"});
+}
+
+// The same column-pointer form has to reach a NOT wherever it stands, and a CHECK constraint is
+// where the serialized SQL is the whole product: it goes into the schema and SQLite enforces it
+// from then on. What the clause has to read is `CHECK (NOT "a")` — checked against sqlite3 3.51,
+// which accepts 0 and NULL for it and rejects 7.
+TEST_CASE("runtime: a NOT over a column in a CHECK constraint is enforced the way the source reads") {
+    const std::string generatedCode = generate("CREATE TABLE t(a INTEGER CHECK(NOT a));");
+    REQUIRE(generatedCode ==
+            "struct T {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a, check(not column<T>(&T::a)))));");
+    REQUIRE(checkConstraintBehaviour(generatedCode, {"0", "7", "std::nullopt"}) ==
+            std::vector<std::string>{
+                "0 accepted",
+                "7 rejected",
+                "std::nullopt accepted",
+                "CREATE TABLE \"t\" (\"a\" INTEGER CHECK (NOT \"a\") NULL)",
+            });
+}

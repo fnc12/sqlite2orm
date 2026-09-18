@@ -18,6 +18,24 @@ namespace {
         "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
         "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.";
 
+    // The hint attached to every column a NOT stands over; asserted on its own in
+    // "codegen: a column under a NOT carries its comment".
+    const std::string kNotColumnPointerComment =
+        "A column under a NOT is generated as `column<T>(&T::x)`: `operator!` is the one sqlite_orm "
+        "operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walker "
+        "that collects the tables a statement reads stops at such a wrapper — `select(not c(&T::x))` "
+        "comes out with no FROM clause at all and throws `SQL logic error`. The column pointer names "
+        "the same column and serializes to the same SQL.";
+
+    // The hint attached to every NOT the generator delimits with a CAST; asserted on its own in
+    // "codegen: a NOT over a NOT carries its comment".
+    const std::string kNegatedConditionCastComment =
+        "A NOT over a NOT is generated as `not cast<int64_t>(not …)`: sqlite_orm's `negated_condition_t` "
+        "— what a NOT and the `!predicate` spelling of a negated BETWEEN, LIKE, GLOB and MATCH produce — "
+        "is neither negatable nor an operator argument, so a second NOT over it does not compile. The "
+        "CAST leaves what the inner NOT stands for alone: it is 0, 1 or NULL, and a CAST to INTEGER "
+        "keeps all three.";
+
 }  // namespace
 
 TEST_CASE("codegen: integer literal") {
@@ -393,13 +411,26 @@ TEST_CASE("codegen: logical OR") {
 TEST_CASE("codegen: logical NOT") {
     SECTION("leaf operand") {
         auto result = generateFull("NOT a");
-        REQUIRE(result == CodeGenResult{"not c(&User::a)",
+        REQUIRE(result == CodeGenResult{"not column<User>(&User::a)",
             {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "not c(&User::a)",
+                DecisionPoint{1, "expr_style", "operator", "not column<User>(&User::a)",
                               {
-                                  Option{"operator", "not c(&User::a)", "operator style"},
-                                  Option{"operator_excl", "!c(&User::a)", "use ! instead of not"},
+                                  Option{"operator", "not column<User>(&User::a)", "operator style"},
+                                  Option{"operator_excl", "!column<User>(&User::a)", "use ! instead of not"},
+                              }},
+            },
+            {},
+            {},
+            {kNotColumnPointerComment}});
+    }
+    SECTION("literal operand keeps the c() wrapper") {
+        auto result = generateFull("NOT 1");
+        REQUIRE(result == CodeGenResult{"not c(1)",
+            {
+                DecisionPoint{1, "expr_style", "operator", "not c(1)",
+                              {
+                                  Option{"operator", "not c(1)", "operator style"},
+                                  Option{"operator_excl", "!c(1)", "use ! instead of not"},
                               }},
             }});
     }
@@ -423,6 +454,81 @@ TEST_CASE("codegen: logical NOT") {
             {kZeroMinusComment}
         });
     }
+}
+
+// `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of
+// unwrapping it, and the walker that collects the tables a statement reads stops at such a wrapper.
+// A column a NOT is the only mention of was invisible to it, so `select(not c(&Users::a))` came out
+// as `SELECT NOT "users"."a"` with no FROM clause at all and threw `SQL logic error`. The
+// column-pointer form names the same column and serializes to the same SQL. The forms that already
+// carry their table — an aliased column, a CTE column — are left as they were. The values the
+// generated code answers with are pinned in
+// "runtime: a NOT over a column returns the value SQLite computes".
+TEST_CASE("codegen: a column under a NOT is generated as a column pointer") {
+    REQUIRE(generate("SELECT NOT a FROM users;") ==
+            "auto rows = storage.select(as_optional(not column<Users>(&Users::a)));");
+    REQUIRE(generate("SELECT NOT users.a FROM users;") ==
+            "auto rows = storage.select(as_optional(not column<Users>(&Users::a)));");
+    REQUIRE(generate("SELECT NOT (a COLLATE NOCASE) FROM users;") ==
+            "auto rows = storage.select(as_optional(not column<Users>(&Users::a)));");
+    REQUIRE(generate("SELECT 1 FROM users WHERE NOT a;") ==
+            "auto rows = storage.select(1, where(not column<Users>(&Users::a)));");
+    REQUIRE(generate("CREATE TABLE t(a INTEGER CHECK(NOT a));") ==
+            "struct T {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a, check(not column<T>(&T::a)))));");
+    REQUIRE(generate("SELECT NOT x.a FROM users AS x;") ==
+            "auto rows = storage.select(as_optional(not alias_column<alias_a<Users>>(&Users::a)));");
+    // An operand that is not a leaf is not wrapped in `c(...)` to begin with: a binary operator
+    // unwraps what it is given, so the column under one stays a member pointer.
+    REQUIRE(generate("SELECT NOT (a + 1) FROM users;") ==
+            "auto rows = storage.select(as_optional(not (c(&Users::a) + 1)));");
+    REQUIRE(generate("SELECT NOT -a FROM users;") ==
+            "auto rows = storage.select(as_optional(not (c(0) - c(&Users::a))));");
+}
+
+TEST_CASE("codegen: a column under a NOT carries its comment") {
+    auto result = generateFull("SELECT NOT a FROM users;");
+    REQUIRE(result.comments == std::vector<std::string>{kNotColumnPointerComment});
+}
+
+// sqlite_orm classifies `negated_condition_t` — what a NOT and the `!predicate` spelling of a
+// negated BETWEEN, LIKE, GLOB and MATCH generate — as neither negatable nor an operator argument,
+// so a second NOT over one does not compile at all. A CAST to INTEGER makes it an operand again and
+// keeps its value: a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three. The
+// predicates sqlite_orm does class as negatable need nothing.
+TEST_CASE("codegen: a NOT over a NOT is delimited by a CAST") {
+    REQUIRE(generate("SELECT NOT NOT a FROM users;") ==
+            "auto rows = storage.select(as_optional(not cast<int64_t>(not column<Users>(&Users::a))));");
+    REQUIRE(generate("SELECT NOT NOT NOT a FROM users;") ==
+            "auto rows = storage.select(as_optional(not cast<int64_t>(not cast<int64_t>(not "
+            "column<Users>(&Users::a)))));");
+    REQUIRE(generate("SELECT NOT (a NOT BETWEEN 1 AND 9) FROM users;") ==
+            "auto rows = storage.select(as_optional(not cast<int64_t>(!between(&Users::a, 1, 9))));");
+    REQUIRE(generate("SELECT NOT (a NOT LIKE 'x') FROM users;") ==
+            "auto rows = storage.select(as_optional(not cast<int64_t>(!like(&Users::a, \"x\"))));");
+    REQUIRE(generate("SELECT NOT (a NOT GLOB 'x') FROM users;") ==
+            "auto rows = storage.select(as_optional(not cast<int64_t>(!glob(&Users::a, \"x\"))));");
+    // BETWEEN, LIKE, GLOB, IN and the NULL tests are negatable on their own, and `not_in` is an
+    // `in` with its negation inside rather than a NOT over one.
+    REQUIRE(generate("SELECT NOT (a BETWEEN 1 AND 9) FROM users;") ==
+            "auto rows = storage.select(as_optional(not (between(&Users::a, 1, 9))));");
+    REQUIRE(generate("SELECT NOT (a LIKE 'x') FROM users;") ==
+            "auto rows = storage.select(as_optional(not (like(&Users::a, \"x\"))));");
+    REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") ==
+            "auto rows = storage.select(not (is_null(&Users::a)));");
+    REQUIRE(generate("SELECT NOT (a NOT IN (1, 2)) FROM users;") ==
+            "auto rows = storage.select(as_optional(not (not_in(&Users::a, {1, 2}))));");
+}
+
+TEST_CASE("codegen: a NOT over a NOT carries its comment") {
+    auto result = generateFull("SELECT NOT NOT a FROM users;");
+    REQUIRE(result.comments ==
+            std::vector<std::string>{kNotColumnPointerComment, kNegatedConditionCastComment});
 }
 
 TEST_CASE("codegen: double unary minus parenthesized") {
@@ -509,7 +615,8 @@ TEST_CASE("codegen: unary minus over a predicate warns instead") {
           "IS NULL");
     check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));",
           "IS NOT NULL");
-    check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not c(&Users::a)));", "NOT");
+    check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not column<Users>(&Users::a)));",
+          "NOT");
 }
 
 // sqlite_orm parenthesizes an operand it serializes only when that operand is a binary operator or
@@ -527,7 +634,7 @@ TEST_CASE("codegen: a predicate under an operator is cast to stay one SQL term")
     REQUIRE(generate("1 - (a LIKE 'x')") == "c(1) - cast<int64_t>(like(&User::a, \"x\"))");
     REQUIRE(generate("1 - (a GLOB 'x')") == "c(1) - cast<int64_t>(glob(&User::a, \"x\"))");
     REQUIRE(generate("1 - (a MATCH 'x')") == "c(1) - cast<int64_t>(match(&User::a, \"x\"))");
-    REQUIRE(generate("1 - (NOT a)") == "c(1) - cast<int64_t>(not c(&User::a))");
+    REQUIRE(generate("1 - (NOT a)") == "c(1) - cast<int64_t>(not column<User>(&User::a))");
     // Every rank that binds tighter than a predicate needs it, the left operand included.
     REQUIRE(generate("1 || (a IS NULL)") == "c(1) || cast<int64_t>(is_null(&User::a))");
     REQUIRE(generate("1 * (a IS NULL)") == "c(1) * cast<int64_t>(is_null(&User::a))");
@@ -551,8 +658,8 @@ TEST_CASE("codegen: an operator no looser than the predicate leaves it bare") {
     REQUIRE(generate("1 AND (a IS NULL)") == "c(1) and is_null(&User::a)");
     REQUIRE(generate("(a IS NULL) OR 1") == "is_null(&User::a) or 1");
     REQUIRE(generate("1 OR (a IS NULL)") == "c(1) or is_null(&User::a)");
-    REQUIRE(generate("(NOT a) AND 1") == "not c(&User::a) and 1");
-    REQUIRE(generate("(NOT a) = 1") == "cast<int64_t>(not c(&User::a)) == 1");
+    REQUIRE(generate("(NOT a) AND 1") == "not column<User>(&User::a) and 1");
+    REQUIRE(generate("(NOT a) = 1") == "cast<int64_t>(not column<User>(&User::a)) == 1");
     // The JSON operators are generated as a json_extract() call, whose own syntax delimits both
     // operands whatever SQLite's precedence says.
     REQUIRE(generate("a -> (b IS NULL)") == "json_extract(&User::a, is_null(&User::b))");

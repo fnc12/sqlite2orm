@@ -287,7 +287,9 @@ namespace sqlite2orm {
             const auto cppType =
                 column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
             const bool nullable = !column.primaryKey && !column.notNull;
-            columns.push_back(SourceTableColumn{stripIdentifierQuotes(column.name), cppType, nullable});
+            const bool generated = column.generatedStorage != ColumnDef::GeneratedStorage::none;
+            columns.push_back(
+                SourceTableColumn{stripIdentifierQuotes(column.name), cppType, nullable, generated});
         }
         return columns;
     }
@@ -498,16 +500,73 @@ namespace sqlite2orm {
         return isHexadecimalLiteral(integerLiteral) && significantDigits(integerLiteral.substr(2)).size() > 16;
     }
 
-    bool integerLiteralExceedsInt64(std::string_view integerLiteral) {
+    bool integerLiteralExceedsInt64(std::string_view integerLiteral, bool negated) {
         if(isHexadecimalLiteral(integerLiteral)) {
             // A hex literal never leaves the range: SQLite wraps it around, and the one that
             // would need a seventeenth digit is `hexLiteralExceedsInt64`, refused before this.
             return false;
         }
+        // SQLite decides the type of a decimal literal with the sign already folded in, the way
+        // `codeInteger()` does, so the magnitude an int64 holds is one larger for a negative one:
+        // `-9223372036854775808` is an INTEGER while `9223372036854775808` is a REAL.
         static constexpr std::string_view int64Max = "9223372036854775807";
+        static constexpr std::string_view int64MinMagnitude = "9223372036854775808";
+        const std::string_view limit = negated ? int64MinMagnitude : int64Max;
         const std::string digits = significantDigits(integerLiteral);
-        return digits.size() > int64Max.size() ||
-               (digits.size() == int64Max.size() && std::string_view(digits) > int64Max);
+        return digits.size() > limit.size() ||
+               (digits.size() == limit.size() && std::string_view(digits) > limit);
+    }
+
+    namespace {
+
+        /** `value` with every folded minus sign taken off; `negated` ends up true for an odd count. */
+        const AstNode* withoutFoldedSigns(const AstNode& value, bool& negated) {
+            negated = false;
+            const AstNode* node = &value;
+            while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
+                if(unaryOperator->unaryOperator != UnaryOperator::minus) {
+                    break;
+                }
+                negated = !negated;
+                node = unaryOperator->operand.get();
+            }
+            return node;
+        }
+
+    }  // namespace
+
+    const IntegerLiteralNode* integerLiteralPastIntegerFieldRange(const AstNode& value) {
+        bool negated = false;
+        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
+        if(!integerLiteral || !integerLiteralExceedsInt64(integerLiteral->value, negated)) {
+            return nullptr;
+        }
+        return integerLiteral;
+    }
+
+    std::string numericLiteralSqlText(const AstNode& value) {
+        bool negated = false;
+        const AstNode* literal = withoutFoldedSigns(value, negated);
+        std::string_view text;
+        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(literal)) {
+            text = integerLiteral->value;
+        } else if(auto* realLiteral = dynamic_cast<const RealLiteralNode*>(literal)) {
+            text = realLiteral->value;
+        } else {
+            return {};
+        }
+        return (negated ? "-" : "") + withoutDigitSeparators(text);
+    }
+
+    bool integerFieldCarriesValue(const AstNode& value) {
+        bool negated = false;
+        if(dynamic_cast<const RealLiteralNode*>(withoutFoldedSigns(value, negated))) {
+            // SQLite turns a REAL into an INTEGER only where the column affinity converts it back
+            // and forth without loss, while a C++ field truncates it either way: `1.5` would reach
+            // an int64_t field as 1 where SQLite keeps the 1.5 it stored.
+            return false;
+        }
+        return integerLiteralPastIntegerFieldRange(value) == nullptr;
     }
 
     std::string integerLiteralToCpp(std::string_view integerLiteral) {

@@ -535,11 +535,6 @@ namespace sqlite2orm {
             return isDigit(character) ? character - '0' : (character | 0x20) - 'a' + 10;
         }
 
-        bool isHexadecimalLiteral(std::string_view integerLiteral) {
-            return integerLiteral.size() > 1 && integerLiteral.front() == '0' &&
-                   (integerLiteral[1] == 'x' || integerLiteral[1] == 'X');
-        }
-
         // Neither the `_` separators SQLite allows between digits nor the leading zeros carry any
         // value, so both go away before a literal is measured against the int64 range.
         std::string significantDigits(std::string_view digits) {
@@ -566,12 +561,17 @@ namespace sqlite2orm {
 
     }  // namespace
 
+    bool isHexadecimalIntegerLiteral(std::string_view integerLiteral) {
+        return integerLiteral.size() > 1 && integerLiteral.front() == '0' &&
+               (integerLiteral[1] == 'x' || integerLiteral[1] == 'X');
+    }
+
     bool hexLiteralExceedsInt64(std::string_view integerLiteral) {
-        return isHexadecimalLiteral(integerLiteral) && significantDigits(integerLiteral.substr(2)).size() > 16;
+        return isHexadecimalIntegerLiteral(integerLiteral) && significantDigits(integerLiteral.substr(2)).size() > 16;
     }
 
     bool integerLiteralExceedsInt64(std::string_view integerLiteral, bool negated) {
-        if(isHexadecimalLiteral(integerLiteral)) {
+        if(isHexadecimalIntegerLiteral(integerLiteral)) {
             // A hex literal never leaves the range: SQLite wraps it around, and the one that
             // would need a seventeenth digit is `hexLiteralExceedsInt64`, refused before this.
             return false;
@@ -674,7 +674,7 @@ namespace sqlite2orm {
                 return std::nullopt;
             }
             const std::string_view text = integerLiteral->value;
-            const bool hexadecimal = isHexadecimalLiteral(text);
+            const bool hexadecimal = isHexadecimalIntegerLiteral(text);
             std::uint64_t magnitude = 0;
             for(char character: hexadecimal ? text.substr(2) : text) {
                 if(character == '_') {
@@ -746,7 +746,7 @@ namespace sqlite2orm {
     }
 
     bool integerLiteralExceedsInt32(std::string_view integerLiteral) {
-        if(isHexadecimalLiteral(integerLiteral)) {
+        if(isHexadecimalIntegerLiteral(integerLiteral)) {
             // SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the
             // digits alone say which side of the int32 range the value lands on: up to
             // `0x7FFFFFFF` it is a positive int32, from `0xFFFFFFFF80000000` on it has wrapped
@@ -778,7 +778,7 @@ namespace sqlite2orm {
         // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not
         // compile at all. The separators standing between those zeros go away with them, so that
         // `0_9` becomes `9` rather than the octal constant `0'9`.
-        if(isHexadecimalLiteral(integerLiteral)) {
+        if(isHexadecimalIntegerLiteral(integerLiteral)) {
             // Where C++ picks an unsigned type for the literal the two languages part ways again:
             // `0xFFFFFFFFFFFFFFFF` means -1 to SQLite and 18446744073709551615 to C++, and even
             // where the value itself survives, as it does for `0xDEADBEEF`, an unsigned operand
@@ -1113,50 +1113,65 @@ namespace sqlite2orm {
             return result;
         }
 
-        /**
-         *  SQLite's `sqlite3GetInt32()`: the leading decimal (or `0x…` hexadecimal) digits of `text`
-         *  as an int32. Everything that does not fit an int32 reads as 0 — a hexadecimal value with
-         *  the sign bit set, more than ten decimal digits, or a value above 2147483647 — which is why
-         *  `PRAGMA recursive_triggers = 2147483648` is false in SQLite while `= 2147483647` is true.
-         */
-        int sqliteTextToInt32(std::string_view text) {
-            if(text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') && isHexDigit(text[2])) {
-                size_t index = 2;
-                while(index < text.size() && text[index] == '0') {
-                    ++index;
-                }
-                std::uint32_t value = 0;
-                size_t digitCount = 0;
-                for(; index < text.size() && digitCount < 8 && isHexDigit(text[index]); ++index, ++digitCount) {
-                    value = value * 16 + static_cast<std::uint32_t>(hexDigitValue(text[index]));
-                }
-                if((value & 0x80000000u) != 0 || (index < text.size() && isHexDigit(text[index]))) {
-                    return 0;
-                }
-                return static_cast<int>(value);
-            }
-            size_t index = 0;
-            while(index < text.size() && text[index] == '0') {
+    }  // namespace
+
+    std::optional<std::int32_t> sqlitePragmaInt32(std::string_view valueText) {
+        // `sqlite3GetInt32()` takes the sign off first and only then looks for a `0x` prefix, so a
+        // signed value never reaches its hexadecimal branch: `-0x10` falls through to the decimal
+        // one, which stops at the `x` and answers 0 rather than -16.
+        bool negated = false;
+        bool hexadecimal = false;
+        if(!valueText.empty() && (valueText.front() == '-' || valueText.front() == '+')) {
+            negated = valueText.front() == '-';
+            valueText.remove_prefix(1);
+        } else {
+            hexadecimal = valueText.size() > 2 && valueText[0] == '0' &&
+                          (valueText[1] == 'x' || valueText[1] == 'X') && isHexDigit(valueText[2]);
+        }
+        if(hexadecimal) {
+            size_t index = 2;
+            while(index < valueText.size() && valueText[index] == '0') {
                 ++index;
             }
-            std::int64_t value = 0;
+            std::uint32_t value = 0;
             size_t digitCount = 0;
-            for(; index < text.size() && digitCount < 11 && isDigit(text[index]); ++index, ++digitCount) {
-                value = value * 10 + (text[index] - '0');
+            for(; index < valueText.size() && digitCount < 8 && isHexDigit(valueText[index]);
+                ++index, ++digitCount) {
+                value = value * 16 + static_cast<std::uint32_t>(hexDigitValue(valueText[index]));
             }
-            if(digitCount > 10 || value > 2147483647) {
-                return 0;
+            // SQLite reads eight hexadecimal digits at most and refuses the value outright once the
+            // sign bit is set or a ninth digit follows, rather than wrapping or truncating it.
+            if((value & 0x80000000u) != 0 || (index < valueText.size() && isHexDigit(valueText[index]))) {
+                return std::nullopt;
             }
-            return static_cast<int>(value);
+            return static_cast<std::int32_t>(value);
         }
-
-    }  // namespace
+        if(valueText.empty() || !isDigit(valueText.front())) {
+            return std::nullopt;
+        }
+        size_t index = 0;
+        while(index < valueText.size() && valueText[index] == '0') {
+            ++index;
+        }
+        std::int64_t value = 0;
+        size_t digitCount = 0;
+        for(; index < valueText.size() && digitCount < 11 && isDigit(valueText[index]); ++index, ++digitCount) {
+            value = value * 10 + (valueText[index] - '0');
+        }
+        // The digits stop at the first character that is not one, so `1.5` reads as 1, and the
+        // magnitude a negative value may reach is one larger: `-2147483648` is an int32, `2147483648`
+        // is not.
+        if(digitCount > 10 || value - (negated ? 1 : 0) > 2147483647) {
+            return std::nullopt;
+        }
+        return static_cast<std::int32_t>(negated ? -value : value);
+    }
 
     bool sqlitePragmaBoolean(std::string_view valueText) {
         if(!valueText.empty() && isDigit(valueText.front())) {
             // SQLite's `getSafetyLevel()` returns a u8, so the int32 loses everything above its low
             // byte before the `!= 0` test: `256` and `65536` are false while `255` and `257` are true.
-            return (sqliteTextToInt32(valueText) & 0xFF) != 0;
+            return (sqlitePragmaInt32(valueText).value_or(0) & 0xFF) != 0;
         }
         const std::string lower = toLowerAscii(valueText);
         return lower == "on" || lower == "yes" || lower == "true";

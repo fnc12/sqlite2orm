@@ -18,6 +18,28 @@ namespace sqlite2orm {
             return std::nullopt;
         }
 
+        /**
+         *  Whether generating `valueNode` as it is written passes on the very int32
+         *  `sqlite3GetInt32()` reads from it, so that the generated call runs the statement SQLite
+         *  itself runs. An integer literal `sqlite3GetInt32()` accepts denotes exactly the value it
+         *  answers — it reads the same digits C++ does — and so does a decimal one under a minus
+         *  sign. A hexadecimal literal under a minus sign does not: the sign sends
+         *  `sqlite3GetInt32()` down its decimal branch, where `-0x10` is 0 and not -16.
+         */
+        bool pragmaValueSpellsItsInt32(const AstNode& valueNode) {
+            if(dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
+                return true;
+            }
+            if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
+                if(unaryOperator->unaryOperator == UnaryOperator::minus && unaryOperator->operand) {
+                    const auto* integerLiteral =
+                        dynamic_cast<const IntegerLiteralNode*>(unaryOperator->operand.get());
+                    return integerLiteral != nullptr && !isHexadecimalIntegerLiteral(integerLiteral->value);
+                }
+            }
+            return false;
+        }
+
     }  // namespace
 
     PragmaCodeGenerator::PragmaCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -72,12 +94,13 @@ namespace sqlite2orm {
                 return CodeGenResult{"storage.pragma.integrity_check();", {}, {}};
             }
             if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(node.value.get())) {
-                if(auto tooBig = pragmaValueHexLiteralTooBig(*node.value)) {
+                if(!sqlitePragmaInt32(withoutDigitSeparators(integerLiteral->value))) {
                     // SQLite reads the value with `sqlite3GetInt32()` and takes it for a table name
-                    // when it does not fit one, so this is `no such table: 0x10000000000000000`.
+                    // when it does not fit an int32, so `= 2147483648` and `= 0x80000000` are both
+                    // `no such table`, exactly as `= 0x10000000000000000` is.
                     this->context.accumulatedErrors.push_back(
-                        "PRAGMA integrity_check = " + *tooBig +
-                        ": SQLite cannot read this hex literal as a 32-bit integer and refuses it as a table name");
+                        "PRAGMA integrity_check = " + withoutDigitSeparators(integerLiteral->value) +
+                        ": SQLite cannot read this literal as a 32-bit integer and refuses it as a table name");
                     return CodeGenResult{"/* PRAGMA integrity_check */"};
                 }
                 return CodeGenResult{
@@ -94,14 +117,52 @@ namespace sqlite2orm {
                 "storage.pragma.integrity_check(" + std::move(arg) + ");", std::move(decisionPoints),
                 std::move(warnings)};
         }
-        if(name == "busy_timeout" || name == "application_id" || name == "synchronous" || name == "user_version" ||
-           name == "auto_vacuum" || name == "max_page_count") {
+        if(name == "busy_timeout" || name == "application_id" || name == "user_version") {
             if(!node.value) {
                 return CodeGenResult{"storage.pragma." + name + "();", {}, {}};
             }
             // A PRAGMA value is not an expression: SQLite never compiles it, so it accepts a hex
-            // literal it refuses in a query and reads it with `sqlite3GetInt32()`, which answers 0
-            // for one that does not fit an int32.
+            // literal it refuses in a query, and it reads the value's text with `sqlite3Atoi()` —
+            // which answers 0 for everything that does not fit an int32, a name and a string
+            // included. Whatever the SQL spells, the generated call has to pass that int32 on, or
+            // the header sets something SQLite never would.
+            if(auto value = pragmaValue(*node.value)) {
+                // SQLite refuses a `_` digit separator in a PRAGMA value outright, a standing
+                // difference of its own; the separators a numeric literal carries here go away
+                // before it is read, the way the generated C++ literal drops its own. A string is
+                // read with them, though — `sqlite3Atoi()` stops at the `_` of `'1_2'` and answers
+                // 1 — so only a numeric literal is stripped.
+                const std::string numericText = numericLiteralSqlText(*node.value);
+                const std::optional<std::int32_t> readValue =
+                    sqlitePragmaInt32(numericText.empty() ? value->text : numericText);
+                if(!readValue || !pragmaValueSpellsItsInt32(*node.value)) {
+                    const std::string prefix = "PRAGMA " + name + " = " + value->sqlText +
+                                               ": SQLite reads a PRAGMA value as a 32-bit integer";
+                    warnings.push_back(readValue ? prefix + ", so it sets " + std::to_string(*readValue)
+                                                 : prefix + " and cannot read this one, so it sets 0");
+                    return CodeGenResult{
+                        "storage.pragma." + name + "(" + std::to_string(readValue.value_or(0)) + ");", {},
+                        std::move(warnings)};
+                }
+                std::string arg = mergeSub(this->coordinator.generateNode(*node.value));
+                return CodeGenResult{
+                    "storage.pragma." + name + "(" + std::move(arg) + ");", std::move(decisionPoints),
+                    std::move(warnings)};
+            }
+            this->context.accumulatedErrors.push_back("PRAGMA " + name +
+                                                      " = …: expected a number, a string or a name");
+            return CodeGenResult{"/* PRAGMA " + name + " */"};
+        }
+        if(name == "synchronous" || name == "auto_vacuum" || name == "max_page_count") {
+            if(!node.value) {
+                return CodeGenResult{"storage.pragma." + name + "();", {}, {}};
+            }
+            // These three read their value with a function of their own rather than with
+            // `sqlite3Atoi()`, so the int32 above does not describe them: `getSafetyLevel()` falls
+            // back to 1 for anything that does not start with a digit, `getAutoVacuum()` knows the
+            // names `none`/`full`/`incremental`, and `max_page_count` reads the whole text as an
+            // int64 and clamps it to 0xfffffffe — `= 0x80000000` really does set 2147483648 there.
+            // All three still read a hex literal past the int64 range as 0, the way #32 left them.
             if(auto tooBig = pragmaValueHexLiteralTooBig(*node.value)) {
                 warnings.push_back("PRAGMA " + name + " = " + *tooBig +
                                    ": SQLite reads a PRAGMA value as a 32-bit integer and this hex literal does "

@@ -214,6 +214,86 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT hexadecimal past the int64 range") {
         "        make_column(\"x\", &T::x, default_value(static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)))));");
 }
 
+// SQLite raises `hex literal too big` in codeInteger(), when it compiles an expression, and a
+// DEFAULT is stored without ever being compiled: `CREATE TABLE weird(x INTEGER DEFAULT
+// 0x10000000000000000)` is accepted and kept in sqlite_master, and only `INSERT INTO weird
+// DEFAULT VALUES` fails with it. C++ has no literal for the value either, so the column stays and
+// the default goes. Checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT hex literal too big for an int64") {
+    auto result = generateFull("CREATE TABLE weird (x INTEGER DEFAULT 0x10000000000000000)");
+    REQUIRE(result.code ==
+        "struct Weird {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"weird\",\n"
+        "        make_column(\"x\", &Weird::x)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite stores it "
+             "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
+             "default_value()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// The literal is just as stored inside a parenthesized DEFAULT expression, and the separators are
+// taken out of the diagnostic the way SQLite takes them out of its own.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT expression holding a hex literal too big") {
+    auto result = generateFull("CREATE TABLE t (x INTEGER DEFAULT (0x1_0000_0000_0000_0000 + 1))");
+    REQUIRE(result.code ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite stores it "
+             "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
+             "default_value()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// A CHECK is stored the same way, and SQLite refuses it only once a row goes in.
+TEST_CASE("codegen: CREATE TABLE - column CHECK holding a hex literal too big") {
+    auto result = generateFull("CREATE TABLE t (x INTEGER CHECK (x <> 0x10000000000000000))");
+    REQUIRE(result.code ==
+        "struct T {\n"
+        "    std::optional<int64_t> x;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"x\", &T::x)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"CHECK on column 'x' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores it "
+             "but refuses every use of the constraint, and C++ has no literal for it, so the generated column has "
+             "no check()"}});
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - table-level CHECK holding a hex literal too big") {
+    auto result = generateFull("CREATE TABLE t (a INTEGER, CHECK (a <> 0x10000000000000000))");
+    REQUIRE(result.code ==
+        "struct T {\n"
+        "    std::optional<int64_t> a;\n"
+        "};\n"
+        "\n"
+        "auto storage = make_storage(\"\",\n"
+        "    make_table(\"t\",\n"
+        "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"table CHECK uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores it but "
+             "refuses every use of the constraint, and C++ has no literal for it, so the generated table has no "
+             "check()"}});
+    REQUIRE(result.errors.empty());
+}
+
 TEST_CASE("codegen: CREATE TABLE - DEFAULT string") {
     auto result = generate("CREATE TABLE t (x TEXT DEFAULT 'hello')");
     REQUIRE(result ==

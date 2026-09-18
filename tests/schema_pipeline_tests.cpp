@@ -115,6 +115,101 @@ TEST_CASE("generateSqliteSchemaHeader: merged storage") {
     REQUIRE(header == expected);
 }
 
+// One column whose DEFAULT holds a hex literal no int64 can hold used to fail the statement and
+// with it the whole import: sqlite2orm printed a parse error and not a single struct. SQLite
+// raises `hex literal too big` in codeInteger(), when it compiles an expression, and a DEFAULT is
+// never compiled, so it keeps the schema — `sqlite3 s.db "CREATE TABLE weird(x INTEGER DEFAULT
+// 0x10000000000000000)"` succeeds and sqlite_master holds the column. Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a DEFAULT SQLite stores but cannot compile keeps the schema") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER);"
+            "CREATE TABLE weird (x INTEGER DEFAULT 0x10000000000000000);"
+            "CREATE TABLE ok2 (b TEXT);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    const CodeGenResult expected{
+        std::string("#pragma once\n\n"
+                    "#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n\n"
+                    "struct Ok1 {\n"
+                    "    std::optional<int64_t> a;\n"
+                    "};\n\n"
+                    "struct Ok2 {\n"
+                    "    std::optional<std::string> b;\n"
+                    "};\n\n"
+                    "struct Weird {\n"
+                    "    std::optional<int64_t> x;\n"
+                    "};\n\n\n"
+                    "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                    "    using namespace sqlite_orm;\n"
+                    "    return make_storage(db_path,\n"
+                    "        make_table(\"ok1\",\n"
+                    "        make_column(\"a\", &Ok1::a)),\n"
+                    "        make_table(\"ok2\",\n"
+                    "        make_column(\"b\", &Ok2::b)),\n"
+                    "        make_table(\"weird\",\n"
+                    "        make_column(\"x\", &Weird::x)));\n"
+                    "}\n"),
+        {},
+        {CodegenWarning{"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite "
+                        "stores it but refuses every use of the default, and C++ has no literal for it, so the "
+                        "generated column has no default_value()"}},
+        {}};
+
+    REQUIRE(header == expected);
+}
+
+// A view and a trigger holding the same literal are stored by SQLite too, so neither may fail the
+// import: each is left out of make_storage() with a warning and the tables still come through.
+TEST_CASE("generateSqliteSchemaHeader: a view and a trigger SQLite stores but cannot compile are skipped") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER);"
+            "CREATE VIEW vw AS SELECT 0x10000000000000000 AS c;"
+            "CREATE TRIGGER tr AFTER INSERT ON ok1 BEGIN UPDATE ok1 SET a = 0x10000000000000000; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE VIEW vw uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the "
+                 "view but refuses every query against it, and C++ has no literal for it, so the view is not "
+                 "generated"},
+                {"CREATE VIEW `vw` is not merged into make_storage()"},
+                {"CREATE TRIGGER tr uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores "
+                 "the trigger but refuses every statement that fires it, and C++ has no literal for it, so the "
+                 "trigger is not generated"},
+                {"CREATE TRIGGER `tr` is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
 TEST_CASE("generateSqliteSchemaHeader: DML after DDL emits seed_data()") {
     auto pipelines = processMultiSql(
         "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"

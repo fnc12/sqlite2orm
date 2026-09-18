@@ -284,3 +284,46 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 0x1FFFFFFF is true, like SQLite"
                                           "0/1, TRUE/FALSE or ON/OFF instead"}},
                           {}});
 }
+
+// A PRAGMA value is not an expression: SQLite never compiles it, so `PRAGMA user_version =
+// 0x10000000000000000` is accepted where `SELECT 0x10000000000000000` is refused, and read with
+// sqlite3GetInt32(), which answers 0 for a value it cannot fit in an int32 — the schema then
+// reports `PRAGMA user_version` as 0. Checked against sqlite3 3.51.
+TEST_CASE("codegen: PRAGMA user_version = a hex literal too big for an int64") {
+    REQUIRE(generateFull("PRAGMA user_version = 0x10000000000000000;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 0x10000000000000000: SQLite reads a PRAGMA value "
+                                          "as a 32-bit integer and this hex literal does not fit one, so it sets "
+                                          "0"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = 0x1_0000_0000_0000_0000;") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = 0x10000000000000000: SQLite reads a PRAGMA "
+                                          "value as a 32-bit integer and this hex literal does not fit one, so it "
+                                          "sets 0"}},
+                          {}});
+}
+
+// `PRAGMA integrity_check` is the one that takes a value SQLite falls back to reading as a table
+// name, so a hex literal it cannot fit in an int32 is `Error: in prepare, no such table`.
+TEST_CASE("codegen: PRAGMA integrity_check = a hex literal too big for an int64") {
+    REQUIRE(generateFull("PRAGMA integrity_check = 0x10000000000000000;") ==
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"PRAGMA integrity_check = 0x10000000000000000: SQLite cannot read this hex literal as a "
+                           "32-bit integer and refuses it as a table name"},
+                          {}});
+}
+
+// The boolean PRAGMAs read the same int32, so the value is false and the spelling warning stands.
+TEST_CASE("codegen: PRAGMA recursive_triggers = a hex literal too big for an int64") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = 0x10000000000000000;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = 0x10000000000000000: SQLite reads this as "
+                                          "false; spell it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}

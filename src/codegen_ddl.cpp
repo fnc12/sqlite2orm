@@ -71,6 +71,10 @@ namespace sqlite2orm {
             base += ".for_each_row()";
         }
         std::vector<DecisionPoint> decisionPoints;
+        // Like a view body, a trigger body is stored and compiled only when the trigger fires, so
+        // SQLite accepts a hex literal in it that it refuses in a query of its own.
+        this->context.storedHexLiteralsTooBig.clear();
+        this->context.storedExpression = true;
         if(createTrigger.whenClause) {
             auto whenResult = this->coordinator.generateNode(*createTrigger.whenClause);
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(whenResult.decisionPoints.begin()),
@@ -93,7 +97,18 @@ namespace sqlite2orm {
             stepsJoined += stepResult.code;
         }
 
+        this->context.storedExpression = false;
         this->context.structName = savedStruct;
+        if(!this->context.storedHexLiteralsTooBig.empty()) {
+            for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
+                warnings.push_back("CREATE TRIGGER " + stripIdentifierQuotes(createTrigger.triggerName) + " uses " +
+                                   literal +
+                                   ", too big for a signed 64-bit integer: SQLite stores the trigger but refuses "
+                                   "every statement that fires it, and C++ has no literal for it, so the trigger "
+                                   "is not generated");
+            }
+            return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
+        }
 
         std::string triggerLiteral = identifierToCppStringLiteral(createTrigger.triggerName);
         std::string code = "make_trigger(" + triggerLiteral + ", " + base + ".begin(" + stepsJoined + "));";
@@ -716,7 +731,21 @@ namespace sqlite2orm {
                 "view name only");
         }
 
+        // A view body is stored, never compiled, so SQLite accepts a hex literal in it that it
+        // refuses in a query; C++ has no literal for one, so the view cannot be generated.
+        this->context.storedHexLiteralsTooBig.clear();
+        this->context.storedExpression = true;
         CodeGenResult selectExpression = this->coordinator.tryCodegenSelectLikeSubquery(*node.selectQuery);
+        this->context.storedExpression = false;
+        for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
+            parts.warnings.push_back("CREATE VIEW " + displayName + " uses " + literal +
+                                     ", too big for a signed 64-bit integer: SQLite stores the view but refuses "
+                                     "every query against it, and C++ has no literal for it, so the view is not "
+                                     "generated");
+        }
+        if(!this->context.storedHexLiteralsTooBig.empty()) {
+            return parts;
+        }
         parts.decisionPoints.insert(parts.decisionPoints.end(),
                                     std::make_move_iterator(selectExpression.decisionPoints.begin()),
                                     std::make_move_iterator(selectExpression.decisionPoints.end()));
@@ -941,8 +970,17 @@ namespace sqlite2orm {
                 makeExpression += ", " + primaryKey;
             }
             if(column.defaultValue) {
-                const auto defaultCode = this->coordinator.generateNode(*column.defaultValue).code;
-                makeExpression += ", default_value(" + defaultCode + ")";
+                const auto defaultCode = this->coordinator.generateStoredExpression(*column.defaultValue).code;
+                if(this->context.storedHexLiteralsTooBig.empty()) {
+                    makeExpression += ", default_value(" + defaultCode + ")";
+                } else {
+                    for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
+                        warnings.push_back("DEFAULT " + literal + " on column '" + rawColumnName +
+                                           "' is too big for a signed 64-bit integer: SQLite stores it but "
+                                           "refuses every use of the default, and C++ has no literal for it, so "
+                                           "the generated column has no default_value()");
+                    }
+                }
             }
             if(column.unique) {
                 makeExpression += ", unique()";
@@ -952,8 +990,17 @@ namespace sqlite2orm {
                 }
             }
             if(column.checkExpression) {
-                const auto checkCode = this->coordinator.generateNode(*column.checkExpression).code;
-                makeExpression += ", check(" + checkCode + ")";
+                const auto checkCode = this->coordinator.generateStoredExpression(*column.checkExpression).code;
+                if(this->context.storedHexLiteralsTooBig.empty()) {
+                    makeExpression += ", check(" + checkCode + ")";
+                } else {
+                    for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
+                        warnings.push_back("CHECK on column '" + rawColumnName + "' uses " + literal +
+                                           ", too big for a signed 64-bit integer: SQLite stores it but refuses "
+                                           "every use of the constraint, and C++ has no literal for it, so the "
+                                           "generated column has no check()");
+                    }
+                }
             }
             if(!column.collation.empty()) {
                 const auto lower = toLowerAscii(column.collation);
@@ -1101,7 +1148,16 @@ namespace sqlite2orm {
         }
         for(const auto& tableCheck : createTable.checks) {
             if(tableCheck.expression) {
-                const auto checkCode = this->coordinator.generateNode(*tableCheck.expression).code;
+                const auto checkCode = this->coordinator.generateStoredExpression(*tableCheck.expression).code;
+                if(!this->context.storedHexLiteralsTooBig.empty()) {
+                    for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
+                        warnings.push_back("table CHECK uses " + literal +
+                                           ", too big for a signed 64-bit integer: SQLite stores it but refuses "
+                                           "every use of the constraint, and C++ has no literal for it, so the "
+                                           "generated table has no check()");
+                    }
+                    continue;
+                }
                 makeExpression += ",\n        check(" + checkCode + ")";
             }
         }

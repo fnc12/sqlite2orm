@@ -223,6 +223,12 @@ namespace sqlite2orm {
                                          fragment.decisionPoints.end());
                 std::string storageArgLine = fragment.code;
                 trimTrailingSemicolon(storageArgLine);
+                if(storageArgLine.empty()) {
+                    allWarnings.push_back(
+                        std::string(dynamic_cast<const CreateIndexNode*>(root) ? "CREATE INDEX" : "CREATE TRIGGER") +
+                        " `" + statementResult.meta.name + "` is not merged into make_storage()");
+                    continue;
+                }
                 storageArgs.push_back(storageArgLine);
             }
         }

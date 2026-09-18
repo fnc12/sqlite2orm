@@ -1417,7 +1417,11 @@ namespace sqlite2orm {
 
     std::optional<std::string> journalModeSqlTokenToCppEnum(std::string_view token) {
         const std::string lower = toLowerAscii(stripIdentifierQuotes(token));
-        if(lower == "delete") return std::string{"sqlite_orm::journal_mode::DELETE"};
+        // `DELETE_` rather than `DELETE`: the Windows SDK defines `DELETE` as a macro, and
+        // sqlite_orm's journal_mode header only hides it while the enum is being declared, so in a
+        // user translation unit that included <windows.h> the name is a macro again. sqlite_orm
+        // declares `DELETE_ = DELETE` for exactly that, and it spells the same value everywhere.
+        if(lower == "delete") return std::string{"sqlite_orm::journal_mode::DELETE_"};
         if(lower == "truncate") return std::string{"sqlite_orm::journal_mode::TRUNCATE"};
         if(lower == "persist") return std::string{"sqlite_orm::journal_mode::PERSIST"};
         if(lower == "memory") return std::string{"sqlite_orm::journal_mode::MEMORY"};

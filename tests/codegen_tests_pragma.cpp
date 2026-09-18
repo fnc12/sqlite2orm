@@ -1,4 +1,10 @@
 #include "codegen_tests_common.hpp"
+#include "temp_build_dir.hpp"
+
+#include <filesystem>
+#include <sstream>
+#include <string>
+#include <vector>
 
 TEST_CASE("codegen: PRAGMA user_version getter") {
     REQUIRE(generateFull("PRAGMA user_version;") == CodeGenResult{"storage.pragma.user_version();", {}, {}, {}});
@@ -361,9 +367,17 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = CURRENT_TIMESTAMP") {
 
 // DELETE is SQLite's default journal mode and EXCLUSIVE one of the two locking modes, and both
 // spell a keyword — neither reached codegen before the value took a name.
+// The enumerator is spelled `DELETE_`, sqlite_orm's alternate name for the same value: the Windows
+// SDK defines `DELETE` as a macro, and a translation unit that included <windows.h> before the
+// generated code cannot compile the plain name. See the Windows compile probe below.
 TEST_CASE("codegen: PRAGMA journal_mode = DELETE") {
     REQUIRE(generateFull("PRAGMA journal_mode = DELETE;") ==
-            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::DELETE);", {}, {}, {}});
+            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::DELETE_);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA journal_mode = 'delete'") {
+    REQUIRE(generateFull("PRAGMA journal_mode = 'delete';") ==
+            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::DELETE_);", {}, {}, {}});
 }
 
 TEST_CASE("codegen: PRAGMA locking_mode = EXCLUSIVE") {
@@ -626,4 +640,63 @@ TEST_CASE("codegen: PRAGMA user_version = a REAL is read by its leading digits o
                           {CodegenWarning{"PRAGMA user_version = 0.9: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 0"}},
                           {}});
+}
+
+namespace {
+
+    /**
+     *  Compiles the generated PRAGMA calls against sqlite_orm in a translation unit that looks like
+     *  a Windows one: winnt.h defines `DELETE` as a macro and sets `_WINNT_`, and sqlite_orm's
+     *  journal_mode header only hides that macro while the enum is being declared. A generated
+     *  enumerator whose name the Windows SDK has taken reads fine and compiles nowhere — only
+     *  building it says so.
+     */
+    void requireCompilesWithWindowsDeleteMacro(const std::vector<std::string>& statements) {
+        std::ostringstream program;
+        program << "// winnt.h, as far as sqlite_orm's journal_mode header is concerned\n"
+                   "#define _WINNT_\n"
+                   "#define DELETE (0x00010000L)\n"
+                   "\n"
+                   "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "\n"
+                   "struct User {\n"
+                   "    int id = 0;\n"
+                   "};\n"
+                   "\n"
+                   "int main() {\n"
+                   "    auto storage = sqlite_orm::make_storage(\n"
+                   "        \"\", sqlite_orm::make_table(\"users\", sqlite_orm::make_column(\"id\", &User::id)));\n";
+        for(const auto& statement: statements) {
+            program << "    " << statement << '\n';
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand() << " -fsyntax-only " << cpppath.string() << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        if(exitCode != 0) {
+            WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
+        }
+        REQUIRE(exitCode == 0);
+    }
+
+}  // namespace
+
+// Every journal mode a user can write, built the way a Windows user builds it. `DELETE` is the one
+// the Windows SDK has taken, but a mode name is only ever an enumerator in someone else's
+// translation unit, so the probe covers the whole set rather than that one name.
+TEST_CASE("codegen: generated journal_mode calls compile with the Windows DELETE macro in scope") {
+    std::vector<std::string> statements;
+    for(const std::string mode: {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}) {
+        statements.push_back(generateFull("PRAGMA journal_mode = " + mode + ";").code);
+    }
+    for(const std::string mode: {"NORMAL", "EXCLUSIVE"}) {
+        statements.push_back(generateFull("PRAGMA locking_mode = " + mode + ";").code);
+    }
+    requireCompilesWithWindowsDeleteMacro(statements);
 }

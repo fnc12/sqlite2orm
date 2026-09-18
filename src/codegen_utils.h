@@ -47,6 +47,7 @@ namespace sqlite2orm {
     extern const std::string kCommentViewReflection;
     extern const std::string kCommentNegationAsZeroMinus;
     extern const std::string kCommentPredicateGroupingCast;
+    extern const std::string kCommentBitwiseResultCast;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -230,6 +231,16 @@ namespace sqlite2orm {
      *  `std::unique_ptr`, NULL itself is a `std::nullptr_t`).
      */
     bool selectResultNeedsAsOptional(const AstNode& astNode);
+    /**
+     *  Whether a SELECT result column has to be generated as `cast<int64_t>(...)` for the integer
+     *  SQLite computes to reach the caller whole. sqlite_orm types the bitwise operators `int`, so
+     *  a result outside the int32 range is truncated — `9223372036854775807 & -1` reads back as -1.
+     *  SQLite answers `&`, `|`, `<<`, `>>` and `~` with an INTEGER or a NULL whatever their
+     *  operands hold, and a CAST to INTEGER keeps both, `typeof` included, so the CAST only widens
+     *  the C++ type. Every other operator answers a REAL for some operands, where a CAST would
+     *  truncate the value instead of carrying it.
+     */
+    bool selectResultNeedsIntegerCast(const AstNode& astNode);
 
     std::string sqliteTypeToCpp(std::string_view typeName);
     std::string defaultInitializer(std::string_view cppType);

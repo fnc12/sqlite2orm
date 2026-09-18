@@ -397,7 +397,8 @@ TEST_CASE("runtime: a CASE branch beyond int32 keeps its value") {
 // C++ groups the emitted operators by its own precedence, so a nested operand that would regroup
 // there carries parentheses. Without them `1 - (2 - 3)` came out as `c(1) - c(2) - 3` and the
 // program printed -4 where SQLite computes 2. Expected values checked against sqlite3 3.51 (the
-// single row holds a = 7).
+// single row holds a = 7). The CAST around the `6 | 3 & 5` statement is the int64 widening of
+// "runtime: a bitwise result column reads the whole int64 back", which leaves the value alone.
 TEST_CASE("runtime: a nested operand keeps the value its SQL grouping has") {
     const std::vector<std::string> statements{
         generate("SELECT 1 - (2 - 3);"),
@@ -415,7 +416,7 @@ TEST_CASE("runtime: a nested operand keeps the value its SQL grouping has") {
                               "auto rows = storage.select(as_optional(c(10) % (c(7) % 4)));",
                               "auto rows = storage.select((c(1) + 2) * 3);",
                               "auto rows = storage.select((c(4) & 2) < 3);",
-                              "auto rows = storage.select((c(6) | 3) & 5);",
+                              "auto rows = storage.select(cast<int64_t>((c(6) | 3) & 5));",
                               "auto rows = storage.select(as_optional(c(&User::a) - (c(&User::a) - 1)));",
                               "auto rows = storage.select(c(1) - 2 - 3);",
                           });
@@ -660,4 +661,30 @@ TEST_CASE("runtime: a predicate in a CHECK constraint is enforced the way the so
                 "std::nullopt rejected",
                 "CREATE TABLE \"t\" (\"a\" INTEGER CHECK (1 - CAST (\"a\" IS NULL AS INTEGER)) NULL)",
             });
+}
+
+// sqlite_orm types `&`, `|`, `<<`, `>>` and `~` as `int`, so the int64 SQLite computes reached the
+// caller through a 32-bit truncation: `9223372036854775807 & -1` printed -1. The CAST widens the
+// C++ type without moving the value — a bitwise result is an INTEGER or a NULL, and a CAST to
+// INTEGER keeps both. Expected values checked against sqlite3 3.51 over `users(a INTEGER)` holding
+// one row with a = 9223372036854775807: 9223372036854775807 for the four binary operators and
+// -9223372036854775808 for `~a`.
+TEST_CASE("runtime: a bitwise result column reads the whole int64 back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a & -1;"),
+        generate("SELECT a | 0;"),
+        generate("SELECT a << 0;"),
+        generate("SELECT a >> 0;"),
+        generate("SELECT ~a;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(cast<int64_t>(c(&User::a) & -1)));",
+                              "auto rows = storage.select(as_optional(cast<int64_t>(c(&User::a) | 0)));",
+                              "auto rows = storage.select(as_optional(cast<int64_t>(c(&User::a) << 0)));",
+                              "auto rows = storage.select(as_optional(cast<int64_t>(c(&User::a) >> 0)));",
+                              "auto rows = storage.select(as_optional(cast<int64_t>(~c(&User::a))));",
+                          });
+    REQUIRE(selectedValues(statements, "int64_t", "9223372036854775807") ==
+            std::vector<std::string>{"9223372036854775807", "9223372036854775807", "9223372036854775807",
+                                     "9223372036854775807", "-9223372036854775808"});
 }

@@ -270,12 +270,14 @@ TEST_CASE("codegen: unary minus") {
 }
 
 // The signed literal is a plain C++ value again, so an operator around it needs the usual `c()`.
+// The `~` column carries the int64 widening of
+// "codegen: a bitwise result column is cast to an int64_t" on top of that.
 TEST_CASE("codegen: negative literal as an operand") {
     REQUIRE(generate("SELECT -2;") == "auto rows = storage.select(-2);");
     REQUIRE(generate("SELECT 100 / -2;") == "auto rows = storage.select(as_optional(c(100) / -2));");
     REQUIRE(generate("SELECT -2 + 3;") == "auto rows = storage.select(c(-2) + 3);");
     REQUIRE(generate("SELECT a * -2;") == "auto rows = storage.select(as_optional(c(&User::a) * -2));");
-    REQUIRE(generate("SELECT ~ -2;") == "auto rows = storage.select(~c(-2));");
+    REQUIRE(generate("SELECT ~ -2;") == "auto rows = storage.select(cast<int64_t>(~c(-2)));");
     REQUIRE(generate("SELECT a BETWEEN -1 AND 5;") == "auto rows = storage.select(between(&User::a, -1, 5));");
 }
 

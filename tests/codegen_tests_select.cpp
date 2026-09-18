@@ -655,7 +655,10 @@ TEST_CASE("codegen: explicit C++20 table_alias policy is overridden by targetCpp
 // row used to reach the caller as 0 / false / "". `as_optional` leaves the SQL untouched and hands
 // back a `std::optional` instead. A unary operator is typed the same way, whether it keeps its
 // shape (`~x`) or becomes the subtraction `(c(0) - x)` a negation is generated as. Values checked
-// against sqlite3 3.51 in "runtime: a result column that can be NULL reads the NULL back".
+// against sqlite3 3.51 in "runtime: a result column that can be NULL reads the NULL back". The CAST
+// inside the `~a` column is the int64 widening of
+// "codegen: a bitwise result column is cast to an int64_t", which the widening rule here is
+// independent of.
 TEST_CASE("codegen: a result column that can be NULL is generated as as_optional") {
     REQUIRE(generate("SELECT a + 1 FROM users;") ==
             "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
@@ -665,7 +668,8 @@ TEST_CASE("codegen: a result column that can be NULL is generated as as_optional
             "auto rows = storage.select(as_optional(c(0) - &Users::a));");
     REQUIRE(generate("SELECT -a FROM users;") ==
             "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
-    REQUIRE(generate("SELECT ~a FROM users;") == "auto rows = storage.select(as_optional(~c(&Users::a)));");
+    REQUIRE(generate("SELECT ~a FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(~c(&Users::a))));");
     REQUIRE(generate("SELECT a > 0 FROM users;") ==
             "auto rows = storage.select(as_optional(c(&Users::a) > 0));");
     REQUIRE(generate("SELECT a AND 1 FROM users;") ==
@@ -697,7 +701,8 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
 // `~` form has no sqlite_orm overload and does not compile, which is a separate gap and not what
 // this widening rule decides.) The CAST around a NULL test under a binary operator is the grouping
 // the serialized SQL needs, spelled out in
-// "codegen: a predicate under an operator is cast to stay one SQL term".
+// "codegen: a predicate under an operator is cast to stay one SQL term"; the one around the whole
+// `~` column is the int64 widening of "codegen: a bitwise result column is cast to an int64_t".
 TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
     REQUIRE(generate("SELECT (a IS NULL) + 1 FROM users;") ==
             "auto rows = storage.select(cast<int64_t>(is_null(&Users::a)) + 1);");
@@ -710,7 +715,7 @@ TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
     REQUIRE(generate("SELECT (a IS NULL) || 'x' FROM users;") ==
             "auto rows = storage.select(cast<int64_t>(is_null(&Users::a)) || \"x\");");
     REQUIRE(generate("SELECT ~(a IS NULL) FROM users;") ==
-            "auto rows = storage.select(~(is_null(&Users::a)));");
+            "auto rows = storage.select(cast<int64_t>(~(is_null(&Users::a))));");
 }
 
 // A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the
@@ -740,4 +745,58 @@ TEST_CASE("codegen: as_optional reaches every form a result column is generated 
     REQUIRE(generate("SELECT DISTINCT a + 1, a * 2 FROM users;") ==
             "auto rows = storage.select(distinct(columns(as_optional(c(&Users::a) + 1), "
             "as_optional(c(&Users::a) * 2))));");
+}
+
+// sqlite_orm types `&`, `|`, `<<`, `>>` and `~` as `int`, so the int64 SQLite computes reached the
+// caller truncated: `9223372036854775807 & -1` came back as -1. SQLite answers a bitwise operator
+// with an INTEGER or a NULL whatever its operands hold — checked over 1463 operand pairs against
+// sqlite3 3.51, none of them REAL or TEXT — and a CAST to INTEGER keeps both, `typeof` included,
+// so the CAST only widens the C++ type. Values checked in "runtime: a bitwise result column reads
+// the whole int64 back".
+TEST_CASE("codegen: a bitwise result column is cast to an int64_t") {
+    REQUIRE(generate("SELECT a & -1 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) & -1)));");
+    REQUIRE(generate("SELECT a | 0 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) | 0)));");
+    REQUIRE(generate("SELECT a << 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) << 1)));");
+    REQUIRE(generate("SELECT a >> 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) >> 1)));");
+    REQUIRE(generate("SELECT ~a FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(~c(&Users::a))));");
+    // A unary plus generates its operand's code, so the operand is what carries the CAST.
+    REQUIRE(generate("SELECT +(a & -1) FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) & -1)));");
+    // An operator over literals alone needs no `as_optional`, and still needs the CAST.
+    REQUIRE(generate("SELECT 9223372036854775807 & -1;") ==
+            "auto rows = storage.select(cast<int64_t>(c(9223372036854775807) & -1));");
+    // Only the top-level operator of a result column decides the type the row is read back with.
+    REQUIRE(generate("SELECT (a & -1) + 1 FROM users;") ==
+            "auto rows = storage.select(as_optional((c(&Users::a) & -1) + 1));");
+}
+
+// The CAST is what a result column is read back with, so an expression nobody reads back — a
+// WHERE, an ORDER BY, a GROUP BY — keeps the code the expression generator gives it.
+TEST_CASE("codegen: the int64 cast is confined to the result columns of a select") {
+    REQUIRE(generate("SELECT * FROM users WHERE a & 1;") ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::a) & 1));");
+    REQUIRE(generate("SELECT a FROM users ORDER BY a & 1;") ==
+            "auto rows = storage.select(&Users::a, order_by(c(&Users::a) & 1));");
+}
+
+// The CAST reaches a result column in every shape a select spells one, the way `as_optional` does.
+TEST_CASE("codegen: the int64 cast reaches every form a result column is generated in") {
+    REQUIRE(generate("SELECT a & 1 AS masked FROM users;") ==
+            "struct MaskedAlias : sqlite_orm::alias_tag {\n"
+            "    static const std::string& get() {\n"
+            "        static const std::string res = \"masked\";\n"
+            "        return res;\n"
+            "    }\n"
+            "};\n"
+            "auto rows = storage.select(as<MaskedAlias>(as_optional(cast<int64_t>(c(&Users::a) & 1))));");
+    REQUIRE(generate("SELECT DISTINCT a & 1 FROM users;") ==
+            "auto rows = storage.select(distinct(as_optional(cast<int64_t>(c(&Users::a) & 1))));");
+    REQUIRE(generate("SELECT a & 1, a | 2 FROM users;") ==
+            "auto rows = storage.select(columns(as_optional(cast<int64_t>(c(&Users::a) & 1)), "
+            "as_optional(cast<int64_t>(c(&Users::a) | 2))));");
 }

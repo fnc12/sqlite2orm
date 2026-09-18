@@ -175,9 +175,14 @@ namespace sqlite2orm {
             }
             // A result column is what the caller reads back, so it is here — and not in the
             // expression generator, whose code also serves a WHERE or an ORDER BY — that an
-            // expression sqlite_orm types non-nullably gets its `as_optional`.
+            // expression sqlite_orm types too narrowly is widened: `as_optional` for a value that
+            // can be NULL, `cast<int64_t>` for a bitwise one that can leave the int32 range.
             auto resultColumnCode = [&](const SelectColumn& column) -> std::string {
                 auto colCode = expressionCode(*column.expression);
+                if(selectResultNeedsIntegerCast(*column.expression)) {
+                    colCode = "cast<int64_t>(" + colCode + ")";
+                    appendUniqueString(selectComments, kCommentBitwiseResultCast);
+                }
                 if(selectResultNeedsAsOptional(*column.expression)) {
                     colCode = "as_optional(" + colCode + ")";
                 }

@@ -309,6 +309,13 @@ namespace sqlite2orm {
         "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
         "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentBitwiseResultCast =
+        "A bitwise result column is generated as `cast<int64_t>(expr)`: sqlite_orm types `&`, `|`, "
+        "`<<`, `>>` and `~` as `int`, so a result outside the int32 range comes back truncated "
+        "(`9223372036854775807 & -1` reads back as -1). SQLite answers a bitwise operator with an "
+        "INTEGER or a NULL whatever its operands hold, and a CAST to INTEGER keeps both, typeof "
+        "included, so the CAST widens the C++ type and leaves the value alone.";
+
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
         "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
@@ -1010,6 +1017,28 @@ namespace sqlite2orm {
             return expressionMayBeNull(*collate->operand);
         }
         return true;
+    }
+
+    bool selectResultNeedsIntegerCast(const AstNode& astNode) {
+        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            if(unaryOperator->unaryOperator == UnaryOperator::plus) {
+                // A unary plus generates its operand's code, so the operand decides the type too.
+                return selectResultNeedsIntegerCast(*unaryOperator->operand);
+            }
+            return unaryOperator->unaryOperator == UnaryOperator::bitwiseNot;
+        }
+        if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+            switch(binaryOperator->binaryOperator) {
+            case BinaryOperator::bitwiseAnd:
+            case BinaryOperator::bitwiseOr:
+            case BinaryOperator::shiftLeft:
+            case BinaryOperator::shiftRight:
+                return true;
+            default:
+                return false;
+            }
+        }
+        return false;
     }
 
     bool selectResultNeedsAsOptional(const AstNode& astNode) {

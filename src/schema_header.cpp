@@ -2,6 +2,8 @@
 
 #include <sqlite2orm/ast.h>
 
+#include "codegen_context.h"
+
 #include <algorithm>
 #include <cctype>
 #include <queue>
@@ -28,6 +30,73 @@ namespace sqlite2orm {
 
         std::string normTableName(std::string_view sqlTableName) {
             return stripIdentifierQuotes(sqlTableName);
+        }
+
+        /** Table name as the context keys it: quotes off and folded to lower case, as SQLite matches. */
+        std::string normTableKey(std::string_view sqlTableName) {
+            std::string name = stripIdentifierQuotes(sqlTableName);
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+            return name;
+        }
+
+        /**
+         *  Whether a statement names one of `tables` as a table it reads or writes. A table that
+         *  cannot be mapped has no struct to name, so every statement resting on it is left out.
+         */
+        bool referencesTable(const AstNode& node, const std::unordered_set<std::string>& tables) {
+            const auto named = [&tables](std::string_view tableName) {
+                return tables.count(normTableKey(tableName)) != 0;
+            };
+            if(const auto* select = dynamic_cast<const SelectNode*>(&node)) {
+                for(const FromClauseItem& item : select->fromClause) {
+                    if(item.table.derivedSelect) {
+                        if(referencesTable(*item.table.derivedSelect, tables)) {
+                            return true;
+                        }
+                    } else if(named(item.table.tableName)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if(const auto* compound = dynamic_cast<const CompoundSelectNode*>(&node)) {
+                for(const AstNodePointer& select : compound->selects) {
+                    if(select && referencesTable(*select, tables)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if(const auto* insert = dynamic_cast<const InsertNode*>(&node)) {
+                return named(insert->tableName) ||
+                       (insert->selectStatement && referencesTable(*insert->selectStatement, tables));
+            }
+            if(const auto* update = dynamic_cast<const UpdateNode*>(&node)) {
+                return named(update->tableName);
+            }
+            if(const auto* remove = dynamic_cast<const DeleteNode*>(&node)) {
+                return named(remove->tableName);
+            }
+            if(const auto* createView = dynamic_cast<const CreateViewNode*>(&node)) {
+                return createView->selectQuery && referencesTable(*createView->selectQuery, tables);
+            }
+            if(const auto* createIndex = dynamic_cast<const CreateIndexNode*>(&node)) {
+                return named(createIndex->tableName);
+            }
+            if(const auto* createTrigger = dynamic_cast<const CreateTriggerNode*>(&node)) {
+                if(named(createTrigger->tableName)) {
+                    return true;
+                }
+                for(const AstNodePointer& step : createTrigger->bodyStatements) {
+                    if(step && referencesTable(*step, tables)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return false;
         }
 
         void collectFkParents(const CreateTableNode& tableNode, std::unordered_set<std::string>& out,
@@ -178,10 +247,40 @@ namespace sqlite2orm {
         std::vector<CodegenWarning> allWarnings;
         std::vector<std::string> allComments;
 
+        std::vector<CreateTableParts> tableParts;
+        tableParts.reserve(sortedTables.size());
         for(const CreateTableNode* createTableNode : sortedTables) {
-            const CreateTableParts parts = gen.createTableParts(*createTableNode);
-            oss << parts.structDeclaration << "\n";
+            tableParts.push_back(gen.createTableParts(*createTableNode));
+        }
+
+        // A table holding a clause C++ cannot spell at all is left out of the storage, and
+        // sqlite_orm has no type to name for it, so every foreign key into it and every view,
+        // index and trigger resting on it must go too. The tables are generated again once that
+        // set is known; without one this costs nothing.
+        std::unordered_set<std::string> ungeneratableTables;
+        for(size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
+            if(tableParts[tableIndex].makeTableExpression.empty()) {
+                ungeneratableTables.insert(normTableKey(sortedTables[tableIndex]->tableName));
+            }
+        }
+        if(!ungeneratableTables.empty()) {
+            for(const std::string& tableName : ungeneratableTables) {
+                gen.context().markUngeneratableTable(tableName);
+            }
+            for(size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
+                tableParts[tableIndex] = gen.createTableParts(*sortedTables[tableIndex]);
+            }
+        }
+
+        for(size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
+            const CreateTableParts& parts = tableParts[tableIndex];
             allWarnings.insert(allWarnings.end(), parts.warnings.begin(), parts.warnings.end());
+            if(parts.makeTableExpression.empty()) {
+                allWarnings.push_back("CREATE TABLE `" + stripIdentifierQuotes(sortedTables[tableIndex]->tableName) +
+                                      "` is not merged into make_storage()");
+                continue;
+            }
+            oss << parts.structDeclaration << "\n";
             storageArgs.push_back(parts.makeTableExpression);
         }
 
@@ -191,6 +290,12 @@ namespace sqlite2orm {
             }
             const AstNode* root = statementResult.pipeline.parseResult.astNodePointer.get();
             if(dynamic_cast<const CreateTableNode*>(root)) {
+                continue;
+            }
+            if(!ungeneratableTables.empty() && referencesTable(*root, ungeneratableTables)) {
+                allWarnings.push_back("`" + statementResult.meta.name +
+                                      "` rests on a table that is not generated and is not merged into "
+                                      "make_storage()");
                 continue;
             }
             if(dynamic_cast<const CreateVirtualTableNode*>(root)) {

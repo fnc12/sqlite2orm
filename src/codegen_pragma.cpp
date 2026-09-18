@@ -109,9 +109,10 @@ namespace sqlite2orm {
             if(auto lit = pragmaTableNameLiteral(*node.value)) {
                 return CodeGenResult{"storage.pragma.integrity_check(" + *lit + ");", {}, {}};
             }
-            warnings.push_back(
+            warnings.push_back(pragmaValueWarning(
                 "PRAGMA integrity_check argument is emitted via subexpression codegen; ensure it matches "
-                "sqlite_orm::pragma_t::integrity_check overloads");
+                "sqlite_orm::pragma_t::integrity_check overloads",
+                *node.value));
             std::string arg = mergeSub(this->coordinator.generateNode(*node.value));
             return CodeGenResult{
                 "storage.pragma.integrity_check(" + std::move(arg) + ");", std::move(decisionPoints),
@@ -138,8 +139,10 @@ namespace sqlite2orm {
                 if(!readValue || !pragmaValueSpellsItsInt32(*node.value)) {
                     const std::string prefix = "PRAGMA " + name + " = " + value->sqlText +
                                                ": SQLite reads a PRAGMA value as a 32-bit integer";
-                    warnings.push_back(readValue ? prefix + ", so it sets " + std::to_string(*readValue)
-                                                 : prefix + " and cannot read this one, so it sets 0");
+                    warnings.push_back(
+                        pragmaValueWarning(readValue ? prefix + ", so it sets " + std::to_string(*readValue)
+                                                     : prefix + " and cannot read this one, so it sets 0",
+                                           *value));
                     return CodeGenResult{
                         "storage.pragma." + name + "(" + std::to_string(readValue.value_or(0)) + ");", {},
                         std::move(warnings)};
@@ -164,9 +167,11 @@ namespace sqlite2orm {
             // int64 and clamps it to 0xfffffffe — `= 0x80000000` really does set 2147483648 there.
             // All three still read a hex literal past the int64 range as 0, the way #32 left them.
             if(auto tooBig = pragmaValueHexLiteralTooBig(*node.value)) {
-                warnings.push_back("PRAGMA " + name + " = " + *tooBig +
-                                   ": SQLite reads a PRAGMA value as a 32-bit integer and this hex literal does "
-                                   "not fit one, so it sets 0");
+                warnings.push_back(pragmaValueWarning(
+                    "PRAGMA " + name + " = " + *tooBig +
+                        ": SQLite reads a PRAGMA value as a 32-bit integer and this hex literal does not fit "
+                        "one, so it sets 0",
+                    *node.value));
                 return CodeGenResult{"storage.pragma." + name + "(0);", {}, std::move(warnings)};
             }
             std::string arg = mergeSub(this->coordinator.generateNode(*node.value));
@@ -181,9 +186,11 @@ namespace sqlite2orm {
             if(auto value = pragmaValue(*node.value)) {
                 const bool boolValue = sqlitePragmaBoolean(value->text);
                 if(!isCanonicalPragmaBooleanText(value->text)) {
-                    warnings.push_back("PRAGMA recursive_triggers = " + value->sqlText + ": SQLite reads this as " +
-                                       (boolValue ? "true" : "false") +
-                                       "; spell it 0/1, TRUE/FALSE or ON/OFF instead");
+                    warnings.push_back(pragmaValueWarning("PRAGMA recursive_triggers = " + value->sqlText +
+                                                             ": SQLite reads this as " +
+                                                             (boolValue ? "true" : "false") +
+                                                             "; spell it 0/1, TRUE/FALSE or ON/OFF instead",
+                                                         *value));
                 }
                 return CodeGenResult{
                     std::string("storage.pragma.recursive_triggers(") + (boolValue ? "true" : "false") + ");", {},

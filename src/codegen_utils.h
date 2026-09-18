@@ -296,10 +296,20 @@ namespace sqlite2orm {
         std::string text;
         /** The same value as written in the SQL, quotes and all, for diagnostics. */
         std::string sqlText;
+        /** Start of the value in the source SQL, so a warning about it can be underlined. */
+        SourceLocation location;
+        /** Characters the value occupies from `location`, its quotes and its minus sign included. */
+        size_t length = 0;
     };
 
     /** The value of `PRAGMA name = <value>`, or nullopt for a node SQLite does not accept there. */
     std::optional<PragmaValue> pragmaValue(const AstNode& valueNode);
+    /**
+     *  `message` anchored at `value`, so that a consumer underlines the PRAGMA value the message is
+     *  about. Unanchored for a value with no span of its own, as a node that is no PRAGMA value has.
+     */
+    CodegenWarning pragmaValueWarning(std::string message, const PragmaValue& value);
+    CodegenWarning pragmaValueWarning(std::string message, const AstNode& valueNode);
     /**
      *  SQLite's `sqlite3GetInt32()`, which is how a PRAGMA value reaches every PRAGMA that takes a
      *  number: the leading decimal — or `0x…` hexadecimal — digits of `valueText` as an int32.

@@ -119,10 +119,24 @@ namespace sqlite2orm {
         if(dynamic_cast<const StringLiteralNode*>(&node)) return "std::string";
         if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&node)) {
             // An integer literal an int64 cannot hold is a REAL for SQLite, so is the column.
-            return integerLiteralExceedsInt64(integerLiteral->value) ? "double" : "int";
+            if(integerLiteralExceedsInt64(integerLiteral->value)) {
+                return "double";
+            }
+            // `int` stays the field for the small literal the comparison usually carries, but one
+            // that only an int64 holds would be truncated by it, so it widens the field instead.
+            return integerLiteralExceedsInt32(integerLiteral->value) ? "int64_t" : "int";
         }
         if(dynamic_cast<const RealLiteralNode*>(&node)) return "double";
         if(dynamic_cast<const BoolLiteralNode*>(&node)) return "bool";
+        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&node)) {
+            // A sign does not change the width a value needs, so `-3000000000` is the int64_t its
+            // operand is. C++ types the constant the same way: `2147483648` is already wider than
+            // an `int` there, and the unary minus applies to that wider type.
+            if(unaryOperator->operand && (unaryOperator->unaryOperator == UnaryOperator::minus ||
+                                          unaryOperator->unaryOperator == UnaryOperator::plus)) {
+                return this->inferTypeFromNode(*unaryOperator->operand);
+            }
+        }
         return "int";
     }
 

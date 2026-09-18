@@ -718,7 +718,48 @@ TEST_CASE("codegen: prefix - inferred double from real") {
 // real literal does one line above.
 TEST_CASE("codegen: prefix - inferred double from an integer literal beyond int64") {
     REQUIRE(prefixFor("x > 99999999999999999999") == "struct User {\n    double x = 0.0;\n};");
-    REQUIRE(prefixFor("x > 9223372036854775807") == "struct User {\n    int x = 0;\n};");
+}
+
+// An `int` field would truncate the literal the column is compared against, so the field the
+// literal infers is only an `int` while an int32 holds it. The boundary values are the ones
+// `sqlite3 :memory: "SELECT 2147483648"` prints back unchanged as an INTEGER.
+TEST_CASE("codegen: prefix - inferred int64_t from an integer literal beyond int32") {
+    REQUIRE(prefixFor("x > 2147483647") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > 2147483648") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 3000000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 9223372036854775807") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 0_2147483648") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the width the
+// field needs follows the wrapped value: `0xFFFFFFFFFFFFFFFF` is -1 and an `int` holds it, while
+// `0xFFFFFFFF7FFFFFFF` is -2147483649 and one does not.
+TEST_CASE("codegen: prefix - inferred int64_t from a hexadecimal literal beyond int32") {
+    REQUIRE(prefixFor("x > 0x7FFFFFFF") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > 0x80000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 0xDEADBEEF") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 0xFFFFFFFF7FFFFFFF") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > 0xFFFFFFFF80000000") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > 0xffffffffffffffff") == "struct User {\n    int x = 0;\n};");
+}
+
+// A sign does not bring the value back into an int32, and the operand of a unary plus or minus
+// decides the field on its own.
+TEST_CASE("codegen: prefix - inferred type looks through a unary sign") {
+    REQUIRE(prefixFor("x > -3000000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > +3000000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -5") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -3.14") == "struct User {\n    double x = 0.0;\n};");
+}
+
+// The same inference answers for BETWEEN, for IN and for the result type of a CASE, so a literal
+// beyond int32 widens the field there too.
+TEST_CASE("codegen: int64_t literal widens BETWEEN, IN and CASE") {
+    REQUIRE(prefixFor("x BETWEEN 3000000000 AND 4000000000") ==
+            "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x IN (3000000000)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(generate("CASE WHEN a > 0 THEN 3000000000 ELSE 0 END") ==
+            "case_<int64_t>().when(c(&User::a) > 0, then(3000000000)).else_(0).end()");
 }
 
 TEST_CASE("codegen: prefix - LIKE infers string") {

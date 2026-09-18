@@ -36,7 +36,10 @@ namespace sqlite2orm {
                 row["decisionPoints"] = statement.pipeline.codegen.decisionPoints;
                 row["comments"] = statement.pipeline.codegen.comments;
             } else {
+                // A consumer reads the same keys either way: a statement that did not generate has
+                // no decision points and no comments, not a missing key.
                 row["decisionPoints"] = nlohmann::json::array();
+                row["comments"] = nlohmann::json::array();
             }
             statements.push_back(std::move(row));
         }

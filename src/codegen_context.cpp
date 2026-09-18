@@ -76,7 +76,9 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {
-        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&argument)) {
+        // The argument a COLLATE or a unary plus stands over is the one the call is handed.
+        const AstNode& valueNode = generatedOperandNode(argument);
+        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             // Schema type wins when the column belongs to a known CREATE TABLE in the batch.
             const std::string normalizedColumn = normalizeSqlIdentifier(columnRef->columnName);
             for(const auto& [tableKey, columns] : this->sourceTableColumnsByNormalizedName) {
@@ -94,7 +96,7 @@ namespace sqlite2orm {
             }
             return this->syntheticColumnCppType(cppName);  // name heuristic (name → std::string, else int)
         }
-        return this->inferTypeFromNode(argument);
+        return this->inferTypeFromNode(valueNode);
     }
 
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {
@@ -116,8 +118,11 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::inferTypeFromNode(const AstNode& node) const {
-        if(dynamic_cast<const StringLiteralNode*>(&node)) return "std::string";
-        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&node)) {
+        // A COLLATE picks a collating sequence for a comparison and leaves the value it is written
+        // over alone, so the value — and the field that holds it — is the one under it.
+        const AstNode& valueNode = generatedOperandNode(node);
+        if(dynamic_cast<const StringLiteralNode*>(&valueNode)) return "std::string";
+        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
             // An integer literal an int64 cannot hold is a REAL for SQLite, so is the column.
             if(integerLiteralExceedsInt64(integerLiteral->value)) {
                 return "double";
@@ -126,9 +131,9 @@ namespace sqlite2orm {
             // that only an int64 holds would be truncated by it, so it widens the field instead.
             return integerLiteralExceedsInt32(integerLiteral->value) ? "int64_t" : "int";
         }
-        if(dynamic_cast<const RealLiteralNode*>(&node)) return "double";
-        if(dynamic_cast<const BoolLiteralNode*>(&node)) return "bool";
-        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&node)) {
+        if(dynamic_cast<const RealLiteralNode*>(&valueNode)) return "double";
+        if(dynamic_cast<const BoolLiteralNode*>(&valueNode)) return "bool";
+        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             // A sign does not change the width a value needs, so `-3000000000` is the int64_t its
             // operand is. C++ types the constant the same way: `2147483648` is already wider than
             // an `int` there, and the unary minus applies to that wider type.

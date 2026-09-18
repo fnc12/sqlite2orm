@@ -1062,6 +1062,110 @@ TEST_CASE("codegen: expr COLLATE warning") {
                       {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
 }
 
+// The COLLATE above is dropped, and the operand it stood over has to come out exactly as it would
+// have come out without it. It did not: the operand lost the `c(…)` wrap a leaf operand of an
+// operator gets, so `('a' COLLATE NOCASE) || 'b'` generated `"a" || "b"` — two `const char*` under
+// C++'s own `||`, which is the constant `true` and not the `ab` sqlite3 3.51 answers with. Over a
+// column the same operand generated `&User::a + 1`, arithmetic on a pointer to member that does
+// not compile. Values checked in "runtime: an operand under a dropped COLLATE keeps its value".
+TEST_CASE("codegen: a dropped COLLATE leaves the operand it stood over as it was") {
+    REQUIRE(generate("SELECT ('a' COLLATE NOCASE) || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
+    REQUIRE(generate("SELECT 'a' || ('b' COLLATE NOCASE);") == "auto rows = storage.select(c(\"a\") || \"b\");");
+    REQUIRE(generate("SELECT 'a' || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
+    REQUIRE(generate("SELECT (a COLLATE BINARY) + 1;") ==
+            "auto rows = storage.select(as_optional(c(&User::a) + 1));");
+    REQUIRE(generate("SELECT a + (a COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional(c(&User::a) + &User::a));");
+    REQUIRE(generate("SELECT a + 1;") == "auto rows = storage.select(as_optional(c(&User::a) + 1));");
+    REQUIRE(generate("SELECT ~('a' COLLATE NOCASE);") == "auto rows = storage.select(~c(\"a\"));");
+}
+
+// The grouping the generated operand needs is the grouping of the node under the COLLATE, and the
+// field a compared column is given is the one the value under the COLLATE asks for.
+TEST_CASE("codegen: a COLLATE'd operand keeps the grouping and the field of what it stands over") {
+    REQUIRE(generate("SELECT ((1+2) COLLATE BINARY) * 3;") == "auto rows = storage.select((c(1) + 2) * 3);");
+    REQUIRE(generate("SELECT (1+2) * 3;") == "auto rows = storage.select((c(1) + 2) * 3);");
+    REQUIRE(generate("SELECT (1 COLLATE BINARY) + 2 * 3;") == "auto rows = storage.select(c(1) + c(2) * 3);");
+    REQUIRE(generate("SELECT 2 * ((a + 1) COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional(c(2) * (c(&User::a) + 1)));");
+    REQUIRE(prefixFor("SELECT a = ('x' COLLATE NOCASE);") == "struct User {\n    std::string a;\n};");
+}
+
+// The bound side of a comparison is not the only thing that says what a column holds: the operand of
+// BETWEEN / IN / LIKE / GLOB / MATCH and the first argument of a scalar function that reads text say
+// it too, and so does an argument handed to a user-defined function. All of them are the node under
+// a dropped COLLATE, so `(a COLLATE NOCASE) LIKE 'x%'` has to reach the same field `a LIKE 'x%'`
+// does; it used to leave `a` an `int` the pattern is never compared against.
+TEST_CASE("codegen: a column under a dropped COLLATE is still the operand of the predicate") {
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) BETWEEN 'x' AND 'y';") ==
+            "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT a BETWEEN 'x' AND 'y';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) IN ('x', 'y');") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) LIKE 'x%';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) GLOB 'x*';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) MATCH 'x';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT upper(a COLLATE NOCASE);") == "struct User {\n    std::string a;\n};");
+}
+
+// A user-defined function is generated from the arguments the call hands it, and a COLLATE over one
+// of them changes neither the value nor the column it comes from: the parameter keeps the name and
+// the type it has without the COLLATE. It used to fall back to the `arg0` / `int` a call over an
+// expression gets.
+TEST_CASE("codegen: an argument under a dropped COLLATE keeps its name and type") {
+    REQUIRE(generate("SELECT myfunc(a COLLATE NOCASE) FROM users;") ==
+            "struct Myfunc {\n"
+            "    // TODO: implement this user-defined scalar function\n"
+            "    int operator()(int a) const { return {}; }\n"
+            "    static const char *name() { return \"myfunc\"; }\n"
+            "};\n"
+            "\n"
+            "storage.create_scalar_function<Myfunc>();\n"
+            "\n"
+            "auto rows = storage.select(func<Myfunc>(&Users::a));");
+    REQUIRE(generate("SELECT myfunc(a) FROM users;") ==
+            "struct Myfunc {\n"
+            "    // TODO: implement this user-defined scalar function\n"
+            "    int operator()(int a) const { return {}; }\n"
+            "    static const char *name() { return \"myfunc\"; }\n"
+            "};\n"
+            "\n"
+            "storage.create_scalar_function<Myfunc>();\n"
+            "\n"
+            "auto rows = storage.select(func<Myfunc>(&Users::a));");
+}
+
+// SQLite's parser folds a minus into the literal it stands over through parentheses but not through
+// a COLLATE: it refuses `-(0x8000000000000000)` with `hex literal too big` and answers
+// `-(0x8000000000000000 COLLATE BINARY)` with 9.22337203685478e+18, which is what `0 - x` is.
+// So a minus over a COLLATE keeps the subtraction form, and carries no `hex literal too big`.
+TEST_CASE("codegen: a minus over a COLLATE is a negation, not a folded sign") {
+    REQUIRE(generate("SELECT -(5 COLLATE BINARY);") == "auto rows = storage.select((c(0) - c(5)));");
+    REQUIRE(generate("SELECT -((5) COLLATE BINARY) + 1;") == "auto rows = storage.select((c(0) - c(5)) + 1);");
+    REQUIRE(generate("SELECT -(a COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional((c(0) - c(&User::a))));");
+    REQUIRE(generate("SELECT -(-3 COLLATE BINARY);") == "auto rows = storage.select(-(-3));");
+    auto tooBig = generateFull("SELECT -(0x8000000000000000 COLLATE BINARY);");
+    REQUIRE(tooBig.code == "auto rows = storage.select((c(0) - c(static_cast<int64_t>(0x8000000000000000))));");
+    REQUIRE(tooBig.warnings ==
+            std::vector<CodegenWarning>{
+                "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen"});
+}
+
+// A predicate under the COLLATE is still a predicate sqlite_orm serializes without parentheses, so
+// the negation cannot become `0 - is_null(a)`: SQLite would read that as `(0 - a) IS NULL`, which
+// answers 1 over a NULL row where `-((a IS NULL) COLLATE BINARY)` answers -1.
+TEST_CASE("codegen: a minus over a predicate under a COLLATE warns as the bare predicate does") {
+    auto result = generateFull("SELECT -((a IS NULL) COLLATE BINARY);");
+    REQUIRE(result.code == "auto rows = storage.select(-(is_null(&User::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen",
+                CodegenWarning{"unary minus over a predicate (IS NULL) has no working sqlite_orm "
+                               "form; the generated negation does not reproduce what SQLite "
+                               "computes and does not compile",
+                               SourceLocation{1, 8}, 1}});
+}
+
 namespace {
     const sqlite2orm::DecisionPoint* findDp(const sqlite2orm::CodeGenResult& result, std::string_view category) {
         for(const auto& dp : result.decisionPoints) {

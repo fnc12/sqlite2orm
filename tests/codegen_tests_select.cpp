@@ -679,6 +679,23 @@ TEST_CASE("codegen: a result column that can be NULL is generated as as_optional
     REQUIRE(generate("SELECT 1 % 0;") == "auto rows = storage.select(as_optional(c(1) % 0));");
 }
 
+// A COLLATE has no sqlite_orm form, so the result column comes out as the node under it comes out —
+// and it is that node the widening is decided from. Looking at the COLLATE instead left the column
+// unwidened, and a NULL row reached the caller as 0 where sqlite3 3.51 answers NULL. A NULL test or
+// a plain column under the COLLATE is not widened, for the same reason it is not widened bare.
+// Values checked in "runtime: a result column under a dropped COLLATE reads the NULL back".
+TEST_CASE("codegen: a result column under a dropped COLLATE is widened like the node under it") {
+    REQUIRE(generate("SELECT (a + 1) COLLATE BINARY FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
+    REQUIRE(generate("SELECT (a || 'x') COLLATE NOCASE FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) || \"x\"));");
+    REQUIRE(generate("SELECT (-a) COLLATE BINARY FROM users;") ==
+            "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
+    REQUIRE(generate("SELECT (a IS NULL) COLLATE BINARY FROM users;") ==
+            "auto rows = storage.select(is_null(&Users::a));");
+    REQUIRE(generate("SELECT a COLLATE BINARY FROM users;") == "auto rows = storage.select(&Users::a);");
+}
+
 // Only what sqlite_orm cannot type nullably on its own is widened: a column carries its field's
 // type, `abs(...)` is a `std::unique_ptr`, NULL itself is a `std::nullptr_t`, `IS NULL` is the test
 // for a NULL and never is one, and an operator over literals alone has no NULL to report.

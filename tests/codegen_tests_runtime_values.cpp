@@ -661,3 +661,44 @@ TEST_CASE("runtime: a predicate in a CHECK constraint is enforced the way the so
                 "CREATE TABLE \"t\" (\"a\" INTEGER CHECK (1 - CAST (\"a\" IS NULL AS INTEGER)) NULL)",
             });
 }
+
+// A dropped COLLATE used to take the `c(…)` wrap of the operand under it with it, and the operand
+// then landed in a plain C++ expression: `('a' COLLATE NOCASE) || 'b'` was two `const char*` under
+// C++'s own `||`, so `storage.dump` printed `SELECT 1` and the row came back as 1. Values checked
+// against sqlite3 3.51, which answers `ab`, 8, 16 and -5 for these four.
+TEST_CASE("runtime: an operand under a dropped COLLATE keeps its value") {
+    const std::vector<std::string> statements{
+        generate("SELECT ('a' COLLATE NOCASE) || 'b';"),
+        generate("SELECT (a COLLATE BINARY) + 1;"),
+        generate("SELECT 2 * ((a + 1) COLLATE BINARY);"),
+        generate("SELECT -(5 COLLATE BINARY);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(c(\"a\") || \"b\");",
+                              "auto rows = storage.select(as_optional(c(&User::a) + 1));",
+                              "auto rows = storage.select(as_optional(c(2) * (c(&User::a) + 1)));",
+                              "auto rows = storage.select((c(0) - c(5)));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"ab", "8", "16", "-5"});
+}
+
+// The sqlite_orm node a result column comes out as is the node under a dropped COLLATE, and so is
+// the type the row is read back into: without the widening the NULL row came back as 0 and as "",
+// where sqlite3 3.51 answers NULL for all three of these. Checked against it over `users(a INTEGER)`
+// holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a result column under a dropped COLLATE reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT (a + 1) COLLATE BINARY;"),
+        generate("SELECT (a || 'x') COLLATE NOCASE;"),
+        generate("SELECT (-a) COLLATE BINARY;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(c(&User::a) + 1));",
+                              "auto rows = storage.select(as_optional(c(&User::a) || \"x\"));",
+                              "auto rows = storage.select(as_optional((c(0) - c(&User::a))));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"8", "7x", "-7"});
+}

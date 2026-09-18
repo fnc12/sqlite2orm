@@ -87,6 +87,32 @@ TEST_CASE("codegen: hexadecimal literal past the int64 range wraps around") {
             "auto rows = storage.select(static_cast<int64_t>(0xFFFFFFFFFFFFFFFF));");
 }
 
+// SQLite reads `0xDEADBEEF` as the integer 3735928559, but C++ hands that spelling an
+// `unsigned int`, the only unsigned type it fits in below the int64 range. The value survives the
+// difference, the arithmetic around it does not: g++ 13.3 makes `-1 > 0xDEADBEEF` true while
+// sqlite3 3.51 makes it false. One digit more and C++ is back to a signed type, so `0x100000000`
+// needs no cast. Checked against sqlite3 3.51.
+TEST_CASE("codegen: hexadecimal literal in the unsigned int range keeps its signed type") {
+    REQUIRE(generate("0x7FFFFFFF") == "0x7FFFFFFF");
+    REQUIRE(generate("0x80000000") == "static_cast<int64_t>(0x80000000)");
+    REQUIRE(generate("0xDEADBEEF") == "static_cast<int64_t>(0xDEADBEEF)");
+    REQUIRE(generate("0xFFFFFFFF") == "static_cast<int64_t>(0xFFFFFFFF)");
+    REQUIRE(generate("0X8000_0000") == "static_cast<int64_t>(0X8000'0000)");
+    REQUIRE(generate("0x0080000000") == "static_cast<int64_t>(0x0080000000)");
+    REQUIRE(generate("0xdeadbeef") == "static_cast<int64_t>(0xdeadbeef)");
+    // Neither a separator nor a leading zero is one of the eight digits that overflow an `int`,
+    // so `0x8000_000` is the seven-digit 134217728 and stays signed in C++ as it is in SQLite.
+    REQUIRE(generate("0x8000_000") == "0x8000'000");
+    // A ninth digit takes the literal past an `unsigned int` and back to a signed C++ type, so
+    // the leading 8 of `0x800000000` means nothing here: it is 34359738368, a `long`.
+    REQUIRE(generate("0x800000000") == "0x800000000");
+    REQUIRE(generate("0xFFFFFFFFFFFFFFF") == "0xFFFFFFFFFFFFFFF");
+    REQUIRE(generate("0x100000000") == "0x100000000");
+    REQUIRE(generate("0x1FFFFFFFF") == "0x1FFFFFFFF");
+    REQUIRE(generate("SELECT x > 0xDEADBEEF;") ==
+            "auto rows = storage.select(c(&User::x) > static_cast<int64_t>(0xDEADBEEF));");
+}
+
 TEST_CASE("codegen: string literal") {
     REQUIRE(generate("'hello'") == "\"hello\"");
     REQUIRE(generate("'it''s'") == "\"it's\"");

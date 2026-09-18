@@ -132,8 +132,13 @@ Statuses:
   level below `+` and `-`) and because every one of them is left-associative there too, so a nested
   right operand would regroup even at equal precedence. An operand C++ would regroup is parenthesized,
   which is what tells `1 - (2 - 3)` from `1 - 2 - 3`; the functional spelling passes its operands as
-  arguments and needs none. Partial because a grouping that makes a comparison or a concatenation the
-  operand of an arithmetic or a bitwise operator has no sqlite_orm form: that code does not compile
+  arguments and needs none. The C++ grouping is only half of it: sqlite_orm serializes the statement
+  back into SQL, and there it parenthesizes an operand only when that operand is a binary operator or
+  condition of its own, so a predicate (`IN`, `BETWEEN`, `LIKE`, `GLOB`, `MATCH`, `IS [NOT] NULL`,
+  `NOT`) under an operator SQLite binds tighter is generated as `cast<int64_t>(predicate)` — the CAST
+  delimits it in the serialized SQL and keeps what it stands for, which is `0`, `1` or `NULL` either
+  way. Partial because a grouping that makes a comparison or a concatenation the operand of an
+  arithmetic or a bitwise operator has no sqlite_orm form: that code does not compile
 
 ### Function call
 - [x] `function-name(args)`

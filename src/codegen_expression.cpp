@@ -392,6 +392,33 @@ namespace sqlite2orm {
                 rightNoWrap = true;
             }
 
+            // The C++ term the operands make is only half the grouping: sqlite_orm serializes the
+            // statement back into SQL, and there it parenthesizes an operand only when that operand
+            // is itself a binary operator or condition. A predicate — IN, BETWEEN, LIKE, GLOB,
+            // MATCH, IS [NOT] NULL, NOT — comes out bare, and SQLite binds those looser than every
+            // arithmetic, bit and comparison operator, so `c(1) - is_null(&User::a)` serializes as
+            // `1 - "a" IS NULL` and is read back as `(1 - "a") IS NULL`. A CAST to INTEGER delimits
+            // the predicate in that SQL and leaves what it stands for alone: a predicate is 0, 1 or
+            // NULL, and a CAST to INTEGER keeps all three, typeof included.
+            const bool operandsBecomeCallArguments =
+                binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
+                binaryOp->binaryOperator == BinaryOperator::jsonArrow2;
+            const int sqlPrecedence = sqlOperatorPrecedence(binaryOp->binaryOperator);
+            bool castsPredicateOperand = false;
+            auto castPredicate = [&](std::string& code, const AstNode& operandNode, bool rightOperand) {
+                if(operandsBecomeCallArguments) return;
+                const int operandPrecedence = serializedSqlPrecedence(operandNode);
+                // SQL reads these operators left-associatively too, so the right operand regroups at
+                // equal precedence as well: `1 = (a IS NULL)` comes back as `(1 = "a") IS NULL`.
+                const bool regroups = rightOperand ? operandPrecedence >= sqlPrecedence
+                                                   : operandPrecedence > sqlPrecedence;
+                if(!regroups) return;
+                code = "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
+                castsPredicateOperand = true;
+            };
+            castPredicate(leftResult.code, *binaryOp->lhs, false);
+            castPredicate(rightResult.code, *binaryOp->rhs, true);
+
             // The operator spelling puts the operands into a C++ expression, whose grouping is the
             // C++ precedence and not the SQL one this node was parsed with. An operand that would
             // regroup there gets parentheses: every operator involved is left-associative, so the
@@ -469,6 +496,9 @@ namespace sqlite2orm {
             std::vector<std::string> binComments;
             appendUniqueStrings(binComments, leftResult.comments);
             appendUniqueStrings(binComments, rightResult.comments);
+            if(castsPredicateOperand) {
+                appendUniqueString(binComments, kCommentPredicateGroupingCast);
+            }
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings), {},
                                  std::move(binComments)};
         } else if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {

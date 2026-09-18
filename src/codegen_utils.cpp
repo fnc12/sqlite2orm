@@ -302,6 +302,13 @@ namespace sqlite2orm {
         "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
         "computes for `-expr` — same value and same typeof for every operand kind.";
 
+    const std::string kCommentPredicateGroupingCast =
+        "A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
+        "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses, and "
+        "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
+        "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
+        "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.";
+
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
         "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
@@ -436,6 +443,68 @@ namespace sqlite2orm {
             case BinaryOperator::isNotDistinctFrom:  return kCppPrecedencePrimary;
         }
         return kCppPrecedencePrimary;
+    }
+
+    int sqlOperatorPrecedence(BinaryOperator binaryOperator) {
+        // SQLite's own operator table, tightest first: `||` above `* / %` above `+ -` above the bit
+        // operators above the ordering comparisons above the equality ones, the rank the predicates
+        // share. `AND` and `OR` are looser than everything a predicate operand could regroup with.
+        switch(binaryOperator) {
+            case BinaryOperator::concatenate:
+            case BinaryOperator::jsonArrow:
+            case BinaryOperator::jsonArrow2:         return 1;
+            case BinaryOperator::multiply:
+            case BinaryOperator::divide:
+            case BinaryOperator::modulo:             return 2;
+            case BinaryOperator::add:
+            case BinaryOperator::subtract:           return 3;
+            case BinaryOperator::shiftLeft:
+            case BinaryOperator::shiftRight:
+            case BinaryOperator::bitwiseAnd:
+            case BinaryOperator::bitwiseOr:          return 4;
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:     return 5;
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:  return kSqlPrecedencePredicate;
+            case BinaryOperator::logicalAnd:         return 8;
+            case BinaryOperator::logicalOr:          return 9;
+        }
+        return kSqlPrecedencePredicate;
+    }
+
+    int serializedSqlPrecedence(const AstNode& astNode) {
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            if(unaryOp->unaryOperator == UnaryOperator::plus) {
+                // A unary plus emits its operand and nothing else.
+                return serializedSqlPrecedence(*unaryOp->operand);
+            }
+            if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+                return kSqlPrecedenceNot;
+            }
+            if(unaryOp->unaryOperator == UnaryOperator::minus) {
+                // A negation is a constant or the parenthesized `(c(0) - …)` subtraction, both of
+                // them terms. The exception is the one over a predicate, which keeps a bare unary
+                // minus SQLite reads inside the predicate: `- "a" IS NULL` is `(- "a") IS NULL`.
+                return negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate
+                           ? serializedSqlPrecedence(*unaryOp->operand)
+                           : kSqlPrecedenceTerm;
+            }
+            return kSqlPrecedenceTerm;
+        }
+        if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
+            // COLLATE has no sqlite_orm form, so the generated code is the operand's own.
+            return serializedSqlPrecedence(*collateNode->operand);
+        }
+        // Everything else is a term of its own in the serialized SQL: a literal, a column, a call,
+        // CAST, CASE, a parenthesized subquery, or a binary operator sqlite_orm parenthesizes.
+        return sqlPredicateLooserThanMinus(astNode).empty() ? kSqlPrecedenceTerm
+                                                           : kSqlPrecedencePredicate;
     }
 
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {

@@ -190,6 +190,15 @@ namespace sqlite2orm {
     bool hexLiteralExceedsInt64(std::string_view integerLiteral);
     /** True for an integer literal written with SQLite's `0x` prefix rather than in decimal. */
     bool isHexadecimalIntegerLiteral(std::string_view integerLiteral);
+    /**
+     *  The node whose generated code an operand's code really is. A COLLATE, which sqlite_orm has
+     *  no form for, and a unary plus emit their operand and nothing else, so every question about
+     *  the SHAPE of the generated operand — the `c(…)` wrap it needs, the C++ precedence it is
+     *  topped by, the sqlite_orm node it comes out as — is a question about what stands under them.
+     *  Questions about the SQL itself are not: SQLite's own parser reads a sign through parentheses
+     *  but not through a COLLATE, which is why `negationFormFor` takes the operand as written.
+     */
+    const AstNode& generatedOperandNode(const AstNode& astNode);
     /** True for an integer or real literal, the two kinds a minus sign is folded into. */
     bool isNumericLiteral(const AstNode& astNode);
     /**

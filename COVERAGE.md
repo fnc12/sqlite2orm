@@ -91,8 +91,10 @@ Statuses:
 - [x] `OR`
 
 ### IS operators
-- [x] `IS NULL`
-- [x] `IS NOT NULL`
+- [x] `IS NULL` — `IS` is a binary operator on the `=` level and `NULL` an ordinary right operand,
+  so the operand keeps parsing: `a IS NULL - 1` is `a IS (NULL - 1)`, a binary IS, and gets the
+  validator error below. `is_null(a)` is generated for a right operand that is exactly `NULL`
+- [x] `IS NOT NULL` — the same rule: `a IS NOT NULL - 1` is `a IS NOT (NULL - 1)`
 - [x] `ISNULL` (single keyword)
 - [x] `NOTNULL` (single keyword)
 - [x] `NOT NULL` (two keywords)

@@ -533,3 +533,128 @@ TEST_CASE("processMultiSql: custom-function arg types come from the schema") {
     CHECK(code.find("func<MortonEncode>(&Transactions::day, &Transactions::cat, &Transactions::a_norm)") !=
           std::string::npos);
 }
+
+// A table sqlite_orm cannot map at all — a STORED generated column holding a hex literal no int64
+// can hold — is left out of the storage, and there is then no C++ type behind its name. Everything
+// naming it has to go with it, or the snippet references a struct it never declared and does not
+// compile, at exit 0. SQLite takes this schema (`sqlite3 :memory: "<the SQL>"` succeeds; only a row
+// written to `gen` is refused, with `hex literal too big`), so the rest of it still has to generate.
+// Checked against sqlite3 3.51.0.
+TEST_CASE("processMultiSql: a table that cannot be mapped takes what names it with it") {
+    const auto results = processMultiSql(
+        "CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);\n"
+        "CREATE TABLE child(id INTEGER PRIMARY KEY, gid INTEGER REFERENCES gen(x));\n"
+        "CREATE INDEX i ON gen(x);\n"
+        "CREATE VIEW vg AS SELECT x FROM gen;\n"
+        "DELETE FROM gen;");
+    REQUIRE(results.size() == 5);
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct Child {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> gid;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"child\",\n"
+            "        make_column(\"id\", &Child::id, primary_key()),\n"
+            "        make_column(\"gid\", &Child::gid)));\n"
+            "\n"
+            "/* CREATE TABLE gen — not supported for sqlite_orm */\n");
+    REQUIRE(results[0].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                "STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, "
+                "so the table is not generated"});
+    REQUIRE(results[1].codegen.warnings ==
+            std::vector<CodegenWarning>{"foreign key on column 'gid' references gen, which is not generated, "
+                                        "so the generated table has no foreign_key()"});
+    REQUIRE(results[2].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                "`i` rests on a table that is not generated and is not merged into make_storage()"});
+    REQUIRE(results[3].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                "`vg` rests on a table that is not generated and is not merged into make_storage()"});
+    REQUIRE(results[4].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                "a statement naming `gen` rests on a table that is not generated and is left out"});
+}
+
+// SQLite takes a foreign key into a table declared later in the same script, so the batch cannot
+// know from statement order alone which names it will fail to map; it is generated again once it
+// does. Without the second pass `child` keeps `foreign_key(&Gen::x)` with no `struct Gen`.
+TEST_CASE("processMultiSql: a table that cannot be mapped is taken out of an earlier foreign key") {
+    const auto results = processMultiSql(
+        "CREATE TABLE child(id INTEGER PRIMARY KEY, gid INTEGER REFERENCES gen(x));\n"
+        "CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);");
+    REQUIRE(results.size() == 2);
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct Child {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> gid;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"child\",\n"
+            "        make_column(\"id\", &Child::id, primary_key()),\n"
+            "        make_column(\"gid\", &Child::gid)));\n"
+            "\n"
+            "/* CREATE TABLE gen — not supported for sqlite_orm */\n");
+    REQUIRE(results[0].codegen.warnings ==
+            std::vector<CodegenWarning>{"foreign key on column 'gid' references gen, which is not generated, "
+                                        "so the generated table has no foreign_key()"});
+}
+
+// A view left out of the storage is a name with no C++ type behind it exactly as an unmappable
+// table is, so a view selecting from it and a trigger INSTEAD OF it go with it. SQLite stores a
+// view body without compiling it, so it takes `0x10000000000000000` there and refuses only a query
+// against the view (`Error: hex literal too big`), which is why the schema still has to generate.
+TEST_CASE("processMultiSql: a view that cannot be generated takes its dependents with it") {
+    const auto results = processMultiSql(
+        "CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"
+        "CREATE VIEW v1 AS SELECT a + 0x10000000000000000 AS b FROM ok1;\n"
+        "CREATE VIEW v2 AS SELECT b FROM v1;\n"
+        "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN DELETE FROM ok1; END;");
+    REQUIRE(results.size() == 4);
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct Ok1 {\n"
+            "    int64_t a = 0;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a, primary_key())));\n"
+            "\n"
+            "/* CREATE VIEW v1 — not supported for sqlite_orm */\n");
+    REQUIRE(results[1].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                "CREATE VIEW v1 uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores "
+                "the view but refuses every query against it, and C++ has no literal for it, so the view is "
+                "not generated"});
+    REQUIRE(results[2].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                "`v2` rests on a view that is not generated and is not merged into make_storage()"});
+    REQUIRE(results[3].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                "`trv` rests on a view that is not generated and is not merged into make_storage()"});
+}
+
+// A dropped statement gives back the result variable name it took, so the surviving SELECT is
+// `rows` and not `rows2`.
+TEST_CASE("processMultiSql: a dropped statement leaves no gap in the result variable names") {
+    const auto results = processMultiSql(
+        "CREATE TABLE ok(a INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);\n"
+        "SELECT * FROM gen;\n"
+        "SELECT a FROM ok;");
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct Ok {\n"
+            "    int64_t a = 0;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"ok\",\n"
+            "        make_column(\"a\", &Ok::a, primary_key())));\n"
+            "\n"
+            "/* CREATE TABLE gen — not supported for sqlite_orm */\n"
+            "auto rows = storage.select(&Ok::a);\n");
+}

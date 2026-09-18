@@ -511,6 +511,24 @@ TEST_CASE("codegen: a column under a NOT carries its comment") {
     REQUIRE(result.comments == std::vector<std::string>{kNotColumnPointerComment});
 }
 
+// A column that names a SELECT alias is generated as `get<Alias>()` whatever a NOT over it asks
+// for: the alias carries the statement it was declared in, so the walk that collects the tables
+// reads it through the `c(...)` wrapper and there is no column pointer to put in its place. The
+// form is the one it had before a NOT ever rewrote a column, and the explanation of a rewrite that
+// did not happen stays off it.
+TEST_CASE("codegen: a SELECT alias under a NOT keeps the form it had") {
+    auto result = generateFull("SELECT a AS al FROM users WHERE NOT al;");
+    REQUIRE(result.code ==
+            "struct AlAlias : sqlite_orm::alias_tag {\n"
+            "    static const std::string& get() {\n"
+            "        static const std::string res = \"al\";\n"
+            "        return res;\n"
+            "    }\n"
+            "};\n"
+            "auto rows = storage.select(as<AlAlias>(&Users::a), where(not c(get<AlAlias>())));");
+    REQUIRE(result.comments == std::vector<std::string>{});
+}
+
 // The same wrapper hides a value from the walk that binds one: the literal of `select(not c(0))`
 // never reached a parameter, so the statement ran with an empty one and answered NULL where SQLite
 // answers 1. A binary operator unwraps what it is given, and `0 + x` is the numeric coercion SQLite

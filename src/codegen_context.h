@@ -130,6 +130,13 @@ namespace sqlite2orm {
          *  names the same column and which that walker does read.
          */
         bool columnRefUnderLogicalNot = false;
+        /**
+         *  Set by the column reference branch when `columnRefUnderLogicalNot` made it emit that
+         *  column-pointer form, and read back by the NOT that asked for it. A column naming a
+         *  SELECT alias answers earlier, with `get<Alias>()`, and leaves this false: no column
+         *  pointer came out of it, so it keeps the wrapper and the explanation that form replaces.
+         */
+        bool emittedColumnPointerUnderLogicalNot = false;
 
         /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
         std::vector<CustomFunctionUse> customFunctions;

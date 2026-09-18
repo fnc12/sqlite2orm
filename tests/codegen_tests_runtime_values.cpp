@@ -761,6 +761,26 @@ TEST_CASE("runtime: a NOT over a column in a CHECK constraint is enforced the wa
             });
 }
 
+// A column that names a SELECT alias is generated as `get<Alias>()`, not as a column pointer, and
+// the statement it stands in already names the table through the aliased result column — so it
+// keeps the `c(...)` wrapper it always had and still runs. Checked against sqlite3 3.51: the row
+// holding a = 0 is the one `WHERE NOT al` returns.
+TEST_CASE("runtime: a SELECT alias under a NOT returns the row SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT a AS al FROM user WHERE NOT al;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "struct AlAlias : sqlite_orm::alias_tag {\n"
+                              "    static const std::string& get() {\n"
+                              "        static const std::string res = \"al\";\n"
+                              "        return res;\n"
+                              "    }\n"
+                              "};\n"
+                              "auto rows = storage.select(as<AlAlias>(&User::a), where(not c(get<AlAlias>())));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "0") == std::vector<std::string>{"0"});
+}
+
 // sqlite_orm types `&`, `|`, `<<`, `>>` and `~` as `int`, so the int64 SQLite computes reached the
 // caller through a 32-bit truncation: `9223372036854775807 & -1` printed -1. The CAST widens the
 // C++ type without moving the value — a bitwise result is an INTEGER or a NULL, and a CAST to

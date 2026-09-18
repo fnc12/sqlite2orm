@@ -161,6 +161,7 @@ namespace sqlite2orm {
             if(this->context.columnRefUnderLogicalNot) {
                 // Only the column-pointer form survives under a NOT, so there is no style left to
                 // decide between and no decision point to offer.
+                this->context.emittedColumnPointerUnderLogicalNot = true;
                 return CodeGenResult{std::move(columnPointer), {}, {}, {}, {}};
             }
             const bool useColumnPtr =
@@ -268,6 +269,7 @@ namespace sqlite2orm {
             if(this->context.columnRefUnderLogicalNot) {
                 // Only the column-pointer form survives under a NOT, so there is no style left to
                 // decide between and no decision point to offer.
+                this->context.emittedColumnPointerUnderLogicalNot = true;
                 return CodeGenResult{std::move(columnPointer), {}, std::move(qualWarnings), {}, {}};
             }
             const bool useQColPtr =
@@ -535,9 +537,16 @@ namespace sqlite2orm {
             const bool notKeepsOperandQuoted =
                 unaryOp->unaryOperator == UnaryOperator::logicalNot && operandLeaf;
             const bool outerColumnRefUnderLogicalNot = this->context.columnRefUnderLogicalNot;
+            const bool outerEmittedColumnPointer = this->context.emittedColumnPointerUnderLogicalNot;
             this->context.columnRefUnderLogicalNot = notKeepsOperandQuoted;
+            this->context.emittedColumnPointerUnderLogicalNot = false;
             auto operandResult = this->coordinator.generateNode(*unaryOp->operand);
+            // What the operand was generated as is the emitter's own answer, not the node's kind: a
+            // column that names a SELECT alias is generated as `get<Alias>()` whatever this asks for.
+            const bool operandGeneratedColumnPointerUnderNot =
+                this->context.emittedColumnPointerUnderLogicalNot;
             this->context.columnRefUnderLogicalNot = outerColumnRefUnderLogicalNot;
+            this->context.emittedColumnPointerUnderLogicalNot = outerEmittedColumnPointer;
             auto decisionPoints = std::move(operandResult.decisionPoints);
 
             if(unaryOp->unaryOperator == UnaryOperator::plus) {
@@ -602,10 +611,8 @@ namespace sqlite2orm {
             // `c(...)`; the two forms stand in the same place, so the wrapper is skipped for it.
             const bool wrapsOperandInC =
                 operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(&operandNode);
-            const bool operandIsColumnRef = dynamic_cast<const ColumnRefNode*>(&operandNode) != nullptr ||
-                                            dynamic_cast<const QualifiedColumnRefNode*>(&operandNode) != nullptr;
             const bool operandIsColumnPointerUnderNot =
-                notKeepsOperandQuoted && wrapsOperandInC && operandIsColumnRef;
+                wrapsOperandInC && operandGeneratedColumnPointerUnderNot;
             if(operandIsColumnPointerUnderNot) {
                 appendUniqueString(operandResult.comments, kCommentNotColumnPointer);
             }

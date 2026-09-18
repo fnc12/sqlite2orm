@@ -27,6 +27,33 @@ TEST_CASE("validator: unary minus is valid") {
     REQUIRE(validate("-5").empty());
 }
 
+// `0x8000000000000000` is INT64_MIN, so SQLite takes the literal on its own and refuses its
+// negation: `SELECT -0x8000000000000000` is `hex literal too big` in sqlite3 3.51, through
+// parentheses and a second sign too, while every neighbouring value is accepted.
+TEST_CASE("validator: negating the hex literal for INT64_MIN is rejected") {
+    REQUIRE(validate("-0x8000000000000000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("-(0x8000000000000000)") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("- -0x8000000000000000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 3}, "UnaryOperatorNode"}
+    });
+    // SQLite spells the literal back with the separators taken out and the leading zeros left in.
+    REQUIRE(validate("-0x8000_0000_0000_0000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("-0x0_8000_0000_0000_0000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x08000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("0x8000000000000000").empty());
+    REQUIRE(validate("-0x8000000000000001").empty());
+    REQUIRE(validate("-0x7FFFFFFFFFFFFFFF").empty());
+    REQUIRE(validate("-0xFFFFFFFFFFFFFFFF").empty());
+    REQUIRE(validate("-9223372036854775808").empty());
+}
+
 TEST_CASE("validator: bitwise not is valid") {
     REQUIRE(validate("~5").empty());
 }

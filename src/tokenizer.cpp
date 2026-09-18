@@ -1,4 +1,5 @@
 #include <sqlite2orm/tokenizer.h>
+#include <sqlite2orm/utils.h>
 
 #include <algorithm>
 #include <cctype>

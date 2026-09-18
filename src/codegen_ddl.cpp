@@ -952,6 +952,23 @@ namespace sqlite2orm {
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
         std::vector<CodegenWarning> warnings;
         bool tableIsGeneratable = true;
+        // A DEFAULT / CHECK / generated-column expression is the one place an expression clause
+        // reaches codegen without going through the validator, so its warnings are the only word a
+        // user gets about it — `-0x8000000000000000` is refused by SQLite wherever it is used, and a
+        // negated predicate has no sqlite_orm form at all.
+        //
+        // SQLite stores the text of such a clause and compiles it only when the clause is used, so
+        // it keeps a hex literal no int64 can hold where a query is refused: `stored` asks for the
+        // literal to be collected in `storedHexLiteralsTooBig`, which the caller reads right after,
+        // rather than to fail the statement. A VIRTUAL generated column is the one clause SQLite
+        // compiles at CREATE TABLE time, so it is generated as an ordinary expression.
+        auto clauseExpressionCode = [this, &warnings](const AstNode& expression, bool stored) {
+            auto result = stored ? this->coordinator.generateStoredExpression(expression)
+                                 : this->coordinator.generateNode(expression);
+            warnings.insert(warnings.end(), std::make_move_iterator(result.warnings.begin()),
+                            std::make_move_iterator(result.warnings.end()));
+            return std::move(result.code);
+        };
 
         std::string structDeclaration = "struct " + structName + " {\n";
         for(const auto& column : createTable.columns) {
@@ -989,7 +1006,7 @@ namespace sqlite2orm {
                 makeExpression += ", " + primaryKey;
             }
             if(column.defaultValue) {
-                const auto defaultCode = this->coordinator.generateStoredExpression(*column.defaultValue).code;
+                const auto defaultCode = clauseExpressionCode(*column.defaultValue, true);
                 if(this->context.storedHexLiteralsTooBig.empty()) {
                     makeExpression += ", default_value(" + defaultCode + ")";
                 } else {
@@ -1009,7 +1026,7 @@ namespace sqlite2orm {
                 }
             }
             if(column.checkExpression) {
-                const auto checkCode = this->coordinator.generateStoredExpression(*column.checkExpression).code;
+                const auto checkCode = clauseExpressionCode(*column.checkExpression, true);
                 if(this->context.storedHexLiteralsTooBig.empty()) {
                     makeExpression += ", check(" + checkCode + ")";
                 } else {
@@ -1041,9 +1058,7 @@ namespace sqlite2orm {
                 // it, and a column that lost its as(...) would be an ordinary column instead of a
                 // generated one, so the whole table is left out rather than reshaped.
                 const bool storedGenerated = column.generatedStorage == ColumnDef::GeneratedStorage::stored;
-                const auto expressionCode =
-                    storedGenerated ? this->coordinator.generateStoredExpression(*column.generatedExpression).code
-                                    : this->coordinator.generateNode(*column.generatedExpression).code;
+                const auto expressionCode = clauseExpressionCode(*column.generatedExpression, storedGenerated);
                 if(storedGenerated && !this->context.storedHexLiteralsTooBig.empty()) {
                     for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("STORED generated column '" + rawColumnName + "' uses " + literal +
@@ -1200,7 +1215,7 @@ namespace sqlite2orm {
         }
         for(const auto& tableCheck : createTable.checks) {
             if(tableCheck.expression) {
-                const auto checkCode = this->coordinator.generateStoredExpression(*tableCheck.expression).code;
+                const auto checkCode = clauseExpressionCode(*tableCheck.expression, true);
                 if(!this->context.storedHexLiteralsTooBig.empty()) {
                     for(const std::string& literal : this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("table CHECK uses " + literal +

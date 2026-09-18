@@ -31,7 +31,7 @@ Statuses:
 
 ### Literals
 - [x] numeric-literal (integer) — leading zeros (and the separators between them) are dropped so the C++ literal stays decimal like SQLite (`010` → `10`, `0009` → `9`, `0_9` → `9`); `0x0FF` and reals keep their spelling
-- [x] numeric-literal (integer) beyond int64 — SQLite reads it as a REAL, so the C++ literal gets a fractional part (`9223372036854775808` → `9223372036854775808.0`); a hex literal wraps around instead (`0xFFFFFFFFFFFFFFFF` → `static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)`, i.e. -1)
+- [x] numeric-literal (integer) beyond int64 — SQLite reads it as a REAL, so the C++ literal gets a fractional part (`9223372036854775808` → `9223372036854775808.0`); a hex literal wraps around instead (`0xFFFFFFFFFFFFFFFF` → `static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)`, i.e. -1); a negated `0x8000000000000000` leaves the int64 range and is `hex literal too big`, as in SQLite (validator error; a DDL clause SQLite stores without compiling reaches codegen instead, where the sign is kept out of the C++ constant that could not hold it and the clause carries a warning)
 - [x] hex literal past int64 (more than 16 significant digits) — refused as `hex literal too big` wherever the statement compiles the expression (SELECT / DML / `CREATE INDEX`), which is where SQLite raises it too (`codeInteger()`); the clauses SQLite only stores the text of keep it and warn instead, leaving that clause out: a column `DEFAULT`, a column or table `CHECK`, a view body, a trigger body, and a `STORED` generated column — the last one warns and drops the whole table, because a column that lost its `as(...)` would be an ordinary column instead of a generated one, and everything resting on that table — a foreign key into it, an index, a trigger or a view naming it, however indirectly (a subquery in any expression, a trigger `WHEN` clause, a CTE) — is left out with it, because sqlite_orm cannot reference a type it does not map — in the header `--db` generates and in the snippet a `.sql` file, stdin or `-e` generates alike, where a statement may even name a table declared after it; a view that is left out is a name without a type in the same way, whether it is dropped for a hex literal in its own body, for resting on such a table, or for a `SELECT` sqlite_orm cannot spell, so a trigger `INSTEAD OF` it and a view selecting from it go with it; on its own such a `CREATE TABLE` generates `/* CREATE TABLE g — not supported for sqlite_orm */`, as an ungeneratable `CREATE VIEW` does. A `VIRTUAL` generated column (the spelling `AS (...)` defaults to) is compiled at `CREATE TABLE` time and refused, so it stays an error. A `PRAGMA` value is read with `sqlite3GetInt32()`, which answers 0 for it, so `PRAGMA user_version = 0x10000000000000000` generates `user_version(0)` with a warning, and `PRAGMA integrity_check` is an error because SQLite falls back to reading the value as a table name
 - [x] numeric-literal (real / float)
 - [x] numeric-literal `_` digit separators (SQLite 3.46+) — `1_000_000` → `1'000'000`, `0x1_ffff` → `0x1'ffff`; a misplaced separator (`100_`, `1__0`, `0x_1f`) is an unrecognized token, as in SQLite
@@ -50,7 +50,7 @@ Statuses:
 - [x] schema-name.table-name.column-name
 
 ### Unary operators
-- [x] `-` (unary minus)
+- [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works — the generated code does not compile: codegen warning)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
 - [x] `NOT`
@@ -613,6 +613,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] NULLS FIRST / NULLS LAST
 - [!] RETURNING clause
 - [!] Unary plus (`+expr`)
+- [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-`; the generated negation does not compile (codegen warning)
 - [x] DROP TABLE — `storage.drop_table("name")` / `storage.drop_table_if_exists("name")`
 - [x] DROP INDEX — `storage.drop_index("name")` / `storage.drop_index_if_exists("name")`
 - [x] DROP TRIGGER — `storage.drop_trigger("name")` / `storage.drop_trigger_if_exists("name")`

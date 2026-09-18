@@ -13,7 +13,7 @@ namespace sqlite2orm {
         std::optional<std::string> pragmaValueHexLiteralTooBig(const AstNode& valueNode) {
             const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode);
             if(integerLiteral && hexLiteralExceedsInt64(integerLiteral->value)) {
-                return numericLiteralWithoutDigitSeparators(integerLiteral->value);
+                return withoutDigitSeparators(integerLiteral->value);
             }
             return std::nullopt;
         }

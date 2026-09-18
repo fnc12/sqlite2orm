@@ -178,6 +178,7 @@ Statuses:
 - [x] `schema.table.*` → parsed; codegen `asterisk<Struct>()` + warning (schema qualifier not represented in sqlite_orm mapping)
 - [x] expr → `select(expr)` / `select(columns(...))`
 - [x] expr AS alias (parsed, alias stored in AST)
+- [x] expr whose value can be NULL → `select(as_optional(expr))`, so the row reads back as a `std::optional`. sqlite_orm types an operator expression from the operator alone — `double` for the arithmetic ones, `std::string` for `||`, `bool` for a comparison — and a NULL row would come back as 0 / "" / false. Only an operator expression is widened, and only when SQLite can answer it with NULL: a literal cannot, a column already carries its field's type, `abs(...)` is a `std::unique_ptr` and NULL itself a `std::nullptr_t`. A `/` or `%` counts whatever its operands are, because SQLite answers a division by zero with NULL. The SQL is unchanged — `as_optional` serializes to its argument — and a WHERE / ORDER BY / GROUP BY expression, which is not read back, is left alone
 
 ### Table or subquery
 - [x] table-name

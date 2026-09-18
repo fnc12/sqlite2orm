@@ -9,6 +9,7 @@
 #include <cctype>
 #include <optional>
 #include <queue>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -196,6 +197,24 @@ namespace sqlite2orm {
             storageArgs.push_back(parts.makeTableExpression);
         }
 
+        // A view that is left out is a name sqlite_orm has no type for, exactly as an
+        // ungeneratable table is, so it joins them: a trigger `INSTEAD OF ... ON` it and a view
+        // selecting from it go with it. SQLite creates nothing before the view it names, so a
+        // dropped view is always marked before anything resting on it is generated.
+        std::set<std::string> ungeneratableViews;
+        const auto markUngeneratableView = [&](std::string_view viewName) {
+            gen.context().markUngeneratableTable(viewName);
+            ungeneratableViews.insert(normalizeSqlIdentifier(viewName));
+        };
+        const auto ungeneratableKind = [&](const std::set<std::string>& referencedNames) -> std::string {
+            for(const std::string& referencedName : referencedNames) {
+                if(!ungeneratableViews.count(referencedName)) {
+                    return "table";
+                }
+            }
+            return "view";
+        };
+
         for(const SchemaStatementResult& statementResult : schema.statements) {
             if(!statementResult.pipeline.ok()) {
                 continue;
@@ -215,9 +234,12 @@ namespace sqlite2orm {
             // records them (`CodeGeneratorContext::structNameForTable`), and a statement that
             // named an ungenerated table is rolled back whole — the fragment goes, and so does
             // every decision point id, bind parameter index and alias its generation took. The
-            // context is only copied when there is a table to roll back for.
+            // context is only copied when there is something to roll back for, which is read
+            // afresh at every statement because a dropped view adds to the set as we go; a name
+            // can only be recorded when the set was already non-empty, so the copy is always
+            // there when the rollback needs it.
             std::optional<CodeGeneratorContext> contextBeforeStatement;
-            if(anyUngeneratableTable) {
+            if(!gen.context().ungeneratableTables.empty()) {
                 contextBeforeStatement = gen.context();
             }
             gen.context().referencedUngeneratableTables.clear();
@@ -225,9 +247,10 @@ namespace sqlite2orm {
                 if(gen.context().referencedUngeneratableTables.empty()) {
                     return false;
                 }
+                const std::string kind = ungeneratableKind(gen.context().referencedUngeneratableTables);
                 gen.context() = *contextBeforeStatement;
-                allWarnings.push_back("`" + statementResult.meta.name +
-                                      "` rests on a table that is not generated and is not merged into "
+                allWarnings.push_back("`" + statementResult.meta.name + "` rests on a " + kind +
+                                      " that is not generated and is not merged into "
                                       "make_storage()");
                 return true;
             };
@@ -235,6 +258,7 @@ namespace sqlite2orm {
             if(auto* createView = dynamic_cast<const CreateViewNode*>(root)) {
                 CreateViewParts viewParts = gen.createViewParts(*createView);
                 if(restsOnUngeneratableTable()) {
+                    markUngeneratableView(createView->viewName);
                     continue;
                 }
                 allWarnings.insert(allWarnings.end(), viewParts.warnings.begin(), viewParts.warnings.end());
@@ -244,6 +268,7 @@ namespace sqlite2orm {
                 if(viewParts.makeViewExpression.empty()) {
                     allWarnings.push_back("CREATE VIEW `" + statementResult.meta.name +
                                           "` is not merged into make_storage()");
+                    markUngeneratableView(createView->viewName);
                     continue;
                 }
                 oss << viewParts.structDeclaration << "\n";
@@ -292,15 +317,16 @@ namespace sqlite2orm {
                 continue;
             }
             std::optional<CodeGeneratorContext> contextBeforeStatement;
-            if(anyUngeneratableTable) {
+            if(!gen.context().ungeneratableTables.empty()) {
                 contextBeforeStatement = gen.context();
             }
             gen.context().referencedUngeneratableTables.clear();
             CodeGenResult fragment = gen.generate(*root);
             if(!gen.context().referencedUngeneratableTables.empty()) {
+                const std::string kind = ungeneratableKind(gen.context().referencedUngeneratableTables);
                 gen.context() = *contextBeforeStatement;
-                allWarnings.push_back("`" + statementResult.meta.name +
-                                      "` rests on a table that is not generated and is left out");
+                allWarnings.push_back("`" + statementResult.meta.name + "` rests on a " + kind +
+                                      " that is not generated and is left out");
                 continue;
             }
             allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());

@@ -224,6 +224,99 @@ namespace {
         return rows;
     }
 
+    /**
+     *  Builds the generated `make_storage` of a single CREATE TABLE, compiles and links it against
+     *  sqlite_orm, runs `sync_schema()` and returns one line per probe value saying whether an
+     *  insert of it was accepted, followed by the CHECK clause SQLite stored. The generated storage
+     *  is given the file database the schema is read back out of. A CHECK constraint is the slot
+     *  where the serialized SQL is the whole product — it goes into the schema and SQLite enforces
+     *  it from then on, with no C++ term left to hold the grouping — so only what `sqlite_master`
+     *  comes back with pins that grouping down.
+     */
+    std::vector<std::string> checkConstraintBehaviour(const std::string& generatedCode,
+                                                      const std::vector<std::string>& probeValues) {
+        const TempBuildDir dir;
+        const std::filesystem::path databasePath = dir.file("check.sqlite3");
+
+        const std::string inMemory = "make_storage(\"\"";
+        const std::size_t storageAt = generatedCode.find(inMemory);
+        REQUIRE(storageAt != std::string::npos);
+        std::string storageDefinition = generatedCode;
+        storageDefinition.replace(storageAt, inMemory.size(),
+                                  "make_storage(\"" + databasePath.generic_string() + "\"");
+
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <sqlite3.h>\n"
+                   "#include <cstdint>\n"
+                   "#include <iostream>\n"
+                   "#include <optional>\n"
+                   "\n"
+                   "using namespace sqlite_orm;\n"
+                   "\n"
+                << storageDefinition
+                << "\n"
+                   "\n"
+                   "int main() {\n"
+                   "    storage.sync_schema();\n";
+        for(const auto& probeValue: probeValues) {
+            program << "    try {\n"
+                       "        storage.insert(T{"
+                    << probeValue
+                    << "});\n"
+                       "        std::cout << \""
+                    << probeValue
+                    << " accepted\" << '\\n';\n"
+                       "    } catch(const std::system_error&) {\n"
+                       "        std::cout << \""
+                    << probeValue
+                    << " rejected\" << '\\n';\n"
+                       "    }\n";
+        }
+        // The schema text is read through the C API, so that what is compared is what SQLite stored
+        // and not what sqlite_orm would print for it.
+        program << "    sqlite3* db = nullptr;\n"
+                   "    sqlite3_open(\""
+                << databasePath.generic_string()
+                << "\", &db);\n"
+                   "    sqlite3_stmt* statement = nullptr;\n"
+                   "    sqlite3_prepare_v2(db, \"SELECT sql FROM sqlite_master WHERE name = 't'\", -1, &statement, "
+                   "nullptr);\n"
+                   "    while(sqlite3_step(statement) == SQLITE_ROW) {\n"
+                   "        std::cout << reinterpret_cast<const char*>(sqlite3_column_text(statement, 0)) << '\\n';\n"
+                   "    }\n"
+                   "    sqlite3_finalize(statement);\n"
+                   "    sqlite3_close(db);\n"
+                   "    return 0;\n"
+                   "}\n";
+
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("check");
+        const std::filesystem::path outpath = dir.file("check.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> lines;
+        {
+            std::ifstream out(outpath);
+            for(std::string line; std::getline(out, line);) {
+                lines.push_back(line);
+            }
+        }
+        if(exitCode != 0) {
+            WARN("building the generated CHECK constraint failed (exit "
+                 << exitCode << "); ensure c++, sqlite_orm headers and libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return lines;
+    }
+
 }  // namespace
 
 // The generated code used to read every negative numeric literal back as 0: the SQL was right, but
@@ -503,7 +596,8 @@ TEST_CASE("runtime: a result column that can be NULL reads the NULL back") {
 
 // The widening rule leaves an operator over a NULL test alone, and it is right to: sqlite3 3.45.1
 // answers `NOT (a IS NULL)` with 0 over a NULL row and 1 over `a = 7`, never with a NULL. (The
-// arithmetic forms of the same rule — `(a IS NULL) + 1` — have no sqlite_orm overload to run.)
+// arithmetic forms of the same rule are run in
+// "runtime: a predicate under an operator keeps the grouping it was written with".)
 TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its value") {
     const std::vector<std::string> statements{
         generate("SELECT NOT (a IS NULL);"),
@@ -514,6 +608,58 @@ TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its v
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
             std::vector<std::string>{"0"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"1"});
+}
+
+// sqlite_orm serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses,
+// and SQLite binds those looser than the operator around them, so `c(1) - is_null(&User::a)` was
+// read back as `(1 - a) IS NULL` — one C++ term, another SQL expression, and no complaint from
+// either. The CAST the generator now spells out restores the grouping. Both expected rows checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL first and 7 second; on master
+// the `a = 7` row answers 0, 1, 0, 0, and the arithmetic over a left-hand predicate does not
+// compile at all.
+TEST_CASE("runtime: a predicate under an operator keeps the grouping it was written with") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 - (a IS NULL);"),
+        generate("SELECT 1 - (a NOT NULL);"),
+        generate("SELECT 1 - (a IN (1,2,3));"),
+        generate("SELECT 1 = (a IS NULL);"),
+        generate("SELECT (a IS NULL) + 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(c(1) - cast<int64_t>(is_null(&User::a)));",
+                              "auto rows = storage.select(c(1) - cast<int64_t>(is_not_null(&User::a)));",
+                              "auto rows = storage.select(as_optional(c(1) - cast<int64_t>(in(&User::a, {1, 2, 3}))));",
+                              "auto rows = storage.select(c(1) == cast<int64_t>(is_null(&User::a)));",
+                              "auto rows = storage.select(cast<int64_t>(is_null(&User::a)) + 1);",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"0", "1", "NULL", "1", "2"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"1", "0", "1", "0", "1"});
+}
+
+// A CHECK constraint is the slot where the serialized SQL is the whole product: it is stored in the
+// schema and SQLite enforces it from then on, with no C++ term left to hold the grouping. The bare
+// predicate made the generated table enforce the opposite of what the source said — the stored
+// clause read `CHECK (1 - "a" IS NULL)`, that is `(1 - "a") IS NULL`, so it rejected the `a = 7` row
+// it should accept and accepted the NULL row it should reject. Checked against sqlite3 3.45.1 and
+// 3.51: `CREATE TABLE t(a INTEGER CHECK(1 - (a IS NULL)))` accepts 7 and rejects NULL.
+TEST_CASE("runtime: a predicate in a CHECK constraint is enforced the way the source reads") {
+    const std::string generatedCode = generate("CREATE TABLE t(a INTEGER CHECK(1 - (a IS NULL)));");
+    REQUIRE(generatedCode ==
+            "struct T {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a, check(c(1) - cast<int64_t>(is_null(&T::a))))));");
+    REQUIRE(checkConstraintBehaviour(generatedCode, {"7", "std::nullopt"}) ==
+            std::vector<std::string>{
+                "7 accepted",
+                "std::nullopt rejected",
+                "CREATE TABLE \"t\" (\"a\" INTEGER CHECK (1 - CAST (\"a\" IS NULL AS INTEGER)) NULL)",
+            });
 }
 
 // A dropped COLLATE used to take the `c(…)` wrap of the operand under it with it, and the operand
@@ -535,3 +681,4 @@ TEST_CASE("runtime: an operand under a dropped COLLATE keeps its value") {
                           });
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"ab", "8", "16", "-5"});
 }
+

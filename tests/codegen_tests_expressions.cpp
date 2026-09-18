@@ -9,6 +9,15 @@ namespace {
         "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
         "computes for `-expr` — same value and same typeof for every operand kind.";
 
+    // The hint attached to every predicate the generator delimits with a CAST; asserted on its own
+    // in "codegen: a predicate cast under an operator carries its comment".
+    const std::string kPredicateCastComment =
+        "A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
+        "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses, and "
+        "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
+        "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
+        "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.";
+
 }  // namespace
 
 TEST_CASE("codegen: integer literal") {
@@ -501,6 +510,67 @@ TEST_CASE("codegen: unary minus over a predicate warns instead") {
     check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));",
           "IS NOT NULL");
     check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not c(&Users::a)));", "NOT");
+}
+
+// sqlite_orm parenthesizes an operand it serializes only when that operand is a binary operator or
+// condition of its own. A predicate comes out bare, and SQLite binds every predicate looser than
+// the arithmetic, bit and comparison operators, so `c(1) - is_null(&User::a)` is one C++ term whose
+// SQL reads `1 - "a" IS NULL` — that is, `(1 - "a") IS NULL`. A CAST to INTEGER delimits the
+// predicate and keeps its value, which is 0, 1 or NULL either way. Grouping checked against
+// sqlite3 3.51; the values the generated code answers with are pinned in
+// "runtime: a predicate under an operator keeps the grouping it was written with".
+TEST_CASE("codegen: a predicate under an operator is cast to stay one SQL term") {
+    REQUIRE(generate("1 - (a IS NULL)") == "c(1) - cast<int64_t>(is_null(&User::a))");
+    REQUIRE(generate("1 - (a NOT NULL)") == "c(1) - cast<int64_t>(is_not_null(&User::a))");
+    REQUIRE(generate("1 - (a IN (1, 2))") == "c(1) - cast<int64_t>(in(&User::a, {1, 2}))");
+    REQUIRE(generate("1 - (a BETWEEN 1 AND 9)") == "c(1) - cast<int64_t>(between(&User::a, 1, 9))");
+    REQUIRE(generate("1 - (a LIKE 'x')") == "c(1) - cast<int64_t>(like(&User::a, \"x\"))");
+    REQUIRE(generate("1 - (a GLOB 'x')") == "c(1) - cast<int64_t>(glob(&User::a, \"x\"))");
+    REQUIRE(generate("1 - (a MATCH 'x')") == "c(1) - cast<int64_t>(match(&User::a, \"x\"))");
+    REQUIRE(generate("1 - (NOT a)") == "c(1) - cast<int64_t>(not c(&User::a))");
+    // Every rank that binds tighter than a predicate needs it, the left operand included.
+    REQUIRE(generate("1 || (a IS NULL)") == "c(1) || cast<int64_t>(is_null(&User::a))");
+    REQUIRE(generate("1 * (a IS NULL)") == "c(1) * cast<int64_t>(is_null(&User::a))");
+    REQUIRE(generate("1 << (a IS NULL)") == "c(1) << cast<int64_t>(is_null(&User::a))");
+    REQUIRE(generate("1 & (a IS NULL)") == "c(1) & cast<int64_t>(is_null(&User::a))");
+    REQUIRE(generate("1 < (a IS NULL)") == "c(1) < cast<int64_t>(is_null(&User::a))");
+    REQUIRE(generate("(a IS NULL) - 1") == "cast<int64_t>(is_null(&User::a)) - 1");
+    REQUIRE(generate("(a IS NULL) || 'x'") == "cast<int64_t>(is_null(&User::a)) || \"x\"");
+}
+
+// `=` shares its rank with the predicates and SQLite reads it left-associatively, so only the right
+// operand regroups: `a IS NULL = 1` is `(a IS NULL) = 1` already, while `1 = a IS NULL` is
+// `(1 = a) IS NULL`. `AND` and `OR` are looser than any predicate, so neither operand regroups
+// there — which is what keeps a plain WHERE clause free of casts. `NOT` is looser than `=` and
+// tighter than `AND`, so it parts company with the other predicates on both. Checked against
+// sqlite3 3.51.
+TEST_CASE("codegen: an operator no looser than the predicate leaves it bare") {
+    REQUIRE(generate("(a IS NULL) = 1") == "is_null(&User::a) == 1");
+    REQUIRE(generate("(a IS NULL) <> 1") == "is_null(&User::a) != 1");
+    REQUIRE(generate("(a IS NULL) AND 1") == "is_null(&User::a) and 1");
+    REQUIRE(generate("1 AND (a IS NULL)") == "c(1) and is_null(&User::a)");
+    REQUIRE(generate("(a IS NULL) OR 1") == "is_null(&User::a) or 1");
+    REQUIRE(generate("1 OR (a IS NULL)") == "c(1) or is_null(&User::a)");
+    REQUIRE(generate("(NOT a) AND 1") == "not c(&User::a) and 1");
+    REQUIRE(generate("(NOT a) = 1") == "cast<int64_t>(not c(&User::a)) == 1");
+    // The JSON operators are generated as a json_extract() call, whose own syntax delimits both
+    // operands whatever SQLite's precedence says.
+    REQUIRE(generate("a -> (b IS NULL)") == "json_extract(&User::a, is_null(&User::b))");
+}
+
+// The functional spelling changes the C++ and not the SQL — `sub(1, is_null(&User::a))` serializes
+// as `1 - "a" IS NULL` just like the operator one — so the CAST belongs to both.
+TEST_CASE("codegen: the predicate cast survives the functional expression style") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
+    REQUIRE(generateWithPolicy("SELECT 1 - (a IS NULL);", policy).code ==
+            "auto rows = storage.select(sub(1, cast<int64_t>(is_null(&User::a))));");
+}
+
+TEST_CASE("codegen: a predicate cast under an operator carries its comment") {
+    REQUIRE(generateFull("SELECT 1 - (a IS NULL);").comments ==
+            std::vector<std::string>{kPredicateCastComment});
+    REQUIRE(generateFull("SELECT (a IS NULL) AND 1;").comments.empty());
 }
 
 TEST_CASE("codegen: IS NULL") {

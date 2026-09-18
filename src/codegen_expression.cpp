@@ -455,17 +455,18 @@ namespace sqlite2orm {
             // right SQL and still reads the row back as 0. A minus over a numeric constant is folded
             // into it the way SQLite's own parser does, which is why `-2` is the constant -2 rather
             // than a negation of 2; C++ folds the second sign of `- -3` just as well.
-            if(unaryOp->unaryOperator == UnaryOperator::minus) {
-                if(isNumericLiteral(*unaryOp->operand)) {
-                    return CodeGenResult{"-" + operandResult.code, std::move(decisionPoints),
-                                         std::move(operandResult.warnings), std::move(operandResult.errors),
-                                         std::move(operandResult.comments)};
-                }
-                if(isNegatedNumericLiteral(*unaryOp->operand)) {
-                    return CodeGenResult{"-(" + operandResult.code + ")", std::move(decisionPoints),
-                                         std::move(operandResult.warnings), std::move(operandResult.errors),
-                                         std::move(operandResult.comments)};
-                }
+            const std::optional<NegationForm> negationForm =
+                unaryOp->unaryOperator == UnaryOperator::minus
+                    ? std::optional<NegationForm>{negationFormFor(*unaryOp->operand)}
+                    : std::nullopt;
+            if(negationForm == NegationForm::foldedIntoConstant) {
+                // A constant that already carries a sign needs the parentheses C++ has no `--` for.
+                std::string folded = isNumericLiteral(*unaryOp->operand)
+                                         ? "-" + operandResult.code
+                                         : "-(" + operandResult.code + ")";
+                return CodeGenResult{std::move(folded), std::move(decisionPoints),
+                                     std::move(operandResult.warnings), std::move(operandResult.errors),
+                                     std::move(operandResult.comments)};
             }
 
             bool operandLeaf = isLeafNode(*unaryOp->operand);
@@ -506,15 +507,28 @@ namespace sqlite2orm {
             // looser than a binary `-`, so `0 - a BETWEEN 1 AND 9` would regroup the expression.
             bool negationAsSubtraction = false;
             if(unaryOp->unaryOperator == UnaryOperator::minus) {
-                const std::string_view predicate = sqlPredicateLooserThanMinus(*unaryOp->operand);
-                if(predicate.empty()) {
+                if(negationForm == NegationForm::zeroMinusSubtraction) {
                     negationAsSubtraction = true;
                     appendUniqueString(operandResult.comments, kCommentNegationAsZeroMinus);
                 } else {
                     operandResult.warnings.push_back(CodegenWarning{
-                        "unary minus over a predicate (" + std::string(predicate) +
+                        "unary minus over a predicate (" +
+                            std::string(sqlPredicateLooserThanMinus(*unaryOp->operand)) +
                             ") has no working sqlite_orm form; the generated negation does not "
-                            "reproduce what SQLite computes and may not compile",
+                            "reproduce what SQLite computes and does not compile",
+                        unaryOp->location, 1});
+                }
+                if(numericLiteralRejectsFoldedSign(*unaryOp->operand)) {
+                    // The sign stays out of the C++ constant, which could not hold it, so the
+                    // subtraction above is generated instead. SQLite has no value for this
+                    // expression either: it refuses the statement that uses it, and only a DDL
+                    // clause — which SQLite stores without compiling — gets this far.
+                    const auto& tooBigLiteral =
+                        dynamic_cast<const IntegerLiteralNode&>(*unaryOp->operand);
+                    operandResult.warnings.push_back(CodegenWarning{
+                        "hex literal too big: -" + withoutDigitSeparators(tooBigLiteral.value) +
+                            "; SQLite refuses this expression wherever it is used, so the generated "
+                            "subtraction from zero does not reproduce it",
                         unaryOp->location, 1});
                 }
             }

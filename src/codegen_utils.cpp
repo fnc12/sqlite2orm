@@ -543,12 +543,9 @@ namespace sqlite2orm {
                dynamic_cast<const RealLiteralNode*>(&astNode);
     }
 
-    bool isNegatedNumericLiteral(const AstNode& astNode) {
-        auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
-        if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
-            return false;
-        }
-        return isNumericLiteral(*unaryOp->operand);
+    bool numericLiteralRejectsFoldedSign(const AstNode& astNode) {
+        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&astNode);
+        return integerLiteral && hexLiteralIsInt64Min(integerLiteral->value);
     }
 
     std::string_view sqlPredicateLooserThanMinus(const AstNode& astNode) {
@@ -586,19 +583,41 @@ namespace sqlite2orm {
         return {};
     }
 
+    NegationForm negationFormFor(const AstNode& operand) {
+        if(isNumericLiteral(operand)) {
+            return numericLiteralRejectsFoldedSign(operand) ? NegationForm::zeroMinusSubtraction
+                                                            : NegationForm::foldedIntoConstant;
+        }
+        if(generatesFoldedNegation(operand)) {
+            // The operand is itself a constant with a sign already folded in, so C++ folds this
+            // sign too: `- - -3` is the constant `-(-(-3))`.
+            return NegationForm::foldedIntoConstant;
+        }
+        return sqlPredicateLooserThanMinus(operand).empty() ? NegationForm::zeroMinusSubtraction
+                                                            : NegationForm::unaryOverPredicate;
+    }
+
+    namespace {
+        /** The form a node's own negation takes, for a node that is not a negation at all. */
+        std::optional<NegationForm> formOfNegationNode(const AstNode& astNode) {
+            auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
+            if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
+                return std::nullopt;
+            }
+            return negationFormFor(*unaryOp->operand);
+        }
+    }
+
+    bool generatesFoldedNegation(const AstNode& astNode) {
+        return formOfNegationNode(astNode) == NegationForm::foldedIntoConstant;
+    }
+
     bool generatesZeroMinusSubtraction(const AstNode& astNode) {
-        auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
-        if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
-            return false;
-        }
-        if(isNumericLiteral(*unaryOp->operand) || isNegatedNumericLiteral(*unaryOp->operand)) {
-            return false;
-        }
-        return sqlPredicateLooserThanMinus(*unaryOp->operand).empty();
+        return formOfNegationNode(astNode) == NegationForm::zeroMinusSubtraction;
     }
 
     bool isLeafNode(const AstNode& astNode) {
-        return isNegatedNumericLiteral(astNode) ||
+        return generatesFoldedNegation(astNode) ||
                dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
                dynamic_cast<const RealLiteralNode*>(&astNode) ||
                dynamic_cast<const StringLiteralNode*>(&astNode) ||

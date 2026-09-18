@@ -73,14 +73,31 @@ namespace sqlite2orm {
     bool integerLiteralExceedsInt64(std::string_view integerLiteral);
     /** True for an integer or real literal, the two kinds a minus sign is folded into. */
     bool isNumericLiteral(const AstNode& astNode);
-    /** True for a numeric literal carrying a folded-in minus sign, e.g. `-2` (see `isLeafNode`). */
-    bool isNegatedNumericLiteral(const AstNode& astNode);
+    /**
+     *  True for an integer literal whose C++ constant cannot carry a folded-in minus sign, which is
+     *  `0x8000000000000000` alone: it is INT64_MIN, so `-static_cast<int64_t>(0x8000000000000000)`
+     *  overflows. SQLite refuses the same SQL with `hex literal too big`.
+     */
+    bool numericLiteralRejectsFoldedSign(const AstNode& astNode);
+    /** The three shapes a unary minus is generated in, decided by its operand alone. */
+    enum class NegationForm {
+        /** The sign is folded into the numeric constant the operand generates, as SQLite's parser does. */
+        foldedIntoConstant,
+        /** `(c(0) - x)` / `sub(0, x)`, which is what SQLite computes for `-x`. */
+        zeroMinusSubtraction,
+        /** No form reproduces the negation; the unary minus stays and codegen warns. */
+        unaryOverPredicate,
+    };
+    /** The shape a unary minus over `operand` is generated in — the single home of that rule. */
+    NegationForm negationFormFor(const AstNode& operand);
     /**
      *  Name of the SQL predicate a node stands for when sqlite_orm serializes it without
      *  parentheses and SQLite binds it looser than a binary `-`, empty for every other node.
      *  Such an operand cannot carry the `0 - expr` spelling of a negation.
      */
     std::string_view sqlPredicateLooserThanMinus(const AstNode& astNode);
+    /** True for a negation generated as a plain C++ constant, e.g. `-2` (see `isLeafNode`). */
+    bool generatesFoldedNegation(const AstNode& astNode);
     /**
      *  True for a node generated as the parenthesized `(c(0) - …)` subtraction a negation becomes,
      *  which is already one C++ term and needs no parentheses of its own around it.

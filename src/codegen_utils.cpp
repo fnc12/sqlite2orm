@@ -656,21 +656,24 @@ namespace sqlite2orm {
                (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
-    namespace {
-
-        /** `value` with every folded minus sign taken off; `negated` ends up true for an odd count. */
-        const AstNode* withoutFoldedSigns(const AstNode& value, bool& negated) {
-            negated = false;
-            const AstNode* node = &value;
-            while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
-                if(unaryOperator->unaryOperator != UnaryOperator::minus) {
-                    break;
-                }
-                negated = !negated;
-                node = unaryOperator->operand.get();
+    const AstNode* withoutFoldedSigns(const AstNode& value, std::size_t& foldedMinusSigns) {
+        foldedMinusSigns = 0;
+        const AstNode* node = &value;
+        while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
+            const bool sign = unaryOperator->unaryOperator == UnaryOperator::minus ||
+                              unaryOperator->unaryOperator == UnaryOperator::plus;
+            if(!sign || !unaryOperator->operand) {
+                break;
             }
-            return node;
+            if(unaryOperator->unaryOperator == UnaryOperator::minus) {
+                ++foldedMinusSigns;
+            }
+            node = unaryOperator->operand.get();
         }
+        return node;
+    }
+
+    namespace {
 
         /** The source text of a numeric literal node, or an empty view for any other node. */
         std::string_view numericLiteralText(const AstNode& literal) {
@@ -686,23 +689,33 @@ namespace sqlite2orm {
     }  // namespace
 
     bool isIntegerLiteralPastIntegerFieldRange(const AstNode& value) {
-        bool negated = false;
-        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
-        return integerLiteral != nullptr && integerLiteralExceedsInt64(integerLiteral->value, negated);
+        std::size_t foldedSigns = 0;
+        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, foldedSigns));
+        if(integerLiteral == nullptr) {
+            return false;
+        }
+        if(integerLiteralExceedsInt64(integerLiteral->value, foldedSigns % 2 != 0)) {
+            return true;
+        }
+        // Only the innermost sign folds into the literal; SQLite negates the value the rest of
+        // them stand on while it runs the statement, and negating the int64 minimum leaves the
+        // integer range: `SELECT typeof(-9223372036854775808)` is integer, while
+        // `typeof(-(-9223372036854775808))` is real.
+        return foldedSigns > 1 && integerLiteralExceedsInt64(integerLiteral->value);
     }
 
     std::string numericLiteralSqlText(const AstNode& value) {
-        bool negated = false;
-        const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, negated));
+        std::size_t foldedSigns = 0;
+        const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, foldedSigns));
         if(text.empty()) {
             return {};
         }
-        return (negated ? "-" : "") + withoutDigitSeparators(text);
+        return (foldedSigns % 2 != 0 ? "-" : "") + withoutDigitSeparators(text);
     }
 
     CodegenWarning numericLiteralWarning(std::string message, const AstNode& value) {
-        bool negated = false;
-        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        std::size_t foldedSigns = 0;
+        const AstNode& literal = *withoutFoldedSigns(value, foldedSigns);
         const std::string_view text = numericLiteralText(literal);
         if(text.empty()) {
             return CodegenWarning{std::move(message)};
@@ -719,8 +732,8 @@ namespace sqlite2orm {
     }
 
     bool integerFieldCarriesValue(const AstNode& value) {
-        bool negated = false;
-        if(dynamic_cast<const RealLiteralNode*>(withoutFoldedSigns(value, negated))) {
+        std::size_t foldedSigns = 0;
+        if(dynamic_cast<const RealLiteralNode*>(withoutFoldedSigns(value, foldedSigns))) {
             // SQLite turns a REAL into an INTEGER only where the column affinity converts it back
             // and forth without loss, while a C++ field truncates it either way: `1.5` would reach
             // an int64_t field as 1 where SQLite keeps the 1.5 it stored.
@@ -737,8 +750,10 @@ namespace sqlite2orm {
          *  64-bit integer and wraps it around, so `0xFFFFFFFFFFFFFFFF` is -1.
          */
         std::optional<std::int64_t> integerLiteralInt64Value(const AstNode& value) {
-            bool negated = false;
-            const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
+            std::size_t foldedSigns = 0;
+            const auto* integerLiteral =
+                dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, foldedSigns));
+            const bool negated = foldedSigns % 2 != 0;
             if(integerLiteral == nullptr || integerLiteralExceedsInt64(integerLiteral->value, negated)) {
                 return std::nullopt;
             }
@@ -791,8 +806,8 @@ namespace sqlite2orm {
         }
         // A sign folds into a number only; in front of anything else it is an operator SQLite
         // computes, and the generated code spells that operator out rather than a value.
-        bool negated = false;
-        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        std::size_t foldedSigns = 0;
+        const AstNode& literal = *withoutFoldedSigns(value, foldedSigns);
         if(dynamic_cast<const IntegerLiteralNode*>(&literal) || dynamic_cast<const RealLiteralNode*>(&literal)) {
             return ValueStorageClass::numeric;
         }

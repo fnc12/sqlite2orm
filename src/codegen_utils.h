@@ -4,6 +4,7 @@
 #include <sqlite2orm/codegen_policy.h>
 #include <sqlite2orm/codegen_result.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -113,8 +114,17 @@ namespace sqlite2orm {
      */
     bool integerLiteralExceedsInt64(std::string_view integerLiteral, bool negated = false);
     /**
+     *  `value` with the signs standing in front of it taken off, i.e. the node they apply to.
+     *  SQLite's parser drops a unary plus altogether, so that `-+5` is the `-5` it prints, and
+     *  folds a minus into the literal behind it. `foldedMinusSigns` receives how many minus signs
+     *  stood there: only the innermost one goes into the literal, and SQLite computes the rest
+     *  while it runs the statement, where negating the int64 minimum leaves the integer range.
+     */
+    const AstNode* withoutFoldedSigns(const AstNode& value, std::size_t& foldedMinusSigns);
+    /**
      *  True when `value` denotes a decimal integer literal SQLite keeps a REAL — one past the int64
-     *  range, any folded minus signs counted in. SQLite types a value by itself and applies column
+     *  range with the innermost folded sign in it, or one an outer sign takes out of the range,
+     *  which only the int64 minimum reaches. SQLite types a value by itself and applies column
      *  affinity only afterwards, so such a literal stays a REAL even in an INTEGER column, where a
      *  C++ `int64_t` field would convert it.
      */

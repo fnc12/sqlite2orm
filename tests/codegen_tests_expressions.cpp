@@ -910,6 +910,31 @@ TEST_CASE("codegen: prefix - the width of a literal follows the sign folded into
     REQUIRE(prefixFor("x > +0xFFFFFFFF80000000") == "struct User {\n    int x = 0;\n};");
 }
 
+// Parentheses leave no node behind, so `-(-2147483648)` is a minus over a minus and every sign
+// counts: `sqlite3 :memory: "SELECT -(-2147483648), -(-(-2147483648))"` prints 2147483648, which
+// an `int` field reads back as -2147483648, and -2147483648, which it holds. A unary plus
+// disappears from SQLite's parse tree altogether and does not interrupt the chain either:
+// `SELECT -+2147483648` prints -2147483648 and `SELECT -(+(-2147483648))` prints 2147483648.
+TEST_CASE("codegen: prefix - the width of a literal follows every sign folded into it") {
+    REQUIRE(prefixFor("x > -(-2147483648)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-0x80000000)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-(-2147483648))") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-2147483647)") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -+2147483648") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -(+(-2147483648))") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// Only the innermost sign folds into the literal; SQLite negates the value the outer ones stand
+// on while it runs the statement, and negating the int64 minimum leaves the integer range:
+// `sqlite3 :memory: "SELECT typeof(-9223372036854775808), typeof(-(-9223372036854775808)),
+// typeof(-(-(-9223372036854775808)))"` prints integer, real and real.
+TEST_CASE("codegen: prefix - the int64 minimum keeps its field until a second sign negates it") {
+    REQUIRE(prefixFor("x > -9223372036854775808") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-9223372036854775808)") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > -(-(-9223372036854775808))") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > +9223372036854775808") == "struct User {\n    double x = 0.0;\n};");
+}
+
 // `~` complements over 64 bits, so it takes a value out of the int32 range as readily as it
 // brings one back in: `sqlite3 :memory: "SELECT ~2147483648"` prints -2147483649, which an `int`
 // field reads back as 2147483647.

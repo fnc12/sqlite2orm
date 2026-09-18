@@ -138,20 +138,25 @@ namespace sqlite2orm {
             }
             if(unaryOperator->operand && (unaryOperator->unaryOperator == UnaryOperator::minus ||
                                           unaryOperator->unaryOperator == UnaryOperator::plus)) {
-                // A minus sign belongs to the literal it stands before, so the width follows the
-                // value the two spell together: `0xFFFFFFFF80000000` is the -2147483648 an `int`
-                // holds, while `-0xFFFFFFFF80000000` is the 2147483648 it does not.
-                if(unaryOperator->unaryOperator == UnaryOperator::minus) {
-                    auto* signedLiteral =
-                        dynamic_cast<const IntegerLiteralNode*>(unaryOperator->operand.get());
-                    if(signedLiteral && !integerLiteralExceedsInt64(signedLiteral->value)) {
-                        return integerLiteralExceedsInt32(signedLiteral->value, /*negated*/ true) ? "int64_t"
-                                                                                                 : "int";
+                // The signs standing in front of a literal belong to the value they spell with
+                // it, so the width follows all of them together rather than the magnitude alone:
+                // `0xFFFFFFFF80000000` is the -2147483648 an `int` holds, `-0xFFFFFFFF80000000`
+                // is the 2147483648 it does not, and `-(-2147483648)` is that value again.
+                std::size_t foldedSigns = 0;
+                auto* signedLiteral =
+                    dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(node, foldedSigns));
+                if(signedLiteral) {
+                    // A value past the int64 range is a REAL for SQLite, whichever side of the
+                    // range the signs leave it on.
+                    if(isIntegerLiteralPastIntegerFieldRange(node)) {
+                        return "double";
                     }
+                    return integerLiteralExceedsInt32(signedLiteral->value, foldedSigns % 2 != 0) ? "int64_t"
+                                                                                                 : "int";
                 }
-                // A sign does not otherwise change the width a value needs, so `-3000000000` is
-                // the int64_t its operand is. C++ types the constant the same way: `2147483648`
-                // is already wider than an `int` there, and the minus applies to that wider type.
+                // A sign does not otherwise change the width a value needs, so `-(x + 1)` is the
+                // int64_t its operand is. C++ types a constant the same way: `2147483648` is
+                // already wider than an `int` there, and the minus applies to that wider type.
                 return this->inferTypeFromNode(*unaryOperator->operand);
             }
         }

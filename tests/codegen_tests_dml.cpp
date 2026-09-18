@@ -322,6 +322,25 @@ TEST_CASE("codegen: INSERT VALUES - a doubly negated INT64_MIN leaves the int64 
     REQUIRE(result.errors.empty());
 }
 
+// A third sign does not bring the value back: SQLite folds only the innermost one into the
+// literal and negates what the rest stand on, so `sqlite3 :memory: "SELECT
+// typeof(-(-(-9223372036854775808)))"` is real, and so is the value a unary plus stands on,
+// which SQLite's parser drops altogether.
+TEST_CASE("codegen: INSERT VALUES - a third sign leaves a negated INT64_MIN past the range") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (-(-(-9223372036854775808)));");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(-(-(-9223372036854775808.0)))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"INSERT into column 'x' of table 't' uses -9223372036854775808, past the signed 64-bit integer "
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{1, 50},
+                 24}});
+    REQUIRE(result.errors.empty());
+}
+
 // The limit moves by one for a negated literal, the way SQLite's own `codeInteger()` moves it:
 // `INSERT INTO t VALUES (-9223372036854775808)` stores `integer|-9223372036854775808`, which the
 // `int64_t` field holds, so the object form stays.

@@ -12,7 +12,9 @@ namespace sqlite2orm {
     CodeGenResult DdlCodeGenerator::generateCreateTable(const CreateTableNode& createTable) {
         const CreateTableParts parts = this->createTableParts(createTable);
         if(parts.makeTableExpression.empty()) {
-            return CodeGenResult{{}, {}, std::vector<CodegenWarning>(parts.warnings)};
+            return CodeGenResult{"/* CREATE TABLE " + createTable.tableName + " — not supported for sqlite_orm */",
+                                 {},
+                                 std::vector<CodegenWarning>(parts.warnings)};
         }
         std::string code = parts.structDeclaration + "\nauto storage = make_storage(\"\",\n    " +
                            parts.makeTableExpression + ");";

@@ -299,10 +299,12 @@ TEST_CASE("codegen: CREATE TABLE - table-level CHECK holding a hex literal too b
 // sqlite_master holds the table, while every INSERT into it is `hex literal too big`. C++ has no
 // literal for the value, and a column that lost its as(...) would be an ordinary column rather
 // than a generated one, so the table is left out whole instead of being reshaped — the statement
-// is not an error and the rest of a schema holding it still generates. Checked against sqlite3 3.51.
+// is not an error and the rest of a schema holding it still generates. On its own it generates a
+// placeholder comment rather than nothing, the way an unsupported CREATE VIEW does. Checked
+// against sqlite3 3.51.
 TEST_CASE("codegen: CREATE TABLE - STORED generated column holding a hex literal too big") {
     auto result = generateFull("CREATE TABLE g (x INTEGER, y AS (x + 0x10000000000000000) STORED)");
-    REQUIRE(result.code.empty());
+    REQUIRE(result.code == "/* CREATE TABLE g — not supported for sqlite_orm */");
     REQUIRE(result.warnings ==
         std::vector<CodegenWarning>{
             {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "
@@ -315,7 +317,7 @@ TEST_CASE("codegen: CREATE TABLE - STORED generated column holding a hex literal
 TEST_CASE("codegen: CREATE TABLE - GENERATED ALWAYS STORED column holding a hex literal too big") {
     auto result =
         generateFull("CREATE TABLE g (x INTEGER, y GENERATED ALWAYS AS (x + 0x1_0000_0000_0000_0000) STORED)");
-    REQUIRE(result.code.empty());
+    REQUIRE(result.code == "/* CREATE TABLE g — not supported for sqlite_orm */");
     REQUIRE(result.warnings ==
         std::vector<CodegenWarning>{
             {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "

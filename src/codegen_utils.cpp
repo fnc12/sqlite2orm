@@ -523,6 +523,18 @@ namespace sqlite2orm {
 
     namespace {
 
+        bool isDigit(char character) {
+            return std::isdigit(static_cast<unsigned char>(character)) != 0;
+        }
+
+        bool isHexDigit(char character) {
+            return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+        }
+
+        int hexDigitValue(char character) {
+            return isDigit(character) ? character - '0' : (character | 0x20) - 'a' + 10;
+        }
+
         bool isHexadecimalLiteral(std::string_view integerLiteral) {
             return integerLiteral.size() > 1 && integerLiteral.front() == '0' &&
                    (integerLiteral[1] == 'x' || integerLiteral[1] == 'X');
@@ -648,9 +660,53 @@ namespace sqlite2orm {
         return !isIntegerLiteralPastIntegerFieldRange(value);
     }
 
+    namespace {
+
+        /**
+         *  The int64 the integer literal `value` denotes, or nothing for any other node and for a
+         *  decimal literal past the int64 range. SQLite reads a hexadecimal literal as a signed
+         *  64-bit integer and wraps it around, so `0xFFFFFFFFFFFFFFFF` is -1.
+         */
+        std::optional<std::int64_t> integerLiteralInt64Value(const AstNode& value) {
+            bool negated = false;
+            const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
+            if(integerLiteral == nullptr || integerLiteralExceedsInt64(integerLiteral->value, negated)) {
+                return std::nullopt;
+            }
+            const std::string_view text = integerLiteral->value;
+            const bool hexadecimal = isHexadecimalLiteral(text);
+            std::uint64_t magnitude = 0;
+            for(char character: hexadecimal ? text.substr(2) : text) {
+                if(character == '_') {
+                    continue;
+                }
+                magnitude = hexadecimal ? magnitude * 16 + static_cast<std::uint64_t>(hexDigitValue(character))
+                                        : magnitude * 10 + static_cast<std::uint64_t>(character - '0');
+            }
+            // The magnitude of the int64 minimum does not fit an int64, so the sign folds in on
+            // the unsigned value, where the wraparound is the one SQLite performs anyway.
+            return static_cast<std::int64_t>(negated ? ~magnitude + 1 : magnitude);
+        }
+
+    }  // namespace
+
+    bool doubleFieldCarriesValue(const AstNode& value) {
+        const std::optional<std::int64_t> number = integerLiteralInt64Value(value);
+        if(!number) {
+            // A REAL literal initializes a `double` field as itself, and a decimal literal past
+            // the int64 range is generated as a REAL, so neither of them narrows.
+            return true;
+        }
+        const double asDouble = static_cast<double>(*number);
+        static constexpr double int64Limit = 9223372036854775808.0;
+        // `static_cast<double>(INT64_MAX)` rounds up to the limit itself, which no int64 holds.
+        if(asDouble < -int64Limit || asDouble >= int64Limit) {
+            return false;
+        }
+        return static_cast<std::int64_t>(asDouble) == *number;
+    }
+
     ValueStorageClass valueStorageClass(const AstNode& value) {
-        // A sign folds into a number only; in front of anything else it is an operator SQLite
-        // computes, and the generated code spells that operator out rather than a value.
         if(dynamic_cast<const NullLiteralNode*>(&value)) {
             return ValueStorageClass::null;
         }
@@ -664,6 +720,8 @@ namespace sqlite2orm {
             // SQLite reads TRUE and FALSE as the integers 1 and 0.
             return ValueStorageClass::numeric;
         }
+        // A sign folds into a number only; in front of anything else it is an operator SQLite
+        // computes, and the generated code spells that operator out rather than a value.
         bool negated = false;
         const AstNode& literal = *withoutFoldedSigns(value, negated);
         if(dynamic_cast<const IntegerLiteralNode*>(&literal) || dynamic_cast<const RealLiteralNode*>(&literal)) {
@@ -673,6 +731,8 @@ namespace sqlite2orm {
     }
 
     ValueStorageClass fieldTypeStorageClass(std::string_view cppType) {
+        // These are the types `sqliteTypeToCpp` gives a table column; a mapping added there and
+        // left out here falls into `unknown`, which lets every value through the object form.
         if(cppType == "int64_t" || cppType == "int" || cppType == "double" || cppType == "bool") {
             return ValueStorageClass::numeric;
         }
@@ -935,18 +995,6 @@ namespace sqlite2orm {
     }
 
     namespace {
-
-        bool isDigit(char character) {
-            return std::isdigit(static_cast<unsigned char>(character)) != 0;
-        }
-
-        bool isHexDigit(char character) {
-            return std::isxdigit(static_cast<unsigned char>(character)) != 0;
-        }
-
-        int hexDigitValue(char character) {
-            return isDigit(character) ? character - '0' : (character | 0x20) - 'a' + 10;
-        }
 
         /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
         std::string sqlStringLiteralText(std::string_view literal) {

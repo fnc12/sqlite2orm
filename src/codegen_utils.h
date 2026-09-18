@@ -105,6 +105,13 @@ namespace sqlite2orm {
      */
     bool integerFieldCarriesValue(const AstNode& value);
     /**
+     *  True when a `double` field is known to hold exactly the value SQLite gives `value`: false
+     *  for an integer literal inside the int64 range that no `double` holds exactly, because the
+     *  object form brace-initializes the field and a braced initializer refuses a constant it
+     *  would narrow, true for anything else.
+     */
+    bool doubleFieldCarriesValue(const AstNode& value);
+    /**
      *  The storage class SQLite gives a value before it applies any column affinity, as far as the
      *  SQL spells it out. A value that is not a literal is an expression SQLite computes while it
      *  runs the statement, and `unknown` stands for it.

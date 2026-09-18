@@ -26,7 +26,9 @@ namespace sqlite2orm {
          *  class: a text or blob literal does not even initialize a numeric field — `CREATE TABLE
          *  ch(x); INSERT INTO ch VALUES (1)` generated `Ch{1}` for a `std::vector<char>` field,
          *  which does not compile — and an expression, whose value only SQLite knows, initializes
-         *  no field at all.
+         *  no field at all. A field of the right storage class still has a range: a braced
+         *  initializer refuses a whole number past the int64 range, and a `double` one refuses
+         *  every integer constant it would round.
          */
         bool objectFormCarriesValue(const SourceTableColumn& column, const AstNode& value) {
             const ValueStorageClass fieldClass = fieldTypeStorageClass(column.cppType);
@@ -42,7 +44,10 @@ namespace sqlite2orm {
             if(storageClass != fieldClass) {
                 return false;
             }
-            return !isWholeNumberFieldType(column.cppType) || integerFieldCarriesValue(value);
+            if(isWholeNumberFieldType(column.cppType)) {
+                return integerFieldCarriesValue(value);
+            }
+            return column.cppType != "double" || doubleFieldCarriesValue(value);
         }
 
     }  // namespace

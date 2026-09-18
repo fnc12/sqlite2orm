@@ -386,6 +386,130 @@ TEST_CASE("generateSqliteSchemaHeader: a view over an ungenerated table is left 
     REQUIRE(header.errors.empty());
 }
 
+// A table can also be named indirectly, from a subquery that sits inside an expression. The
+// struct is just as absent there, so the trigger goes the same way as one deleting from the
+// table outright — while the index next to it, which names nothing ungenerated, stays.
+TEST_CASE("generateSqliteSchemaHeader: a trigger naming an ungenerated table in a subquery is left out") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gen (x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE TABLE good (a INTEGER);"
+            "CREATE TRIGGER tr_sub AFTER UPDATE ON good BEGIN DELETE FROM good WHERE a IN (SELECT x FROM gen); END;"
+            "CREATE INDEX i_ok ON good (a);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Good {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"good\",\n"
+            "        make_column(\"a\", &Good::a)),\n"
+            "        make_index(\"i_ok\", indexed_column(&Good::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"},
+                {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS "
+                 "differs from serialized output"},
+                {"`tr_sub` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
+// A trigger WHEN clause is not part of the body, and names a table just as well.
+TEST_CASE("generateSqliteSchemaHeader: a trigger WHEN clause naming an ungenerated table is left out") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gen (x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE TABLE good (a INTEGER);"
+            "CREATE TRIGGER tr_when AFTER UPDATE ON good WHEN (SELECT count(*) FROM gen) > 0 "
+            "BEGIN DELETE FROM good; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Good {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"good\",\n"
+            "        make_column(\"a\", &Good::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"},
+                {"`tr_when` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
+// The same for a view whose FROM names only generated tables and whose WHERE does not.
+TEST_CASE("generateSqliteSchemaHeader: a view naming an ungenerated table in a subquery is left out") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gen (x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE TABLE good (a INTEGER);"
+            "CREATE VIEW vw_sub AS SELECT a FROM good WHERE a IN (SELECT x FROM gen);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Good {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"good\",\n"
+            "        make_column(\"a\", &Good::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"},
+                {"`vw_sub` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
 TEST_CASE("generateSqliteSchemaHeader: DML after DDL emits seed_data()") {
     auto pipelines = processMultiSql(
         "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"

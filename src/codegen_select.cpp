@@ -175,11 +175,22 @@ namespace sqlite2orm {
             }
             // A result column is what the caller reads back, so it is here — and not in the
             // expression generator, whose code also serves a WHERE or an ORDER BY — that an
-            // expression sqlite_orm types non-nullably gets its `as_optional`.
+            // expression sqlite_orm types too narrowly is widened: `as_optional` for a value that
+            // can be NULL, `cast<int64_t>` for a bitwise one that can leave the int32 range, and a
+            // warning for the arithmetic operators, whose `double` no CAST can widen without
+            // truncating the REAL they answer with. Warnings dedupe by message, so several columns
+            // computed with the same operator report once, anchored at the first of them.
             auto resultColumnCode = [&](const SelectColumn& column) -> std::string {
                 auto colCode = expressionCode(*column.expression);
+                if(selectResultNeedsIntegerCast(*column.expression)) {
+                    colCode = "cast<int64_t>(" + colCode + ")";
+                    appendUniqueString(selectComments, kCommentBitwiseResultCast);
+                }
                 if(selectResultNeedsAsOptional(*column.expression)) {
                     colCode = "as_optional(" + colCode + ")";
+                }
+                if(auto warning = selectResultDoublePrecisionWarning(*column.expression)) {
+                    appendUniqueWarnings(selectWarnings, {std::move(*warning)});
                 }
                 return wrapWithColumnAlias(colCode, column.alias, cpp20ColumnAliases);
             };

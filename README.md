@@ -4,6 +4,10 @@ Converts SQLite SQL into C++ code for [sqlite_orm](https://github.com/fnc12/sqli
 
 Paste any SQLite statement — `CREATE TABLE`, `SELECT`, `INSERT`, triggers, indexes, window functions — and get ready-to-compile `sqlite_orm` API calls with struct definitions and `make_storage()`.
 
+## Try it online
+
+No build required — paste SQL and get sqlite_orm code at [sqliteorm.com/playground](https://sqliteorm.com/playground).
+
 ## Features
 
 - Full SQLite grammar coverage (lexer + recursive-descent parser)

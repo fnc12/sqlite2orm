@@ -655,7 +655,10 @@ TEST_CASE("codegen: explicit C++20 table_alias policy is overridden by targetCpp
 // row used to reach the caller as 0 / false / "". `as_optional` leaves the SQL untouched and hands
 // back a `std::optional` instead. A unary operator is typed the same way, whether it keeps its
 // shape (`~x`) or becomes the subtraction `(c(0) - x)` a negation is generated as. Values checked
-// against sqlite3 3.51 in "runtime: a result column that can be NULL reads the NULL back".
+// against sqlite3 3.51 in "runtime: a result column that can be NULL reads the NULL back". The CAST
+// inside the `~a` column is the int64 widening of
+// "codegen: a bitwise result column is cast to an int64_t", which the widening rule here is
+// independent of.
 TEST_CASE("codegen: a result column that can be NULL is generated as as_optional") {
     REQUIRE(generate("SELECT a + 1 FROM users;") ==
             "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
@@ -665,7 +668,8 @@ TEST_CASE("codegen: a result column that can be NULL is generated as as_optional
             "auto rows = storage.select(as_optional(c(0) - &Users::a));");
     REQUIRE(generate("SELECT -a FROM users;") ==
             "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
-    REQUIRE(generate("SELECT ~a FROM users;") == "auto rows = storage.select(as_optional(~c(&Users::a)));");
+    REQUIRE(generate("SELECT ~a FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(~c(&Users::a))));");
     REQUIRE(generate("SELECT a > 0 FROM users;") ==
             "auto rows = storage.select(as_optional(c(&Users::a) > 0));");
     REQUIRE(generate("SELECT a AND 1 FROM users;") ==
@@ -714,7 +718,8 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
 // `~` form has no sqlite_orm overload and does not compile, which is a separate gap and not what
 // this widening rule decides.) The CAST around a NULL test under a binary operator is the grouping
 // the serialized SQL needs, spelled out in
-// "codegen: a predicate under an operator is cast to stay one SQL term".
+// "codegen: a predicate under an operator is cast to stay one SQL term"; the one around the whole
+// `~` column is the int64 widening of "codegen: a bitwise result column is cast to an int64_t".
 TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
     REQUIRE(generate("SELECT (a IS NULL) + 1 FROM users;") ==
             "auto rows = storage.select(cast<int64_t>(is_null(&Users::a)) + 1);");
@@ -727,7 +732,7 @@ TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
     REQUIRE(generate("SELECT (a IS NULL) || 'x' FROM users;") ==
             "auto rows = storage.select(cast<int64_t>(is_null(&Users::a)) || \"x\");");
     REQUIRE(generate("SELECT ~(a IS NULL) FROM users;") ==
-            "auto rows = storage.select(~(is_null(&Users::a)));");
+            "auto rows = storage.select(cast<int64_t>(~(is_null(&Users::a))));");
 }
 
 // A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the
@@ -757,4 +762,228 @@ TEST_CASE("codegen: as_optional reaches every form a result column is generated 
     REQUIRE(generate("SELECT DISTINCT a + 1, a * 2 FROM users;") ==
             "auto rows = storage.select(distinct(columns(as_optional(c(&Users::a) + 1), "
             "as_optional(c(&Users::a) * 2))));");
+}
+
+// sqlite_orm types `&`, `|`, `<<`, `>>` and `~` as `int`, so the int64 SQLite computes reached the
+// caller truncated: `9223372036854775807 & -1` came back as -1. SQLite answers a bitwise operator
+// with an INTEGER or a NULL whatever its operands hold — checked over 1463 operand pairs against
+// sqlite3 3.51, none of them REAL or TEXT — and a CAST to INTEGER keeps both, `typeof` included,
+// so the CAST only widens the C++ type. Values checked in "runtime: a bitwise result column reads
+// the whole int64 back".
+TEST_CASE("codegen: a bitwise result column is cast to an int64_t") {
+    REQUIRE(generate("SELECT a & -1 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) & -1)));");
+    REQUIRE(generate("SELECT a | 0 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) | 0)));");
+    REQUIRE(generate("SELECT a << 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) << 1)));");
+    REQUIRE(generate("SELECT a >> 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) >> 1)));");
+    REQUIRE(generate("SELECT ~a FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(~c(&Users::a))));");
+    // A unary plus generates its operand's code, so the operand is what carries the CAST.
+    REQUIRE(generate("SELECT +(a & -1) FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(c(&Users::a) & -1)));");
+    // An operator over literals alone needs no `as_optional`, and still needs the CAST.
+    REQUIRE(generate("SELECT 9223372036854775807 & -1;") ==
+            "auto rows = storage.select(cast<int64_t>(c(9223372036854775807) & -1));");
+    // Only the top-level operator of a result column decides the type the row is read back with.
+    REQUIRE(generate("SELECT (a & -1) + 1 FROM users;") ==
+            "auto rows = storage.select(as_optional((c(&Users::a) & -1) + 1));");
+}
+
+// The CAST is what a result column is read back with, so an expression nobody reads back — a
+// WHERE, an ORDER BY, a GROUP BY — keeps the code the expression generator gives it.
+TEST_CASE("codegen: the int64 cast is confined to the result columns of a select") {
+    REQUIRE(generate("SELECT * FROM users WHERE a & 1;") ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::a) & 1));");
+    REQUIRE(generate("SELECT a FROM users ORDER BY a & 1;") ==
+            "auto rows = storage.select(&Users::a, order_by(c(&Users::a) & 1));");
+}
+
+// The CAST reaches a result column in every shape a select spells one, the way `as_optional` does.
+TEST_CASE("codegen: the int64 cast reaches every form a result column is generated in") {
+    REQUIRE(generate("SELECT a & 1 AS masked FROM users;") ==
+            "struct MaskedAlias : sqlite_orm::alias_tag {\n"
+            "    static const std::string& get() {\n"
+            "        static const std::string res = \"masked\";\n"
+            "        return res;\n"
+            "    }\n"
+            "};\n"
+            "auto rows = storage.select(as<MaskedAlias>(as_optional(cast<int64_t>(c(&Users::a) & 1))));");
+    REQUIRE(generate("SELECT DISTINCT a & 1 FROM users;") ==
+            "auto rows = storage.select(distinct(as_optional(cast<int64_t>(c(&Users::a) & 1))));");
+    REQUIRE(generate("SELECT a & 1, a | 2 FROM users;") ==
+            "auto rows = storage.select(columns(as_optional(cast<int64_t>(c(&Users::a) & 1)), "
+            "as_optional(cast<int64_t>(c(&Users::a) | 2))));");
+}
+
+// `+`, `-`, `*`, `/` and `%` have no such CAST: SQLite answers them with a REAL as soon as an
+// operand is one, and a CAST would truncate that REAL instead of carrying it. sqlite_orm types
+// them `double`, which holds every integer up to 2^53 and rounds the ones past it, so the column
+// is generated as it was and the loss is reported. The underline covers the operator token, which
+// is what the message names.
+TEST_CASE("codegen: an arithmetic result column reports the double it is read back through") {
+    REQUIRE(generateFull("SELECT a + 0 FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 10}, 1}});
+    REQUIRE(generateFull("SELECT a - 1 FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `-` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 10}, 1}});
+    REQUIRE(generateFull("SELECT a * 2 FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `*` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 10}, 1}});
+    REQUIRE(generateFull("SELECT a / 2 FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `/` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 10}, 1}});
+    REQUIRE(generateFull("SELECT a % a FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `%` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 10}, 1}});
+    // Several columns computed with the same operator report once, anchored at the first of them.
+    REQUIRE(generateFull("SELECT a + 1, a + 2 FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 10}, 1}});
+    // A unary plus generates its operand's code, so the operand is the one the warning names and
+    // is anchored at: the `+` of `a + 0`, at column 12, not the one the column starts with.
+    REQUIRE(generateFull("SELECT +(a + 0) FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 12}, 1}});
+    // A negation reaches sqlite_orm as the subtraction `0 - x`, which is typed `double` too; the
+    // minus sign of the SQL is the token the message names.
+    REQUIRE(generateFull("SELECT -a FROM users;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `-` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 8}, 1}});
+}
+
+// A `double` holds every integer up to 2^53, so an expression whose operands the SQL spells out is
+// reported only when the arithmetic can leave that range. The bound is an upper bound on the
+// magnitude of an INTEGER answer, and it is computed in the int64 domain SQLite computes in:
+// carrying it in the `double` the warning is about would round it down past 2^53 and lose the very
+// values it looks for. Each step saturates instead of growing, and an INTEGER SQLite cannot hold is
+// a REAL, which reaches the caller exactly.
+TEST_CASE("codegen: an arithmetic result column a double carries is not reported") {
+    REQUIRE(generateFull("SELECT 1 + 2;").warnings.empty());
+    REQUIRE(generateFull("SELECT 1000000 * 1000000;").warnings.empty());
+    REQUIRE(generateFull("SELECT 1.5 * 2;").warnings.empty());
+    REQUIRE(generateFull("SELECT 9223372036854775807 % 2;").warnings.empty());
+    // A remainder is smaller than the divisor, so a spelled-out divisor bounds it whatever the
+    // dividend is.
+    REQUIRE(generateFull("SELECT a % 2 FROM users;").warnings.empty());
+    // An integer division never grows the dividend, so a spelled-out one bounds the quotient.
+    REQUIRE(generateFull("SELECT 1000 / a FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT 99999999999999999999 + 1;").warnings.empty());
+    // 2^53 itself is the largest magnitude a double still holds, so it is not reported and the
+    // next integer up is.
+    REQUIRE(generateFull("SELECT 9007199254740992 + 0;").warnings.empty());
+    // A factor of zero answers zero however large the other side is.
+    REQUIRE(generateFull("SELECT a * 0 FROM users;").warnings.empty());
+    // A WHERE or an ORDER BY is not read back, so there is nothing to lose there.
+    REQUIRE(generateFull("SELECT * FROM users WHERE a + 1 > 2;").warnings.empty());
+    REQUIRE(generateFull("SELECT a FROM users ORDER BY a + 1;").warnings.empty());
+}
+
+// `+`, `-`, `*`, `/` and `%` answer a REAL as soon as an operand is one and a NULL as soon as an
+// operand is one — checked over 1710 operand pairs against sqlite3 3.51, none of which answered an
+// INTEGER — so such a column has no INTEGER to lose: a `double` carries a REAL as it is and the
+// `as_optional` already generated carries the NULL. Reporting them would underline an `a * 1.0` in
+// the playground and in Studio over a loss the SQL cannot produce.
+TEST_CASE("codegen: an arithmetic result column with a REAL or a NULL operand is not reported") {
+    REQUIRE(generateFull("SELECT a + 1.5 FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT 1.5 - a FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT a * 1e300 FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT a / 1.5 FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT a % 1.5 FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT NULL + a FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT a - NULL FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT a * NULL FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT a / NULL FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT a % NULL FROM users;").warnings.empty());
+    // A REAL or a NULL reaches the outer operator through the inner one the same way.
+    REQUIRE(generateFull("SELECT (a + 1.5) * 9223372036854775807 FROM users;").warnings.empty());
+}
+
+// The first integers a `double` no longer holds, which a bound carried in a `double` rounded back
+// down into range and stayed quiet about: `static_cast<double>(9007199254740993)` is
+// 9007199254740992.0, and `9007199254740992.0 + 1.0` is 9007199254740992.0 as well. sqlite3 3.51
+// answers all four of these with an INTEGER — 9007199254740993, 9007199254740993, 9007199254740993
+// and -9007199254740994 — and the generated column reads the first three back as
+// 9007199254740992.
+TEST_CASE("codegen: an arithmetic result column is reported at the first integer past 2^53") {
+    REQUIRE(generateFull("SELECT 9007199254740993 + 0;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 25}, 1}});
+    REQUIRE(generateFull("SELECT 9007199254740992 + 1;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 25}, 1}});
+    REQUIRE(generateFull("SELECT 4503599627370496 * 2 + 1;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 29}, 1}});
+    // `~` casts its operand to an INTEGER first, so a REAL operand is not carried through it the
+    // way it is through the arithmetic operators: this one answers the INTEGER -9007199254740995.
+    REQUIRE(generateFull("SELECT 1 + ~9007199254740994.0;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 10}, 1}});
+    // A magnitude past 2^53 is reported even when both operands are literals.
+    REQUIRE(generateFull("SELECT 9223372036854775807 + 0;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 28}, 1}});
+    REQUIRE(generateFull("SELECT 100000000 * 100000000;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"result column computed with `*` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 18}, 1}});
 }

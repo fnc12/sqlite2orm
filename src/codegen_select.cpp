@@ -173,32 +173,35 @@ namespace sqlite2orm {
                     aliasPreamble = generateColumnAliasPreamble(selectNode.columns);
                 }
             }
+            // A result column is what the caller reads back, so it is here — and not in the
+            // expression generator, whose code also serves a WHERE or an ORDER BY — that an
+            // expression sqlite_orm types non-nullably gets its `as_optional`.
+            auto resultColumnCode = [&](const SelectColumn& column) -> std::string {
+                auto colCode = expressionCode(*column.expression);
+                if(selectResultNeedsAsOptional(*column.expression)) {
+                    colCode = "as_optional(" + colCode + ")";
+                }
+                return wrapWithColumnAlias(colCode, column.alias, cpp20ColumnAliases);
+            };
             code = "auto " + rowsVariable + " = storage.select(";
             if(selectNode.distinct) {
                 if(selectNode.columns.size() == 1) {
-                    auto colCode = expressionCode(*selectNode.columns.at(0).expression);
-                    code += "distinct(" +
-                            wrapWithColumnAlias(colCode, selectNode.columns.at(0).alias, cpp20ColumnAliases) + ")";
+                    code += "distinct(" + resultColumnCode(selectNode.columns.at(0)) + ")";
                 } else {
                     code += "distinct(columns(";
                     for(size_t i = 0; i < selectNode.columns.size(); ++i) {
                         if(i > 0) code += ", ";
-                        auto colCode = expressionCode(*selectNode.columns.at(i).expression);
-                        code +=
-                            wrapWithColumnAlias(colCode, selectNode.columns.at(i).alias, cpp20ColumnAliases);
+                        code += resultColumnCode(selectNode.columns.at(i));
                     }
                     code += "))";
                 }
             } else if(selectNode.columns.size() == 1) {
-                auto colCode = expressionCode(*selectNode.columns.at(0).expression);
-                code += wrapWithColumnAlias(colCode, selectNode.columns.at(0).alias, cpp20ColumnAliases);
+                code += resultColumnCode(selectNode.columns.at(0));
             } else {
                 code += "columns(";
                 for(size_t i = 0; i < selectNode.columns.size(); ++i) {
                     if(i > 0) code += ", ";
-                    auto colCode = expressionCode(*selectNode.columns.at(i).expression);
-                    code +=
-                        wrapWithColumnAlias(colCode, selectNode.columns.at(i).alias, cpp20ColumnAliases);
+                    code += resultColumnCode(selectNode.columns.at(i));
                 }
                 code += ")";
             }

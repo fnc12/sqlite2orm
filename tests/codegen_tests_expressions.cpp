@@ -121,7 +121,7 @@ TEST_CASE("codegen: hexadecimal literal in the unsigned int range keeps its sign
     REQUIRE(generate("0x100000000") == "0x100000000");
     REQUIRE(generate("0x1FFFFFFFF") == "0x1FFFFFFFF");
     REQUIRE(generate("SELECT x > 0xDEADBEEF;") ==
-            "auto rows = storage.select(c(&User::x) > static_cast<int64_t>(0xDEADBEEF));");
+            "auto rows = storage.select(as_optional(c(&User::x) > static_cast<int64_t>(0xDEADBEEF)));");
 }
 
 TEST_CASE("codegen: string literal") {
@@ -263,9 +263,9 @@ TEST_CASE("codegen: unary minus") {
 // The signed literal is a plain C++ value again, so an operator around it needs the usual `c()`.
 TEST_CASE("codegen: negative literal as an operand") {
     REQUIRE(generate("SELECT -2;") == "auto rows = storage.select(-2);");
-    REQUIRE(generate("SELECT 100 / -2;") == "auto rows = storage.select(c(100) / -2);");
+    REQUIRE(generate("SELECT 100 / -2;") == "auto rows = storage.select(as_optional(c(100) / -2));");
     REQUIRE(generate("SELECT -2 + 3;") == "auto rows = storage.select(c(-2) + 3);");
-    REQUIRE(generate("SELECT a * -2;") == "auto rows = storage.select(c(&User::a) * -2);");
+    REQUIRE(generate("SELECT a * -2;") == "auto rows = storage.select(as_optional(c(&User::a) * -2));");
     REQUIRE(generate("SELECT ~ -2;") == "auto rows = storage.select(~c(-2));");
     REQUIRE(generate("SELECT a BETWEEN -1 AND 5;") == "auto rows = storage.select(between(&User::a, -1, 5));");
 }
@@ -442,15 +442,18 @@ TEST_CASE("codegen: double unary minus parenthesized") {
 TEST_CASE("codegen: unary minus over a general operand becomes a subtraction from zero") {
     REQUIRE(generate("SELECT -(2+3);") == "auto rows = storage.select((c(0) - (c(2) + 3)));");
     REQUIRE(generate("SELECT - ~2;") == "auto rows = storage.select((c(0) - (~c(2))));");
-    REQUIRE(generate("SELECT -length('abc');") == "auto rows = storage.select((c(0) - (length(\"abc\"))));");
+    REQUIRE(generate("SELECT -length('abc');") ==
+            "auto rows = storage.select(as_optional((c(0) - (length(\"abc\")))));");
     REQUIRE(generate("SELECT -x'31';") ==
             "auto rows = storage.select((c(0) - c(std::vector<char>{'\\x31'})));");
-    REQUIRE(generate("SELECT -(SELECT 1);") == "auto rows = storage.select((c(0) - (select(1))));");
-    REQUIRE(generate("SELECT -a FROM users;") == "auto rows = storage.select((c(0) - c(&Users::a)));");
+    REQUIRE(generate("SELECT -(SELECT 1);") ==
+            "auto rows = storage.select(as_optional((c(0) - (select(1)))));");
+    REQUIRE(generate("SELECT -a FROM users;") ==
+            "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
     REQUIRE(generate("SELECT -(a+1) FROM users;") ==
-            "auto rows = storage.select((c(0) - (c(&Users::a) + 1)));");
+            "auto rows = storage.select(as_optional((c(0) - (c(&Users::a) + 1))));");
     REQUIRE(generate("SELECT -CAST(a AS INTEGER) FROM users;") ==
-            "auto rows = storage.select((c(0) - (cast<int64_t>(&Users::a))));");
+            "auto rows = storage.select(as_optional((c(0) - (cast<int64_t>(&Users::a)))));");
     // The subtraction carries its own parentheses, so it survives as one operand of another operator
     // where `c(1) - c(0) - (c(2) + 3)` would regroup into `(1 - 0) - 5`.
     REQUIRE(generate("SELECT 1 - -(2+3);") == "auto rows = storage.select(c(1) - (c(0) - (c(2) + 3)));");
@@ -465,7 +468,7 @@ TEST_CASE("codegen: unary minus under the functional expression style") {
     CodeGenPolicy policy;
     policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
     REQUIRE(generateWithPolicy("SELECT -a FROM users;", policy).code ==
-            "auto rows = storage.select(sub(0, &Users::a));");
+            "auto rows = storage.select(as_optional(sub(0, &Users::a)));");
     REQUIRE(generateWithPolicy("SELECT -(2+3);", policy).code ==
             "auto rows = storage.select(sub(0, add(2, 3)));");
 }

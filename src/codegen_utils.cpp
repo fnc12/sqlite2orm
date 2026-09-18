@@ -807,6 +807,77 @@ namespace sqlite2orm {
         return "c(" + std::string(code) + ")";
     }
 
+    bool expressionMayBeNull(const AstNode& astNode) {
+        if(dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
+           dynamic_cast<const RealLiteralNode*>(&astNode) ||
+           dynamic_cast<const StringLiteralNode*>(&astNode) ||
+           dynamic_cast<const BoolLiteralNode*>(&astNode) ||
+           dynamic_cast<const BlobLiteralNode*>(&astNode) ||
+           dynamic_cast<const CurrentDatetimeLiteralNode*>(&astNode)) {
+            return false;
+        }
+        if(dynamic_cast<const IsNullNode*>(&astNode) || dynamic_cast<const IsNotNullNode*>(&astNode) ||
+           dynamic_cast<const ExistsNode*>(&astNode)) {
+            // SQLite answers these over a NULL operand too; they are the tests for one.
+            return false;
+        }
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+            switch(binaryOp->binaryOperator) {
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:
+                // `NULL IS 1` is 0, not NULL: these compare NULL rather than propagate it.
+                return false;
+            case BinaryOperator::divide:
+            case BinaryOperator::modulo:
+                // `1 / 0` and `1 % 0` are NULL in SQLite, however plain the operands are.
+                return true;
+            default:
+                return expressionMayBeNull(*binaryOp->lhs) || expressionMayBeNull(*binaryOp->rhs);
+            }
+        }
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            return expressionMayBeNull(*unaryOp->operand);
+        }
+        if(auto* collate = dynamic_cast<const CollateNode*>(&astNode)) {
+            return expressionMayBeNull(*collate->operand);
+        }
+        return true;
+    }
+
+    bool selectResultNeedsAsOptional(const AstNode& astNode) {
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+            switch(binaryOp->binaryOperator) {
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:
+            case BinaryOperator::jsonArrow:
+            case BinaryOperator::jsonArrow2:
+                // Not generated as a C++ binary operator: the first four never reach codegen (the
+                // validator rejects them), the JSON arrows become a json_extract() call.
+                return false;
+            default:
+                return expressionMayBeNull(astNode);
+            }
+        }
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            // A unary operator is typed from the operator alone too — `-x` is generated as the
+            // subtraction `(c(0) - x)`, `~x` as a `bitwise_not_t`. A sign folded into a numeric
+            // constant leaves no operator behind, but a constant is never NULL either, so
+            // `expressionMayBeNull` already answers no for it.
+            if(unaryOp->unaryOperator == UnaryOperator::minus &&
+               negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate) {
+                // The one form codegen already warns has no working sqlite_orm spelling: it does
+                // not compile at all, so there is no result type to widen.
+                return false;
+            }
+            return expressionMayBeNull(astNode);
+        }
+        return false;
+    }
+
     std::string sqliteTypeToCpp(std::string_view typeName) {
         std::string lower = toLowerAscii(typeName);
         if(lower.find("bool") != std::string::npos) return "bool";

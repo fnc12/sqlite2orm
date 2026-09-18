@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -40,6 +41,58 @@ namespace {
             std::filesystem::remove(path, ec);
         }
     };
+
+    /**
+     *  Compiles `generatedCode` against the sqlite_orm headers, as the one header of a translation
+     *  unit. Code that names a struct it never declared fails here and nowhere else — the text
+     *  itself looks fine, and the CLI has already exited 0 by then.
+     */
+    void requireCompiles(std::string_view generatedCode) {
+        namespace fs = std::filesystem;
+        static thread_local std::mt19937 gen{std::random_device{}()};
+        std::uniform_int_distribution<std::uint64_t> dist{};
+        const fs::path dir = fs::temp_directory_path() / ("sqlite2orm_cc_" + std::to_string(dist(gen)));
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        REQUIRE_FALSE(ec);
+
+        const fs::path hpath = dir / "gen.hpp";
+        const fs::path cpppath = dir / "check.cpp";
+        {
+            std::ofstream h(hpath);
+            REQUIRE(h);
+            h << generatedCode;
+        }
+        {
+            std::ofstream c(cpppath);
+            REQUIRE(c);
+            c << "#include \"gen.hpp\"\n";
+        }
+
+        std::ostringstream cmd;
+        cmd << "c++ -std=c++20 -fsyntax-only";
+#if defined(__APPLE__)
+        cmd << " -stdlib=libc++";
+#endif
+        cmd << " -I" << SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE;
+        cmd << " -I" << dir.string();
+        cmd << ' ' << cpppath.string();
+        cmd << " 2>&1";
+
+        const int rawStatus = std::system(cmd.str().c_str());
+        fs::remove_all(dir, ec);
+
+        int exitCode = rawStatus;
+#if defined(__unix__) || defined(__APPLE__)
+        if(rawStatus != -1) {
+            exitCode = WEXITSTATUS(rawStatus);
+        }
+#endif
+        if(exitCode != 0) {
+            WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
+        }
+        REQUIRE(exitCode == 0);
+    }
 
     void execSql(const std::filesystem::path& dbPath, std::string_view sql) {
         sqlite3* db = nullptr;
@@ -698,48 +751,43 @@ TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    namespace fs = std::filesystem;
-    static thread_local std::mt19937 gen{std::random_device{}()};
-    std::uniform_int_distribution<std::uint64_t> dist{};
-    const fs::path dir = fs::temp_directory_path() / ("sqlite2orm_rt_" + std::to_string(dist(gen)));
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    REQUIRE_FALSE(ec);
+    requireCompiles(header.code);
+}
 
-    const fs::path hpath = dir / "gen.hpp";
-    const fs::path cpppath = dir / "check.cpp";
-    {
-        std::ofstream h(hpath);
-        REQUIRE(h);
-        h << header.code;
-    }
-    {
-        std::ofstream c(cpppath);
-        REQUIRE(c);
-        c << "#include \"gen.hpp\"\n";
-    }
+// The snippet path — a .sql file, stdin or `-e`, which is what the playground runs — leaves out
+// what it cannot map exactly as the schema header does. SQLite takes both schemas below; what it
+// refuses is a row written to `gen` and a query against `v1`. Before the drop reached this path the
+// snippet still said `&Gen::x` and `make_view<Vg>` with no struct behind them, at exit 0, and only
+// a compiler saw it. Checked against sqlite3 3.51.0.
+TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table compiles") {
+    const auto results = processMultiSql(
+        "CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);\n"
+        "CREATE TABLE child(id INTEGER PRIMARY KEY, gid INTEGER REFERENCES gen(x));\n"
+        "CREATE INDEX i ON gen(x);\n"
+        "CREATE VIEW vg AS SELECT x FROM gen;\n"
+        "DELETE FROM gen;");
 
-    std::ostringstream cmd;
-    cmd << "c++ -std=c++20 -fsyntax-only";
-#if defined(__APPLE__)
-    cmd << " -stdlib=libc++";
-#endif
-    cmd << " -I" << SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE;
-    cmd << " -I" << dir.string();
-    cmd << ' ' << cpppath.string();
-    cmd << " 2>&1";
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
 
-    const int rawStatus = std::system(cmd.str().c_str());
-    fs::remove_all(dir, ec);
+TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view compiles") {
+    const auto results = processMultiSql(
+        "CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"
+        "CREATE VIEW v1 AS SELECT a + 0x10000000000000000 AS b FROM ok1;\n"
+        "CREATE VIEW v2 AS SELECT b FROM v1;\n"
+        "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN DELETE FROM ok1; END;");
 
-    int exitCode = rawStatus;
-#if defined(__unix__) || defined(__APPLE__)
-    if(rawStatus != -1) {
-        exitCode = WEXITSTATUS(rawStatus);
-    }
-#endif
-    if(exitCode != 0) {
-        WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
-    }
-    REQUIRE(exitCode == 0);
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
 }

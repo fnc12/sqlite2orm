@@ -510,6 +510,131 @@ TEST_CASE("generateSqliteSchemaHeader: a view naming an ungenerated table in a s
     REQUIRE(header.errors.empty());
 }
 
+// A view that is left out leaves sqlite_orm without a type just as an ungenerated table does,
+// so what rests on the view has to go with it. Here the view is dropped for a hex literal in its
+// own body: the trigger INSTEAD OF INSERT on it needs no C++26 reflection, so a header keeping it
+// would simply not compile.
+TEST_CASE("generateSqliteSchemaHeader: what rests on a view dropped for a hex literal is left out too") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER);"
+            "CREATE VIEW v1 AS SELECT a, 0x10000000000000000 AS big FROM ok1;"
+            "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN INSERT INTO ok1(a) VALUES(1); END;"
+            "CREATE VIEW v2 AS SELECT a FROM v1;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE VIEW v1 uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "
+                 "stores the view but refuses every query against it, and C++ has no literal for it, so "
+                 "the view is not generated"},
+                {"CREATE VIEW `v1` is not merged into make_storage()"},
+                {"`v2` rests on a view that is not generated and is not merged into make_storage()"},
+                {"`trv` rests on a view that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
+// The same, one level deeper: the view itself is only dropped because it rests on an ungenerated
+// table, and the trigger on the view has to follow.
+TEST_CASE("generateSqliteSchemaHeader: what rests on a view over an ungenerated table is left out too") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER);"
+            "CREATE TABLE gen (x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);"
+            "CREATE VIEW v1 AS SELECT x FROM gen;"
+            "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN INSERT INTO ok1(a) VALUES(1); END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                 "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, so "
+                 "the table is not generated"},
+                {"CREATE TABLE `gen` is not merged into make_storage()"},
+                {"`v1` rests on a table that is not generated and is not merged into make_storage()"},
+                {"`trv` rests on a view that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
+// A view is also left out when its SELECT has no sqlite_orm spelling, which predates the hex
+// literal rule; the dependent trigger is dropped there too, from the same branch.
+TEST_CASE("generateSqliteSchemaHeader: what rests on a view with an unsupported SELECT is left out too") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER);"
+            "CREATE VIEW v1 AS SELECT a FROM ok1 GROUP BY a HAVING count(*) > 1;"
+            "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN INSERT INTO ok1(a) VALUES(1); END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"},
+                {"CREATE VIEW v1: SELECT is not supported for sqlite_orm code generation"},
+                {"CREATE VIEW `v1` is not merged into make_storage()"},
+                {"`trv` rests on a view that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+}
+
 TEST_CASE("generateSqliteSchemaHeader: DML after DDL emits seed_data()") {
     auto pipelines = processMultiSql(
         "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"

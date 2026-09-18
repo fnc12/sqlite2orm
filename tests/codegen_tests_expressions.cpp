@@ -270,12 +270,14 @@ TEST_CASE("codegen: unary minus") {
 }
 
 // The signed literal is a plain C++ value again, so an operator around it needs the usual `c()`.
+// The `~` column carries the int64 widening of
+// "codegen: a bitwise result column is cast to an int64_t" on top of that.
 TEST_CASE("codegen: negative literal as an operand") {
     REQUIRE(generate("SELECT -2;") == "auto rows = storage.select(-2);");
     REQUIRE(generate("SELECT 100 / -2;") == "auto rows = storage.select(as_optional(c(100) / -2));");
     REQUIRE(generate("SELECT -2 + 3;") == "auto rows = storage.select(c(-2) + 3);");
     REQUIRE(generate("SELECT a * -2;") == "auto rows = storage.select(as_optional(c(&User::a) * -2));");
-    REQUIRE(generate("SELECT ~ -2;") == "auto rows = storage.select(~c(-2));");
+    REQUIRE(generate("SELECT ~ -2;") == "auto rows = storage.select(cast<int64_t>(~c(-2)));");
     REQUIRE(generate("SELECT a BETWEEN -1 AND 5;") == "auto rows = storage.select(between(&User::a, -1, 5));");
 }
 
@@ -1166,7 +1168,10 @@ TEST_CASE("codegen: a dropped COLLATE leaves the operand it stood over as it was
     REQUIRE(generate("SELECT a + (a COLLATE BINARY);") ==
             "auto rows = storage.select(as_optional(c(&User::a) + &User::a));");
     REQUIRE(generate("SELECT a + 1;") == "auto rows = storage.select(as_optional(c(&User::a) + 1));");
-    REQUIRE(generate("SELECT ~('a' COLLATE NOCASE);") == "auto rows = storage.select(~c(\"a\"));");
+    // The CAST around the whole column is the int64 widening of
+    // "codegen: a bitwise result column is cast to an int64_t", which the COLLATE is inside of.
+    REQUIRE(generate("SELECT ~('a' COLLATE NOCASE);") ==
+            "auto rows = storage.select(cast<int64_t>(~c(\"a\")));");
 }
 
 // The grouping the generated operand needs is the grouping of the node under the COLLATE, and the
@@ -1235,9 +1240,17 @@ TEST_CASE("codegen: a minus over a COLLATE is a negation, not a folded sign") {
     REQUIRE(generate("SELECT -(-3 COLLATE BINARY);") == "auto rows = storage.select(-(-3));");
     auto tooBig = generateFull("SELECT -(0x8000000000000000 COLLATE BINARY);");
     REQUIRE(tooBig.code == "auto rows = storage.select((c(0) - c(static_cast<int64_t>(0x8000000000000000))));");
+    // The negation is read back through sqlite_orm's `double`, and the magnitude the bound carries
+    // for the int64 minimum is past 2^53, so the column is reported as
+    // "codegen: an arithmetic result column reports the double it is read back through" describes.
     REQUIRE(tooBig.warnings ==
             std::vector<CodegenWarning>{
-                "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen"});
+                "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen",
+                CodegenWarning{"result column computed with `-` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 8}, 1}});
 }
 
 // A predicate under the COLLATE is still a predicate sqlite_orm serializes without parentheses, so

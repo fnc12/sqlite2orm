@@ -3,9 +3,11 @@
 
 #include <sqlite2orm/utils.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <limits>
 
 namespace sqlite2orm {
 
@@ -308,6 +310,13 @@ namespace sqlite2orm {
         "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
         "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
         "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.";
+
+    const std::string kCommentBitwiseResultCast =
+        "A bitwise result column is generated as `cast<int64_t>(expr)`: sqlite_orm types `&`, `|`, "
+        "`<<`, `>>` and `~` as `int`, so a result outside the int32 range comes back truncated "
+        "(`9223372036854775807 & -1` reads back as -1). SQLite answers a bitwise operator with an "
+        "INTEGER or a NULL whatever its operands hold, and a CAST to INTEGER keeps both, typeof "
+        "included, so the CAST widens the C++ type and leaves the value alone.";
 
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
@@ -1040,6 +1049,257 @@ namespace sqlite2orm {
             return expressionMayBeNull(*collate->operand);
         }
         return true;
+    }
+
+    namespace {
+
+        /** The largest magnitude a `double` still holds every integer up to, i.e. 2^53. */
+        constexpr std::int64_t kDoubleExactIntegerLimit = 9007199254740992;
+
+        /** What a `double` has to carry for an expression, see `MagnitudeBound`. */
+        enum class ResultBound {
+            /** SQLite answers a REAL or a NULL, both of which a `double` carries as they are. */
+            exact,
+            /** SQLite answers a REAL, a NULL or an INTEGER of at most `magnitude`. */
+            bounded,
+            /** Nothing is known: the SQL no longer spells the value out. */
+            unbounded,
+        };
+
+        /**
+         *  What sqlite_orm's `double` has to carry for an expression. The magnitude is an upper
+         *  bound and lives in the int64 domain SQLite computes in — rounding it into a `double`
+         *  would lose the very integers this bound exists to find — so every step past the int64
+         *  range saturates to `unbounded` instead of growing. An INTEGER SQLite cannot hold is a
+         *  REAL anyway, which the caller reads back exactly.
+         */
+        struct MagnitudeBound {
+            ResultBound kind = ResultBound::unbounded;
+            std::int64_t magnitude = 0;
+        };
+
+        constexpr MagnitudeBound exactBound{ResultBound::exact, 0};
+        constexpr MagnitudeBound unboundedBound{ResultBound::unbounded, 0};
+
+        MagnitudeBound boundedBy(std::int64_t magnitude) {
+            return MagnitudeBound{ResultBound::bounded, magnitude};
+        }
+
+        /** Whether `bound` is an INTEGER answer of at most `magnitude`. */
+        bool isBounded(const MagnitudeBound& bound) {
+            return bound.kind == ResultBound::bounded;
+        }
+
+        /** `left + right` over two magnitudes, both of them at least zero, saturating to `unbounded`. */
+        MagnitudeBound saturatingSum(std::int64_t left, std::int64_t right) {
+            static constexpr std::int64_t int64Max = std::numeric_limits<std::int64_t>::max();
+            return left > int64Max - right ? unboundedBound : boundedBy(left + right);
+        }
+
+        /** `left * right` over two magnitudes, both of them at least zero, saturating to `unbounded`. */
+        MagnitudeBound saturatingProduct(std::int64_t left, std::int64_t right) {
+            static constexpr std::int64_t int64Max = std::numeric_limits<std::int64_t>::max();
+            if(left == 0 || right == 0) {
+                return boundedBy(0);
+            }
+            return left > int64Max / right ? unboundedBound : boundedBy(left * right);
+        }
+
+        /** The magnitude of `value` as a bound, the int64 minimum saturating to `unbounded`. */
+        MagnitudeBound magnitudeOf(std::int64_t value) {
+            static constexpr std::int64_t int64Min = std::numeric_limits<std::int64_t>::min();
+            // The magnitude of the int64 minimum does not fit an int64, and it is past the range a
+            // double holds exactly anyway.
+            return value == int64Min ? unboundedBound : boundedBy(value < 0 ? -value : value);
+        }
+
+        /**
+         *  What a `double` has to carry for the value SQLite answers `astNode` with. A REAL and a
+         *  NULL are carried as they are, so a node answering one of those is `exact`: `+`, `-`,
+         *  `*`, `/` and `%` all answer a REAL as soon as an operand is one and a NULL as soon as
+         *  an operand is one — checked over 1710 operand pairs against sqlite3 3.51. An INTEGER is
+         *  bounded only while the SQL spells the operands out; a column, a call or a subquery is a
+         *  value only SQLite knows.
+         */
+        MagnitudeBound integerMagnitudeBound(const AstNode& astNode) {
+            if(auto* collate = dynamic_cast<const CollateNode*>(&astNode)) {
+                // COLLATE decides how a value compares, not what the value is.
+                return integerMagnitudeBound(*collate->operand);
+            }
+            std::size_t foldedSigns = 0;
+            const AstNode& literal = *withoutFoldedSigns(astNode, foldedSigns);
+            if(dynamic_cast<const IntegerLiteralNode*>(&literal) != nullptr) {
+                const std::optional<std::int64_t> value = integerLiteralInt64Value(astNode);
+                // A decimal literal past the int64 range — the sign SQLite folds in already
+                // counted, so `-9223372036854775808` is not one — is a REAL to SQLite.
+                return value ? magnitudeOf(*value) : exactBound;
+            }
+            if(dynamic_cast<const RealLiteralNode*>(&literal) != nullptr ||
+               dynamic_cast<const NullLiteralNode*>(&literal) != nullptr) {
+                return exactBound;
+            }
+            if(dynamic_cast<const BoolLiteralNode*>(&literal) != nullptr) {
+                // SQLite spells TRUE and FALSE as the integers 1 and 0.
+                return boundedBy(1);
+            }
+            if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+                switch(unaryOperator->unaryOperator) {
+                case UnaryOperator::plus:
+                case UnaryOperator::minus:
+                    // `+x` is a no-op to SQLite and a negation keeps the magnitude it is given.
+                    return integerMagnitudeBound(*unaryOperator->operand);
+                case UnaryOperator::bitwiseNot: {
+                    // `~` casts its operand to an INTEGER first, so a REAL operand is not carried
+                    // through it the way it is through the arithmetic operators: `~1.5` answers
+                    // the INTEGER -2 and `~1e300` the int64 minimum. Only an operand already
+                    // bounded as an INTEGER bounds `~x`, which is `-x - 1`; a NULL answers NULL.
+                    if(dynamic_cast<const NullLiteralNode*>(unaryOperator->operand.get()) != nullptr) {
+                        return exactBound;
+                    }
+                    const MagnitudeBound operand = integerMagnitudeBound(*unaryOperator->operand);
+                    return isBounded(operand) ? saturatingSum(operand.magnitude, 1) : unboundedBound;
+                }
+                case UnaryOperator::logicalNot:
+                    // `NOT x` answers 0, 1 or NULL.
+                    return boundedBy(1);
+                }
+                return unboundedBound;
+            }
+            if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+                switch(binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                case BinaryOperator::subtract:
+                case BinaryOperator::multiply:
+                case BinaryOperator::divide:
+                case BinaryOperator::modulo:
+                    break;
+                default:
+                    // Every other operator either answers a value of its own — a bitwise result is
+                    // an INTEGER of any magnitude, a comparison a 0, 1 or NULL — or is not an
+                    // operand an arithmetic result column is reached through.
+                    return unboundedBound;
+                }
+                const MagnitudeBound left = integerMagnitudeBound(*binaryOperator->lhs);
+                const MagnitudeBound right = integerMagnitudeBound(*binaryOperator->rhs);
+                if(left.kind == ResultBound::exact || right.kind == ResultBound::exact) {
+                    // A REAL operand makes the whole answer a REAL and a NULL operand a NULL.
+                    return exactBound;
+                }
+                switch(binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                case BinaryOperator::subtract:
+                    return isBounded(left) && isBounded(right) ? saturatingSum(left.magnitude, right.magnitude)
+                                                               : unboundedBound;
+                case BinaryOperator::multiply:
+                    // A factor of zero answers zero however large the other side is.
+                    if((isBounded(left) && left.magnitude == 0) || (isBounded(right) && right.magnitude == 0)) {
+                        return boundedBy(0);
+                    }
+                    return isBounded(left) && isBounded(right) ? saturatingProduct(left.magnitude, right.magnitude)
+                                                               : unboundedBound;
+                case BinaryOperator::divide:
+                    // An integer division never grows the dividend, and a zero divisor is NULL, so
+                    // the dividend bounds the quotient whatever the divisor is.
+                    return left;
+                case BinaryOperator::modulo:
+                    // A remainder is smaller than both the dividend and the divisor, so either of
+                    // them bounds it on its own.
+                    if(isBounded(left) && isBounded(right)) {
+                        return boundedBy(std::min(left.magnitude, right.magnitude));
+                    }
+                    return isBounded(left) ? left : right;
+                default:
+                    return unboundedBound;
+                }
+            }
+            return unboundedBound;
+        }
+
+        /** An arithmetic operator node and the SQL token it is spelled with. */
+        struct ArithmeticOperatorNode {
+            const AstNode* node = nullptr;
+            std::string_view operatorText;
+        };
+
+        /**
+         *  The arithmetic operator a result column is read back through, together with the node it
+         *  is located at; an empty text for a column read back through anything else.
+         */
+        ArithmeticOperatorNode doubleTypedResultOperator(const AstNode& astNode) {
+            // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm
+            // node the result column comes out as is the one the operand under them comes out as.
+            const AstNode& generatedNode = generatedOperandNode(astNode);
+            if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+                // A negation reaches sqlite_orm as the subtraction `0 - x`, which is typed
+                // `double` like the other arithmetic operators; the folded and the warned forms
+                // carry no operator of their own.
+                if(unaryOperator->unaryOperator == UnaryOperator::minus &&
+                   negationFormFor(*unaryOperator->operand) == NegationForm::zeroMinusSubtraction) {
+                    return {&generatedNode, "-"};
+                }
+                return {};
+            }
+            if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+                switch(binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                    return {&generatedNode, "+"};
+                case BinaryOperator::subtract:
+                    return {&generatedNode, "-"};
+                case BinaryOperator::multiply:
+                    return {&generatedNode, "*"};
+                case BinaryOperator::divide:
+                    return {&generatedNode, "/"};
+                case BinaryOperator::modulo:
+                    return {&generatedNode, "%"};
+                default:
+                    return {};
+                }
+            }
+            return {};
+        }
+
+    }  // namespace
+
+    bool selectResultNeedsIntegerCast(const AstNode& astNode) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
+        // the result column comes out as — and with it the type the row is read back into — is the
+        // one the operand under them comes out as.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            return unaryOperator->unaryOperator == UnaryOperator::bitwiseNot;
+        }
+        if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            switch(binaryOperator->binaryOperator) {
+            case BinaryOperator::bitwiseAnd:
+            case BinaryOperator::bitwiseOr:
+            case BinaryOperator::shiftLeft:
+            case BinaryOperator::shiftRight:
+                return true;
+            default:
+                return false;
+            }
+        }
+        return false;
+    }
+
+    std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode) {
+        const ArithmeticOperatorNode arithmetic = doubleTypedResultOperator(astNode);
+        if(arithmetic.operatorText.empty()) {
+            return std::nullopt;
+        }
+        const MagnitudeBound bound = integerMagnitudeBound(astNode);
+        if(bound.kind == ResultBound::exact ||
+           (isBounded(bound) && bound.magnitude <= kDoubleExactIntegerLimit)) {
+            return std::nullopt;
+        }
+        std::string message = "result column computed with `";
+        message += arithmetic.operatorText;
+        message +=
+            "` is read back through a double: sqlite_orm types `+`, `-`, `*`, `/` and `%` as "
+            "`double`, so an INTEGER result past 2^53 comes back rounded (9223372036854775807 "
+            "reads back as 9223372036854775808)";
+        // The operator token is what its node is located at, and it is what the message names.
+        return CodegenWarning{std::move(message), arithmetic.node->location, arithmetic.operatorText.size()};
     }
 
     bool selectResultNeedsAsOptional(const AstNode& astNode) {

@@ -93,8 +93,14 @@ installed automatically — enable it per clone with:
 ```
 
 That sets `core.hooksPath` to `.githooks`; `git config --unset core.hooksPath` turns it off
-again. Set `CLANG_FORMAT` to point the hook at a specific binary. The same check runs on CI
-as the `clang-format lint` workflow.
+again. Set `CLANG_FORMAT` to point the hook at a specific binary.
+
+The whole tree is checked the same way by the `sqlite2orm_clang_format` test, which is
+registered only when clang-format 19 is on `PATH`:
+
+```bash
+ctest --test-dir build -R "sqlite2orm_clang_format|sqlite2orm_git_hooks"
+```
 
 ## Architecture
 

@@ -641,9 +641,62 @@ TEST_CASE("codegen: parenthesized expression") {
 }
 
 TEST_CASE("codegen: parenthesized changes precedence") {
-    auto result = generateFull("(a + b) * c");
-    auto plain = generateFull("a + b * c");
-    REQUIRE(result.code != plain.code);
+    REQUIRE(generate("(a + b) * c") == "(c(&User::a) + &User::b) * &User::c");
+    REQUIRE(generate("a + b * c") == "c(&User::a) + c(&User::b) * &User::c");
+}
+
+// The emitted operators are grouped by C++ precedence, which is not the SQL precedence the parser
+// applied. Every operator here is left-associative in C++ too, so a nested right operand regroups
+// even at equal precedence; and SQL binds `||`, `&` and `|` tighter than C++ does, so a nested left
+// operand regroups as well. Both get parentheses. Values checked against sqlite3 3.51.
+TEST_CASE("codegen: a nested operand keeps the grouping SQL gave it") {
+    SECTION("right operand of equal precedence") {
+        // `1 - (2 - 3)` is 2 in sqlite3, where `c(1) - c(2) - 3` reads as `(1 - 2) - 3` and is -4.
+        REQUIRE(generate("1 - (2 - 3)") == "c(1) - (c(2) - 3)");
+        REQUIRE(generate("20 / (4 / 2)") == "c(20) / (c(4) / 2)");
+        REQUIRE(generate("10 % (7 % 4)") == "c(10) % (c(7) % 4)");
+        REQUIRE(generate("1 + (2 - 3)") == "c(1) + (c(2) - 3)");
+        REQUIRE(generate("2 * (3 % 4)") == "c(2) * (c(3) % 4)");
+        REQUIRE(generate("1 << (2 << 3)") == "c(1) << (c(2) << 3)");
+        REQUIRE(generate("a - (a - 1)") == "c(&User::a) - (c(&User::a) - 1)");
+        REQUIRE(generate("1 - (0 - a)") == "c(1) - (c(0) - &User::a)");
+        REQUIRE(generate("1 AND (2 OR 3)") == "c(1) and (c(2) or 3)");
+    }
+    SECTION("left operand C++ binds looser than SQL does") {
+        // SQL groups `4 & 2 < 3` as `(4 & 2) < 3` and is 1; C++ binds `<` tighter than `&`.
+        REQUIRE(generate("4 & 2 < 3") == "(c(4) & 2) < 3");
+        // SQL gives `|` and `&` the same precedence, C++ binds `&` tighter.
+        REQUIRE(generate("6 | 3 & 5") == "(c(6) | 3) & 5");
+        // SQL binds `||` tightest of the binary operators, C++ loosest.
+        REQUIRE(generate("'a' || 'b' = 'ab'") == R"((c("a") || "b") == "ab")");
+        REQUIRE(generate("(1 + 2) * 3") == "(c(1) + 2) * 3");
+        REQUIRE(generate("(a + 1) * 2") == "(c(&User::a) + 1) * 2");
+    }
+    SECTION("an operand C++ groups the same way is left alone") {
+        REQUIRE(generate("1 - 2 - 3") == "c(1) - 2 - 3");
+        REQUIRE(generate("1 + 2 * 3") == "c(1) + c(2) * 3");
+        REQUIRE(generate("1 * 2 + 3") == "c(1) * 2 + 3");
+        REQUIRE(generate("1 OR 2 AND 3") == "c(1) or c(2) and 3");
+        REQUIRE(generate("1 = 2 AND 3") == "c(1) == 2 and 3");
+    }
+    SECTION("an operand that is one C++ term already") {
+        // A negation is either a signed constant or the parenthesized `(c(0) - …)` subtraction.
+        REQUIRE(generate("1 - -(2 - 3)") == "c(1) - (c(0) - (c(2) - 3))");
+        REQUIRE(generate("-(1 - 2) - (3 - 4)") == "(c(0) - (c(1) - 2)) - (c(3) - 4)");
+        // A unary plus emits its operand and nothing else, so the operand decides.
+        REQUIRE(generate("1 - +(2 - 3)") == "c(1) - (c(2) - 3)");
+        REQUIRE(generate("length(a) - (a - 1)") == "length(&User::a) - (c(&User::a) - 1)");
+    }
+}
+
+// The functional style passes the operands as arguments, which group themselves.
+TEST_CASE("codegen: the functional expression style needs no parentheses") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
+    REQUIRE(generateWithPolicy("SELECT 1 - (2 - 3);", policy).code ==
+            "auto rows = storage.select(sub(1, sub(2, 3)));");
+    REQUIRE(generateWithPolicy("SELECT 'a' || 'b' = 'ab';", policy).code ==
+            R"(auto rows = storage.select(is_equal(conc("a", "b"), "ab"));)");
 }
 
 TEST_CASE("codegen: CAST - INTEGER") {

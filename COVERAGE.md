@@ -126,7 +126,14 @@ Statuses:
 - [x] `(select-stmt)` as scalar subquery
 
 ### Parenthesized expression
-- [x] `(expr)` — grouping
+- [~] `(expr)` — grouping. The parentheses do not survive into the AST; the generated code spells the
+  grouping out in C++ terms instead, because C++ ranks the emitted operators differently (SQL binds
+  `||` tightest of the binary operators and C++ binds it loosest, and SQL gives `<<` `>>` `&` `|` one
+  level below `+` and `-`) and because every one of them is left-associative there too, so a nested
+  right operand would regroup even at equal precedence. An operand C++ would regroup is parenthesized,
+  which is what tells `1 - (2 - 3)` from `1 - 2 - 3`; the functional spelling passes its operands as
+  arguments and needs none. Partial because a grouping that makes a comparison or a concatenation the
+  operand of an arithmetic or a bitwise operator has no sqlite_orm form: that code does not compile
 
 ### Function call
 - [x] `function-name(args)`

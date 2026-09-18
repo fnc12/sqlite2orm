@@ -406,6 +406,61 @@ namespace sqlite2orm {
         return {};
     }
 
+    int cppOperatorPrecedence(BinaryOperator binaryOperator) {
+        switch(binaryOperator) {
+            case BinaryOperator::multiply:
+            case BinaryOperator::divide:
+            case BinaryOperator::modulo:             return 5;
+            case BinaryOperator::add:
+            case BinaryOperator::subtract:           return 6;
+            case BinaryOperator::shiftLeft:
+            case BinaryOperator::shiftRight:         return 7;
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:     return 9;
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:          return 10;
+            case BinaryOperator::bitwiseAnd:         return 11;
+            case BinaryOperator::bitwiseOr:          return 13;
+            case BinaryOperator::logicalAnd:         return 14;
+            // `or` and `||` are the same C++ token; sqlite_orm reads the latter as a concatenation.
+            case BinaryOperator::logicalOr:
+            case BinaryOperator::concatenate:        return 15;
+            // json_extract() is a call, and an IS operator never reaches an emitted operator at all.
+            case BinaryOperator::jsonArrow:
+            case BinaryOperator::jsonArrow2:
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:  return kCppPrecedencePrimary;
+        }
+        return kCppPrecedencePrimary;
+    }
+
+    int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+            if(policyEquals(policy, "expr_style", "functional")) {
+                return kCppPrecedencePrimary;
+            }
+            return cppOperatorPrecedence(binaryOp->binaryOperator);
+        }
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            // A unary plus emits its operand and nothing else. Every other unary operator emits
+            // either a C++ unary expression, which binds tighter than any binary one, or the
+            // parenthesized `(c(0) - …)` a negation becomes.
+            if(unaryOp->unaryOperator == UnaryOperator::plus) {
+                return generatedCppPrecedence(*unaryOp->operand, policy);
+            }
+            return kCppPrecedencePrimary;
+        }
+        if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
+            // COLLATE has no sqlite_orm form, so the generated code is the operand's own.
+            return generatedCppPrecedence(*collateNode->operand, policy);
+        }
+        return kCppPrecedencePrimary;
+    }
+
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier) {
         return toLowerAscii(stripIdentifierQuotes(sqlIdentifier));
     }

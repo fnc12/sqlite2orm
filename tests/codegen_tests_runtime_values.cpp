@@ -184,6 +184,34 @@ TEST_CASE("runtime: a negation over a general operand keeps its value") {
             std::vector<std::string>{"-5", "3", "-3", "-1", "6", "-7", "-8", "7"});
 }
 
+// C++ groups the emitted operators by its own precedence, so a nested operand that would regroup
+// there carries parentheses. Without them `1 - (2 - 3)` came out as `c(1) - c(2) - 3` and the
+// program printed -4 where SQLite computes 2. Expected values checked against sqlite3 3.51 (the
+// single row holds a = 7).
+TEST_CASE("runtime: a nested operand keeps the value its SQL grouping has") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 - (2 - 3);"),
+        generate("SELECT 20 / (4 / 2);"),
+        generate("SELECT 10 % (7 % 4);"),
+        generate("SELECT (1 + 2) * 3;"),
+        generate("SELECT 4 & 2 < 3;"),
+        generate("SELECT 6 | 3 & 5;"),
+        generate("SELECT a - (a - 1);"),
+        generate("SELECT 1 - 2 - 3;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(c(1) - (c(2) - 3));",
+                              "auto rows = storage.select(c(20) / (c(4) / 2));",
+                              "auto rows = storage.select(c(10) % (c(7) % 4));",
+                              "auto rows = storage.select((c(1) + 2) * 3);",
+                              "auto rows = storage.select((c(4) & 2) < 3);",
+                              "auto rows = storage.select((c(6) | 3) & 5);",
+                              "auto rows = storage.select(c(&User::a) - (c(&User::a) - 1));",
+                              "auto rows = storage.select(c(1) - 2 - 3);",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"2", "10", "1", "9", "1", "5", "1", "-4"});
+}
+
 // The object form of an insert sends every value through a struct field, so a literal SQLite keeps
 // a REAL reached an INTEGER column as garbage: `T{99999999999999999999.0}` stored
 // `integer|-9223372036854775808` (converting an out-of-range double to an int64_t is undefined),

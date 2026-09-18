@@ -3,9 +3,12 @@
 
 #include <sqlite2orm/utils.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace sqlite2orm {
 
@@ -1019,6 +1022,117 @@ namespace sqlite2orm {
         return true;
     }
 
+    namespace {
+
+        /** The magnitude every integer below which a `double` carries exactly, i.e. 2^53. */
+        constexpr double kDoubleExactIntegerLimit = 9007199254740992.0;
+
+        /**
+         *  An upper bound on the magnitude of the INTEGER SQLite can answer `astNode` with, or
+         *  infinity once the SQL no longer spells one out — a column, a call or a subquery is a
+         *  value only SQLite knows. A node SQLite answers with a REAL or a NULL bounds at zero:
+         *  `+`, `-`, `*`, `/` and `%` answer a REAL as soon as an operand is one, and a `double`
+         *  carries a REAL and a NULL as they are.
+         */
+        double integerMagnitudeBound(const AstNode& astNode) {
+            static constexpr double unbounded = std::numeric_limits<double>::infinity();
+            if(dynamic_cast<const IntegerLiteralNode*>(&astNode) != nullptr) {
+                const std::optional<std::int64_t> value = integerLiteralInt64Value(astNode);
+                // A decimal literal past the int64 range is a REAL to SQLite.
+                return value ? std::fabs(static_cast<double>(*value)) : 0.0;
+            }
+            if(dynamic_cast<const RealLiteralNode*>(&astNode) != nullptr ||
+               dynamic_cast<const NullLiteralNode*>(&astNode) != nullptr) {
+                return 0.0;
+            }
+            if(dynamic_cast<const BoolLiteralNode*>(&astNode) != nullptr) {
+                // SQLite spells TRUE and FALSE as the integers 1 and 0.
+                return 1.0;
+            }
+            if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+                switch(unaryOperator->unaryOperator) {
+                case UnaryOperator::plus:
+                case UnaryOperator::minus:
+                    // Negating a value keeps its magnitude, the int64 minimum aside, whose
+                    // magnitude is past the range a double holds exactly anyway.
+                    return integerMagnitudeBound(*unaryOperator->operand);
+                case UnaryOperator::bitwiseNot:
+                    return integerMagnitudeBound(*unaryOperator->operand) + 1.0;
+                case UnaryOperator::logicalNot:
+                    return 1.0;
+                }
+                return unbounded;
+            }
+            if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+                const double left = integerMagnitudeBound(*binaryOperator->lhs);
+                const double right = integerMagnitudeBound(*binaryOperator->rhs);
+                switch(binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                case BinaryOperator::subtract:
+                    return left + right;
+                case BinaryOperator::multiply:
+                    // A factor of zero answers zero however large the other side is, which is the
+                    // one product `left * right` alone would report as a NaN.
+                    return left == 0.0 || right == 0.0 ? 0.0 : left * right;
+                case BinaryOperator::divide:
+                    // An integer division never grows the dividend, and a zero divisor is NULL.
+                    return left;
+                case BinaryOperator::modulo:
+                    // A remainder is smaller than both the dividend and the divisor.
+                    return std::min(left, right);
+                default:
+                    return unbounded;
+                }
+            }
+            return unbounded;
+        }
+
+        /** An arithmetic operator node and the SQL token it is spelled with. */
+        struct ArithmeticOperatorNode {
+            const AstNode* node = nullptr;
+            std::string_view operatorText;
+        };
+
+        /**
+         *  The arithmetic operator a result column is read back through, together with the node it
+         *  is located at; an empty text for a column read back through anything else.
+         */
+        ArithmeticOperatorNode doubleTypedResultOperator(const AstNode& astNode) {
+            if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+                if(unaryOperator->unaryOperator == UnaryOperator::plus) {
+                    // A unary plus generates its operand's code, so the operand answers for it.
+                    return doubleTypedResultOperator(*unaryOperator->operand);
+                }
+                // A negation reaches sqlite_orm as the subtraction `0 - x`, which is typed
+                // `double` like the other arithmetic operators; the folded and the warned forms
+                // carry no operator of their own.
+                if(unaryOperator->unaryOperator == UnaryOperator::minus &&
+                   negationFormFor(*unaryOperator->operand) == NegationForm::zeroMinusSubtraction) {
+                    return {&astNode, "-"};
+                }
+                return {};
+            }
+            if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+                switch(binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                    return {&astNode, "+"};
+                case BinaryOperator::subtract:
+                    return {&astNode, "-"};
+                case BinaryOperator::multiply:
+                    return {&astNode, "*"};
+                case BinaryOperator::divide:
+                    return {&astNode, "/"};
+                case BinaryOperator::modulo:
+                    return {&astNode, "%"};
+                default:
+                    return {};
+                }
+            }
+            return {};
+        }
+
+    }  // namespace
+
     bool selectResultNeedsIntegerCast(const AstNode& astNode) {
         if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
             if(unaryOperator->unaryOperator == UnaryOperator::plus) {
@@ -1039,6 +1153,21 @@ namespace sqlite2orm {
             }
         }
         return false;
+    }
+
+    std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode) {
+        const ArithmeticOperatorNode arithmetic = doubleTypedResultOperator(astNode);
+        if(arithmetic.operatorText.empty() || integerMagnitudeBound(astNode) <= kDoubleExactIntegerLimit) {
+            return std::nullopt;
+        }
+        std::string message = "result column computed with `";
+        message += arithmetic.operatorText;
+        message +=
+            "` is read back through a double: sqlite_orm types `+`, `-`, `*`, `/` and `%` as "
+            "`double`, so an INTEGER result past 2^53 comes back rounded (9223372036854775807 "
+            "reads back as 9223372036854775808)";
+        // The operator token is what its node is located at, and it is what the message names.
+        return CodegenWarning{std::move(message), arithmetic.node->location, arithmetic.operatorText.size()};
     }
 
     bool selectResultNeedsAsOptional(const AstNode& astNode) {

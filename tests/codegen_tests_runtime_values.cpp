@@ -688,3 +688,23 @@ TEST_CASE("runtime: a bitwise result column reads the whole int64 back") {
             std::vector<std::string>{"9223372036854775807", "9223372036854775807", "9223372036854775807",
                                      "9223372036854775807", "-9223372036854775808"});
 }
+
+// What the arithmetic operators still do, and why the generated column carries a warning instead of
+// a CAST of its own: sqlite_orm types `+`, `-`, `*`, `/` and `%` as `double`, which rounds the
+// integers past 2^53, and a CAST to INTEGER would truncate the REAL the very same operators answer
+// with as soon as an operand is one. sqlite3 3.51 answers the same two rows with the INTEGERs
+// 9223372036854775807 and 9223372036854775806, and the third with the REAL 1.8446744073709552e+19.
+TEST_CASE("runtime: an arithmetic result column rounds the int64 it reads back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 0;"),
+        generate("SELECT a - 1;"),
+        generate("SELECT a * 2;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(c(&User::a) + 0));",
+                              "auto rows = storage.select(as_optional(c(&User::a) - 1));",
+                              "auto rows = storage.select(as_optional(c(&User::a) * 2));",
+                          });
+    REQUIRE(selectedValues(statements, "int64_t", "9223372036854775807") ==
+            std::vector<std::string>{"9.22337e+18", "9.22337e+18", "1.84467e+19"});
+}

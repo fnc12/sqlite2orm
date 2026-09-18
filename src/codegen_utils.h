@@ -241,6 +241,16 @@ namespace sqlite2orm {
      *  truncate the value instead of carrying it.
      */
     bool selectResultNeedsIntegerCast(const AstNode& astNode);
+    /**
+     *  The warning a SELECT result column whose value sqlite_orm reads back through a `double`
+     *  carries, or nullopt when a `double` is known to hold it. sqlite_orm types `+`, `-`, `*`,
+     *  `/` and `%` as `double` whatever their operands are, while SQLite answers them with an
+     *  INTEGER whenever the operands are integers, so an integer result past the range a double
+     *  holds exactly comes back rounded. Nothing in sqlite_orm reads such a column as an int64
+     *  without a CAST, and a CAST would truncate the REAL results of the very same operators, so
+     *  the generated code is left alone and the loss is reported instead.
+     */
+    std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode);
 
     std::string sqliteTypeToCpp(std::string_view typeName);
     std::string defaultInitializer(std::string_view cppType);

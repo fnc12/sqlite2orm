@@ -222,6 +222,79 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
+    bool isKeywordUsableAsName(TokenType type) {
+        if(type < TokenType::kwAbort || type > TokenType::kwWithout) {
+            return false;
+        }
+        switch(type) {
+            // SQLite's reserved words, the keywords its parser never falls back to an identifier
+            // for. Everything else it knows is a name wherever the grammar asks for one, which is
+            // why `CREATE TABLE t(row INTEGER)` is a table and `CREATE TABLE t(set INTEGER)` is a
+            // syntax error. Checked against sqlite3 3.51 over every keyword in the map above.
+            case TokenType::kwAdd:
+            case TokenType::kwAll:
+            case TokenType::kwAlter:
+            case TokenType::kwAnd:
+            case TokenType::kwAs:
+            case TokenType::kwAutoincrement:
+            case TokenType::kwBetween:
+            case TokenType::kwCase:
+            case TokenType::kwCheck:
+            case TokenType::kwCollate:
+            case TokenType::kwCommit:
+            case TokenType::kwConstraint:
+            case TokenType::kwCreate:
+            case TokenType::kwDefault:
+            case TokenType::kwDeferrable:
+            case TokenType::kwDelete:
+            case TokenType::kwDistinct:
+            case TokenType::kwDrop:
+            case TokenType::kwElse:
+            case TokenType::kwEscape:
+            case TokenType::kwExcept:
+            case TokenType::kwExists:
+            case TokenType::kwForeign:
+            case TokenType::kwFrom:
+            case TokenType::kwGroup:
+            case TokenType::kwHaving:
+            case TokenType::kwIn:
+            case TokenType::kwIndex:
+            case TokenType::kwInsert:
+            case TokenType::kwIntersect:
+            case TokenType::kwInto:
+            case TokenType::kwIs:
+            case TokenType::kwIsnull:
+            case TokenType::kwJoin:
+            case TokenType::kwLimit:
+            case TokenType::kwNot:
+            case TokenType::kwNothing:
+            case TokenType::kwNotnull:
+            case TokenType::kwNull:
+            case TokenType::kwOn:
+            case TokenType::kwOr:
+            case TokenType::kwOrder:
+            case TokenType::kwPrimary:
+            case TokenType::kwReferences:
+            case TokenType::kwReturning:
+            case TokenType::kwSelect:
+            case TokenType::kwSet:
+            case TokenType::kwTable:
+            case TokenType::kwThen:
+            case TokenType::kwTo:
+            case TokenType::kwTransaction:
+            case TokenType::kwUnion:
+            case TokenType::kwUnique:
+            case TokenType::kwUpdate:
+            case TokenType::kwUsing:
+            case TokenType::kwValues:
+            case TokenType::kwWhen:
+            case TokenType::kwWhere:
+                return false;
+            default:
+                return true;
+        }
+    }
+
     std::string_view tokenTypeName(TokenType type) {
         switch(type) {
             case TokenType::integerLiteral: return "IntegerLiteral";

@@ -47,6 +47,8 @@ namespace sqlite2orm {
         AstNodePointer parseExplainStatement();
 
       private:
+        AstNodePointer parsePragmaValue();
+
         Parser& parser;
         TokenStream& tokenStream;
 

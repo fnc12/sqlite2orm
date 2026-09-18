@@ -229,4 +229,13 @@ namespace sqlite2orm {
 
     std::optional<TokenType> keywordFromIdentifier(std::string_view word);
 
+    /**
+     *  Whether SQLite folds this keyword back into an identifier, so that it stands wherever the
+     *  grammar asks for a name. Its parser does this with a `%fallback ID …` list, and the join
+     *  keywords reach the same rule through `idj`. `ON`, `DELETE` and `DEFAULT` are not among
+     *  these — they are reserved, and the rules that take them anyway, `nmnum` of a PRAGMA value
+     *  for one, name them on top of a name.
+     */
+    bool isKeywordUsableAsName(TokenType type);
+
 }  // namespace sqlite2orm

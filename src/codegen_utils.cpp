@@ -1203,6 +1203,16 @@ namespace sqlite2orm {
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName)};
         }
+        if(const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
+            // `CURRENT_DATE` and its two siblings are names to a PRAGMA — SQLite's `nmnum` rule
+            // falls them back to an identifier, and the reader gets those very letters — so the
+            // value is whatever that text reads as, not today's date.
+            const std::string written = currentDatetime->kind == CurrentDatetimeKind::date ? "current_date"
+                                        : currentDatetime->kind == CurrentDatetimeKind::time
+                                            ? "current_time"
+                                            : "current_timestamp";
+            return PragmaValue{written, written};
+        }
         if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             const bool numericOperand =
                 unaryOperator->operand && (dynamic_cast<const IntegerLiteralNode*>(unaryOperator->operand.get()) ||

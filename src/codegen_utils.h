@@ -270,7 +270,11 @@ namespace sqlite2orm {
      *  INTEGER whenever the operands are integers, so an integer result past the range a double
      *  holds exactly comes back rounded. Nothing in sqlite_orm reads such a column as an int64
      *  without a CAST, and a CAST would truncate the REAL results of the very same operators, so
-     *  the generated code is left alone and the loss is reported instead.
+     *  the generated code is left alone and the loss is reported instead. The bound the report is
+     *  left out on is an upper bound on the magnitude of an INTEGER answer, computed in the int64
+     *  domain SQLite computes in rather than in the `double` the warning is about; a REAL or a
+     *  NULL operand takes the expression out of it altogether, since these operators answer a REAL
+     *  or a NULL whenever an operand is one.
      */
     std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode);
 

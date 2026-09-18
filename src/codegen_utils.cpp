@@ -533,8 +533,18 @@ namespace sqlite2orm {
         return numericLiteralToCpp(significant);
     }
 
+    bool isNegatedNumericLiteral(const AstNode& astNode) {
+        auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
+        if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
+            return false;
+        }
+        return dynamic_cast<const IntegerLiteralNode*>(unaryOp->operand.get()) ||
+               dynamic_cast<const RealLiteralNode*>(unaryOp->operand.get());
+    }
+
     bool isLeafNode(const AstNode& astNode) {
-        return dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
+        return isNegatedNumericLiteral(astNode) ||
+               dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
                dynamic_cast<const RealLiteralNode*>(&astNode) ||
                dynamic_cast<const StringLiteralNode*>(&astNode) ||
                dynamic_cast<const NullLiteralNode*>(&astNode) ||

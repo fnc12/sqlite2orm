@@ -49,7 +49,7 @@ Statuses:
 - [x] schema-name.table-name.column-name
 
 ### Unary operators
-- [x] `-` (unary minus)
+- [x] `-` (unary minus — folded into the literal it precedes, as SQLite's own parser does)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
 - [x] `NOT`

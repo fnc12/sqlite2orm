@@ -119,6 +119,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/parser_tests_misc_statements.cpp
         tests/codegen_tests_common.cpp
         tests/codegen_tests_expressions.cpp
+        tests/codegen_tests_runtime_values.cpp
         tests/codegen_tests_create_table.cpp
         tests/codegen_tests_create_view.cpp
         tests/codegen_tests_select.cpp

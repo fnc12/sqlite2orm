@@ -210,13 +210,29 @@ TEST_CASE("codegen: bitwise operators") {
     REQUIRE(generateFull("a >> 2") == expectedBinaryLeaf("&User::a", "2", " >> ", "bitwise_shift_right"));
 }
 
+// A minus glued to a numeric literal is folded into the literal, the way SQLite's own parser does
+// it. sqlite_orm's unary_minus_t reports a wrong result type, so `-c(5)` serializes to the right
+// SQL and still reads the row back as 0. Values checked against sqlite3 3.51.
 TEST_CASE("codegen: unary minus") {
     SECTION("-5") {
         auto result = generateFull("-5");
-        REQUIRE(result == CodeGenResult{"-c(5)", {DecisionPoint{1, "expr_style", "operator", "-c(5)",
-            {Option{"operator", "-c(5)", "operator style"},
-             Option{"functional", "minus(5)", "functional style"}}
-        }}});
+        REQUIRE(result == CodeGenResult{"-5", {}});
+    }
+    SECTION("-2.5") {
+        auto result = generateFull("-2.5");
+        REQUIRE(result == CodeGenResult{"-2.5", {}});
+    }
+    SECTION("-0x10") {
+        auto result = generateFull("-0x10");
+        REQUIRE(result == CodeGenResult{"-0x10", {}});
+    }
+    SECTION("-1e3") {
+        auto result = generateFull("-1e3");
+        REQUIRE(result == CodeGenResult{"-1e3", {}});
+    }
+    SECTION("leading zeros are still stripped under the sign") {
+        auto result = generateFull("-010");
+        REQUIRE(result == CodeGenResult{"-10", {}});
     }
     SECTION("-a") {
         auto result = generateFull("-a");
@@ -228,6 +244,26 @@ TEST_CASE("codegen: unary minus") {
                                Option{"functional", "minus(&User::a)", "functional style"}}},
             }});
     }
+}
+
+// The signed literal is a plain C++ value again, so an operator around it needs the usual `c()`.
+TEST_CASE("codegen: negative literal as an operand") {
+    REQUIRE(generate("SELECT -2;") == "auto rows = storage.select(-2);");
+    REQUIRE(generate("SELECT 100 / -2;") == "auto rows = storage.select(c(100) / -2);");
+    REQUIRE(generate("SELECT -2 + 3;") == "auto rows = storage.select(c(-2) + 3);");
+    REQUIRE(generate("SELECT a * -2;") == "auto rows = storage.select(c(&User::a) * -2);");
+    REQUIRE(generate("SELECT ~ -2;") == "auto rows = storage.select(~c(-2));");
+    REQUIRE(generate("SELECT a BETWEEN -1 AND 5;") == "auto rows = storage.select(between(&User::a, -1, 5));");
+}
+
+// A second minus has no literal to fold into; parenthesizing keeps it out of `c()`, which would
+// rebuild the unary_minus_t the fold exists to avoid. `SELECT - -3` is 3 in sqlite3 3.51.
+TEST_CASE("codegen: double unary minus on a literal") {
+    auto result = generateFull("- -3");
+    REQUIRE(result == CodeGenResult{"-(-3)", {DecisionPoint{1, "expr_style", "operator", "-(-3)",
+        {Option{"operator", "-(-3)", "operator style"},
+         Option{"functional", "minus(-3)", "functional style"}}
+    }}});
 }
 
 TEST_CASE("codegen: unary plus is no-op") {

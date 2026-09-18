@@ -450,7 +450,21 @@ namespace sqlite2orm {
                                      std::move(operandResult.comments)};
             }
 
+            if(isNegatedNumericLiteral(*unaryOp)) {
+                // SQLite's own parser glues a minus sign onto the numeric literal behind it, and so do
+                // we: sqlite_orm's unary_minus_t reports a wrong result type, so `-c(2)` serializes to
+                // the right SQL but reads the row back as 0.
+                return CodeGenResult{"-" + operandResult.code, std::move(decisionPoints), {}, {},
+                                     std::move(operandResult.comments)};
+            }
+
             bool operandLeaf = isLeafNode(*unaryOp->operand);
+            if(unaryOp->unaryOperator == UnaryOperator::minus &&
+               isNegatedNumericLiteral(*unaryOp->operand)) {
+                // A second minus over an already signed literal: parenthesize instead of wrapping, so
+                // that `c(-2)` does not become the unary_minus_t the fold above avoids.
+                operandLeaf = false;
+            }
             bool operandNoWrap = false;
             if(auto* opCol = dynamic_cast<const ColumnRefNode*>(unaryOp->operand.get())) {
                 operandNoWrap = this->context.columnRefIsSelectAliasNoWrap(*opCol);

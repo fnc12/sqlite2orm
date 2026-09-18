@@ -70,6 +70,9 @@ namespace sqlite2orm {
     std::string integerLiteralToCpp(std::string_view integerLiteral);
     /** True when SQLite reads a decimal integer literal as a REAL because an int64 cannot hold it. */
     bool integerLiteralExceedsInt64(std::string_view integerLiteral);
+    /** True for a numeric literal carrying a folded-in minus sign, e.g. `-2` (see `isLeafNode`). */
+    bool isNegatedNumericLiteral(const AstNode& astNode);
+    /** True for a node that generates a bare C++ value, which `wrap` turns into a sqlite_orm expression. */
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);
 

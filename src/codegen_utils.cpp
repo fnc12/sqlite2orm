@@ -648,6 +648,34 @@ namespace sqlite2orm {
         return !isIntegerLiteralPastIntegerFieldRange(value);
     }
 
+    bool integerLiteralExceedsInt32(std::string_view integerLiteral) {
+        if(isHexadecimalLiteral(integerLiteral)) {
+            // SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the
+            // digits alone say which side of the int32 range the value lands on: up to
+            // `0x7FFFFFFF` it is a positive int32, from `0xFFFFFFFF80000000` on it has wrapped
+            // back into one as a negative number, and everything in between needs an int64.
+            static constexpr std::string_view wrappedInt32Min = "ffffffff80000000";
+            const std::string digits = significantDigits(integerLiteral.substr(2));
+            if(digits.size() < 8) {
+                return false;
+            }
+            if(digits.size() == 8) {
+                return digits.front() >= '8';
+            }
+            if(digits.size() == 16) {
+                const std::string lowered = toLowerAscii(digits);
+                return std::string_view(lowered) < wrappedInt32Min;
+            }
+            // Nine to fifteen digits are past `0xFFFFFFFF`, and a seventeenth one is past an
+            // int64 altogether — `hexLiteralExceedsInt64` refuses that where it is compiled.
+            return true;
+        }
+        static constexpr std::string_view int32Max = "2147483647";
+        const std::string digits = significantDigits(integerLiteral);
+        return digits.size() > int32Max.size() ||
+               (digits.size() == int32Max.size() && std::string_view(digits) > int32Max);
+    }
+
     std::string integerLiteralToCpp(std::string_view integerLiteral) {
         // A hexadecimal literal denotes the same number in both languages, but a decimal one with
         // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not

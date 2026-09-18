@@ -102,12 +102,12 @@ Statuses:
 - [!] `IS NOT DISTINCT FROM expr` — not supported in sqlite_orm; validator error
 
 ### Special operators
-- [x] `BETWEEN expr AND expr`
-- [x] `NOT BETWEEN expr AND expr`
-- [x] `IN (expr-list)`
+- [~] `BETWEEN expr AND expr` — generated as `between(operand, low, high)`, and sqlite_orm declares it `between(A, T, T)`: both bounds have to reach C++ as one type, so `x BETWEEN 1 AND 3000000000` (an `int` next to a `long`) does not compile, and neither does an integer bound next to a real, a string, a column or a nested expression. Independent of the field the prefix infers for the column, which widens to the wider bound
+- [~] `NOT BETWEEN expr AND expr` — the same bounds rule
+- [~] `IN (expr-list)` — generated as `in(operand, {...})`, one braced-init-list, so every value has to reach C++ as one type: `x IN (1, 3000000000)` does not compile, nor does a list mixing an integer with a real, a string, a column or a nested expression. Independent of the field the prefix infers, which widens to the widest value
 - [x] `IN (select-stmt)`
 - [!] `IN table-name` (table-valued IN — not in sqlite_orm; validator error)
-- [x] `NOT IN (expr-list)`
+- [~] `NOT IN (expr-list)` — the same list rule
 - [x] `NOT IN (select-stmt)` (via `InNode` + subquery)
 - [x] `EXISTS (select-stmt)`
 - [x] `NOT EXISTS (select-stmt)`

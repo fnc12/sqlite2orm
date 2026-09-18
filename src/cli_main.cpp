@@ -1,8 +1,7 @@
-#include <sqlite2orm/json_emit.h>
 #include <sqlite2orm/process.h>
-#include <sqlite2orm/schema_header.h>
 #include <sqlite2orm/schema_process.h>
 #include <sqlite2orm/schema_reader.h>
+#include <sqlite2orm/schema_report.h>
 
 #include <fmt/format.h>
 
@@ -27,7 +26,7 @@ namespace {
                    "  sqlite2orm                    Read one statement from stdin\n"
                    "\n"
                    "Options:\n"
-                   "  --json                       With --db: print JSON decision points (stderr: warnings)\n"
+                   "  --json                       With --db: print JSON decision points (stderr: diagnostics)\n"
                    "  -h, --help                   Show this help\n");
     }
 
@@ -59,43 +58,10 @@ namespace {
         try {
             SqliteSchemaReader reader(dbPath);
             const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
-            if(jsonOnly) {
-                fmt::print("{}\n", sqliteSchemaResultToJson(schema));
-            }
-            for(const auto& st: schema.statements) {
-                for(const auto& w: st.pipeline.codegen.warnings) {
-                    fmt::print(stderr, "warning: {}\n", w.message);
-                }
-            }
-            if(!jsonOnly) {
-                const CodeGenResult header = generateSqliteSchemaHeader(schema);
-                for(const auto& w: header.warnings) {
-                    fmt::print(stderr, "warning: {}\n", w.message);
-                }
-                if(!schema.allOk()) {
-                    for(const auto& st: schema.statements) {
-                        if(st.pipeline.ok()) {
-                            continue;
-                        }
-                        for(const auto& err: st.pipeline.parseResult.errors) {
-                            fmt::print(stderr, "parse error [{} {}]: {} at {}:{}\n", st.meta.type, st.meta.name,
-                                       err.message, err.location.line, err.location.column);
-                        }
-                        for(const auto& err: st.pipeline.validationErrors) {
-                            fmt::print(stderr, "validation [{} {}]: {} ({})\n", st.meta.type, st.meta.name,
-                                       err.message, err.nodeType);
-                        }
-                        for(const auto& err: st.pipeline.codegen.errors) {
-                            fmt::print(stderr, "codegen error [{} {}]: {}\n", st.meta.type, st.meta.name, err);
-                        }
-                    }
-                    return 1;
-                }
-                fmt::print("{}", header.code);
-                if(!header.code.empty() && header.code.back() != '\n') {
-                    fmt::print("\n");
-                }
-            }
+            const SchemaReport report = reportSqliteSchema(schema, jsonOnly);
+            fmt::print(stderr, "{}", report.err);
+            fmt::print("{}", report.out);
+            return report.exitCode;
         } catch(const SchemaReadError& e) {
             fmt::print(stderr, "sqlite2orm: cannot open database: {}\n", e.what());
             return 2;
@@ -103,7 +69,6 @@ namespace {
             fmt::print(stderr, "sqlite2orm: {}\n", ex.what());
             return 2;
         }
-        return EXIT_SUCCESS;
     }
 
 }  // namespace

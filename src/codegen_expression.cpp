@@ -612,8 +612,11 @@ namespace sqlite2orm {
             auto highResult = this->coordinator.generateNode(*betweenNode->high);
 
             if(auto* col = dynamic_cast<const ColumnRefNode*>(betweenNode->operand.get())) {
-                this->context.registerPrefixColumn(toCppIdentifier(col->columnName),
-                                                   this->context.inferTypeFromNode(*betweenNode->low));
+                // Both bounds are compared against the column, so both have a say in its type:
+                // registering the wider one after the narrower one widens the field to hold it.
+                const std::string cppName = toCppIdentifier(col->columnName);
+                this->context.registerPrefixColumn(cppName, this->context.inferTypeFromNode(*betweenNode->low));
+                this->context.registerPrefixColumn(cppName, this->context.inferTypeFromNode(*betweenNode->high));
             }
 
             auto decisionPoints = std::move(operandResult.decisionPoints);
@@ -758,9 +761,11 @@ namespace sqlite2orm {
             auto decisionPoints = std::move(operandResult.decisionPoints);
 
             if(auto* col = dynamic_cast<const ColumnRefNode*>(inNode->operand.get())) {
-                if(!inNode->values.empty()) {
-                    this->context.registerPrefixColumn(toCppIdentifier(col->columnName),
-                                                       this->context.inferTypeFromNode(*inNode->values.at(0)));
+                // Every value of the list is compared against the column, not just the first one,
+                // so the field has to hold the widest of them.
+                const std::string cppName = toCppIdentifier(col->columnName);
+                for(const auto& value: inNode->values) {
+                    this->context.registerPrefixColumn(cppName, this->context.inferTypeFromNode(*value));
                 }
             }
 

@@ -762,6 +762,22 @@ TEST_CASE("codegen: int64_t literal widens BETWEEN, IN and CASE") {
             "case_<int64_t>().when(c(&User::a) > 0, then(3000000000)).else_(0).end()");
 }
 
+// Every operand of a BETWEEN and every value of an IN list is compared against the column, so a
+// literal beyond int32 widens the field wherever it stands, not only in the leading position.
+TEST_CASE("codegen: int64_t literal widens BETWEEN and IN from a trailing position") {
+    REQUIRE(prefixFor("x BETWEEN 1 AND 3000000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x IN (1, 3000000000)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x IN (1, 2, 0xFFFFFFFF)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x NOT BETWEEN 1 AND 3000000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x NOT IN (1, 3000000000)") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// A list that stays inside an int32 keeps the readable `int`, from either position.
+TEST_CASE("codegen: BETWEEN and IN within int32 keep an int field") {
+    REQUIRE(prefixFor("x BETWEEN 1 AND 5") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x IN (1, 2, 3)") == "struct User {\n    int x = 0;\n};");
+}
+
 TEST_CASE("codegen: prefix - LIKE infers string") {
     REQUIRE(prefixFor("name LIKE '%foo%'") == "struct User {\n    std::string name;\n};");
 }

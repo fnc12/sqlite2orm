@@ -481,7 +481,7 @@ namespace sqlite2orm {
         // up unsigned there: the 8 digits of `0xDEADBEEF` overflow an `int` and land in an
         // `unsigned int`, and the 16 digits of `0xFFFFFFFFFFFFFFFF` overflow an `int64_t` and land
         // in an `unsigned long`. Anything between the two spans stays signed, and a seventeenth
-        // digit the tokenizer rejects.
+        // digit `hexLiteralExceedsInt64` catches before the literal gets here.
         bool hexLiteralIsUnsignedInCpp(std::string_view integerLiteral) {
             const std::string digits = significantDigits(integerLiteral.substr(2));
             return (digits.size() == 8 || digits.size() == 16) && digits.front() >= '8';
@@ -489,10 +489,25 @@ namespace sqlite2orm {
 
     }  // namespace
 
+    bool hexLiteralExceedsInt64(std::string_view integerLiteral) {
+        return isHexadecimalLiteral(integerLiteral) && significantDigits(integerLiteral.substr(2)).size() > 16;
+    }
+
+    std::string numericLiteralWithoutDigitSeparators(std::string_view numericLiteral) {
+        std::string result;
+        result.reserve(numericLiteral.size());
+        for(char character: numericLiteral) {
+            if(character != '_') {
+                result += character;
+            }
+        }
+        return result;
+    }
+
     bool integerLiteralExceedsInt64(std::string_view integerLiteral) {
         if(isHexadecimalLiteral(integerLiteral)) {
-            // A hex literal never leaves the range: SQLite wraps it around and rejects the one
-            // that would need a seventeenth digit.
+            // A hex literal never leaves the range: SQLite wraps it around, and the one that
+            // would need a seventeenth digit is `hexLiteralExceedsInt64`, refused before this.
             return false;
         }
         static constexpr std::string_view int64Max = "9223372036854775807";

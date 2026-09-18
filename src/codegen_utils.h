@@ -70,6 +70,14 @@ namespace sqlite2orm {
     std::string integerLiteralToCpp(std::string_view integerLiteral);
     /** True when SQLite reads a decimal integer literal as a REAL because an int64 cannot hold it. */
     bool integerLiteralExceedsInt64(std::string_view integerLiteral);
+    /**
+     *  True when a signed 64-bit integer cannot hold a hex literal, i.e. it needs a seventeenth
+     *  significant digit. SQLite refuses such a literal in `codeInteger()`, when it compiles an
+     *  expression, so only the statements that never compile one accept it.
+     */
+    bool hexLiteralExceedsInt64(std::string_view integerLiteral);
+    /** A numeric literal as SQLite names it in a diagnostic: with the `_` digit separators taken out. */
+    std::string numericLiteralWithoutDigitSeparators(std::string_view numericLiteral);
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);
 

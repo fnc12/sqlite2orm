@@ -12,6 +12,20 @@ namespace sqlite2orm {
 
     CodeGenResult ExpressionCodeGenerator::generateExpression(const AstNode& astNode) {
         if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&astNode)) {
+            if(hexLiteralExceedsInt64(integerLiteral->value)) {
+                // SQLite raises `hex literal too big` in `codeInteger()`, i.e. when it compiles
+                // the expression, so `SELECT 0x10000000000000000` is refused while a DEFAULT, a
+                // CHECK or a view body keeps the literal and only a use of them fails. C++ has no
+                // literal for it either, so a stored clause hands it to the generator that owns
+                // the clause, which leaves the clause out of the generated code.
+                std::string literal = numericLiteralWithoutDigitSeparators(integerLiteral->value);
+                if(this->context.storedExpression) {
+                    this->context.storedHexLiteralsTooBig.push_back(std::move(literal));
+                } else {
+                    this->context.accumulatedErrors.push_back("hex literal too big: " + std::move(literal));
+                }
+                return CodeGenResult{{}, {}};
+            }
             return CodeGenResult{integerLiteralToCpp(integerLiteral->value), {}};
         } else if(auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&astNode)) {
             return CodeGenResult{numericLiteralToCpp(realLiteral->value), {}};

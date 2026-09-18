@@ -184,6 +184,15 @@ namespace sqlite2orm {
         return this->ddlCodeGenerator->createViewParts(node);
     }
 
+    CodeGenResult CodeGenerator::generateStoredExpression(const AstNode& astNode) {
+        this->generatorContext->storedHexLiteralsTooBig.clear();
+        const bool wasStoredExpression = this->generatorContext->storedExpression;
+        this->generatorContext->storedExpression = true;
+        CodeGenResult result = this->generateNode(astNode);
+        this->generatorContext->storedExpression = wasStoredExpression;
+        return result;
+    }
+
     CodeGenResult CodeGenerator::generateNode(const AstNode& astNode) {
         if(dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
            dynamic_cast<const RealLiteralNode*>(&astNode) ||

@@ -161,6 +161,8 @@ namespace sqlite2orm {
 
     void CodeGeneratorContext::resetForGeneration() {
         this->accumulatedErrors.clear();
+        this->storedExpression = false;
+        this->storedHexLiteralsTooBig.clear();
         this->customFunctions.clear();
     }
 

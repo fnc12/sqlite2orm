@@ -49,6 +49,19 @@ namespace sqlite2orm {
         int nextDecisionPointId = 1;
         int nextBindParamIndex = 0;
         std::vector<std::string> accumulatedErrors;
+        /**
+         *  Set while generating an expression the statement only stores the text of: a column
+         *  DEFAULT, a CHECK, a view or a trigger body. SQLite raises `hex literal too big` in
+         *  `codeInteger()`, when it compiles an expression, so such a statement is accepted with
+         *  a hex literal no compiled expression may hold — and that C++ cannot spell either.
+         */
+        bool storedExpression = false;
+        /**
+         *  The hex literals past the int64 range met since the last `generateStoredExpression()`,
+         *  as SQLite names them. The generator that owns the clause leaves it out of the generated
+         *  code with a warning instead of failing the whole statement.
+         */
+        std::vector<std::string> storedHexLiteralsTooBig;
         std::map<std::string, std::string> columnTypes;
         std::map<std::string, std::string> fromTableAliasToStructName;
         std::map<std::string, TableAliasInfo> activeTableAliases;

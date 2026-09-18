@@ -345,7 +345,14 @@ TEST_CASE("codegen: INSERT VALUES - one past INT64_MAX into an INTEGER column") 
     auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (9223372036854775808);");
     REQUIRE(result.code ==
             "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775808.0)));");
-    REQUIRE(result.warnings.size() == 1u);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"INSERT into column 'x' of table 't' uses 9223372036854775808, past the signed 64-bit integer "
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{1, 50},
+                 19}});
     REQUIRE(result.errors.empty());
 }
 
@@ -375,7 +382,14 @@ TEST_CASE("codegen: INSERT VALUES - several rows, one value past the int64 range
     REQUIRE(result.code ==
             "storage.insert(into<T>(), columns(&T::x, &T::y), "
             "values(std::make_tuple(99999999999999999999.0, \"a\"), std::make_tuple(1, \"b\")));");
-    REQUIRE(result.warnings.size() == 1u);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"INSERT into column 'x' of table 't' uses 99999999999999999999, past the signed 64-bit integer "
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{1, 58},
+                 20}});
     REQUIRE(result.errors.empty());
 }
 

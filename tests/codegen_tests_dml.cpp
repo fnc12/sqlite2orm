@@ -263,9 +263,9 @@ TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into an INTEG
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
                 {"INSERT into column 'x' of table 't' uses 99999999999999999999, past the signed 64-bit integer "
-                 "range: SQLite keeps such a value a REAL even in an INTEGER column, and the int64_t field cannot "
-                 "hold it, so the row is generated through columns()/values(), which writes the value SQLite "
-                 "stores, rather than as a struct, which would write a different one",
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
                  SourceLocation{1, 50},
                  20}});
     REQUIRE(result.errors.empty());
@@ -279,11 +279,46 @@ TEST_CASE("codegen: INSERT VALUES - a negated literal past the int64 range into 
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
                 {"INSERT into column 'x' of table 't' uses -99999999999999999999, past the signed 64-bit integer "
-                 "range: SQLite keeps such a value a REAL even in an INTEGER column, and the int64_t field cannot "
-                 "hold it, so the row is generated through columns()/values(), which writes the value SQLite "
-                 "stores, rather than as a struct, which would write a different one",
-                 SourceLocation{1, 51},
-                 20}});
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{1, 50},
+                 21}});
+    REQUIRE(result.errors.empty());
+}
+
+// The underline covers the signs the message quotes along with the digits, whatever stands
+// between them and the literal.
+TEST_CASE("codegen: INSERT VALUES - the warning underlines the sign of a past-range literal") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (- 99999999999999999999);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(-99999999999999999999.0)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"INSERT into column 'x' of table 't' uses -99999999999999999999, past the signed 64-bit integer "
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{1, 50},
+                 22}});
+    REQUIRE(result.errors.empty());
+}
+
+// Two signs fold into a positive value, which is the value SQLite ends up with as well: negating
+// INT64_MIN leaves the int64 range, and sqlite3 3.51 stores `real|9.22337203685477581e+18` for
+// this row, as the generated code does.
+TEST_CASE("codegen: INSERT VALUES - a doubly negated INT64_MIN leaves the int64 range") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (-(-9223372036854775808));");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(-(-9223372036854775808.0))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"INSERT into column 'x' of table 't' uses 9223372036854775808, past the signed 64-bit integer "
+                 "range: SQLite types a value before it applies the column affinity and keeps such a one a REAL, "
+                 "and the int64_t field cannot hold it, so the row is generated through columns()/values(), which "
+                 "writes the value SQLite stores, rather than as a struct, which would write a different one",
+                 SourceLocation{1, 50},
+                 22}});
     REQUIRE(result.errors.empty());
 }
 

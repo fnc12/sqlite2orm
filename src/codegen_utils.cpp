@@ -533,29 +533,50 @@ namespace sqlite2orm {
             return node;
         }
 
+        /** The source text of a numeric literal node, or an empty view for any other node. */
+        std::string_view numericLiteralText(const AstNode& literal) {
+            if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&literal)) {
+                return integerLiteral->value;
+            }
+            if(auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&literal)) {
+                return realLiteral->value;
+            }
+            return {};
+        }
+
     }  // namespace
 
-    const IntegerLiteralNode* integerLiteralPastIntegerFieldRange(const AstNode& value) {
+    bool isIntegerLiteralPastIntegerFieldRange(const AstNode& value) {
         bool negated = false;
         auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
-        if(!integerLiteral || !integerLiteralExceedsInt64(integerLiteral->value, negated)) {
-            return nullptr;
-        }
-        return integerLiteral;
+        return integerLiteral != nullptr && integerLiteralExceedsInt64(integerLiteral->value, negated);
     }
 
     std::string numericLiteralSqlText(const AstNode& value) {
         bool negated = false;
-        const AstNode* literal = withoutFoldedSigns(value, negated);
-        std::string_view text;
-        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(literal)) {
-            text = integerLiteral->value;
-        } else if(auto* realLiteral = dynamic_cast<const RealLiteralNode*>(literal)) {
-            text = realLiteral->value;
-        } else {
+        const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, negated));
+        if(text.empty()) {
             return {};
         }
         return (negated ? "-" : "") + withoutDigitSeparators(text);
+    }
+
+    CodegenWarning numericLiteralWarning(std::string message, const AstNode& value) {
+        bool negated = false;
+        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        const std::string_view text = numericLiteralText(literal);
+        if(text.empty()) {
+            return CodegenWarning{std::move(message)};
+        }
+        SourceLocation location = literal.location;
+        size_t length = text.size();
+        // The minus signs the message quotes along with the digits stand in front of the literal,
+        // so the underline starts at the value rather than at the token it ends with.
+        if(value.location.line == location.line && value.location.column < location.column) {
+            length = location.column + length - value.location.column;
+            location = value.location;
+        }
+        return CodegenWarning{std::move(message), location, length};
     }
 
     bool integerFieldCarriesValue(const AstNode& value) {
@@ -566,7 +587,7 @@ namespace sqlite2orm {
             // an int64_t field as 1 where SQLite keeps the 1.5 it stored.
             return false;
         }
-        return integerLiteralPastIntegerFieldRange(value) == nullptr;
+        return !isIntegerLiteralPastIntegerFieldRange(value);
     }
 
     std::string integerLiteralToCpp(std::string_view integerLiteral) {

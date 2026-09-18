@@ -76,12 +76,12 @@ namespace sqlite2orm {
      */
     bool integerLiteralExceedsInt64(std::string_view integerLiteral, bool negated = false);
     /**
-     *  The decimal integer literal `value` denotes when SQLite keeps it a REAL — one past the int64
-     *  range, any folded minus signs counted in — or nullptr. SQLite types a value by itself and
-     *  applies column affinity only afterwards, so such a literal stays a REAL even in an INTEGER
-     *  column, where a C++ `int64_t` field would convert it.
+     *  True when `value` denotes a decimal integer literal SQLite keeps a REAL — one past the int64
+     *  range, any folded minus signs counted in. SQLite types a value by itself and applies column
+     *  affinity only afterwards, so such a literal stays a REAL even in an INTEGER column, where a
+     *  C++ `int64_t` field would convert it.
      */
-    const IntegerLiteralNode* integerLiteralPastIntegerFieldRange(const AstNode& value);
+    bool isIntegerLiteralPastIntegerFieldRange(const AstNode& value);
     /**
      *  True when an `int64_t` field is known to hold exactly the value SQLite gives `value`: false
      *  for a decimal integer literal past the int64 range and for every REAL literal, whose storage
@@ -93,6 +93,13 @@ namespace sqlite2orm {
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.
      */
     std::string numericLiteralSqlText(const AstNode& value);
+    /**
+     *  `message` anchored at the numeric literal `value` denotes: the underline covers the literal
+     *  token together with the minus signs folded into it, which `numericLiteralSqlText` quotes
+     *  along with the digits, as far as they share the literal's line. Unanchored for anything
+     *  else.
+     */
+    CodegenWarning numericLiteralWarning(std::string message, const AstNode& value);
     /**
      *  True when a signed 64-bit integer cannot hold a hex literal, i.e. it needs a seventeenth
      *  significant digit. SQLite refuses such a literal in `codeInteger()`, when it compiles an

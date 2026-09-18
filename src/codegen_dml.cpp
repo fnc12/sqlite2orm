@@ -53,17 +53,16 @@ namespace sqlite2orm {
                     continue;
                 }
                 columnListForced = true;
-                if(const IntegerLiteralNode* literal = integerLiteralPastIntegerFieldRange(value)) {
-                    pastRangeWarnings.push_back(
-                        CodegenWarning{"INSERT into column '" + column.sqlName + "' of table '" +
-                                           insertNode.tableName + "' uses " + numericLiteralSqlText(value) +
-                                           ", past the signed 64-bit integer range: SQLite keeps such a value a "
-                                           "REAL even in an INTEGER column, and the " + column.cppType +
-                                           " field cannot hold it, so the row is generated through "
-                                           "columns()/values(), which writes the value SQLite stores, rather "
-                                           "than as a struct, which would write a different one",
-                                       literal->location,
-                                       literal->value.size()});
+                if(isIntegerLiteralPastIntegerFieldRange(value)) {
+                    pastRangeWarnings.push_back(numericLiteralWarning(
+                        "INSERT into column '" + column.sqlName + "' of table '" + insertNode.tableName +
+                            "' uses " + numericLiteralSqlText(value) +
+                            ", past the signed 64-bit integer range: SQLite types a value before it applies "
+                            "the column affinity and keeps such a one a REAL, and the " + column.cppType +
+                            " field cannot hold it, so the row is generated through columns()/values(), which "
+                            "writes the value SQLite stores, rather than as a struct, which would write a "
+                            "different one",
+                        value));
                 }
             }
         }

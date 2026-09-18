@@ -59,6 +59,7 @@ add_library(sqlite2orm_lib
     src/schema_process.cpp
     src/schema_header.cpp
     src/json_emit.cpp
+    src/schema_report.cpp
 )
 
 target_include_directories(sqlite2orm_lib PUBLIC include "${SQLITE2ORM_NLOHMANN_JSON_DIR}")
@@ -132,6 +133,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/process_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp
+        tests/schema_report_tests.cpp
         tests/temp_build_dir.cpp
     )
     # A probe that runs the generated code needs the same libsqlite3 the library links, which is not
@@ -165,6 +167,13 @@ if(SQLITE2ORM_BUILD_TESTS)
             COMMAND $<TARGET_FILE:sqlite2orm_cli> -e "PRAGMA recursive_triggers = NULL;")
         set_tests_properties(sqlite2orm_cli_pragma_value_error_exit_code PROPERTIES WILL_FAIL TRUE)
         if(UNIX)
+            find_program(SQLITE2ORM_SQLITE3_EXECUTABLE sqlite3)
+            if(SQLITE2ORM_SQLITE3_EXECUTABLE)
+                add_test(
+                    NAME sqlite2orm_cli_db_json_exit_code
+                    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_db_json_exit_code.sh"
+                            "$<TARGET_FILE:sqlite2orm_cli>" "${SQLITE2ORM_SQLITE3_EXECUTABLE}")
+            endif()
             add_test(
                 NAME sqlite2orm_cli_stdin
                 COMMAND sh -c "printf 'SELECT 7\\n' | \"$<TARGET_FILE:sqlite2orm_cli>\"")

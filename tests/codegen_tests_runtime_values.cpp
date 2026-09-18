@@ -119,3 +119,23 @@ TEST_CASE("runtime: a negation over a general operand keeps its value") {
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"-5", "3", "-3", "-1", "6", "-7", "-8", "7"});
 }
+
+// `case_<int>()` truncates the branch value the way the field inferred for it would: the result
+// type the CASE is generated with comes from the same inference. Expected values checked against
+// sqlite3 3.51 (the single row holds a = 7).
+TEST_CASE("runtime: a CASE branch beyond int32 keeps its value") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a > 0 THEN 3000000000 ELSE 0 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN -3000000000 ELSE 0 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN 9223372036854775807 ELSE 0 END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) > 0, then(3000000000)).else_(0).end());",
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) > 0, then(-3000000000)).else_(0).end());",
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) > 0, "
+                "then(9223372036854775807)).else_(0).end());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"3000000000", "-3000000000", "9223372036854775807"});
+}

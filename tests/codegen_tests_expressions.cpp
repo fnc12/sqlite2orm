@@ -27,6 +27,16 @@ namespace {
         "comes out with no FROM clause at all and throws `SQL logic error`. The column pointer names "
         "the same column and serializes to the same SQL.";
 
+    // The hint attached to every value a NOT stands over; asserted on its own in
+    // "codegen: a value under a NOT carries its comment".
+    const std::string kNotValueAddedToZeroComment =
+        "A value under a NOT is generated as `(c(0) + value)`: sqlite_orm binds the values of a "
+        "statement by walking its expression tree, and that walk stops at the `c(...)` a NOT keeps "
+        "over its operand — the value of `select(not c(0))` is never bound, so the statement runs "
+        "with an empty parameter and answers NULL. A binary operator unwraps what it is given, and "
+        "`0 + x` is the numeric coercion SQLite applies to `x` in a boolean context anyway, so "
+        "`NOT x` and `NOT (0 + x)` answer alike.";
+
     // The hint attached to every NOT the generator delimits with a CAST; asserted on its own in
     // "codegen: a NOT over a NOT carries its comment".
     const std::string kNegatedConditionCastComment =
@@ -423,16 +433,19 @@ TEST_CASE("codegen: logical NOT") {
             {},
             {kNotColumnPointerComment}});
     }
-    SECTION("literal operand keeps the c() wrapper") {
+    SECTION("value operand") {
         auto result = generateFull("NOT 1");
-        REQUIRE(result == CodeGenResult{"not c(1)",
+        REQUIRE(result == CodeGenResult{"not (c(0) + 1)",
             {
-                DecisionPoint{1, "expr_style", "operator", "not c(1)",
+                DecisionPoint{1, "expr_style", "operator", "not (c(0) + 1)",
                               {
-                                  Option{"operator", "not c(1)", "operator style"},
-                                  Option{"operator_excl", "!c(1)", "use ! instead of not"},
+                                  Option{"operator", "not (c(0) + 1)", "operator style"},
+                                  Option{"operator_excl", "!(c(0) + 1)", "use ! instead of not"},
                               }},
-            }});
+            },
+            {},
+            {},
+            {kNotValueAddedToZeroComment}});
     }
     SECTION("compound operand: NOT -a") {
         auto result = generateFull("NOT -a");
@@ -494,6 +507,29 @@ TEST_CASE("codegen: a column under a NOT is generated as a column pointer") {
 TEST_CASE("codegen: a column under a NOT carries its comment") {
     auto result = generateFull("SELECT NOT a FROM users;");
     REQUIRE(result.comments == std::vector<std::string>{kNotColumnPointerComment});
+}
+
+// The same wrapper hides a value from the walk that binds one: the literal of `select(not c(0))`
+// never reached a parameter, so the statement ran with an empty one and answered NULL where SQLite
+// answers 1. A binary operator unwraps what it is given, and `0 + x` is the numeric coercion SQLite
+// applies to `x` in a boolean context anyway. A leaf that names something instead of carrying a
+// value — NEW/OLD in a trigger, a datetime function — is serialized into the SQL and needs nothing.
+TEST_CASE("codegen: a value under a NOT is added to zero") {
+    REQUIRE(generate("SELECT NOT 0;") == "auto rows = storage.select(not (c(0) + 0));");
+    REQUIRE(generate("SELECT NOT 0.5;") == "auto rows = storage.select(not (c(0) + 0.5));");
+    REQUIRE(generate("SELECT NOT 'abc';") == "auto rows = storage.select(not (c(0) + \"abc\"));");
+    REQUIRE(generate("SELECT NOT TRUE;") == "auto rows = storage.select(not (c(0) + true));");
+    REQUIRE(generate("SELECT NOT NULL;") == "auto rows = storage.select(as_optional(not (c(0) + nullptr)));");
+    REQUIRE(generate("SELECT NOT -2;") == "auto rows = storage.select(not (c(0) + -2));");
+    REQUIRE(generate("SELECT NOT x'3132';") ==
+            "auto rows = storage.select(not (c(0) + std::vector<char>{'\\x31', '\\x32'}));");
+    REQUIRE(generate("SELECT NOT current_timestamp;") ==
+            "auto rows = storage.select(not c(current_timestamp()));");
+}
+
+TEST_CASE("codegen: a value under a NOT carries its comment") {
+    auto result = generateFull("SELECT NOT 0;");
+    REQUIRE(result.comments == std::vector<std::string>{kNotValueAddedToZeroComment});
 }
 
 // sqlite_orm classifies `negated_condition_t` — what a NOT and the `!predicate` spelling of a

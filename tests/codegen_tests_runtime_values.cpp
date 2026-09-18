@@ -709,24 +709,32 @@ TEST_CASE("runtime: a result column under a dropped COLLATE reads the NULL back"
 // `SELECT NOT "users"."a"` with no FROM clause at all and threw `SQL logic error` before any value
 // reached the caller. The column-pointer form names the same column and the walker reads it. A
 // second NOT did not even compile — `negated_condition_t` is neither negatable nor an operator
-// argument — which the CAST that delimits it fixes. Values checked against sqlite3 3.51 over
-// `users(a INTEGER)` holding one row, NULL first and 7 second.
-TEST_CASE("runtime: a NOT over a column returns the value SQLite computes") {
+// argument — which the CAST that delimits it fixes. The same wrapper hides a value from the walk
+// that binds one, so `select(not c(0))` ran with an empty parameter and answered NULL where SQLite
+// answers 1; `0 + x` is the numeric coercion SQLite applies in a boolean context anyway. Values
+// checked against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a NOT returns the value SQLite computes") {
     const std::vector<std::string> statements{
         generate("SELECT NOT a;"),
         generate("SELECT NOT NOT a;"),
         generate("SELECT NOT (a NOT BETWEEN 1 AND 9);"),
+        generate("SELECT NOT 0;"),
+        generate("SELECT NOT 0.5;"),
+        generate("SELECT NOT 'abc';"),
     };
     REQUIRE(statements ==
             std::vector<std::string>{
                 "auto rows = storage.select(as_optional(not column<User>(&User::a)));",
                 "auto rows = storage.select(as_optional(not cast<int64_t>(not column<User>(&User::a))));",
                 "auto rows = storage.select(as_optional(not cast<int64_t>(!between(&User::a, 1, 9))));",
+                "auto rows = storage.select(not (c(0) + 0));",
+                "auto rows = storage.select(not (c(0) + 0.5));",
+                "auto rows = storage.select(not (c(0) + \"abc\"));",
             });
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
-            std::vector<std::string>{"NULL", "NULL", "NULL"});
+            std::vector<std::string>{"NULL", "NULL", "NULL", "1", "0", "1"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
-            std::vector<std::string>{"0", "1", "1"});
+            std::vector<std::string>{"0", "1", "1", "1", "0", "1"});
 }
 
 // The same column-pointer form has to reach a NOT wherever it stands, and a CHECK constraint is

@@ -610,10 +610,24 @@ namespace sqlite2orm {
                 appendUniqueString(operandResult.comments, kCommentNotColumnPointer);
             }
 
+            // The same wrapper hides a value from the walk that binds one: the literal of
+            // `select(not c(0))` was never bound, so the statement ran with an empty parameter and
+            // answered NULL where SQLite answers 1. A binary operator unwraps what it is given, and
+            // `0 + x` is the numeric coercion SQLite applies to `x` in a boolean context anyway —
+            // `NOT x` and `NOT (0 + x)` answer alike for every value (checked against sqlite3 3.51
+            // over 33 literals: integers, reals, text that does and does not convert, blobs, NULL).
+            const bool operandIsAddedToZeroUnderNot =
+                notKeepsOperandQuoted && wrapsOperandInC && generatesBoundValue(operandNode);
+            if(operandIsAddedToZeroUnderNot) {
+                appendUniqueString(operandResult.comments, kCommentNotValueAddedToZero);
+            }
+
             std::string operandStr;
             if(castsNegatedOperand) {
                 // A CAST delimits itself, both in C++ and in the SQL sqlite_orm serializes.
                 operandStr = operandResult.code;
+            } else if(operandIsAddedToZeroUnderNot) {
+                operandStr = "(c(0) + " + operandResult.code + ")";
             } else if(wrapsOperandInC && !operandIsColumnPointerUnderNot) {
                 operandStr = wrap(operandResult.code);
             } else if(!operandLeaf && !generatesZeroMinusSubtraction(operandNode)) {

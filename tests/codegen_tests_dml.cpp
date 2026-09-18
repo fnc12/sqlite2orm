@@ -663,3 +663,24 @@ TEST_CASE("codegen: INSERT VALUES - a whole number no double holds into a NUMERI
     REQUIRE(result.warnings.empty());
     REQUIRE(result.errors.empty());
 }
+
+// The past-range warning belongs to the field that holds whole numbers only, where the column list
+// writes a different number than the struct would have. A TEXT or a BLOB column reaches the same
+// literal through a field of another storage class, so the column list is spelled out for the
+// storage class alone and the literal itself costs nothing: SQLite stores `text|1.0e+20` and
+// `real|1.0e+20` for these two rows in sqlite3 3.51, which is what binding the value reproduces.
+// Dropping the field-type guard on the warning makes both of these warn about an `std::string` or
+// an `std::vector<char>` field that "cannot hold" the value, which is not what decided the form.
+TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into a column of another storage class") {
+    auto text = generateLastOfBatch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES (99999999999999999999);");
+    REQUIRE(text.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(99999999999999999999.0)));");
+    REQUIRE(text.warnings.empty());
+    REQUIRE(text.errors.empty());
+
+    auto blob = generateLastOfBatch("CREATE TABLE t(x BLOB); INSERT INTO t VALUES (99999999999999999999);");
+    REQUIRE(blob.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(99999999999999999999.0)));");
+    REQUIRE(blob.warnings.empty());
+    REQUIRE(blob.errors.empty());
+}

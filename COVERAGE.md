@@ -642,7 +642,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] REINDEX (parsed as `ReindexNode`; validator error)
 - [!] EXPLAIN (parsed as `ExplainNode`; validator error)
 - [!] EXPLAIN QUERY PLAN (parsed as `ExplainNode`; validator error)
-- [x] PRAGMA — parsed as `PragmaNode`; supported names map to `storage.pragma` in sqlite_orm (`journal_mode`, `locking_mode`, `user_version`, `synchronous`, `application_id`, `busy_timeout`, `auto_vacuum`, `max_page_count`, `recursive_triggers`, `module_list`, `quick_check`, `integrity_check`, `table_info`, `table_xinfo`); schema-qualified `PRAGMA main.xxx` is a validator error; other pragma names are validator errors
+- [x] PRAGMA — parsed as `PragmaNode`; supported names map to `storage.pragma` in sqlite_orm (`journal_mode`, `locking_mode`, `user_version`, `synchronous`, `application_id`, `busy_timeout`, `auto_vacuum`, `max_page_count`, `recursive_triggers`, `module_list`, `quick_check`, `integrity_check`, `table_info`, `table_xinfo`); schema-qualified `PRAGMA main.xxx` is a validator error; other pragma names are validator errors. The value is a name to SQLite (`nmnum`), not an expression, so every keyword its parser falls back to an identifier stands as one, `ON`, `DELETE` and `DEFAULT` included — `PRAGMA journal_mode = DELETE`, `PRAGMA locking_mode = EXCLUSIVE` and `PRAGMA recursive_triggers = no` are statements, while the 55 reserved words are a syntax error there
 - [!] SAVEPOINT (parsed as `SavepointNode`; validator error)
 - [!] RELEASE (parsed as `ReleaseNode`; validator error)
 - [!] snippet() — FTS5 (not in sqlite_orm)

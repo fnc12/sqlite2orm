@@ -938,14 +938,35 @@ namespace sqlite2orm {
             node->pragmaName = std::move(firstName);
         }
         if(match(TokenType::eq) || match(TokenType::eq2)) {
-            node->value = this->parser.parseExpression();
+            node->value = parsePragmaValue();
             if(!node->value) return nullptr;
         } else if(match(TokenType::leftParen)) {
-            node->value = this->parser.parseExpression();
+            node->value = parsePragmaValue();
             if(!node->value) return nullptr;
             if(!match(TokenType::rightParen)) return nullptr;
         }
         return node;
+    }
+
+    AstNodePointer DdlParser::parsePragmaValue() {
+        const size_t valueStart = this->tokenStream.currentPosition();
+        if(auto expression = this->parser.parseExpression()) {
+            return expression;
+        }
+        // SQLite never compiles a PRAGMA value, it reads the value's text, and its `nmnum` rule
+        // takes a bare name: every keyword the parser falls back to an identifier for stands here,
+        // and `ON`, `DELETE` and `DEFAULT` are named in the rule on top of those. So
+        // `PRAGMA journal_mode = DELETE` and `PRAGMA recursive_triggers = no` are statements, while
+        // `PRAGMA recursive_triggers = select` is a syntax error. The expression parser already
+        // reads the few of these it has a literal node for, so only the rest arrive here.
+        this->tokenStream.setPosition(valueStart);
+        const Token& token = current();
+        if(isKeywordUsableAsName(token.type) || token.type == TokenType::kwDelete ||
+           token.type == TokenType::kwDefault) {
+            advanceToken();
+            return std::make_unique<ColumnRefNode>(token.value, token.location);
+        }
+        return nullptr;
     }
 
     AstNodePointer DdlParser::parseExplainStatement() {

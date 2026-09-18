@@ -226,3 +226,60 @@ TEST_CASE("parser: parseAll single statement without trailing semicolon") {
     expected.push_back(parse("SELECT 42"));
     REQUIRE(results == expected);
 }
+
+// SQLite never compiles a PRAGMA value, it reads the value's text, and its `nmnum` rule takes a
+// bare name: every keyword its parser falls back to an identifier for stands as a value, and `ON`,
+// `DELETE` and `DEFAULT` are named in the rule on top of those. Only the reserved words below are
+// a syntax error there. The two lists are what sqlite3 3.51 answers for
+// `PRAGMA recursive_triggers = <keyword>;` over every keyword this tokenizer knows.
+TEST_CASE("parser: the keywords SQLite refuses as a PRAGMA value") {
+    const std::vector<std::string> allKeywords{
+        "abort", "action", "add", "after", "all", "alter", "always", "analyze", "and", "as", "asc", "attach",
+        "autoincrement", "before", "begin", "between", "by", "cascade", "case", "cast", "check", "collate",
+        "column", "commit", "conflict", "constraint", "create", "cross", "current", "current_date", "current_time",
+        "current_timestamp", "database", "default", "deferrable", "deferred", "delete", "desc", "detach",
+        "distinct", "do", "drop", "each", "else", "end", "escape", "except", "exclude", "excluded", "exclusive",
+        "exists", "explain", "fail", "false", "filter", "first", "following", "for", "foreign", "from", "full",
+        "generated", "glob", "group", "groups", "having", "if", "ignore", "immediate", "in", "index", "indexed",
+        "initially", "inner", "insert", "instead", "intersect", "into", "is", "isnull", "join", "key", "last",
+        "left", "like", "limit", "match", "materialized", "natural", "no", "not", "nothing", "notnull", "null",
+        "nulls", "of", "offset", "on", "or", "order", "others", "outer", "over", "partition", "plan", "pragma",
+        "preceding", "primary", "query", "raise", "range", "recursive", "references", "regexp", "reindex",
+        "release", "rename", "replace", "restrict", "returning", "right", "rollback", "row", "rows", "savepoint",
+        "select", "set", "stored", "strict", "table", "temp", "temporary", "then", "ties", "to", "transaction",
+        "trigger", "true", "unbounded", "union", "unique", "update", "using", "vacuum", "values", "view",
+        "virtual", "when", "where", "window", "with", "without"
+    };
+    // `NULL` is the one reserved word missing from the list: SQLite calls it a syntax error too,
+    // but the parser keeps it so that codegen can name the PRAGMA it cannot set — see
+    // "processSql: PRAGMA recursive_triggers = NULL".
+    std::vector<std::string> refused;
+    for(const std::string& keyword: allKeywords) {
+        if(!parse("PRAGMA recursive_triggers = " + keyword + ";")) {
+            refused.push_back(keyword);
+        }
+    }
+    REQUIRE(refused == std::vector<std::string>{
+        "add", "all", "alter", "and", "as", "autoincrement", "between", "case", "check", "collate", "commit",
+        "constraint", "create", "deferrable", "distinct", "drop", "else", "escape", "except", "exists", "foreign",
+        "from", "group", "having", "in", "index", "insert", "intersect", "into", "is", "isnull", "join", "limit",
+        "not", "nothing", "notnull", "or", "order", "primary", "references", "returning", "select", "set",
+        "table", "then", "to", "transaction", "union", "unique", "update", "using", "values", "when", "where"
+    });
+}
+
+TEST_CASE("parser: PRAGMA with a keyword value") {
+    auto result = parse("PRAGMA recursive_triggers = no;");
+    auto expected = PragmaNode({});
+    expected.pragmaName = "recursive_triggers";
+    expected.value = makeNode<ColumnRefNode>(std::string_view{"no"});
+    REQUIRE(requireNode<PragmaNode>(result) == expected);
+}
+
+TEST_CASE("parser: PRAGMA with a parenthesized keyword value") {
+    auto result = parse("PRAGMA table_info(row);");
+    auto expected = PragmaNode({});
+    expected.pragmaName = "table_info";
+    expected.value = makeNode<ColumnRefNode>(std::string_view{"row"});
+    REQUIRE(requireNode<PragmaNode>(result) == expected);
+}

@@ -327,3 +327,52 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = a hex literal too big for an int
                                           "false; spell it 0/1, TRUE/FALSE or ON/OFF instead"}},
                           {}});
 }
+
+// A PRAGMA value is a name to SQLite, so the keywords its parser falls back to an identifier are
+// values like any other. `getSafetyLevel()` reads `no` as 0 and `full` as 3, and then drops the 3
+// because `recursive_triggers` asks it to omit the levels above 1 — both are false. Checked
+// against sqlite3 3.51: `PRAGMA recursive_triggers = no; PRAGMA recursive_triggers;` answers 0.
+TEST_CASE("codegen: PRAGMA recursive_triggers = a keyword") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = no;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA recursive_triggers = full;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = full: SQLite reads this as false; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA recursive_triggers = DEFAULT;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = DEFAULT: SQLite reads this as false; spell "
+                                          "it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+// `CURRENT_DATE` and its siblings are names here too, not the datetime they stand for in an
+// expression, so the value is what those letters read as: 0, because they start with no digit.
+TEST_CASE("codegen: PRAGMA recursive_triggers = CURRENT_TIMESTAMP") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = CURRENT_TIMESTAMP;") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = current_timestamp: SQLite reads this as "
+                                          "false; spell it 0/1, TRUE/FALSE or ON/OFF instead"}},
+                          {}});
+}
+
+// DELETE is SQLite's default journal mode and EXCLUSIVE one of the two locking modes, and both
+// spell a keyword — neither reached codegen before the value took a name.
+TEST_CASE("codegen: PRAGMA journal_mode = DELETE") {
+    REQUIRE(generateFull("PRAGMA journal_mode = DELETE;") ==
+            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::DELETE);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA locking_mode = EXCLUSIVE") {
+    REQUIRE(generateFull("PRAGMA locking_mode = EXCLUSIVE;") ==
+            CodeGenResult{"storage.pragma.locking_mode(sqlite_orm::locking_mode::EXCLUSIVE);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA table_info of a table named after a keyword") {
+    REQUIRE(generateFull("PRAGMA table_info(row);") ==
+            CodeGenResult{R"(storage.pragma.table_info("row");)", {}, {}, {}});
+}

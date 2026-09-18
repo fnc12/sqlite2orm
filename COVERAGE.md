@@ -178,6 +178,7 @@ Statuses:
 - [x] ORDER BY ordering-term → `order_by(&T::col).asc()` / `.desc()`
 - [x] LIMIT expr → `limit(n)`
 - [x] LIMIT expr OFFSET expr → `limit(n, offset(m))`
+- [x] LIMIT expr `,` expr → `limit(count, offset(off))` (SQLite's comma form puts the offset first)
 
 ### Result columns
 - [x] `*` → `get_all<T>()`

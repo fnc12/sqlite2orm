@@ -72,6 +72,12 @@ namespace sqlite2orm {
     /** True when SQLite reads a decimal integer literal as a REAL because an int64 cannot hold it. */
     bool integerLiteralExceedsInt64(std::string_view integerLiteral);
     /**
+     *  True when a 32-bit int cannot hold the value SQLite gives an integer literal, i.e. the field
+     *  standing for it has to be an int64_t. A hex literal is measured after the wrap-around SQLite
+     *  applies to it, so that `0xFFFFFFFFFFFFFFFF`, which is -1, still fits.
+     */
+    bool integerLiteralExceedsInt32(std::string_view integerLiteral);
+    /**
      *  True when a signed 64-bit integer cannot hold a hex literal, i.e. it needs a seventeenth
      *  significant digit. SQLite refuses such a literal in `codeInteger()`, when it compiles an
      *  expression, so only the statements that never compile one accept it.

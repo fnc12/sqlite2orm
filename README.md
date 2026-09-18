@@ -75,6 +75,27 @@ See [examples/](examples/) for more: programmatic API, custom policies, database
 | `SQLITE2ORM_BUILD_TESTS` | `ON` | Build unit tests (fetches Catch2 and sqlite_orm headers) |
 | `SQLITE2ORM_BUILD_EXAMPLES` | `OFF` | Build example programs |
 
+## Code style
+
+The tree is formatted with **clang-format 19** using the `.clang-format` copied from
+[sqlite_orm](https://github.com/fnc12/sqlite_orm). Other clang-format versions format this
+tree differently, so use 19:
+
+```bash
+clang-format-19 -i $(find include src tests examples -name '*.h' -o -name '*.hpp' -o -name '*.cpp')
+```
+
+A pre-commit hook that checks the staged C++ files lives in `.githooks/`. It is **not**
+installed automatically — enable it per clone with:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+That sets `core.hooksPath` to `.githooks`; `git config --unset core.hooksPath` turns it off
+again. Set `CLANG_FORMAT` to point the hook at a specific binary. The same check runs on CI
+as the `clang-format lint` workflow.
+
 ## Architecture
 
 ```

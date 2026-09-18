@@ -1,0 +1,52 @@
+#!/bin/sh
+# Rejects a commit whose staged C++ sources clang-format would reformat, so the clang-format
+# lint on CI never fails on something the commit itself could have caught.
+#
+# Install it explicitly with scripts/install-git-hooks.sh — nothing installs it for you.
+# Set CLANG_FORMAT to pick a particular binary; otherwise clang-format-19 and clang-format are
+# tried in that order. Only version 19 is used: other versions format this tree differently.
+set -e
+
+find_clang_format() {
+    for candidate in "$CLANG_FORMAT" clang-format-19 clang-format; do
+        [ -n "$candidate" ] || continue
+        command -v "$candidate" > /dev/null 2>&1 || continue
+        case $("$candidate" --version) in
+            *"clang-format version 19."*)
+                echo "$candidate"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+if ! clang_format=$(find_clang_format); then
+    echo "pre-commit: no clang-format 19 found, skipping the formatting check." >&2
+    exit 0
+fi
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(h|hpp|cpp)$' || true)
+[ -n "$staged" ] || exit 0
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# The staged content is what the commit records, which is not always what is on disk.
+status=0
+IFS='
+'
+for file in $staged; do
+    git show ":$file" > "$tmp/staged"
+    "$clang_format" --style=file --assume-filename="$file" < "$tmp/staged" > "$tmp/formatted"
+    if ! cmp -s "$tmp/staged" "$tmp/formatted"; then
+        echo "pre-commit: $file is not formatted according to .clang-format." >&2
+        status=1
+    fi
+done
+
+if [ "$status" -ne 0 ]; then
+    echo "pre-commit: run clang-format 19 with -i on those files and stage them again." >&2
+fi
+
+exit "$status"

@@ -887,13 +887,102 @@ TEST_CASE("codegen: prefix - the width of a literal follows its significant digi
     REQUIRE(prefixFor("x > 21474_83648") == "struct User {\n    int64_t x = 0;\n};");
 }
 
-// A sign does not bring the value back into an int32, and the operand of a unary plus or minus
-// decides the field on its own.
+// A magnitude past the int32 range stays past it under either sign, and the operand of a unary
+// plus or minus decides the field on its own.
 TEST_CASE("codegen: prefix - inferred type looks through a unary sign") {
     REQUIRE(prefixFor("x > -3000000000") == "struct User {\n    int64_t x = 0;\n};");
     REQUIRE(prefixFor("x > +3000000000") == "struct User {\n    int64_t x = 0;\n};");
     REQUIRE(prefixFor("x > -5") == "struct User {\n    int x = 0;\n};");
     REQUIRE(prefixFor("x > -3.14") == "struct User {\n    double x = 0.0;\n};");
+}
+
+// A minus sign belongs to the literal standing behind it, so the width follows the value the two
+// spell together rather than the magnitude alone. It only shows on the edges of the range, where
+// the sign carries a value across: `sqlite3 :memory: "SELECT -0x80000000, -0xFFFFFFFF80000000"`
+// prints -2147483648, which an `int` holds, and 2147483648, which it does not.
+TEST_CASE("codegen: prefix - the width of a literal follows the sign folded into it") {
+    REQUIRE(prefixFor("x > -2147483648") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -2147483649") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0x80000000") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -0x80000001") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0x100000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFF80000000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFF80000001") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFFFFFFFFFF") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > +0xFFFFFFFF80000000") == "struct User {\n    int x = 0;\n};");
+}
+
+// Parentheses leave no node behind, so `-(-2147483648)` is a minus over a minus and every sign
+// counts: `sqlite3 :memory: "SELECT -(-2147483648), -(-(-2147483648))"` prints 2147483648, which
+// an `int` field reads back as -2147483648, and -2147483648, which it holds. A unary plus
+// disappears from SQLite's parse tree altogether and does not interrupt the chain either:
+// `SELECT -+2147483648` prints -2147483648 and `SELECT -(+(-2147483648))` prints 2147483648.
+TEST_CASE("codegen: prefix - the width of a literal follows every sign folded into it") {
+    REQUIRE(prefixFor("x > -(-2147483648)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-0x80000000)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-(-2147483648))") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-2147483647)") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -+2147483648") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -(+(-2147483648))") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// A COLLATE between a minus and the literal stops SQLite's parser from folding the two together,
+// so the sign left standing over it is a negation SQLite computes over 64 bits while it runs the
+// statement. It takes a value out of the int32 range as readily as a folded sign does, and
+// negating the int64 minimum leaves the integer range altogether:
+// `sqlite3 :memory: "SELECT -(-2147483648 COLLATE BINARY), typeof(-(-9223372036854775808 COLLATE
+// BINARY))"` prints 2147483648 and real.
+TEST_CASE("codegen: prefix - a minus a COLLATE keeps from folding still widens the field") {
+    REQUIRE(prefixFor("x > -(-2147483648 COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-0x80000000 COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-9223372036854775808 COLLATE BINARY)") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > -(-9223372036854775807 COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+    // A COLLATE that does not stand between the sign and the literal leaves the folding alone:
+    // `sqlite3 :memory: "SELECT -2147483648 COLLATE BINARY, -0xFFFFFFFF80000000 COLLATE BINARY"`
+    // prints -2147483648 and 2147483648, the values the signs spell with the literals.
+    REQUIRE(prefixFor("x > -2147483648 COLLATE BINARY") == "struct User {\n    int x = 0;\n};");
+    REQUIRE(prefixFor("x > -0xFFFFFFFF80000000 COLLATE BINARY") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > (-(-2147483648) COLLATE BINARY)") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// Only the innermost sign folds into the literal; SQLite negates the value the outer ones stand
+// on while it runs the statement, and negating the int64 minimum leaves the integer range:
+// `sqlite3 :memory: "SELECT typeof(-9223372036854775808), typeof(-(-9223372036854775808)),
+// typeof(-(-(-9223372036854775808)))"` prints integer, real and real.
+TEST_CASE("codegen: prefix - the int64 minimum keeps its field until a second sign negates it") {
+    REQUIRE(prefixFor("x > -9223372036854775808") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x > -(-9223372036854775808)") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > -(-(-9223372036854775808))") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x > +9223372036854775808") == "struct User {\n    double x = 0.0;\n};");
+}
+
+// `~` complements over 64 bits, so it takes a value out of the int32 range as readily as it
+// brings one back in: `sqlite3 :memory: "SELECT ~2147483648"` prints -2147483649, which an `int`
+// field reads back as 2147483647.
+TEST_CASE("codegen: prefix - inferred int64_t from a bitwise NOT") {
+    REQUIRE(prefixFor("x = ~2147483648") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = ~5") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = ~0xFFFFFFFF80000000") == "struct User {\n    int64_t x = 0;\n};");
+}
+
+// Arithmetic and bit operations are computed over 64-bit integers, so the result leaves the int32
+// range even where both operands sit inside it: `sqlite3 :memory: "SELECT 2147483647 + 1"` prints
+// 2147483648, and `SELECT 3000000000 + 0` prints 3000000000 rather than the -1294967296 an `int`
+// field reads back.
+TEST_CASE("codegen: prefix - inferred int64_t from a binary arithmetic term") {
+    REQUIRE(prefixFor("x = 2147483647 + 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 3000000000 + 0") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 5 - 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 100000 * 100000") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 7 / 2") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 7 % 2") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 3 & 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 3 | 1") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 1 << 40") == "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x = 1099511627776 >> 1") == "struct User {\n    int64_t x = 0;\n};");
+    // A real operand makes the whole term a REAL, the way it does for a view column.
+    REQUIRE(prefixFor("x = 3000000000 * 1.5") == "struct User {\n    double x = 0.0;\n};");
+    REQUIRE(prefixFor("x = 1 / 2.0") == "struct User {\n    double x = 0.0;\n};");
 }
 
 // The same inference answers for BETWEEN, for IN and for the result type of a CASE, so a literal
@@ -1062,6 +1151,121 @@ TEST_CASE("codegen: expr COLLATE warning") {
         CodeGenResult{"auto rows = storage.select(&Users::name);",
                       {columnRefStyleDp(1, "&Users::name")},
                       {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
+}
+
+// The COLLATE above is dropped, and the operand it stood over has to come out exactly as it would
+// have come out without it. It did not: the operand lost the `c(…)` wrap a leaf operand of an
+// operator gets, so `('a' COLLATE NOCASE) || 'b'` generated `"a" || "b"` — two `const char*` under
+// C++'s own `||`, which is the constant `true` and not the `ab` sqlite3 3.51 answers with. Over a
+// column the same operand generated `&User::a + 1`, arithmetic on a pointer to member that does
+// not compile. Values checked in "runtime: an operand under a dropped COLLATE keeps its value".
+TEST_CASE("codegen: a dropped COLLATE leaves the operand it stood over as it was") {
+    REQUIRE(generate("SELECT ('a' COLLATE NOCASE) || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
+    REQUIRE(generate("SELECT 'a' || ('b' COLLATE NOCASE);") == "auto rows = storage.select(c(\"a\") || \"b\");");
+    REQUIRE(generate("SELECT 'a' || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
+    REQUIRE(generate("SELECT (a COLLATE BINARY) + 1;") ==
+            "auto rows = storage.select(as_optional(c(&User::a) + 1));");
+    REQUIRE(generate("SELECT a + (a COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional(c(&User::a) + &User::a));");
+    REQUIRE(generate("SELECT a + 1;") == "auto rows = storage.select(as_optional(c(&User::a) + 1));");
+    // The CAST around the whole column is the int64 widening of
+    // "codegen: a bitwise result column is cast to an int64_t", which the COLLATE is inside of.
+    REQUIRE(generate("SELECT ~('a' COLLATE NOCASE);") ==
+            "auto rows = storage.select(cast<int64_t>(~c(\"a\")));");
+}
+
+// The grouping the generated operand needs is the grouping of the node under the COLLATE, and the
+// field a compared column is given is the one the value under the COLLATE asks for.
+TEST_CASE("codegen: a COLLATE'd operand keeps the grouping and the field of what it stands over") {
+    REQUIRE(generate("SELECT ((1+2) COLLATE BINARY) * 3;") == "auto rows = storage.select((c(1) + 2) * 3);");
+    REQUIRE(generate("SELECT (1+2) * 3;") == "auto rows = storage.select((c(1) + 2) * 3);");
+    REQUIRE(generate("SELECT (1 COLLATE BINARY) + 2 * 3;") == "auto rows = storage.select(c(1) + c(2) * 3);");
+    REQUIRE(generate("SELECT 2 * ((a + 1) COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional(c(2) * (c(&User::a) + 1)));");
+    REQUIRE(prefixFor("SELECT a = ('x' COLLATE NOCASE);") == "struct User {\n    std::string a;\n};");
+}
+
+// The bound side of a comparison is not the only thing that says what a column holds: the operand of
+// BETWEEN / IN / LIKE / GLOB / MATCH and the first argument of a scalar function that reads text say
+// it too, and so does an argument handed to a user-defined function. All of them are the node under
+// a dropped COLLATE, so `(a COLLATE NOCASE) LIKE 'x%'` has to reach the same field `a LIKE 'x%'`
+// does; it used to leave `a` an `int` the pattern is never compared against.
+TEST_CASE("codegen: a column under a dropped COLLATE is still the operand of the predicate") {
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) BETWEEN 'x' AND 'y';") ==
+            "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT a BETWEEN 'x' AND 'y';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) IN ('x', 'y');") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) LIKE 'x%';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) GLOB 'x*';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) MATCH 'x';") == "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT upper(a COLLATE NOCASE);") == "struct User {\n    std::string a;\n};");
+}
+
+// A user-defined function is generated from the arguments the call hands it, and a COLLATE over one
+// of them changes neither the value nor the column it comes from: the parameter keeps the name and
+// the type it has without the COLLATE. It used to fall back to the `arg0` / `int` a call over an
+// expression gets.
+TEST_CASE("codegen: an argument under a dropped COLLATE keeps its name and type") {
+    REQUIRE(generate("SELECT myfunc(a COLLATE NOCASE) FROM users;") ==
+            "struct Myfunc {\n"
+            "    // TODO: implement this user-defined scalar function\n"
+            "    int operator()(int a) const { return {}; }\n"
+            "    static const char *name() { return \"myfunc\"; }\n"
+            "};\n"
+            "\n"
+            "storage.create_scalar_function<Myfunc>();\n"
+            "\n"
+            "auto rows = storage.select(func<Myfunc>(&Users::a));");
+    REQUIRE(generate("SELECT myfunc(a) FROM users;") ==
+            "struct Myfunc {\n"
+            "    // TODO: implement this user-defined scalar function\n"
+            "    int operator()(int a) const { return {}; }\n"
+            "    static const char *name() { return \"myfunc\"; }\n"
+            "};\n"
+            "\n"
+            "storage.create_scalar_function<Myfunc>();\n"
+            "\n"
+            "auto rows = storage.select(func<Myfunc>(&Users::a));");
+}
+
+// SQLite's parser folds a minus into the literal it stands over through parentheses but not through
+// a COLLATE: it refuses `-(0x8000000000000000)` with `hex literal too big` and answers
+// `-(0x8000000000000000 COLLATE BINARY)` with 9.22337203685478e+18, which is what `0 - x` is.
+// So a minus over a COLLATE keeps the subtraction form, and carries no `hex literal too big`.
+TEST_CASE("codegen: a minus over a COLLATE is a negation, not a folded sign") {
+    REQUIRE(generate("SELECT -(5 COLLATE BINARY);") == "auto rows = storage.select((c(0) - c(5)));");
+    REQUIRE(generate("SELECT -((5) COLLATE BINARY) + 1;") == "auto rows = storage.select((c(0) - c(5)) + 1);");
+    REQUIRE(generate("SELECT -(a COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional((c(0) - c(&User::a))));");
+    REQUIRE(generate("SELECT -(-3 COLLATE BINARY);") == "auto rows = storage.select(-(-3));");
+    auto tooBig = generateFull("SELECT -(0x8000000000000000 COLLATE BINARY);");
+    REQUIRE(tooBig.code == "auto rows = storage.select((c(0) - c(static_cast<int64_t>(0x8000000000000000))));");
+    // The negation is read back through sqlite_orm's `double`, and the magnitude the bound carries
+    // for the int64 minimum is past 2^53, so the column is reported as
+    // "codegen: an arithmetic result column reports the double it is read back through" describes.
+    REQUIRE(tooBig.warnings ==
+            std::vector<CodegenWarning>{
+                "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen",
+                CodegenWarning{"result column computed with `-` is read back through a double: sqlite_orm "
+                               "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
+                               "2^53 comes back rounded (9223372036854775807 reads back as "
+                               "9223372036854775808)",
+                               SourceLocation{1, 8}, 1}});
+}
+
+// A predicate under the COLLATE is still a predicate sqlite_orm serializes without parentheses, so
+// the negation cannot become `0 - is_null(a)`: SQLite would read that as `(0 - a) IS NULL`, which
+// answers 1 over a NULL row where `-((a IS NULL) COLLATE BINARY)` answers -1.
+TEST_CASE("codegen: a minus over a predicate under a COLLATE warns as the bare predicate does") {
+    auto result = generateFull("SELECT -((a IS NULL) COLLATE BINARY);");
+    REQUIRE(result.code == "auto rows = storage.select(-(is_null(&User::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen",
+                CodegenWarning{"unary minus over a predicate (IS NULL) has no working sqlite_orm "
+                               "form; the generated negation does not reproduce what SQLite "
+                               "computes and does not compile",
+                               SourceLocation{1, 8}, 1}});
 }
 
 namespace {

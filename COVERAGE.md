@@ -150,7 +150,7 @@ Statuses:
 - [x] `function-name() OVER (window-defn)` — PARTITION BY, ORDER BY, ROWS|RANGE|GROUPS frame, EXCLUDE
 
 ### Collation
-- [x] `expr COLLATE collation-name` (parsed as CollateNode; codegen passes through + warning)
+- [x] `expr COLLATE collation-name` (parsed as CollateNode; codegen passes through + warning) — the dropped node leaves the operand under it exactly as it comes out bare: the `c(...)` wrap, the grouping, the `as_optional` a result column is widened with, the field a compared, BETWEEN'd, IN'd, LIKE'd, GLOB'd or MATCH'd column gets, and the name and type of an argument handed to a user-defined function. The one thing it does change is SQLite's own folding of a sign into a literal, which goes through parentheses but not through a COLLATE, so a minus over one keeps the `0 - x` subtraction form
 
 ### Trigger references
 - [x] `NEW.column-name`

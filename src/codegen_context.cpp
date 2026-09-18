@@ -76,7 +76,9 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {
-        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&argument)) {
+        // The argument a COLLATE or a unary plus stands over is the one the call is handed.
+        const AstNode& valueNode = generatedOperandNode(argument);
+        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             // Schema type wins when the column belongs to a known CREATE TABLE in the batch.
             const std::string normalizedColumn = normalizeSqlIdentifier(columnRef->columnName);
             for(const auto& [tableKey, columns] : this->sourceTableColumnsByNormalizedName) {
@@ -94,7 +96,7 @@ namespace sqlite2orm {
             }
             return this->syntheticColumnCppType(cppName);  // name heuristic (name → std::string, else int)
         }
-        return this->inferTypeFromNode(argument);
+        return this->inferTypeFromNode(valueNode);
     }
 
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {
@@ -116,8 +118,11 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::inferTypeFromNode(const AstNode& node) const {
-        if(dynamic_cast<const StringLiteralNode*>(&node)) return "std::string";
-        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&node)) {
+        // A COLLATE picks a collating sequence for a comparison and leaves the value it is written
+        // over alone, so the value — and the field that holds it — is the one under it.
+        const AstNode& valueNode = generatedOperandNode(node);
+        if(dynamic_cast<const StringLiteralNode*>(&valueNode)) return "std::string";
+        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
             // An integer literal an int64 cannot hold is a REAL for SQLite, so is the column.
             if(integerLiteralExceedsInt64(integerLiteral->value)) {
                 return "double";
@@ -126,15 +131,76 @@ namespace sqlite2orm {
             // that only an int64 holds would be truncated by it, so it widens the field instead.
             return integerLiteralExceedsInt32(integerLiteral->value) ? "int64_t" : "int";
         }
-        if(dynamic_cast<const RealLiteralNode*>(&node)) return "double";
-        if(dynamic_cast<const BoolLiteralNode*>(&node)) return "bool";
-        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&node)) {
-            // A sign does not change the width a value needs, so `-3000000000` is the int64_t its
-            // operand is. C++ types the constant the same way: `2147483648` is already wider than
-            // an `int` there, and the unary minus applies to that wider type.
+        if(dynamic_cast<const RealLiteralNode*>(&valueNode)) return "double";
+        if(dynamic_cast<const BoolLiteralNode*>(&valueNode)) return "bool";
+        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
+            if(unaryOperator->unaryOperator == UnaryOperator::bitwiseNot) {
+                // `~` is a 64-bit complement in SQLite, and it takes a value out of the int32
+                // range as readily as it brings one back in: `~2147483648` is -2147483649. The
+                // field follows the operation rather than the operand, the way it already does
+                // for a view column in `ViewFieldTypeInferrer`.
+                return "int64_t";
+            }
             if(unaryOperator->operand && (unaryOperator->unaryOperator == UnaryOperator::minus ||
                                           unaryOperator->unaryOperator == UnaryOperator::plus)) {
-                return this->inferTypeFromNode(*unaryOperator->operand);
+                // The signs standing in front of a literal belong to the value they spell with
+                // it, so the width follows all of them together rather than the magnitude alone:
+                // `0xFFFFFFFF80000000` is the -2147483648 an `int` holds, `-0xFFFFFFFF80000000`
+                // is the 2147483648 it does not, and `-(-2147483648)` is that value again.
+                std::size_t foldedSigns = 0;
+                auto* signedLiteral =
+                    dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(valueNode, foldedSigns));
+                if(signedLiteral) {
+                    // A value past the int64 range is a REAL for SQLite, whichever side of the
+                    // range the signs leave it on.
+                    if(isIntegerLiteralPastIntegerFieldRange(valueNode)) {
+                        return "double";
+                    }
+                    return integerLiteralExceedsInt32(signedLiteral->value, foldedSigns % 2 != 0) ? "int64_t"
+                                                                                                 : "int";
+                }
+                // A minus SQLite cannot fold into a literal — a COLLATE between the two stops
+                // the folding — is a negation it computes over 64 bits while it runs the
+                // statement, and that takes a value out of the int32 range as readily as a
+                // folded sign does: `-(-2147483648 COLLATE BINARY)` is the 2147483648 an `int`
+                // does not hold. Negating the int64 minimum leaves the integer range altogether,
+                // the way the sign standing over a folded one already does. A plus SQLite's
+                // parser drops, so it leaves the width of what stands under it alone.
+                const std::string operandType = this->inferTypeFromNode(*unaryOperator->operand);
+                if(unaryOperator->unaryOperator != UnaryOperator::minus) {
+                    return operandType;
+                }
+                std::size_t negatedSigns = 0;
+                auto* negatedLiteral = dynamic_cast<const IntegerLiteralNode*>(
+                    withoutFoldedSigns(generatedOperandNode(*unaryOperator->operand), negatedSigns));
+                if(negatedLiteral != nullptr && negatedSigns % 2 != 0 &&
+                   integerLiteralExceedsInt64(negatedLiteral->value)) {
+                    return "double";
+                }
+                return operandType == "int" ? "int64_t" : operandType;
+            }
+        }
+        if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&valueNode)) {
+            // SQLite computes arithmetic and bit operations over 64-bit integers, so the result
+            // leaves the int32 range even where both operands sit inside it: `2147483647 + 1` is
+            // 2147483648. The same widening `ViewFieldTypeInferrer` applies to a view column.
+            switch(binaryOperator->binaryOperator) {
+            case BinaryOperator::add:
+            case BinaryOperator::subtract:
+            case BinaryOperator::multiply:
+            case BinaryOperator::divide:
+            case BinaryOperator::modulo: {
+                const std::string lhsType =
+                    binaryOperator->lhs ? this->inferTypeFromNode(*binaryOperator->lhs) : std::string();
+                const std::string rhsType =
+                    binaryOperator->rhs ? this->inferTypeFromNode(*binaryOperator->rhs) : std::string();
+                return lhsType == "double" || rhsType == "double" ? "double" : "int64_t";
+            }
+            case BinaryOperator::bitwiseAnd:
+            case BinaryOperator::bitwiseOr:
+            case BinaryOperator::shiftLeft:
+            case BinaryOperator::shiftRight: return "int64_t";
+            default: break;
             }
         }
         return "int";

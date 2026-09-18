@@ -4,6 +4,7 @@
 #include <sqlite2orm/codegen_policy.h>
 #include <sqlite2orm/codegen_result.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -114,8 +115,17 @@ namespace sqlite2orm {
      */
     bool integerLiteralExceedsInt64(std::string_view integerLiteral, bool negated = false);
     /**
+     *  `value` with the signs standing in front of it taken off, i.e. the node they apply to.
+     *  SQLite's parser drops a unary plus altogether, so that `-+5` is the `-5` it prints, and
+     *  folds a minus into the literal behind it. `foldedMinusSigns` receives how many minus signs
+     *  stood there: only the innermost one goes into the literal, and SQLite computes the rest
+     *  while it runs the statement, where negating the int64 minimum leaves the integer range.
+     */
+    const AstNode* withoutFoldedSigns(const AstNode& value, std::size_t& foldedMinusSigns);
+    /**
      *  True when `value` denotes a decimal integer literal SQLite keeps a REAL — one past the int64
-     *  range, any folded minus signs counted in. SQLite types a value by itself and applies column
+     *  range with the innermost folded sign in it, or one an outer sign takes out of the range,
+     *  which only the int64 minimum reaches. SQLite types a value by itself and applies column
      *  affinity only afterwards, so such a literal stays a REAL even in an INTEGER column, where a
      *  C++ `int64_t` field would convert it.
      */
@@ -168,8 +178,11 @@ namespace sqlite2orm {
      *  True when a 32-bit int cannot hold the value SQLite gives an integer literal, i.e. the field
      *  standing for it has to be an int64_t. A hex literal is measured after the wrap-around SQLite
      *  applies to it, so that `0xFFFFFFFFFFFFFFFF`, which is -1, still fits.
+     *  `negated` tells whether a minus sign is folded into the literal, which moves the range by
+     *  one: `-0x80000000` is the -2147483648 an int32 still holds, while `-0xFFFFFFFF80000000` is
+     *  the 2147483648 it no longer does.
      */
-    bool integerLiteralExceedsInt32(std::string_view integerLiteral);
+    bool integerLiteralExceedsInt32(std::string_view integerLiteral, bool negated = false);
     /**
      *  True when a signed 64-bit integer cannot hold a hex literal, i.e. it needs a seventeenth
      *  significant digit. SQLite refuses such a literal in `codeInteger()`, when it compiles an
@@ -178,6 +191,15 @@ namespace sqlite2orm {
     bool hexLiteralExceedsInt64(std::string_view integerLiteral);
     /** True for an integer literal written with SQLite's `0x` prefix rather than in decimal. */
     bool isHexadecimalIntegerLiteral(std::string_view integerLiteral);
+    /**
+     *  The node whose generated code an operand's code really is. A COLLATE, which sqlite_orm has
+     *  no form for, and a unary plus emit their operand and nothing else, so every question about
+     *  the SHAPE of the generated operand — the `c(…)` wrap it needs, the C++ precedence it is
+     *  topped by, the sqlite_orm node it comes out as — is a question about what stands under them.
+     *  Questions about the SQL itself are not: SQLite's own parser reads a sign through parentheses
+     *  but not through a COLLATE, which is why `negationFormFor` takes the operand as written.
+     */
+    const AstNode& generatedOperandNode(const AstNode& astNode);
     /** True for an integer or real literal, the two kinds a minus sign is folded into. */
     bool isNumericLiteral(const AstNode& astNode);
     /**

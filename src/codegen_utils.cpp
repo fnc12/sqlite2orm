@@ -455,6 +455,21 @@ namespace sqlite2orm {
         return kCppPrecedencePrimary;
     }
 
+    const AstNode& generatedOperandNode(const AstNode& astNode) {
+        if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
+            // COLLATE has no sqlite_orm form, so the generated code is the operand's own.
+            return generatedOperandNode(*collateNode->operand);
+        }
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            // A unary plus emits its operand and nothing else. Every other unary operator emits
+            // a C++ expression of its own.
+            if(unaryOp->unaryOperator == UnaryOperator::plus) {
+                return generatedOperandNode(*unaryOp->operand);
+            }
+        }
+        return astNode;
+    }
+
     int sqlOperatorPrecedence(BinaryOperator binaryOperator) {
         // SQLite's own operator table, tightest first: `||` above `* / %` above `+ -` above the bit
         // operators above the ordering comparisons above the equality ones, the rank the predicates
@@ -489,11 +504,10 @@ namespace sqlite2orm {
     }
 
     int serializedSqlPrecedence(const AstNode& astNode) {
-        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
-            if(unaryOp->unaryOperator == UnaryOperator::plus) {
-                // A unary plus emits its operand and nothing else.
-                return serializedSqlPrecedence(*unaryOp->operand);
-            }
+        // A COLLATE and a unary plus emit their operand and nothing else, so the SQL this node is
+        // serialized as is the one its operand is serialized as.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
             if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
                 return kSqlPrecedenceNot;
             }
@@ -507,36 +521,22 @@ namespace sqlite2orm {
             }
             return kSqlPrecedenceTerm;
         }
-        if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
-            // COLLATE has no sqlite_orm form, so the generated code is the operand's own.
-            return serializedSqlPrecedence(*collateNode->operand);
-        }
         // Everything else is a term of its own in the serialized SQL: a literal, a column, a call,
         // CAST, CASE, a parenthesized subquery, or a binary operator sqlite_orm parenthesizes.
-        return sqlPredicateLooserThanMinus(astNode).empty() ? kSqlPrecedenceTerm
-                                                           : kSqlPrecedencePredicate;
+        return sqlPredicateLooserThanMinus(generatedNode).empty() ? kSqlPrecedenceTerm
+                                                                  : kSqlPrecedencePredicate;
     }
 
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
-        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
             if(policyEquals(policy, "expr_style", "functional")) {
                 return kCppPrecedencePrimary;
             }
             return cppOperatorPrecedence(binaryOp->binaryOperator);
         }
-        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
-            // A unary plus emits its operand and nothing else. Every other unary operator emits
-            // either a C++ unary expression, which binds tighter than any binary one, or the
-            // parenthesized `(c(0) - …)` a negation becomes.
-            if(unaryOp->unaryOperator == UnaryOperator::plus) {
-                return generatedCppPrecedence(*unaryOp->operand, policy);
-            }
-            return kCppPrecedencePrimary;
-        }
-        if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
-            // COLLATE has no sqlite_orm form, so the generated code is the operand's own.
-            return generatedCppPrecedence(*collateNode->operand, policy);
-        }
+        // Every remaining node emits either a C++ unary expression, which binds tighter than any
+        // binary one, or a primary: a literal, a call, an already-parenthesized subtraction.
         return kCppPrecedencePrimary;
     }
 
@@ -666,21 +666,24 @@ namespace sqlite2orm {
                (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
-    namespace {
-
-        /** `value` with every folded minus sign taken off; `negated` ends up true for an odd count. */
-        const AstNode* withoutFoldedSigns(const AstNode& value, bool& negated) {
-            negated = false;
-            const AstNode* node = &value;
-            while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
-                if(unaryOperator->unaryOperator != UnaryOperator::minus) {
-                    break;
-                }
-                negated = !negated;
-                node = unaryOperator->operand.get();
+    const AstNode* withoutFoldedSigns(const AstNode& value, std::size_t& foldedMinusSigns) {
+        foldedMinusSigns = 0;
+        const AstNode* node = &value;
+        while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
+            const bool sign = unaryOperator->unaryOperator == UnaryOperator::minus ||
+                              unaryOperator->unaryOperator == UnaryOperator::plus;
+            if(!sign || !unaryOperator->operand) {
+                break;
             }
-            return node;
+            if(unaryOperator->unaryOperator == UnaryOperator::minus) {
+                ++foldedMinusSigns;
+            }
+            node = unaryOperator->operand.get();
         }
+        return node;
+    }
+
+    namespace {
 
         /** The source text of a numeric literal node, or an empty view for any other node. */
         std::string_view numericLiteralText(const AstNode& literal) {
@@ -696,23 +699,33 @@ namespace sqlite2orm {
     }  // namespace
 
     bool isIntegerLiteralPastIntegerFieldRange(const AstNode& value) {
-        bool negated = false;
-        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
-        return integerLiteral != nullptr && integerLiteralExceedsInt64(integerLiteral->value, negated);
+        std::size_t foldedSigns = 0;
+        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, foldedSigns));
+        if(integerLiteral == nullptr) {
+            return false;
+        }
+        if(integerLiteralExceedsInt64(integerLiteral->value, foldedSigns % 2 != 0)) {
+            return true;
+        }
+        // Only the innermost sign folds into the literal; SQLite negates the value the rest of
+        // them stand on while it runs the statement, and negating the int64 minimum leaves the
+        // integer range: `SELECT typeof(-9223372036854775808)` is integer, while
+        // `typeof(-(-9223372036854775808))` is real.
+        return foldedSigns > 1 && integerLiteralExceedsInt64(integerLiteral->value);
     }
 
     std::string numericLiteralSqlText(const AstNode& value) {
-        bool negated = false;
-        const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, negated));
+        std::size_t foldedSigns = 0;
+        const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, foldedSigns));
         if(text.empty()) {
             return {};
         }
-        return (negated ? "-" : "") + withoutDigitSeparators(text);
+        return (foldedSigns % 2 != 0 ? "-" : "") + withoutDigitSeparators(text);
     }
 
     CodegenWarning numericLiteralWarning(std::string message, const AstNode& value) {
-        bool negated = false;
-        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        std::size_t foldedSigns = 0;
+        const AstNode& literal = *withoutFoldedSigns(value, foldedSigns);
         const std::string_view text = numericLiteralText(literal);
         if(text.empty()) {
             return CodegenWarning{std::move(message)};
@@ -729,8 +742,8 @@ namespace sqlite2orm {
     }
 
     bool integerFieldCarriesValue(const AstNode& value) {
-        bool negated = false;
-        if(dynamic_cast<const RealLiteralNode*>(withoutFoldedSigns(value, negated))) {
+        std::size_t foldedSigns = 0;
+        if(dynamic_cast<const RealLiteralNode*>(withoutFoldedSigns(value, foldedSigns))) {
             // SQLite turns a REAL into an INTEGER only where the column affinity converts it back
             // and forth without loss, while a C++ field truncates it either way: `1.5` would reach
             // an int64_t field as 1 where SQLite keeps the 1.5 it stored.
@@ -747,8 +760,10 @@ namespace sqlite2orm {
          *  64-bit integer and wraps it around, so `0xFFFFFFFFFFFFFFFF` is -1.
          */
         std::optional<std::int64_t> integerLiteralInt64Value(const AstNode& value) {
-            bool negated = false;
-            const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, negated));
+            std::size_t foldedSigns = 0;
+            const auto* integerLiteral =
+                dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(value, foldedSigns));
+            const bool negated = foldedSigns % 2 != 0;
             if(integerLiteral == nullptr || integerLiteralExceedsInt64(integerLiteral->value, negated)) {
                 return std::nullopt;
             }
@@ -801,8 +816,8 @@ namespace sqlite2orm {
         }
         // A sign folds into a number only; in front of anything else it is an operator SQLite
         // computes, and the generated code spells that operator out rather than a value.
-        bool negated = false;
-        const AstNode& literal = *withoutFoldedSigns(value, negated);
+        std::size_t foldedSigns = 0;
+        const AstNode& literal = *withoutFoldedSigns(value, foldedSigns);
         if(dynamic_cast<const IntegerLiteralNode*>(&literal) || dynamic_cast<const RealLiteralNode*>(&literal)) {
             return ValueStorageClass::numeric;
         }
@@ -824,32 +839,39 @@ namespace sqlite2orm {
         return ValueStorageClass::unknown;
     }
 
-    bool integerLiteralExceedsInt32(std::string_view integerLiteral) {
+    bool integerLiteralExceedsInt32(std::string_view integerLiteral, bool negated) {
         if(isHexadecimalIntegerLiteral(integerLiteral)) {
             // SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the
             // digits alone say which side of the int32 range the value lands on: up to
             // `0x7FFFFFFF` it is a positive int32, from `0xFFFFFFFF80000000` on it has wrapped
             // back into one as a negative number, and everything in between needs an int64.
+            // A folded-in minus sign slides that window by one, the same way it does for a
+            // decimal magnitude: `-0x80000000` is -2147483648 and an int32 holds it, while
+            // `-0xFFFFFFFF80000000` is 2147483648 and one does not.
             static constexpr std::string_view wrappedInt32Min = "ffffffff80000000";
+            static constexpr std::string_view negatedWrappedInt32Max = "ffffffff80000001";
+            static constexpr std::string_view hexInt32MinMagnitude = "80000000";
             const std::string digits = significantDigits(integerLiteral.substr(2));
             if(digits.size() < 8) {
                 return false;
             }
+            const std::string lowered = toLowerAscii(digits);
             if(digits.size() == 8) {
-                return digits.front() >= '8';
+                return negated ? std::string_view(lowered) > hexInt32MinMagnitude : digits.front() >= '8';
             }
             if(digits.size() == 16) {
-                const std::string lowered = toLowerAscii(digits);
-                return std::string_view(lowered) < wrappedInt32Min;
+                return std::string_view(lowered) < (negated ? negatedWrappedInt32Max : wrappedInt32Min);
             }
             // Nine to fifteen digits are past `0xFFFFFFFF`, and a seventeenth one is past an
             // int64 altogether — `hexLiteralExceedsInt64` refuses that where it is compiled.
             return true;
         }
         static constexpr std::string_view int32Max = "2147483647";
+        static constexpr std::string_view int32MinMagnitude = "2147483648";
+        const std::string_view limit = negated ? int32MinMagnitude : int32Max;
         const std::string digits = significantDigits(integerLiteral);
-        return digits.size() > int32Max.size() ||
-               (digits.size() == int32Max.size() && std::string_view(digits) > int32Max);
+        return digits.size() > limit.size() ||
+               (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
     std::string integerLiteralToCpp(std::string_view integerLiteral) {
@@ -899,29 +921,31 @@ namespace sqlite2orm {
         // else an expression can be — a literal, a column, a function call, CAST, CASE, a subquery,
         // `~x` — is a term SQLite reads as one unit. These predicates are the exception: they come
         // out bare and bind looser than `-`, so `0 - a BETWEEN 1 AND 9` would read as
-        // `(0 - a) BETWEEN 1 AND 9` rather than as the negation it stands for.
-        if(dynamic_cast<const InNode*>(&astNode)) {
+        // `(0 - a) BETWEEN 1 AND 9` rather than as the negation it stands for. A COLLATE over one
+        // changes nothing here: it is dropped, and the predicate is what the operand generates.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(dynamic_cast<const InNode*>(&generatedNode)) {
             return "IN";
         }
-        if(dynamic_cast<const BetweenNode*>(&astNode)) {
+        if(dynamic_cast<const BetweenNode*>(&generatedNode)) {
             return "BETWEEN";
         }
-        if(dynamic_cast<const LikeNode*>(&astNode)) {
+        if(dynamic_cast<const LikeNode*>(&generatedNode)) {
             return "LIKE";
         }
-        if(dynamic_cast<const GlobNode*>(&astNode)) {
+        if(dynamic_cast<const GlobNode*>(&generatedNode)) {
             return "GLOB";
         }
-        if(dynamic_cast<const MatchNode*>(&astNode)) {
+        if(dynamic_cast<const MatchNode*>(&generatedNode)) {
             return "MATCH";
         }
-        if(dynamic_cast<const IsNullNode*>(&astNode)) {
+        if(dynamic_cast<const IsNullNode*>(&generatedNode)) {
             return "IS NULL";
         }
-        if(dynamic_cast<const IsNotNullNode*>(&astNode)) {
+        if(dynamic_cast<const IsNotNullNode*>(&generatedNode)) {
             return "IS NOT NULL";
         }
-        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
             if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
                 return "NOT";
             }
@@ -930,6 +954,11 @@ namespace sqlite2orm {
     }
 
     NegationForm negationFormFor(const AstNode& operand) {
+        // SQLite's parser folds the sign into the literal the minus stands directly over — through
+        // parentheses, but NOT through a COLLATE: `-(0x8000000000000000)` is the `hex literal too
+        // big` it refuses, while `-(0x8000000000000000 COLLATE BINARY)` is a negation it computes
+        // (9.22337203685478e+18, checked against sqlite3 3.51). So the literal a sign is folded
+        // into is the operand as written, and a COLLATE over one keeps the subtraction form.
         if(isNumericLiteral(operand)) {
             return numericLiteralRejectsFoldedSign(operand) ? NegationForm::zeroMinusSubtraction
                                                             : NegationForm::foldedIntoConstant;
@@ -946,7 +975,7 @@ namespace sqlite2orm {
     namespace {
         /** The form a node's own negation takes, for a node that is not a negation at all. */
         std::optional<NegationForm> formOfNegationNode(const AstNode& astNode) {
-            auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
+            auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedOperandNode(astNode));
             if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::minus) {
                 return std::nullopt;
             }
@@ -963,20 +992,21 @@ namespace sqlite2orm {
     }
 
     bool isLeafNode(const AstNode& astNode) {
-        return generatesFoldedNegation(astNode) ||
-               dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
-               dynamic_cast<const RealLiteralNode*>(&astNode) ||
-               dynamic_cast<const StringLiteralNode*>(&astNode) ||
-               dynamic_cast<const NullLiteralNode*>(&astNode) ||
-               dynamic_cast<const BoolLiteralNode*>(&astNode) ||
-               dynamic_cast<const BlobLiteralNode*>(&astNode) ||
-               dynamic_cast<const CurrentDatetimeLiteralNode*>(&astNode) ||
-               dynamic_cast<const ColumnRefNode*>(&astNode) ||
-               dynamic_cast<const QualifiedColumnRefNode*>(&astNode) ||
-               dynamic_cast<const NewRefNode*>(&astNode) ||
-               dynamic_cast<const OldRefNode*>(&astNode) ||
-               dynamic_cast<const ExcludedRefNode*>(&astNode) ||
-               dynamic_cast<const RaiseNode*>(&astNode);
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        return generatesFoldedNegation(generatedNode) ||
+               dynamic_cast<const IntegerLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const RealLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const StringLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const NullLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const BoolLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const BlobLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const CurrentDatetimeLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const ColumnRefNode*>(&generatedNode) ||
+               dynamic_cast<const QualifiedColumnRefNode*>(&generatedNode) ||
+               dynamic_cast<const NewRefNode*>(&generatedNode) ||
+               dynamic_cast<const OldRefNode*>(&generatedNode) ||
+               dynamic_cast<const ExcludedRefNode*>(&generatedNode) ||
+               dynamic_cast<const RaiseNode*>(&generatedNode);
     }
 
     std::string wrap(std::string_view code) {
@@ -1171,7 +1201,11 @@ namespace sqlite2orm {
     }
 
     bool selectResultNeedsAsOptional(const AstNode& astNode) {
-        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
+        // the result column comes out as — and with it the type the row is read back into — is the
+        // one the operand under them comes out as.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
             switch(binaryOp->binaryOperator) {
             case BinaryOperator::isOp:
             case BinaryOperator::isNot:
@@ -1183,10 +1217,10 @@ namespace sqlite2orm {
                 // validator rejects them), the JSON arrows become a json_extract() call.
                 return false;
             default:
-                return expressionMayBeNull(astNode);
+                return expressionMayBeNull(generatedNode);
             }
         }
-        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
             // A unary operator is typed from the operator alone too — `-x` is generated as the
             // subtraction `(c(0) - x)`, `~x` as a `bitwise_not_t`. A sign folded into a numeric
             // constant leaves no operator behind, but a constant is never NULL either, so
@@ -1197,7 +1231,7 @@ namespace sqlite2orm {
                 // not compile at all, so there is no result type to widen.
                 return false;
             }
-            return expressionMayBeNull(astNode);
+            return expressionMayBeNull(generatedNode);
         }
         return false;
     }

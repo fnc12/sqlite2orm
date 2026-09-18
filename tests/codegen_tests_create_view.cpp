@@ -1,16 +1,6 @@
 #include "codegen_tests_common.hpp"
 
-#include <sqlite2orm/process.h>
-
 namespace {
-
-    /** Codegen of the last statement in a multi-statement batch (views see prior CREATE TABLEs). */
-    CodeGenResult generateLastOfBatch(std::string_view sql) {
-        const std::vector<ProcessSqlResult> results = processMultiSql(sql, nullptr);
-        REQUIRE(!results.empty());
-        REQUIRE(results.back().ok());
-        return results.back().codegen;
-    }
 
     /**
      *  The warning every view carries below C++26 (views need reflection). `displayName` is the

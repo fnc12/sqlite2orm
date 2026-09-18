@@ -9,8 +9,81 @@
 
 namespace sqlite2orm {
 
+    namespace {
+
+        /**
+         *  The C++ field types that hold whole numbers only, so a value SQLite keeps a REAL reaches
+         *  the database converted. `bool`, which a BOOLEAN column maps to, holds no whole number
+         *  besides 0 and 1 and belongs here all the more.
+         */
+        bool isWholeNumberFieldType(std::string_view cppType) {
+            return cppType == "int64_t" || cppType == "int" || cppType == "bool";
+        }
+
+    }  // namespace
+
     DmlCodeGenerator::DmlCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context)
         : coordinator(coordinator), context(context) {}
+
+    std::vector<std::string>
+    DmlCodeGenerator::columnListForcedByFieldTypes(const InsertNode& insertNode,
+                                                   std::vector<CodegenWarning>& warnings) const {
+        const auto tableIterator =
+            this->context.sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(insertNode.tableName));
+        if(tableIterator == this->context.sourceTableColumnsByNormalizedName.end()) {
+            return {};
+        }
+        // A generated column is computed by SQLite, so a VALUES row never holds one and the column
+        // list of such an insert leaves it out.
+        std::vector<const SourceTableColumn*> columns;
+        for(const SourceTableColumn& column : tableIterator->second) {
+            if(!column.generated) {
+                columns.push_back(&column);
+            }
+        }
+
+        std::vector<CodegenWarning> pastRangeWarnings;
+        bool columnListForced = false;
+        for(const std::vector<AstNodePointer>& row : insertNode.valueRows) {
+            if(row.size() != columns.size()) {
+                // A row that does not line up with the columns is a statement SQLite refuses
+                // anyway, and says nothing about which field a value reaches.
+                return {};
+            }
+            for(size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
+                const SourceTableColumn& column = *columns[columnIndex];
+                const AstNode& value = *row[columnIndex];
+                if(!isWholeNumberFieldType(column.cppType) || integerFieldCarriesValue(value)) {
+                    continue;
+                }
+                columnListForced = true;
+                if(isIntegerLiteralPastIntegerFieldRange(value)) {
+                    pastRangeWarnings.push_back(numericLiteralWarning(
+                        "INSERT into column '" + column.sqlName + "' of table '" + insertNode.tableName +
+                            "' uses " + numericLiteralSqlText(value) +
+                            ", past the signed 64-bit integer range: SQLite types a value before it applies "
+                            "the column affinity and keeps such a one a REAL, and the " + column.cppType +
+                            " field cannot hold it, so the row is generated through columns()/values(), which "
+                            "writes the value SQLite stores, rather than as a struct, which would write a "
+                            "different one",
+                        value));
+                }
+            }
+        }
+        if(!columnListForced) {
+            return {};
+        }
+
+        std::vector<std::string> columnNames;
+        columnNames.reserve(columns.size());
+        for(const SourceTableColumn* column : columns) {
+            columnNames.push_back(column->sqlName);
+        }
+        warnings.insert(warnings.end(),
+                        std::make_move_iterator(pastRangeWarnings.begin()),
+                        std::make_move_iterator(pastRangeWarnings.end()));
+        return columnNames;
+    }
 
     CodeGenResult DmlCodeGenerator::generateInsert(const InsertNode& insertNode) {
         std::vector<CodegenWarning> warnings;
@@ -24,11 +97,16 @@ namespace sqlite2orm {
         std::string verb = insertNode.replaceInto ? "replace" : "insert";
         std::string orPrefix = insertNode.replaceInto ? std::string() : dmlInsertOrPrefix(insertNode.orConflict);
 
+        std::vector<std::string> valueColumnNames = insertNode.columnNames;
+        if(insertNode.dataKind == InsertDataKind::values && valueColumnNames.empty()) {
+            valueColumnNames = this->columnListForcedByFieldTypes(insertNode, warnings);
+        }
+
         std::vector<DecisionPoint> dps;
         std::string middle;
         if(insertNode.dataKind == InsertDataKind::defaultValues) {
             middle = "default_values()";
-        } else if(insertNode.dataKind == InsertDataKind::values && insertNode.columnNames.empty()) {
+        } else if(insertNode.dataKind == InsertDataKind::values && valueColumnNames.empty()) {
             std::string code;
             for(size_t valueRowIndex = 0; valueRowIndex < insertNode.valueRows.size(); ++valueRowIndex) {
                 if(valueRowIndex > 0) {
@@ -59,11 +137,11 @@ namespace sqlite2orm {
             return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
         } else if(insertNode.dataKind == InsertDataKind::values) {
             std::string cols = "columns(";
-            for(size_t columnIndex = 0; columnIndex < insertNode.columnNames.size(); ++columnIndex) {
+            for(size_t columnIndex = 0; columnIndex < valueColumnNames.size(); ++columnIndex) {
                 if(columnIndex > 0) {
                     cols += ", ";
                 }
-                cols += "&" + tableStruct + "::" + toCppIdentifier(insertNode.columnNames[columnIndex]);
+                cols += "&" + tableStruct + "::" + toCppIdentifier(valueColumnNames[columnIndex]);
             }
             cols += ")";
             std::string vals = "values(";

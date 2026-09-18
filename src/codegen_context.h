@@ -23,6 +23,8 @@ namespace sqlite2orm {
         std::string sqlName;
         std::string cppType;
         bool nullable = false;
+        /** A generated column, which SQLite computes and an INSERT never supplies a value for. */
+        bool generated = false;
     };
 
     struct Cpp20TableAliasDeclaration {

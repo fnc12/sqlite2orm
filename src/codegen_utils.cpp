@@ -311,6 +311,27 @@ namespace sqlite2orm {
         "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
         "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentNotColumnPointer =
+        "A column under a NOT is generated as `column<T>(&T::x)`: `operator!` is the one sqlite_orm "
+        "operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walker "
+        "that collects the tables a statement reads stops at such a wrapper — `select(not c(&T::x))` "
+        "comes out with no FROM clause at all and throws `SQL logic error`. The column pointer names "
+        "the same column and serializes to the same SQL.";
+
+    const std::string kCommentNotValueAddedToZero =
+        "A value under a NOT is generated as `(c(0) + value)`: sqlite_orm binds the values of a "
+        "statement by walking its expression tree, and that walk stops at the `c(...)` a NOT keeps "
+        "over its operand — the value of `select(not c(0))` is never bound, so the statement runs "
+        "with an empty parameter and answers NULL. A binary operator unwraps what it is given, and "
+        "`0 + x` is the numeric coercion SQLite applies to `x` in a boolean context anyway, so "
+        "`NOT x` and `NOT (0 + x)` answer alike.";
+
+    const std::string kCommentNegatedConditionCast =
+        "A NOT over a NOT is generated as `not cast<int64_t>(not …)`: sqlite_orm's `negated_condition_t` "
+        "— what a NOT and the `!predicate` spelling of a negated BETWEEN, LIKE, GLOB and MATCH produce — "
+        "is neither negatable nor an operator argument, so a second NOT over it does not compile. The "
+        "CAST leaves what the inner NOT stands for alone: it is 0, 1 or NULL, and a CAST to INTEGER "
+        "keeps all three.";
     const std::string kCommentBitwiseResultCast =
         "A bitwise result column is generated as `cast<int64_t>(expr)`: sqlite_orm types `&`, `|`, "
         "`<<`, `>>` and `~` as `int`, so a result outside the int32 range comes back truncated "
@@ -988,6 +1009,37 @@ namespace sqlite2orm {
 
     bool generatesZeroMinusSubtraction(const AstNode& astNode) {
         return formOfNegationNode(astNode) == NegationForm::zeroMinusSubtraction;
+    }
+
+    bool generatesBoundValue(const AstNode& astNode) {
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        return generatesFoldedNegation(generatedNode) ||
+               dynamic_cast<const IntegerLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const RealLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const StringLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const NullLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const BoolLiteralNode*>(&generatedNode) ||
+               dynamic_cast<const BlobLiteralNode*>(&generatedNode);
+    }
+
+    bool generatesNegatedCondition(const AstNode& astNode) {
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            return unaryOp->unaryOperator == UnaryOperator::logicalNot;
+        }
+        if(auto* between = dynamic_cast<const BetweenNode*>(&generatedNode)) {
+            return between->negated;
+        }
+        if(auto* like = dynamic_cast<const LikeNode*>(&generatedNode)) {
+            return like->negated;
+        }
+        if(auto* glob = dynamic_cast<const GlobNode*>(&generatedNode)) {
+            return glob->negated;
+        }
+        if(auto* match = dynamic_cast<const MatchNode*>(&generatedNode)) {
+            return match->negated;
+        }
+        return false;
     }
 
     bool isLeafNode(const AstNode& astNode) {

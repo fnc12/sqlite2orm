@@ -48,6 +48,9 @@ namespace sqlite2orm {
     extern const std::string kCommentViewReflection;
     extern const std::string kCommentNegationAsZeroMinus;
     extern const std::string kCommentPredicateGroupingCast;
+    extern const std::string kCommentNotColumnPointer;
+    extern const std::string kCommentNotValueAddedToZero;
+    extern const std::string kCommentNegatedConditionCast;
     extern const std::string kCommentBitwiseResultCast;
 
     struct SourceTableColumn;
@@ -232,6 +235,19 @@ namespace sqlite2orm {
      *  which is already one C++ term and needs no parentheses of its own around it.
      */
     bool generatesZeroMinusSubtraction(const AstNode& astNode);
+    /**
+     *  True for a node generated as a plain C++ value that sqlite_orm binds into the prepared
+     *  statement — a literal, or a numeric literal with a sign folded into it. Every other leaf
+     *  names something (a column, NEW/OLD, a function call) and is serialized into the SQL itself.
+     */
+    bool generatesBoundValue(const AstNode& astNode);
+    /**
+     *  True for a node generated as sqlite_orm's `negated_condition_t`: a logical NOT, and the
+     *  `!predicate` spelling a negated BETWEEN, LIKE, GLOB or MATCH takes. sqlite_orm classifies
+     *  that type as neither negatable nor an operator argument, so nothing can be built on top of
+     *  one without delimiting it first.
+     */
+    bool generatesNegatedCondition(const AstNode& astNode);
     /** True for a node that generates a bare C++ value, which `wrap` turns into a sqlite_orm expression. */
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);

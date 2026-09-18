@@ -315,3 +315,18 @@ TEST_CASE("runtime: a result column that can be NULL reads the NULL back") {
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
             std::vector<std::string>{"8", "14", "1", "-7", "-7", "1", "NULL", "NULL"});
 }
+
+// The widening rule leaves an operator over a NULL test alone, and it is right to: sqlite3 3.45.1
+// answers `NOT (a IS NULL)` with 0 over a NULL row and 1 over `a = 7`, never with a NULL. (The
+// arithmetic forms of the same rule — `(a IS NULL) + 1` — have no sqlite_orm overload to run.)
+TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its value") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a IS NULL);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(not (is_null(&User::a)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"0"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"1"});
+}

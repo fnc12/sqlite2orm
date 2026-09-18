@@ -629,6 +629,26 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
     REQUIRE(generate("SELECT a IS NULL FROM users;") == "auto rows = storage.select(is_null(&Users::a));");
 }
 
+// A NULL test and an EXISTS answer over a NULL operand too, so an operator built on one of them has
+// no NULL to report either and keeps the type sqlite_orm gives it. Checked against sqlite3 3.45.1
+// over `users(a INTEGER)` holding one NULL row: 2, 1, 0, 2, '1x', -2 — no NULL among them. (Only
+// the `not` form has a sqlite_orm overload today; arithmetic over a NULL test does not compile,
+// which is a separate gap and not what this widening rule decides.)
+TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
+    REQUIRE(generate("SELECT (a IS NULL) + 1 FROM users;") ==
+            "auto rows = storage.select(is_null(&Users::a) + 1);");
+    REQUIRE(generate("SELECT (a IS NOT NULL) + 1 FROM users;") ==
+            "auto rows = storage.select(is_not_null(&Users::a) + 1);");
+    REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") ==
+            "auto rows = storage.select(not (is_null(&Users::a)));");
+    REQUIRE(generate("SELECT EXISTS(SELECT 1) + 1 FROM users;") ==
+            "auto rows = storage.select(exists(select(1)) + 1);");
+    REQUIRE(generate("SELECT (a IS NULL) || 'x' FROM users;") ==
+            "auto rows = storage.select(is_null(&Users::a) || \"x\");");
+    REQUIRE(generate("SELECT ~(a IS NULL) FROM users;") ==
+            "auto rows = storage.select(~(is_null(&Users::a)));");
+}
+
 // A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the
 // result column of a select is widened.
 TEST_CASE("codegen: as_optional is confined to the result columns of a select") {

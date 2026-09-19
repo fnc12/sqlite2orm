@@ -849,3 +849,26 @@ TEST_CASE("runtime: a prefix NOT groups the way SQLite groups it") {
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "0"});
 }
+
+// A unary plus is dropped, so a result column under one is read back exactly the way the bare
+// operand is — the NULL a nullable column carries reaches the caller, and the `std::string` that
+// `upper(...)` is typed as flattens it to an empty string whether a plus stands over the call or
+// not. sqlite3 3.51 over `users(a INTEGER)` answers `+a` and `+upper(a)` with 7 and '7' on the row
+// a = 7, and with NULL on the row a = NULL.
+TEST_CASE("runtime: a result column under a unary plus reads back as the bare operand does") {
+    const std::vector<std::string> statements{
+        generate("SELECT +a;"),
+        generate("SELECT a;"),
+        generate("SELECT +upper(a);"),
+        generate("SELECT upper(a);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(&User::a);",
+                              "auto rows = storage.select(&User::a);",
+                              "auto rows = storage.select(upper(&User::a));",
+                              "auto rows = storage.select(upper(&User::a));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"7", "7", "7", "7"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "", ""});
+}

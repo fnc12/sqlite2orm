@@ -41,13 +41,10 @@ namespace sqlite2orm {
         std::vector<ValidationError> errors;
 
         if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
-            if(unaryOp->unaryOperator == UnaryOperator::plus) {
-                errors.push_back(ValidationError{
-                    "unary plus (+expr) is not supported in sqlite_orm",
-                    unaryOp->location,
-                    "UnaryOperatorNode"
-                });
-            }
+            // A unary plus is an identity SQLite applies to any expression, so a statement that
+            // carries one is a statement sqlite_orm can be given: codegen emits the operand and
+            // nothing else. The one thing the plus does carry is the column affinity it takes away
+            // from a comparison, which codegen warns about where it matters.
             if(unaryOp->unaryOperator == UnaryOperator::minus) {
                 if(auto* literal = dynamic_cast<const IntegerLiteralNode*>(unaryOp->operand.get())) {
                     // `0x8000000000000000` is INT64_MIN, so negating it leaves the range an integer

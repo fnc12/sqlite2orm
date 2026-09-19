@@ -987,3 +987,29 @@ TEST_CASE("codegen: an arithmetic result column is reported at the first integer
                                "9223372036854775808)",
                                SourceLocation{1, 18}, 1}});
 }
+
+// A unary plus is the identity SQLite treats it as, so a statement carrying one is generated
+// rather than rejected — `sqlite2orm -e 'SELECT +a;'` used to exit 1 on `unary plus (+expr) is
+// not supported in sqlite_orm` — and it is generated as the statement over the bare operand.
+// sqlite3 3.51 over `users(a INTEGER)` holding 7 answers `+a`, `+a + 1`, `1 + +a` and `+upper(a)`
+// with 7, 8, 8 and 7.
+TEST_CASE("codegen: a statement with a unary plus generates what the bare operand generates") {
+    REQUIRE(generate("SELECT +a FROM users;") == "auto rows = storage.select(&Users::a);");
+    REQUIRE(generate("SELECT a FROM users;") == "auto rows = storage.select(&Users::a);");
+    REQUIRE(generate("SELECT +a + 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
+    REQUIRE(generate("SELECT a + 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
+    REQUIRE(generate("SELECT 1 + +a FROM users;") ==
+            "auto rows = storage.select(as_optional(c(1) + &Users::a));");
+    REQUIRE(generate("SELECT 1 + a FROM users;") ==
+            "auto rows = storage.select(as_optional(c(1) + &Users::a));");
+    REQUIRE(generate("SELECT +upper(a) FROM users;") == "auto rows = storage.select(upper(&Users::a));");
+    REQUIRE(generate("SELECT upper(a) FROM users;") == "auto rows = storage.select(upper(&Users::a));");
+    // A plus over a plus is the same identity twice, and so is one over a parenthesised operand.
+    REQUIRE(generate("SELECT + +a FROM users;") == "auto rows = storage.select(&Users::a);");
+    REQUIRE(generate("SELECT +(a) FROM users;") == "auto rows = storage.select(&Users::a);");
+    // Every clause holds an expression, and the plus is dropped in each of them the same way.
+    REQUIRE(generate("SELECT a FROM users WHERE +a ORDER BY +a LIMIT +1;") ==
+            "auto rows = storage.select(&Users::a, where(&Users::a), order_by(&Users::a), limit(1));");
+}

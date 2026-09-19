@@ -17,10 +17,17 @@ namespace {
     }
 }
 
-TEST_CASE("validator: unary plus not supported") {
-    REQUIRE(validate("+5") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 1}, "UnaryOperatorNode"}
-    });
+// SQLite takes a unary plus over any expression and answers the operand's own value, so nothing
+// about one keeps a statement out of sqlite_orm: codegen emits the operand and nothing else.
+// sqlite3 3.51 over `users(a INTEGER)` holding 7 answers `+a`, `+a + 1` and `+upper(a)` with
+// 7, 8 and 7.
+TEST_CASE("validator: unary plus is valid") {
+    REQUIRE(validate("+5").empty());
+    REQUIRE(validate("+a").empty());
+    REQUIRE(validate("SELECT +a;").empty());
+    REQUIRE(validate("SELECT +a + 1;").empty());
+    REQUIRE(validate("SELECT 1 + +a;").empty());
+    REQUIRE(validate("SELECT +upper(a);").empty());
 }
 
 TEST_CASE("validator: unary minus is valid") {
@@ -59,9 +66,8 @@ TEST_CASE("validator: bitwise not is valid") {
 }
 
 TEST_CASE("validator: nested unary plus in expression") {
-    REQUIRE(validate("a + +b") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 5}, "UnaryOperatorNode"}
-    });
+    REQUIRE(validate("a + +b").empty());
+    REQUIRE(validate("+ +a").empty());
 }
 
 TEST_CASE("validator: no errors for binary operators") {
@@ -100,8 +106,8 @@ TEST_CASE("validator: CAST is valid") {
 }
 
 TEST_CASE("validator: CAST validates operand") {
-    REQUIRE(validate("CAST(+a AS INTEGER)") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 6}, "UnaryOperatorNode"}
+    REQUIRE(validate("CAST(-0x8000000000000000 AS INTEGER)") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 6}, "UnaryOperatorNode"}
     });
 }
 
@@ -130,35 +136,39 @@ TEST_CASE("validator: CASE is valid") {
 }
 
 TEST_CASE("validator: CASE validates branches") {
-    REQUIRE(validate("CASE WHEN +a THEN 1 END") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 11}, "UnaryOperatorNode"}
+    REQUIRE(validate("CASE WHEN -0x8000000000000000 THEN 1 END") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 11}, "UnaryOperatorNode"}
     });
 }
 
 TEST_CASE("validator: validates function arguments recursively") {
-    REQUIRE(validate("abs(+a)") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 5}, "UnaryOperatorNode"}
+    REQUIRE(validate("abs(-0x8000000000000000)") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 5}, "UnaryOperatorNode"}
     });
 }
 
 // LIMIT and OFFSET hold whole expressions, so the same rules apply there as in any other clause.
 TEST_CASE("validator: validates the LIMIT expression") {
-    REQUIRE(validate("SELECT a FROM users LIMIT +1") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 27}, "UnaryOperatorNode"}
+    REQUIRE(validate("SELECT a FROM users LIMIT -0x8000000000000000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 27}, "UnaryOperatorNode"}
     });
-    REQUIRE(validate("SELECT a FROM users LIMIT 5, +1") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 30}, "UnaryOperatorNode"}
+    REQUIRE(validate("SELECT a FROM users LIMIT 5, -0x8000000000000000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 30}, "UnaryOperatorNode"}
     });
 }
 
 TEST_CASE("validator: validates the OFFSET expression") {
-    REQUIRE(validate("SELECT a FROM users LIMIT 1 OFFSET +2") == std::vector<ValidationError>{
-        {"unary plus (+expr) is not supported in sqlite_orm", {1, 36}, "UnaryOperatorNode"}
-    });
+    REQUIRE(validate("SELECT a FROM users LIMIT 1 OFFSET -0x8000000000000000") ==
+            std::vector<ValidationError>{
+                {"hex literal too big: -0x8000000000000000", {1, 36}, "UnaryOperatorNode"}
+            });
 }
 
 TEST_CASE("validator: an expression LIMIT is valid") {
     REQUIRE(validate("SELECT a FROM users LIMIT -1").empty());
+    REQUIRE(validate("SELECT a FROM users LIMIT +1").empty());
+    REQUIRE(validate("SELECT a FROM users LIMIT 5, +1").empty());
+    REQUIRE(validate("SELECT a FROM users LIMIT 1 OFFSET +2").empty());
     REQUIRE(validate("SELECT a FROM users LIMIT 2 * 3 OFFSET -1").empty());
 }
 
@@ -266,7 +276,7 @@ TEST_CASE("validator: CREATE VIEW maps to make_view()") {
 }
 
 TEST_CASE("validator: CREATE VIEW inner SELECT is still validated") {
-    REQUIRE_FALSE(validate("CREATE VIEW v AS SELECT +1;").empty());
+    REQUIRE_FALSE(validate("CREATE VIEW v AS SELECT -0x8000000000000000;").empty());
 }
 
 TEST_CASE("validator: ALTER TABLE points to sync_schema") {

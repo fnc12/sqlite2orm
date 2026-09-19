@@ -31,8 +31,8 @@ namespace sqlite2orm {
         CodegenWarning() = default;
         CodegenWarning(std::string message) : message(std::move(message)) {}
         CodegenWarning(const char* message) : message(message) {}
-        CodegenWarning(std::string message, SourceLocation location, size_t length)
-            : message(std::move(message)), location(location), length(length) {}
+        CodegenWarning(std::string message, SourceLocation location, size_t length) :
+            message(std::move(message)), location(location), length(length) {}
 
         bool operator==(const CodegenWarning&) const = default;
     };

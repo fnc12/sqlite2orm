@@ -6,16 +6,15 @@
 #include <fmt/format.h>
 
 int main() {
-    const std::string_view sql =
-        "INSERT INTO logs (level, message) VALUES ('info', 'started');";
+    const std::string_view sql = "INSERT INTO logs (level, message) VALUES ('info', 'started');";
 
     sqlite2orm::Tokenizer tokenizer;
     auto tokens = tokenizer.tokenize(sql);
 
     sqlite2orm::Parser parser;
     auto parseResult = parser.parse(std::move(tokens));
-    if(!parseResult) {
-        for(const auto& error : parseResult.errors) {
+    if (!parseResult) {
+        for (const auto& error: parseResult.errors) {
             fmt::print(stderr, "parse error: {}\n", error.message);
         }
         return 1;
@@ -23,8 +22,8 @@ int main() {
 
     sqlite2orm::Validator validator;
     auto validationErrors = validator.validate(*parseResult.astNodePointer);
-    if(!validationErrors.empty()) {
-        for(const auto& error : validationErrors) {
+    if (!validationErrors.empty()) {
+        for (const auto& error: validationErrors) {
             fmt::print(stderr, "validation: {}\n", error.message);
         }
         return 1;
@@ -33,8 +32,8 @@ int main() {
     sqlite2orm::CodeGenerator codegen;
     auto codegenResult = codegen.generate(*parseResult.astNodePointer);
 
-    if(!codegenResult.errors.empty()) {
-        for(const auto& error : codegenResult.errors) {
+    if (!codegenResult.errors.empty()) {
+        for (const auto& error: codegenResult.errors) {
             fmt::print(stderr, "codegen error: {}\n", error);
         }
         return 1;
@@ -42,11 +41,11 @@ int main() {
 
     fmt::print("Generated C++:\n{}\n", codegenResult.code);
 
-    if(!codegenResult.decisionPoints.empty()) {
+    if (!codegenResult.decisionPoints.empty()) {
         fmt::print("\nDecision points:\n");
-        for(const auto& dp : codegenResult.decisionPoints) {
+        for (const auto& dp: codegenResult.decisionPoints) {
             fmt::print("  [{}] {}: {}\n", dp.id, dp.category, dp.chosenValue);
-            for(const auto& option : dp.options) {
+            for (const auto& option: dp.options) {
                 fmt::print("    - {}: {}\n", option.value, option.description);
             }
         }

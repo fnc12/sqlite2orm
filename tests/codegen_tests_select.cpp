@@ -13,9 +13,7 @@ namespace {
 
 TEST_CASE("codegen: SELECT * FROM table") {
     REQUIRE(generateFull("SELECT * FROM users") ==
-            CodeGenResult{"auto rows = storage.get_all<Users>();",
-                          {apiLevelStarSelectDp(1, "Users", "")},
-                          {}});
+            CodeGenResult{"auto rows = storage.get_all<Users>();", {apiLevelStarSelectDp(1, "Users", "")}, {}});
 }
 
 TEST_CASE("codegen: SELECT table.* FROM table") {
@@ -41,7 +39,8 @@ TEST_CASE("codegen: SELECT DISTINCT table.*") {
 TEST_CASE("codegen: SELECT schema.table.* generates asterisk with warning") {
     auto result = generateFull("SELECT main.users.* FROM users");
     REQUIRE(result.code == "auto rows = storage.select(asterisk<Users>());");
-    REQUIRE(result.warnings ==
+    REQUIRE(
+        result.warnings ==
         std::vector<CodegenWarning>{
             "schema-qualified SELECT result column main.users.* is not represented in sqlite_orm; generated code uses "
             "asterisk<Users>() (table type only)"});
@@ -67,35 +66,32 @@ TEST_CASE("codegen: SELECT column via FROM table alias C++20 style") {
     CodeGenPolicy pol;
     pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
     auto result = generateWithPolicy("SELECT u.name FROM users u", pol);
-    REQUIRE(result.code ==
-            "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
-            "auto rows = storage.select(u->*&Users::name);");
+    REQUIRE(result.code == "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+                           "auto rows = storage.select(u->*&Users::name);");
 }
 
 TEST_CASE("codegen: SELECT t.* FROM alias C++20 style") {
     CodeGenPolicy pol;
     pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
     auto result = generateWithPolicy("SELECT t.* FROM users t", pol);
-    REQUIRE(result.code ==
-            "constexpr orm_table_alias auto t = \"t\"_alias.for_<Users>();\n"
-            "auto rows = storage.select(asterisk<t>());");
+    REQUIRE(result.code == "constexpr orm_table_alias auto t = \"t\"_alias.for_<Users>();\n"
+                           "auto rows = storage.select(asterisk<t>());");
 }
 
 TEST_CASE("codegen: self-join C++20 style") {
     CodeGenPolicy pol;
     pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
     auto result = generateWithPolicy("SELECT a.name, b.name FROM users a, users b", pol);
-    REQUIRE(result.code ==
-            "constexpr orm_table_alias auto a = \"a\"_alias.for_<Users>();\n"
-            "constexpr orm_table_alias auto b = \"b\"_alias.for_<Users>();\n"
-            "auto rows = storage.select(columns(a->*&Users::name, b->*&Users::name), cross_join<b>());");
+    REQUIRE(result.code == "constexpr orm_table_alias auto a = \"a\"_alias.for_<Users>();\n"
+                           "constexpr orm_table_alias auto b = \"b\"_alias.for_<Users>();\n"
+                           "auto rows = storage.select(columns(a->*&Users::name, b->*&Users::name), cross_join<b>());");
 }
 
 TEST_CASE("codegen: table_alias_style decision point present when alias used") {
     auto result = generateFull("SELECT u.name FROM users u");
     bool hasDp = false;
-    for(const auto& dp : result.decisionPoints) {
-        if(dp.category == "table_alias_style") {
+    for (const auto& dp: result.decisionPoints) {
+        if (dp.category == "table_alias_style") {
             hasDp = true;
         }
     }
@@ -104,67 +100,65 @@ TEST_CASE("codegen: table_alias_style decision point present when alias used") {
 
 TEST_CASE("codegen: SELECT with FROM schema qualifier warns") {
     REQUIRE(generateFull("SELECT name FROM main.users") ==
-        CodeGenResult{"auto rows = storage.select(&Users::name);",
-                      {columnRefStyleDp(1, "&Users::name")},
-                      std::vector<CodegenWarning>{
-                          "FROM clause schema qualifier 'main' for table 'users' is not represented in sqlite_orm "
-                          "mapping"}});
+            CodeGenResult{"auto rows = storage.select(&Users::name);",
+                          {columnRefStyleDp(1, "&Users::name")},
+                          std::vector<CodegenWarning>{
+                              "FROM clause schema qualifier 'main' for table 'users' is not represented in sqlite_orm "
+                              "mapping"}});
 }
 
 TEST_CASE("codegen: comma-separated FROM is cross join") {
     REQUIRE(generateFull("SELECT * FROM users, posts") ==
-        CodeGenResult{"auto rows = storage.get_all<Users>(cross_join<Posts>());",
-                      {apiLevelStarSelectDp(1, "Users", "cross_join<Posts>()")},
-                      {}});
+            CodeGenResult{"auto rows = storage.get_all<Users>(cross_join<Posts>());",
+                          {apiLevelStarSelectDp(1, "Users", "cross_join<Posts>()")},
+                          {}});
 }
 
 TEST_CASE("codegen: INNER JOIN ON") {
     REQUIRE(generate("SELECT * FROM users INNER JOIN posts ON users.id = posts.user_id") ==
-        "auto rows = storage.get_all<Users>(inner_join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+            "auto rows = storage.get_all<Users>(inner_join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
 }
 
 TEST_CASE("codegen: LEFT JOIN and JOIN plain") {
     REQUIRE(generate("SELECT * FROM users LEFT JOIN posts ON users.id = posts.user_id") ==
-        "auto rows = storage.get_all<Users>(left_join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+            "auto rows = storage.get_all<Users>(left_join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
     REQUIRE(generate("SELECT * FROM users JOIN posts ON users.id = posts.user_id") ==
-        "auto rows = storage.get_all<Users>(join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+            "auto rows = storage.get_all<Users>(join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
 }
 
 TEST_CASE("codegen: JOIN ON merges expr_style decision point with is_equal alternative") {
     std::vector<DecisionPoint> joinDps;
-    joinDps.push_back(apiLevelStarSelectDp(
-        1, "Users", "left_join<Posts>(on(c(&Users::id) == &Posts::user_id))"));
+    joinDps.push_back(apiLevelStarSelectDp(1, "Users", "left_join<Posts>(on(c(&Users::id) == &Posts::user_id))"));
     auto onExpr = expectedBinaryLeaf("&Users::id", "&Posts::user_id", " == ", "is_equal", 2);
     joinDps.insert(joinDps.end(), onExpr.decisionPoints.begin(), onExpr.decisionPoints.end());
     REQUIRE(generateFull("SELECT * FROM users LEFT JOIN posts ON users.id = posts.user_id") ==
-        CodeGenResult{
-            "auto rows = storage.get_all<Users>(left_join<Posts>(on(c(&Users::id) == &Posts::user_id)));",
-            std::move(joinDps),
-            {}});
+            CodeGenResult{"auto rows = storage.get_all<Users>(left_join<Posts>(on(c(&Users::id) == &Posts::user_id)));",
+                          std::move(joinDps),
+                          {}});
 }
 
 TEST_CASE("codegen: parenthesized join in FROM") {
     REQUIRE(generate("SELECT * FROM (t1 INNER JOIN t2 ON t1.id = t2.t1_id)") ==
-        "auto rows = storage.get_all<T1>(inner_join<T2>(on(c(&T1::id) == &T2::t1_id)));");
+            "auto rows = storage.get_all<T1>(inner_join<T2>(on(c(&T1::id) == &T2::t1_id)));");
 }
 
 TEST_CASE("codegen: LEFT OUTER JOIN CROSS JOIN NATURAL JOIN") {
     REQUIRE(generate("SELECT * FROM users LEFT OUTER JOIN posts ON users.id = posts.user_id") ==
-        "auto rows = storage.get_all<Users>(left_outer_join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+            "auto rows = storage.get_all<Users>(left_outer_join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
     REQUIRE(generate("SELECT * FROM users CROSS JOIN posts") ==
-        "auto rows = storage.get_all<Users>(cross_join<Posts>());");
+            "auto rows = storage.get_all<Users>(cross_join<Posts>());");
     REQUIRE(generate("SELECT * FROM users NATURAL JOIN posts") ==
-        "auto rows = storage.get_all<Users>(natural_join<Posts>());");
+            "auto rows = storage.get_all<Users>(natural_join<Posts>());");
 }
 
 TEST_CASE("codegen: INNER JOIN USING one column") {
     REQUIRE(generate("SELECT * FROM users INNER JOIN posts USING (user_id)") ==
-        "auto rows = storage.get_all<Users>(inner_join<Posts>(using_(&Posts::user_id)));");
+            "auto rows = storage.get_all<Users>(inner_join<Posts>(using_(&Posts::user_id)));");
 }
 
 TEST_CASE("codegen: INNER JOIN USING multiple columns") {
     REQUIRE(generate("SELECT * FROM t1 INNER JOIN t2 USING (a, b)") ==
-        "auto rows = storage.get_all<T1>(inner_join<T2>(on(c(&T1::a) == c(&T2::a) and c(&T1::b) == c(&T2::b))));");
+            "auto rows = storage.get_all<T1>(inner_join<T2>(on(c(&T1::a) == c(&T2::a) and c(&T1::b) == c(&T2::b))));");
 }
 
 TEST_CASE("codegen: SELECT column FROM table") {
@@ -199,7 +193,8 @@ TEST_CASE("codegen: SELECT DISTINCT multiple columns") {
 
 TEST_CASE("codegen: SELECT expression with WHERE") {
     auto result = generate("SELECT id, name FROM users WHERE age >= 18 AND active = 1");
-    REQUIRE(result == "auto rows = storage.select(columns(&Users::id, &Users::name), where(c(&Users::age) >= 18 and c(&Users::active) == 1));");
+    REQUIRE(result == "auto rows = storage.select(columns(&Users::id, &Users::name), where(c(&Users::age) >= 18 and "
+                      "c(&Users::active) == 1));");
 }
 
 TEST_CASE("codegen: SELECT with ORDER BY") {
@@ -219,7 +214,8 @@ TEST_CASE("codegen: SELECT with ORDER BY DESC") {
 
 TEST_CASE("codegen: SELECT with multiple ORDER BY") {
     auto result = generate("SELECT * FROM users ORDER BY name ASC, age DESC");
-    REQUIRE(result == "auto rows = storage.get_all<Users>(multi_order_by(order_by(&Users::name).asc(), order_by(&Users::age).desc()));");
+    REQUIRE(result == "auto rows = storage.get_all<Users>(multi_order_by(order_by(&Users::name).asc(), "
+                      "order_by(&Users::age).desc()));");
 }
 
 TEST_CASE("codegen: SELECT column with ORDER BY") {
@@ -296,7 +292,8 @@ TEST_CASE("codegen: an unmapped subquery in LIMIT is warned about") {
             CodeGenResult{"auto rows = storage.select(&Users::name, limit(/* (SELECT ...) */));",
                           {columnRefStyleDp(1, "&Users::name")},
                           {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 30}, 32},
+                                          SourceLocation{1, 30},
+                                          32},
                            "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
 }
 
@@ -307,14 +304,14 @@ TEST_CASE("codegen: SELECT with GROUP BY") {
 
 TEST_CASE("codegen: SELECT with GROUP BY HAVING") {
     auto result = generate("SELECT name, count(*) FROM users GROUP BY name HAVING count(*) > 1");
-    REQUIRE(result ==
-            "auto rows = storage.select(columns(&Users::name, count<Users>()), "
-            "group_by(&Users::name).having(count<Users>() > 1));");
+    REQUIRE(result == "auto rows = storage.select(columns(&Users::name, count<Users>()), "
+                      "group_by(&Users::name).having(count<Users>() > 1));");
 }
 
 TEST_CASE("codegen: SELECT with WHERE + ORDER BY + LIMIT") {
     auto result = generate("SELECT * FROM users WHERE age > 18 ORDER BY name LIMIT 10");
-    REQUIRE(result == "auto rows = storage.get_all<Users>(where(c(&Users::age) > 18), order_by(&Users::name), limit(10));");
+    REQUIRE(result ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::age) > 18), order_by(&Users::name), limit(10));");
 }
 
 TEST_CASE("codegen: EXISTS (SELECT *)") {
@@ -339,13 +336,11 @@ TEST_CASE("codegen: UNION two literal SELECTs") {
 }
 
 TEST_CASE("codegen: UNION ALL") {
-    REQUIRE(generate("SELECT 1 UNION ALL SELECT 2") ==
-            "auto rows = storage.select(union_all(select(1), select(2)));");
+    REQUIRE(generate("SELECT 1 UNION ALL SELECT 2") == "auto rows = storage.select(union_all(select(1), select(2)));");
 }
 
 TEST_CASE("codegen: INTERSECT") {
-    REQUIRE(generate("SELECT 1 INTERSECT SELECT 2") ==
-            "auto rows = storage.select(intersect(select(1), select(2)));");
+    REQUIRE(generate("SELECT 1 INTERSECT SELECT 2") == "auto rows = storage.select(intersect(select(1), select(2)));");
 }
 
 TEST_CASE("codegen: EXCEPT") {
@@ -353,75 +348,72 @@ TEST_CASE("codegen: EXCEPT") {
 }
 
 TEST_CASE("codegen: derived FROM emits stub and warning") {
-    REQUIRE(generateFull("SELECT n FROM (SELECT 1 AS n) t") ==
-            CodeGenResult{"/* SELECT with derived FROM */",
-                          {},
-                          {CodegenWarning{"subselect in FROM is not supported in sqlite_orm codegen",
-                                          SourceLocation{1, 16}, 13}}});
+    REQUIRE(
+        generateFull("SELECT n FROM (SELECT 1 AS n) t") ==
+        CodeGenResult{
+            "/* SELECT with derived FROM */",
+            {},
+            {CodegenWarning{"subselect in FROM is not supported in sqlite_orm codegen", SourceLocation{1, 16}, 13}}});
 }
 
 TEST_CASE("codegen: ORDER BY COLLATE") {
     REQUIRE(generate("SELECT * FROM users ORDER BY name COLLATE NOCASE;") ==
-        "auto rows = storage.get_all<Users>(order_by(&Users::name).collate_nocase());");
+            "auto rows = storage.get_all<Users>(order_by(&Users::name).collate_nocase());");
 }
 
 TEST_CASE("codegen: VALUES standalone") {
-    REQUIRE(generate("VALUES (1, 'a'), (2, 'b');") ==
-        "auto rows = storage.select(columns(1, \"a\"));");
+    REQUIRE(generate("VALUES (1, 'a'), (2, 'b');") == "auto rows = storage.select(columns(1, \"a\"));");
 }
 
 TEST_CASE("codegen: SELECT single column with alias") {
     auto result = generateFull("SELECT name AS user_name FROM users");
-    REQUIRE(result.code ==
-        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
-        "    static const std::string& get() {\n"
-        "        static const std::string res = \"user_name\";\n"
-        "        return res;\n"
-        "    }\n"
-        "};\n"
-        "auto rows = storage.select(as<User_nameAlias>(&Users::name));");
+    REQUIRE(result.code == "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+                           "    static const std::string& get() {\n"
+                           "        static const std::string res = \"user_name\";\n"
+                           "        return res;\n"
+                           "    }\n"
+                           "};\n"
+                           "auto rows = storage.select(as<User_nameAlias>(&Users::name));");
     REQUIRE(!result.warnings.empty());
 }
 
 TEST_CASE("codegen: SELECT multiple columns with one alias") {
     auto result = generate("SELECT id, name AS user_name FROM users");
-    REQUIRE(result ==
-        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
-        "    static const std::string& get() {\n"
-        "        static const std::string res = \"user_name\";\n"
-        "        return res;\n"
-        "    }\n"
-        "};\n"
-        "auto rows = storage.select(columns(&Users::id, as<User_nameAlias>(&Users::name)));");
+    REQUIRE(result == "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+                      "    static const std::string& get() {\n"
+                      "        static const std::string res = \"user_name\";\n"
+                      "        return res;\n"
+                      "    }\n"
+                      "};\n"
+                      "auto rows = storage.select(columns(&Users::id, as<User_nameAlias>(&Users::name)));");
 }
 
 TEST_CASE("codegen: SELECT column with string literal alias") {
     auto result = generate("SELECT name AS 'UserName' FROM users");
-    REQUIRE(result ==
-        "struct UserNameAlias : sqlite_orm::alias_tag {\n"
-        "    static const std::string& get() {\n"
-        "        static const std::string res = \"UserName\";\n"
-        "        return res;\n"
-        "    }\n"
-        "};\n"
-        "auto rows = storage.select(as<UserNameAlias>(&Users::name));");
+    REQUIRE(result == "struct UserNameAlias : sqlite_orm::alias_tag {\n"
+                      "    static const std::string& get() {\n"
+                      "        static const std::string res = \"UserName\";\n"
+                      "        return res;\n"
+                      "    }\n"
+                      "};\n"
+                      "auto rows = storage.select(as<UserNameAlias>(&Users::name));");
 }
 
 TEST_CASE("codegen: SELECT DISTINCT column with alias") {
     auto result = generate("SELECT DISTINCT name AS user_name FROM users");
-    REQUIRE(result ==
-        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
-        "    static const std::string& get() {\n"
-        "        static const std::string res = \"user_name\";\n"
-        "        return res;\n"
-        "    }\n"
-        "};\n"
-        "auto rows = storage.select(distinct(as<User_nameAlias>(&Users::name)));");
+    REQUIRE(result == "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+                      "    static const std::string& get() {\n"
+                      "        static const std::string res = \"user_name\";\n"
+                      "        return res;\n"
+                      "    }\n"
+                      "};\n"
+                      "auto rows = storage.select(distinct(as<User_nameAlias>(&Users::name)));");
 }
 
 TEST_CASE("codegen: SELECT DISTINCT multiple columns with aliases") {
     auto result = generate("SELECT DISTINCT id AS ID, name AS user_name FROM users");
-    REQUIRE(result ==
+    REQUIRE(
+        result ==
         "struct IDAlias : sqlite_orm::alias_tag {\n"
         "    static const std::string& get() {\n"
         "        static const std::string res = \"ID\";\n"
@@ -444,130 +436,130 @@ TEST_CASE("codegen: SELECT without alias is unchanged") {
 
 TEST_CASE("codegen: SELECT implicit column alias (without AS)") {
     auto result = generateFull("SELECT name user_name FROM users");
-    REQUIRE(result.code ==
-        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
-        "    static const std::string& get() {\n"
-        "        static const std::string res = \"user_name\";\n"
-        "        return res;\n"
-        "    }\n"
-        "};\n"
-        "auto rows = storage.select(as<User_nameAlias>(&Users::name));");
+    REQUIRE(result.code == "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+                           "    static const std::string& get() {\n"
+                           "        static const std::string res = \"user_name\";\n"
+                           "        return res;\n"
+                           "    }\n"
+                           "};\n"
+                           "auto rows = storage.select(as<User_nameAlias>(&Users::name));");
 }
 
 TEST_CASE("codegen: SELECT builtin colalias for single-letter alias") {
     auto result = generateFull("SELECT name AS i FROM users");
     REQUIRE(result.code == "auto rows = storage.select(as<colalias_i>(&Users::name));");
     bool hasBuiltinWarning = false;
-    for(const auto& w : result.warnings) {
-        if(w.message.find("colalias_") != std::string::npos) hasBuiltinWarning = true;
+    for (const auto& w: result.warnings) {
+        if (w.message.find("colalias_") != std::string::npos)
+            hasBuiltinWarning = true;
     }
     REQUIRE(hasBuiltinWarning);
 }
 
 TEST_CASE("codegen: SELECT alias referenced in WHERE and ORDER BY") {
-    auto result = generate(
-        "SELECT name, instr(abilities, 'o') i "
-        "FROM marvel "
-        "WHERE i > 0 "
-        "ORDER BY i");
-    REQUIRE(result ==
-        "auto rows = storage.select("
-        "columns(&Marvel::name, as<colalias_i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
-        "where(c(get<colalias_i>()) > 0), "
-        "order_by(get<colalias_i>()));");
+    auto result = generate("SELECT name, instr(abilities, 'o') i "
+                           "FROM marvel "
+                           "WHERE i > 0 "
+                           "ORDER BY i");
+    REQUIRE(result == "auto rows = storage.select("
+                      "columns(&Marvel::name, as<colalias_i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
+                      "where(c(get<colalias_i>()) > 0), "
+                      "order_by(get<colalias_i>()));");
 }
 
 TEST_CASE("codegen: SELECT alias referenced in ORDER BY with custom struct") {
-    auto result = generate(
-        "SELECT name AS user_name FROM users ORDER BY user_name");
-    REQUIRE(result ==
-        "struct User_nameAlias : sqlite_orm::alias_tag {\n"
-        "    static const std::string& get() {\n"
-        "        static const std::string res = \"user_name\";\n"
-        "        return res;\n"
-        "    }\n"
-        "};\n"
-        "auto rows = storage.select(as<User_nameAlias>(&Users::name), "
-        "order_by(get<User_nameAlias>()));");
+    auto result = generate("SELECT name AS user_name FROM users ORDER BY user_name");
+    REQUIRE(result == "struct User_nameAlias : sqlite_orm::alias_tag {\n"
+                      "    static const std::string& get() {\n"
+                      "        static const std::string res = \"user_name\";\n"
+                      "        return res;\n"
+                      "    }\n"
+                      "};\n"
+                      "auto rows = storage.select(as<User_nameAlias>(&Users::name), "
+                      "order_by(get<User_nameAlias>()));");
 }
 
 TEST_CASE("codegen: column_alias_style decision point offers C++20 alternative") {
     const std::string chosenCode = "auto rows = storage.select(as<colalias_i>(&Users::name));";
     const std::string cpp20AltCode = "constexpr orm_column_alias auto i = \"i\"_col;\n"
                                      "auto rows = storage.select(as<i>(&Users::name));";
-    REQUIRE(generateFull("SELECT name AS i FROM users") ==
-            CodeGenResult{
-                chosenCode,
-                {columnRefStyleDp(1, "&Users::name"),
-                 DecisionPoint{2,
-                               "column_alias_style",
-                               "alias_tag",
-                               chosenCode,
-                               {Option{"alias_tag", chosenCode,
-                                           "alias_tag / colalias_* / generated struct (default; wider compiler "
-                                           "support)"},
-                                Option{"cpp20_literal",
-                                           cpp20AltCode,
-                                           "C++20 literal aliases (`orm_column_alias`, `_col`)",
-                                           false,
-                                           {std::string(kExpectedCpp20ColumnAliasComment)},
-                                           20}}}},
-                {"SELECT column alias uses sqlite_orm built-in colalias_* types; requires `using namespace sqlite_orm`"},
-                {},
-                {}});
+    REQUIRE(
+        generateFull("SELECT name AS i FROM users") ==
+        CodeGenResult{
+            chosenCode,
+            {columnRefStyleDp(1, "&Users::name"),
+             DecisionPoint{2,
+                           "column_alias_style",
+                           "alias_tag",
+                           chosenCode,
+                           {Option{"alias_tag",
+                                   chosenCode,
+                                   "alias_tag / colalias_* / generated struct (default; wider compiler "
+                                   "support)"},
+                            Option{"cpp20_literal",
+                                   cpp20AltCode,
+                                   "C++20 literal aliases (`orm_column_alias`, `_col`)",
+                                   false,
+                                   {std::string(kExpectedCpp20ColumnAliasComment)},
+                                   20}}}},
+            {"SELECT column alias uses sqlite_orm built-in colalias_* types; requires `using namespace sqlite_orm`"},
+            {},
+            {}});
 }
 
 TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
     CodeGenPolicy policy;
     policy.chosenAlternativeValueByCategory["column_alias_style"] = "cpp20_literal";
-    const char* sql =
-        "SELECT name, instr(abilities, 'o') i "
-        "FROM marvel "
-        "WHERE i > 0 "
-        "ORDER BY i";
+    const char* sql = "SELECT name, instr(abilities, 'o') i "
+                      "FROM marvel "
+                      "WHERE i > 0 "
+                      "ORDER BY i";
 
     const std::string mainCode =
         "constexpr orm_column_alias auto i = \"i\"_col;\n"
         "auto rows = storage.select(columns(&Marvel::name, as<i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
         "where(i > 0), order_by(i));";
-    const std::string aliasTagAltCode =
-        "auto rows = storage.select(columns(&Marvel::name, "
-        "as<colalias_i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
-        "where(c(get<colalias_i>()) > 0), order_by(get<colalias_i>()));";
+    const std::string aliasTagAltCode = "auto rows = storage.select(columns(&Marvel::name, "
+                                        "as<colalias_i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
+                                        "where(c(get<colalias_i>()) > 0), order_by(get<colalias_i>()));";
 
     REQUIRE(generateWithPolicy(sql, policy) ==
-            CodeGenResult{
-                mainCode,
-                {columnRefStyleDp(1, "&Marvel::name"),
-                 columnRefStyleDp(2, "&Marvel::abilities"),
-                 DecisionPoint{3,
-                               "expr_style",
-                               "operator_wrap_left",
-                               "i > 0",
-                               {Option{"operator_wrap_left", "i > 0", "wrap left operand"},
-                                Option{"operator_wrap_right", "i > c(0)", "wrap right operand"},
-                                Option{"functional", "greater_than(i, 0)", "functional style"},
-                                Option{"operator_wrap_both", "i > c(0)", "wrap both operands", true}}},
-                 DecisionPoint{4,
-                               "column_alias_style",
-                               "cpp20_literal",
-                               mainCode,
-                               {Option{"alias_tag",
-                                           aliasTagAltCode,
-                                           "alias_tag / colalias_* / generated struct (default; wider compiler "
-                                           "support)"},
-                                Option{"cpp20_literal", mainCode,
-                                           "C++20 literal aliases (`orm_column_alias`, `_col`)",
-                                           false, {}, 20}}}},
-                {},
-                {},
-                 {std::string(kExpectedCpp20ColumnAliasComment)}});
+            CodeGenResult{mainCode,
+                          {columnRefStyleDp(1, "&Marvel::name"),
+                           columnRefStyleDp(2, "&Marvel::abilities"),
+                           DecisionPoint{3,
+                                         "expr_style",
+                                         "operator_wrap_left",
+                                         "i > 0",
+                                         {Option{"operator_wrap_left", "i > 0", "wrap left operand"},
+                                          Option{"operator_wrap_right", "i > c(0)", "wrap right operand"},
+                                          Option{"functional", "greater_than(i, 0)", "functional style"},
+                                          Option{"operator_wrap_both", "i > c(0)", "wrap both operands", true}}},
+                           DecisionPoint{4,
+                                         "column_alias_style",
+                                         "cpp20_literal",
+                                         mainCode,
+                                         {Option{"alias_tag",
+                                                 aliasTagAltCode,
+                                                 "alias_tag / colalias_* / generated struct (default; wider compiler "
+                                                 "support)"},
+                                          Option{"cpp20_literal",
+                                                 mainCode,
+                                                 "C++20 literal aliases (`orm_column_alias`, `_col`)",
+                                                 false,
+                                                 {},
+                                                 20}}}},
+                          {},
+                          {},
+                          {std::string(kExpectedCpp20ColumnAliasComment)}});
 }
 
 TEST_CASE("codegen: SELECT with window function OVER(), bind params in WHERE and LIMIT") {
-    auto result = generate(
-        "SELECT id, firstName, lastName, count(id) OVER() FROM user_profile WHERE id > :refId ORDER BY id LIMIT :resultperpage;");
-    REQUIRE(result == "auto rows = storage.select(columns(&UserProfile::id, &UserProfile::firstName, &UserProfile::lastName, count(&UserProfile::id).over()), where(c(&UserProfile::id) > refId), order_by(&UserProfile::id), limit(resultperpage));");
+    auto result = generate("SELECT id, firstName, lastName, count(id) OVER() FROM user_profile WHERE id > :refId ORDER "
+                           "BY id LIMIT :resultperpage;");
+    REQUIRE(result == "auto rows = storage.select(columns(&UserProfile::id, &UserProfile::firstName, "
+                      "&UserProfile::lastName, count(&UserProfile::id).over()), where(c(&UserProfile::id) > refId), "
+                      "order_by(&UserProfile::id), limit(resultperpage));");
 }
 
 TEST_CASE("codegen: MATCH against a column") {
@@ -577,24 +569,24 @@ TEST_CASE("codegen: MATCH against a column") {
 
 TEST_CASE("codegen: MATCH against the FTS5 table name uses the hidden any column") {
     auto result = generateFull("SELECT * FROM docs_search WHERE docs_search MATCH 'sqlite'");
-    REQUIRE(result.code ==
-            "auto rows = storage.get_all<DocsSearch>(where(match(c<DocsSearch>()->*&fts5::hidden::any, "
-            "\"sqlite\")));");
+    REQUIRE(result.code == "auto rows = storage.get_all<DocsSearch>(where(match(c<DocsSearch>()->*&fts5::hidden::any, "
+                           "\"sqlite\")));");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{"MATCH against table \"docs_search\" maps to the hidden FTS5 'any' "
-                                     "column; requires an FTS5 virtual table mapped as DocsSearch"});
+                                        "column; requires an FTS5 virtual table mapped as DocsSearch"});
 }
 
 TEST_CASE("codegen: MATCH against an aliased FTS5 table name") {
-    auto result = generateFull("SELECT d.* FROM docs d JOIN docs_search s ON d.id = s.rowid WHERE docs_search MATCH 'word'");
+    auto result =
+        generateFull("SELECT d.* FROM docs d JOIN docs_search s ON d.id = s.rowid WHERE docs_search MATCH 'word'");
     REQUIRE(result.code.find("match(c<DocsSearch>()->*&fts5::hidden::any, \"word\")") != std::string::npos);
 }
 
 namespace {
     const sqlite2orm::DecisionPoint* findDecisionPoint(const sqlite2orm::CodeGenResult& result,
                                                        std::string_view category) {
-        for(const auto& dp : result.decisionPoints) {
-            if(dp.category == category) {
+        for (const auto& dp: result.decisionPoints) {
+            if (dp.category == category) {
                 return &dp;
             }
         }
@@ -602,8 +594,8 @@ namespace {
     }
 
     bool hasOptionValue(const sqlite2orm::DecisionPoint& dp, std::string_view value) {
-        for(const auto& option : dp.options) {
-            if(option.value == value) {
+        for (const auto& option: dp.options) {
+            if (option.value == value) {
                 return true;
             }
         }
@@ -620,7 +612,7 @@ TEST_CASE("codegen: targetCppStandard 17 drops the C++20 column_alias option") {
     CHECK(dp->chosenValue == "alias_tag");
     CHECK(hasOptionValue(*dp, "alias_tag"));
     CHECK_FALSE(hasOptionValue(*dp, "cpp20_literal"));
-    for(const auto& option : dp->options) {
+    for (const auto& option: dp->options) {
         CHECK(option.minCppStandard <= 17);
     }
 }
@@ -663,20 +655,14 @@ TEST_CASE("codegen: explicit C++20 table_alias policy is overridden by targetCpp
 // "codegen: a bitwise result column is cast to an int64_t", which the widening rule here is
 // independent of.
 TEST_CASE("codegen: a result column that can be NULL is generated as as_optional") {
-    REQUIRE(generate("SELECT a + 1 FROM users;") ==
-            "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
-    REQUIRE(generate("SELECT a * 2 FROM users;") ==
-            "auto rows = storage.select(as_optional(c(&Users::a) * 2));");
-    REQUIRE(generate("SELECT 0 - a FROM users;") ==
-            "auto rows = storage.select(as_optional(c(0) - &Users::a));");
-    REQUIRE(generate("SELECT -a FROM users;") ==
-            "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
+    REQUIRE(generate("SELECT a + 1 FROM users;") == "auto rows = storage.select(as_optional(c(&Users::a) + 1));");
+    REQUIRE(generate("SELECT a * 2 FROM users;") == "auto rows = storage.select(as_optional(c(&Users::a) * 2));");
+    REQUIRE(generate("SELECT 0 - a FROM users;") == "auto rows = storage.select(as_optional(c(0) - &Users::a));");
+    REQUIRE(generate("SELECT -a FROM users;") == "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
     REQUIRE(generate("SELECT ~a FROM users;") ==
             "auto rows = storage.select(as_optional(cast<int64_t>(~c(&Users::a))));");
-    REQUIRE(generate("SELECT a > 0 FROM users;") ==
-            "auto rows = storage.select(as_optional(c(&Users::a) > 0));");
-    REQUIRE(generate("SELECT a AND 1 FROM users;") ==
-            "auto rows = storage.select(as_optional(c(&Users::a) and 1));");
+    REQUIRE(generate("SELECT a > 0 FROM users;") == "auto rows = storage.select(as_optional(c(&Users::a) > 0));");
+    REQUIRE(generate("SELECT a AND 1 FROM users;") == "auto rows = storage.select(as_optional(c(&Users::a) and 1));");
     REQUIRE(generate("SELECT a || 'x' FROM users;") ==
             "auto rows = storage.select(as_optional(c(&Users::a) || \"x\"));");
     REQUIRE(generate("SELECT NULL + 1;") == "auto rows = storage.select(as_optional(c(nullptr) + 1));");
@@ -715,6 +701,57 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
     REQUIRE(generate("SELECT a IS NULL FROM users;") == "auto rows = storage.select(is_null(&Users::a));");
 }
 
+// A NaN is the one value SQLite has no storage class for, so it stores one as NULL: `+`, `-` and
+// `*` answer NULL as soon as the double they compute in runs into one — `SELECT typeof(0 * (1e300
+// * 1e300))` and `SELECT typeof(1e300 * 1e300 - 1e300 * 1e300)` are both null in sqlite3 3.51 —
+// however spelled out their operands are, the way `1 / 0` is. sqlite_orm types the arithmetic
+// operators `double`, so that row used to reach the caller as 0. It takes an infinity to reach a
+// NaN, and only a value the SQL no longer spells out, one a computation can overflow into, or a
+// decimal literal whose own text runs past the double range, counts as one: an INTEGER answer is
+// finite whatever its magnitude, and a finite number spelled out stays finite, so `1e300 * 1e300`
+// (Inf, a REAL SQLite carries), `9e999`, `0 * 1e300`, `1.5 + 2.5`, `(1 + 2) * 0` and a zero times a
+// comparison or a bitwise result are left plain. Values checked in "runtime: an arithmetic result
+// column that overflows into a NaN reads the NULL back".
+TEST_CASE("codegen: an arithmetic result column that can overflow into a NaN is widened") {
+    REQUIRE(generate("SELECT 0 * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));");
+    REQUIRE(generate("SELECT 0.0 * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(0.0) * (c(1e300) * 1e300)));");
+    REQUIRE(generate("SELECT (1e300 * 1e300) * 0;") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 * 0));");
+    REQUIRE(generate("SELECT 1e300 * 1e300 - 1e300 * 1e300;") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 - c(1e300) * 1e300));");
+    REQUIRE(generate("SELECT 1e300 * 1e300 + -1e300 * 1e300;") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 + c(-1e300) * 1e300));");
+    REQUIRE(generate("SELECT (1e300 * 1e300) / (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 / (c(1e300) * 1e300)));");
+    // SQLite reads a number off the bytes of a blob the way it reads one off a string, and the
+    // bytes of `x'41'` read back as 0, so this column is NULL too.
+    REQUIRE(generate("SELECT x'41' * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(std::vector<char>{'\\x41'}) * (c(1e300) * 1e300)));");
+    // A decimal literal whose exponent runs past the double range is an infinity of its own, and
+    // it is read out of the literal's text rather than out of an int64 it does not fit, so these
+    // pin the text-to-double path the two cells above reach through a magnitude bound instead.
+    REQUIRE(generate("SELECT 9e999 - 9e999;") == "auto rows = storage.select(as_optional(c(9e999) - 9e999));");
+    REQUIRE(generate("SELECT 0 * 9e999;") == "auto rows = storage.select(as_optional(c(0) * 9e999));");
+    REQUIRE(generate("SELECT 1.0e400 - 1.0e400;") == "auto rows = storage.select(as_optional(c(1.0e400) - 1.0e400));");
+    REQUIRE(generate("SELECT -9e999 + 9e999;") == "auto rows = storage.select(as_optional(c(-9e999) + 9e999));");
+    // COLLATE decides how a value compares, not what the value is, so the literal under one is
+    // read as the literal it is: a zero next to an infinity still reaches the NaN, a one does not.
+    REQUIRE(generate("SELECT (0 COLLATE BINARY) * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));");
+    REQUIRE(generate("SELECT 0 * (9e999 COLLATE BINARY);") == "auto rows = storage.select(as_optional(c(0) * 9e999));");
+    REQUIRE(generate("SELECT (1 COLLATE BINARY) * (1e300 * 1e300);") ==
+            "auto rows = storage.select(c(1) * (c(1e300) * 1e300));");
+    REQUIRE(generate("SELECT 1e300 * 1e300;") == "auto rows = storage.select(c(1e300) * 1e300);");
+    REQUIRE(generate("SELECT 9e999;") == "auto rows = storage.select(9e999);");
+    REQUIRE(generate("SELECT 0 * 1e300;") == "auto rows = storage.select(c(0) * 1e300);");
+    REQUIRE(generate("SELECT 1.5 + 2.5;") == "auto rows = storage.select(c(1.5) + 2.5);");
+    REQUIRE(generate("SELECT (1 + 2) * 0;") == "auto rows = storage.select((c(1) + 2) * 0);");
+    REQUIRE(generate("SELECT 0 * (1 < 2);") == "auto rows = storage.select(c(0) * (c(1) < 2));");
+    REQUIRE(generate("SELECT 0 * (1 & 2);") == "auto rows = storage.select(c(0) * (c(1) & 2));");
+}
+
 // A NULL test and an EXISTS answer over a NULL operand too, so an operator built on one of them has
 // no NULL to report either and keeps the type sqlite_orm gives it. Checked against sqlite3 3.45.1
 // over `users(a INTEGER)` holding one NULL row: 2, 1, 0, 2, '1x', -2 — no NULL among them. (The
@@ -728,8 +765,7 @@ TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
             "auto rows = storage.select(cast<int64_t>(is_null(&Users::a)) + 1);");
     REQUIRE(generate("SELECT (a IS NOT NULL) + 1 FROM users;") ==
             "auto rows = storage.select(cast<int64_t>(is_not_null(&Users::a)) + 1);");
-    REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") ==
-            "auto rows = storage.select(not (is_null(&Users::a)));");
+    REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") == "auto rows = storage.select(not (is_null(&Users::a)));");
     REQUIRE(generate("SELECT EXISTS(SELECT 1) + 1 FROM users;") ==
             "auto rows = storage.select(exists(select(1)) + 1);");
     REQUIRE(generate("SELECT (a IS NULL) || 'x' FROM users;") ==
@@ -764,10 +800,8 @@ TEST_CASE("codegen: a result column typed by a predicate, a CAST or a function c
             "auto rows = storage.select(as_optional(cast<std::string>(&Users::a)));");
     REQUIRE(generate("SELECT CAST(a AS INTEGER) FROM users;") ==
             "auto rows = storage.select(as_optional(cast<int64_t>(&Users::a)));");
-    REQUIRE(generate("SELECT length(a) FROM users;") ==
-            "auto rows = storage.select(as_optional(length(&Users::a)));");
-    REQUIRE(generate("SELECT upper(a) FROM users;") ==
-            "auto rows = storage.select(as_optional(upper(&Users::a)));");
+    REQUIRE(generate("SELECT length(a) FROM users;") == "auto rows = storage.select(as_optional(length(&Users::a)));");
+    REQUIRE(generate("SELECT upper(a) FROM users;") == "auto rows = storage.select(as_optional(upper(&Users::a)));");
     // An aggregate SQLite answers NULL for over an empty rowset is widened whatever its argument
     // holds: `SELECT avg(1) FROM users` over no rows is NULL.
     REQUIRE(generate("SELECT avg(1) FROM users;") == "auto rows = storage.select(as_optional(avg(1)));");
@@ -790,13 +824,11 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
     REQUIRE(generate("SELECT date('bogus');") == "auto rows = storage.select(as_optional(date(\"bogus\")));");
     REQUIRE(generate("SELECT date('bogus') || 'x';") ==
             "auto rows = storage.select(as_optional(date(\"bogus\") || \"x\"));");
-    REQUIRE(generate("SELECT julianday('bogus');") ==
-            "auto rows = storage.select(as_optional(julianday(\"bogus\")));");
+    REQUIRE(generate("SELECT julianday('bogus');") == "auto rows = storage.select(as_optional(julianday(\"bogus\")));");
     REQUIRE(generate("SELECT strftime('%Y', 'bogus');") ==
             "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));");
     REQUIRE(generate("SELECT unicode('');") == "auto rows = storage.select(as_optional(unicode(\"\")));");
-    REQUIRE(generate("SELECT unicode('') + 1;") ==
-            "auto rows = storage.select(as_optional(unicode(\"\") + 1));");
+    REQUIRE(generate("SELECT unicode('') + 1;") == "auto rows = storage.select(as_optional(unicode(\"\") + 1));");
     REQUIRE(generate("SELECT sign('abc');") == "auto rows = storage.select(as_optional(sign(\"abc\")));");
     REQUIRE(generate("SELECT json_extract('{}', '$.a');") ==
             "auto rows = storage.select(as_optional(json_extract(\"{}\", \"$.a\")));");
@@ -805,8 +837,7 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
     // empty string, so neither is a function that only propagates a NULL argument.
     REQUIRE(generate("SELECT substr('abc', 1, 1);") ==
             "auto rows = storage.select(as_optional(substr(\"abc\", 1, 1)));");
-    REQUIRE(generate("SELECT printf('') || 'x';") ==
-            "auto rows = storage.select(as_optional(printf(\"\") || \"x\"));");
+    REQUIRE(generate("SELECT printf('') || 'x';") == "auto rows = storage.select(as_optional(printf(\"\") || \"x\"));");
     // An aggregate is NULL over an empty rowset whatever its argument holds. `sum`, `max` and `min`
     // are left plain as a result column — sqlite_orm declares them `std::unique_ptr` — but an
     // operator over one is typed by the operator alone and has to carry the NULL itself.
@@ -828,8 +859,7 @@ TEST_CASE("codegen: an iif without its ELSE argument is widened, the three-argum
     REQUIRE(generate("SELECT iif(0, 1, 2);") == "auto rows = storage.select(iif(0, 1, 2));");
     REQUIRE(generate("SELECT iif(0, 1, 2) + 1;") == "auto rows = storage.select(iif(0, 1, 2) + 1);");
     // The name is matched without regard to case, the way SQLite resolves it.
-    REQUIRE(generate("SELECT IIF(0, 1) || 'x';") ==
-            "auto rows = storage.select(as_optional(iif(0, 1) || \"x\"));");
+    REQUIRE(generate("SELECT IIF(0, 1) || 'x';") == "auto rows = storage.select(as_optional(iif(0, 1) || \"x\"));");
 }
 
 // The widening stops where SQLite never answers NULL and where sqlite_orm reports a nullable type
@@ -870,8 +900,7 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");
     REQUIRE(generate("SELECT max(a) FROM users;") == "auto rows = storage.select(max(&Users::a));");
     REQUIRE(generate("SELECT sum(a) FROM users;") == "auto rows = storage.select(sum(&Users::a));");
-    REQUIRE(generate("SELECT coalesce(a, 1) FROM users;") ==
-            "auto rows = storage.select(coalesce(&Users::a, 1));");
+    REQUIRE(generate("SELECT coalesce(a, 1) FROM users;") == "auto rows = storage.select(coalesce(&Users::a, 1));");
     REQUIRE(generate("SELECT iif(a, 1, 2) FROM users;") == "auto rows = storage.select(iif(&Users::a, 1, 2));");
     REQUIRE(generate("SELECT iif(1, length(a), 2) FROM users;") ==
             "auto rows = storage.select(iif(1, length(&Users::a), 2));");
@@ -880,8 +909,7 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT lag(a) OVER () FROM users;") == "auto rows = storage.select(lag(&Users::a).over());");
     REQUIRE(generate("SELECT lag(a) OVER (ORDER BY a) FROM users;") ==
             "auto rows = storage.select(lag(&Users::a).over(order_by(&Users::a)));");
-    REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
-            "auto rows = storage.select(row_number().over());");
+    REQUIRE(generate("SELECT row_number() OVER () FROM users;") == "auto rows = storage.select(row_number().over());");
     REQUIRE(generate("SELECT a MATCH 'x' FROM users;") == "auto rows = storage.select(match(&Users::a, \"x\"));");
     REQUIRE(generate("SELECT count(*) FROM users;") == "auto rows = storage.select(count<Users>());");
 }
@@ -981,35 +1009,40 @@ TEST_CASE("codegen: an arithmetic result column reports the double it is read ba
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 10}, 1}});
+                               SourceLocation{1, 10},
+                               1}});
     REQUIRE(generateFull("SELECT a - 1 FROM users;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"result column computed with `-` is read back through a double: sqlite_orm "
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 10}, 1}});
+                               SourceLocation{1, 10},
+                               1}});
     REQUIRE(generateFull("SELECT a * 2 FROM users;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"result column computed with `*` is read back through a double: sqlite_orm "
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 10}, 1}});
+                               SourceLocation{1, 10},
+                               1}});
     REQUIRE(generateFull("SELECT a / 2 FROM users;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"result column computed with `/` is read back through a double: sqlite_orm "
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 10}, 1}});
+                               SourceLocation{1, 10},
+                               1}});
     REQUIRE(generateFull("SELECT a % a FROM users;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"result column computed with `%` is read back through a double: sqlite_orm "
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 10}, 1}});
+                               SourceLocation{1, 10},
+                               1}});
     // Several columns computed with the same operator report once, anchored at the first of them.
     REQUIRE(generateFull("SELECT a + 1, a + 2 FROM users;").warnings ==
             std::vector<CodegenWarning>{
@@ -1017,7 +1050,8 @@ TEST_CASE("codegen: an arithmetic result column reports the double it is read ba
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 10}, 1}});
+                               SourceLocation{1, 10},
+                               1}});
     // A unary plus generates its operand's code, so the operand is the one the warning names and
     // is anchored at: the `+` of `a + 0`, at column 12, not the one the column starts with.
     REQUIRE(generateFull("SELECT +(a + 0) FROM users;").warnings ==
@@ -1026,7 +1060,8 @@ TEST_CASE("codegen: an arithmetic result column reports the double it is read ba
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 12}, 1}});
+                               SourceLocation{1, 12},
+                               1}});
     // A negation reaches sqlite_orm as the subtraction `0 - x`, which is typed `double` too; the
     // minus sign of the SQL is the token the message names.
     REQUIRE(generateFull("SELECT -a FROM users;").warnings ==
@@ -1035,7 +1070,8 @@ TEST_CASE("codegen: an arithmetic result column reports the double it is read ba
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 8}, 1}});
+                               SourceLocation{1, 8},
+                               1}});
 }
 
 // A `double` holds every integer up to 2^53, so an expression whose operands the SQL spells out is
@@ -1098,21 +1134,24 @@ TEST_CASE("codegen: an arithmetic result column is reported at the first integer
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 25}, 1}});
+                               SourceLocation{1, 25},
+                               1}});
     REQUIRE(generateFull("SELECT 9007199254740992 + 1;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 25}, 1}});
+                               SourceLocation{1, 25},
+                               1}});
     REQUIRE(generateFull("SELECT 4503599627370496 * 2 + 1;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"result column computed with `+` is read back through a double: sqlite_orm "
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 29}, 1}});
+                               SourceLocation{1, 29},
+                               1}});
     // `~` casts its operand to an INTEGER first, so a REAL operand is not carried through it the
     // way it is through the arithmetic operators: this one answers the INTEGER -9007199254740995.
     REQUIRE(generateFull("SELECT 1 + ~9007199254740994.0;").warnings ==
@@ -1121,7 +1160,8 @@ TEST_CASE("codegen: an arithmetic result column is reported at the first integer
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 10}, 1}});
+                               SourceLocation{1, 10},
+                               1}});
     // A magnitude past 2^53 is reported even when both operands are literals.
     REQUIRE(generateFull("SELECT 9223372036854775807 + 0;").warnings ==
             std::vector<CodegenWarning>{
@@ -1129,12 +1169,14 @@ TEST_CASE("codegen: an arithmetic result column is reported at the first integer
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 28}, 1}});
+                               SourceLocation{1, 28},
+                               1}});
     REQUIRE(generateFull("SELECT 100000000 * 100000000;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"result column computed with `*` is read back through a double: sqlite_orm "
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 18}, 1}});
+                               SourceLocation{1, 18},
+                               1}});
 }

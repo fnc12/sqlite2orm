@@ -11,37 +11,38 @@ namespace {
         return {"CREATE VIEW " + displayName +
                     ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
                     "requires C++26 and will not compile under the selected C++ standard",
-                SourceLocation{line, 1}, headerLength};
+                SourceLocation{line, 1},
+                headerLength};
     }
 
 }  // namespace
 
 TEST_CASE("codegen: CREATE VIEW - standalone, types fall back to name heuristics") {
     auto result = generateFull("CREATE VIEW v AS SELECT id, name FROM users;");
-    REQUIRE(result.code ==
-        "struct [[= \"v\"_orm_name]] V {\n"
-        "    int id = 0;\n"
-        "    std::string name;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<V>(select(columns(&Users::id, &Users::name))));");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int id = 0;\n"
+                           "    std::string name;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(columns(&Users::id, &Users::name))));");
     REQUIRE(result.warnings ==
-        std::vector<CodegenWarning>{
-            {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
-            {"view v: type of column `name` could not be inferred; defaulting to std::string",
-             SourceLocation{1, 29}, 4},
-            cpp26ViewWarning("v", 1)});
+            std::vector<CodegenWarning>{
+                {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
+                {"view v: type of column `name` could not be inferred; defaulting to std::string",
+                 SourceLocation{1, 29},
+                 4},
+                cpp26ViewWarning("v", 1)});
 }
 
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
     REQUIRE(result.comments ==
-        std::vector<std::string>{
-            "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
-            "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
-            "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
-            "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
+            std::vector<std::string>{
+                "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
+                "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
+                "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
+                "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
 }
 
 // The view body is generated through the subquery form of the SELECT generator, which is where the
@@ -49,113 +50,103 @@ TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
 // `--db --json` saw the reflection note and nothing about the CAST in the generated code.
 TEST_CASE("codegen: CREATE VIEW - a comment from the view body is attached too") {
     auto result = generateLastOfBatch("CREATE TABLE t (a INTEGER, b TEXT);\n"
-                                     "CREATE VIEW v AS SELECT 1 - (b LIKE 'x') FROM t;");
-    REQUIRE(result.code ==
-        "struct [[= \"v\"_orm_name]] V {\n"
-        "    int64_t column_1 = 0;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<V>(select(c(1) - cast<int64_t>(like(&T::b, \"x\")))));");
+                                      "CREATE VIEW v AS SELECT 1 - (b LIKE 'x') FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int64_t column_1 = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(c(1) - cast<int64_t>(like(&T::b, \"x\")))));");
     REQUIRE(result.comments ==
-        std::vector<std::string>{
-            "A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
-            "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses, and "
-            "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
-            "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
-            "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.",
-            "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
-            "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
-            "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
-            "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
+            std::vector<std::string>{
+                "A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
+                "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses, and "
+                "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
+                "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
+                "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.",
+                "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
+                "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
+                "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
+                "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
 }
 
 TEST_CASE("codegen: CREATE VIEW - field types from CREATE TABLE in same batch") {
-    auto result = generateLastOfBatch(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER NOT NULL);\n"
-        "CREATE VIEW adults AS SELECT id, name FROM users WHERE age >= 18;");
+    auto result = generateLastOfBatch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER NOT NULL);\n"
+                                      "CREATE VIEW adults AS SELECT id, name FROM users WHERE age >= 18;");
     REQUIRE(result.code ==
-        "struct [[= \"adults\"_orm_name]] Adults {\n"
-        "    int64_t id = 0;\n"
-        "    std::optional<std::string> name;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<Adults>(select(columns(&Users::id, &Users::name), where(c(&Users::age) >= 18))));");
+            "struct [[= \"adults\"_orm_name]] Adults {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<std::string> name;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_view<Adults>(select(columns(&Users::id, &Users::name), where(c(&Users::age) >= 18))));");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("adults", 2)});
 }
 
 TEST_CASE("codegen: CREATE VIEW - explicit column list names the fields") {
-    auto result = generateLastOfBatch(
-        "CREATE TABLE t (x INTEGER NOT NULL);\n"
-        "CREATE VIEW v2(doubled) AS SELECT x * 2 FROM t;");
-    REQUIRE(result.code ==
-        "struct [[= \"v2\"_orm_name]] V2 {\n"
-        "    int64_t doubled = 0;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<V2>(select(c(&T::x) * 2)));");
+    auto result = generateLastOfBatch("CREATE TABLE t (x INTEGER NOT NULL);\n"
+                                      "CREATE VIEW v2(doubled) AS SELECT x * 2 FROM t;");
+    REQUIRE(result.code == "struct [[= \"v2\"_orm_name]] V2 {\n"
+                           "    int64_t doubled = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V2>(select(c(&T::x) * 2)));");
 }
 
 TEST_CASE("codegen: CREATE VIEW - SELECT * expands source table columns") {
-    auto result = generateLastOfBatch(
-        "CREATE TABLE point (x REAL NOT NULL, y REAL NOT NULL);\n"
-        "CREATE VIEW pts AS SELECT * FROM point;");
-    REQUIRE(result.code ==
-        "struct [[= \"pts\"_orm_name]] Pts {\n"
-        "    double x = 0.0;\n"
-        "    double y = 0.0;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<Pts>(select(asterisk<Point>())));");
+    auto result = generateLastOfBatch("CREATE TABLE point (x REAL NOT NULL, y REAL NOT NULL);\n"
+                                      "CREATE VIEW pts AS SELECT * FROM point;");
+    REQUIRE(result.code == "struct [[= \"pts\"_orm_name]] Pts {\n"
+                           "    double x = 0.0;\n"
+                           "    double y = 0.0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<Pts>(select(asterisk<Point>())));");
 }
 
 TEST_CASE("codegen: CREATE VIEW - qualified star with alias expands source table columns") {
-    auto result = generateLastOfBatch(
-        "CREATE TABLE point (x REAL NOT NULL, y REAL NOT NULL);\n"
-        "CREATE VIEW pts2 AS SELECT p.* FROM point p;");
-    REQUIRE(result.code ==
-        "struct [[= \"pts2\"_orm_name]] Pts2 {\n"
-        "    double x = 0.0;\n"
-        "    double y = 0.0;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<Pts2>(select(asterisk<alias_a<Point>>())));");
+    auto result = generateLastOfBatch("CREATE TABLE point (x REAL NOT NULL, y REAL NOT NULL);\n"
+                                      "CREATE VIEW pts2 AS SELECT p.* FROM point p;");
+    REQUIRE(result.code == "struct [[= \"pts2\"_orm_name]] Pts2 {\n"
+                           "    double x = 0.0;\n"
+                           "    double y = 0.0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<Pts2>(select(asterisk<alias_a<Point>>())));");
 }
 
 TEST_CASE("codegen: CREATE VIEW - aggregate functions infer int/double") {
-    auto result = generateLastOfBatch(
-        "CREATE TABLE emp (salary REAL NOT NULL);\n"
-        "CREATE VIEW stats AS SELECT count(*) AS cnt, avg(salary) AS avg_salary FROM emp;");
-    REQUIRE(result.code ==
-        "struct [[= \"stats\"_orm_name]] Stats {\n"
-        "    int cnt = 0;\n"
-        "    double avg_salary = 0.0;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<Stats>(select(columns(count<Emp>(), avg(&Emp::salary)))));");
+    auto result =
+        generateLastOfBatch("CREATE TABLE emp (salary REAL NOT NULL);\n"
+                            "CREATE VIEW stats AS SELECT count(*) AS cnt, avg(salary) AS avg_salary FROM emp;");
+    REQUIRE(result.code == "struct [[= \"stats\"_orm_name]] Stats {\n"
+                           "    int cnt = 0;\n"
+                           "    double avg_salary = 0.0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<Stats>(select(columns(count<Emp>(), avg(&Emp::salary)))));");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("stats", 2)});
 }
 
 TEST_CASE("codegen: CREATE VIEW - schema-qualified name warns and uses bare name") {
     auto result = generateFull("CREATE VIEW main.v AS SELECT 1;");
-    REQUIRE(result.code ==
-        "struct [[= \"v\"_orm_name]] V {\n"
-        "    int64_t column_1 = 0;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<V>(select(1)));");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int64_t column_1 = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(1)));");
     REQUIRE(result.warnings ==
-        std::vector<CodegenWarning>{
-            "schema-qualified view name is not represented in sqlite_orm; generated code uses unqualified "
-            "view name only",
-            "view v: SELECT column 1 has no name; using synthesized field name `column_1`",
-            cpp26ViewWarning("main.v", 1)});
+            std::vector<CodegenWarning>{
+                "schema-qualified view name is not represented in sqlite_orm; generated code uses unqualified "
+                "view name only",
+                "view v: SELECT column 1 has no name; using synthesized field name `column_1`",
+                cpp26ViewWarning("main.v", 1)});
 }
 
 // A view column keeps the type of the literal behind it, and a literal an int64 cannot hold is a
@@ -163,17 +154,15 @@ TEST_CASE("codegen: CREATE VIEW - schema-qualified name warns and uses bare name
 // integer one. Checked against sqlite3 3.51.
 TEST_CASE("codegen: CREATE VIEW - column of an integer literal beyond int64 is a double") {
     auto result = generateFull("CREATE VIEW v AS SELECT 99999999999999999999;");
-    REQUIRE(result.code ==
-        "struct [[= \"v\"_orm_name]] V {\n"
-        "    double column_1 = 0.0;\n"
-        "};\n"
-        "\n"
-        "auto storage = make_storage(\"\",\n"
-        "    make_view<V>(select(99999999999999999999.0)));");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    double column_1 = 0.0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(99999999999999999999.0)));");
     REQUIRE(result.warnings ==
-        std::vector<CodegenWarning>{
-            "view v: SELECT column 1 has no name; using synthesized field name `column_1`",
-            cpp26ViewWarning("v", 1)});
+            std::vector<CodegenWarning>{"view v: SELECT column 1 has no name; using synthesized field name `column_1`",
+                                        cpp26ViewWarning("v", 1)});
 }
 
 TEST_CASE("codegen: view column-type warning carries a source location to underline") {
@@ -181,8 +170,7 @@ TEST_CASE("codegen: view column-type warning carries a source location to underl
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
-                {"view v: type of column `id` could not be inferred; defaulting to int",
-                 SourceLocation{1, 25}, 2},
+                {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
                 cpp26ViewWarning("v", 1)});
 }
 
@@ -193,8 +181,7 @@ TEST_CASE("codegen: CREATE VIEW split across two lines underlines CREATE alone")
     auto result = generateFull("CREATE\nVIEW v AS SELECT id FROM users;");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
-                {"view v: type of column `id` could not be inferred; defaulting to int",
-                 SourceLocation{2, 18}, 2},
+                {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{2, 18}, 2},
                 cpp26ViewWarning("v", 1, 6)});
 }
 
@@ -202,8 +189,7 @@ TEST_CASE("codegen: CREATE VIEW written with two spaces underlines both keywords
     auto result = generateFull("CREATE  VIEW v AS SELECT id FROM users;");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
-                {"view v: type of column `id` could not be inferred; defaulting to int",
-                 SourceLocation{1, 26}, 2},
+                {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 26}, 2},
                 cpp26ViewWarning("v", 1, 12)});
 }
 
@@ -211,8 +197,7 @@ TEST_CASE("codegen: CREATE TEMP VIEW underlines the three keywords it is written
     auto result = generateFull("CREATE TEMP VIEW v AS SELECT id FROM users;");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
-                {"view v: type of column `id` could not be inferred; defaulting to int",
-                 SourceLocation{1, 30}, 2},
+                {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 30}, 2},
                 cpp26ViewWarning("v", 1, 16)});
 }
 
@@ -222,8 +207,7 @@ TEST_CASE("codegen: a view column quoted across two lines underlines its first l
     auto result = generateFull("CREATE VIEW v AS SELECT \"a\nb\" FROM users;");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
-                {"view v: type of column `a\nb` could not be inferred; defaulting to int",
-                 SourceLocation{1, 25}, 2},
+                {"view v: type of column `a\nb` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
                 cpp26ViewWarning("v", 1)});
 }
 
@@ -232,20 +216,20 @@ TEST_CASE("codegen: a view column quoted across two lines underlines its first l
 // still underlines the expression.
 TEST_CASE("codegen: a view column list renaming a column underlines the column, not the name") {
     auto result = generateFull("CREATE VIEW v(averylongname) AS SELECT id FROM users;");
-    REQUIRE(result.warnings ==
-            std::vector<CodegenWarning>{
-                {"view v: type of column `averylongname` could not be inferred; defaulting to int",
-                 SourceLocation{1, 40}, 2},
-                cpp26ViewWarning("v", 1)});
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {"view v: type of column `averylongname` could not be inferred; defaulting to int",
+                                    SourceLocation{1, 40},
+                                    2},
+                                   cpp26ViewWarning("v", 1)});
 }
 
 TEST_CASE("codegen: a view column alias underlines the aliased column, not the alias") {
     auto result = generateFull("CREATE VIEW v AS SELECT id AS averylongalias FROM users;");
-    REQUIRE(result.warnings ==
-            std::vector<CodegenWarning>{
-                {"view v: type of column `averylongalias` could not be inferred; defaulting to int",
-                 SourceLocation{1, 25}, 2},
-                cpp26ViewWarning("v", 1)});
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {"view v: type of column `averylongalias` could not be inferred; defaulting to int",
+                                    SourceLocation{1, 25},
+                                    2},
+                                   cpp26ViewWarning("v", 1)});
 }
 
 // The field name a qualified reference gives the view stands nowhere in the SELECT by itself: `id`
@@ -254,9 +238,8 @@ TEST_CASE("codegen: a view column alias underlines the aliased column, not the a
 TEST_CASE("codegen: a view column-type warning over a qualified reference is left unanchored") {
     auto result = generateFull("CREATE VIEW v AS SELECT users.id FROM users;");
     REQUIRE(result.warnings ==
-            std::vector<CodegenWarning>{
-                {"view v: type of column `id` could not be inferred; defaulting to int"},
-                cpp26ViewWarning("v", 1)});
+            std::vector<CodegenWarning>{{"view v: type of column `id` could not be inferred; defaulting to int"},
+                                        cpp26ViewWarning("v", 1)});
 }
 
 TEST_CASE("codegen: targeting C++26 drops the reflection-not-supported view warning") {
@@ -266,8 +249,7 @@ TEST_CASE("codegen: targeting C++26 drops the reflection-not-supported view warn
     // Only the column-type inference warning remains; the C++26 gate warning is gone.
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
-                {"view v: type of column `id` could not be inferred; defaulting to int",
-                 SourceLocation{1, 25}, 2}});
+                {"view v: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2}});
 }
 
 // A view body is stored, not compiled, so SQLite accepts a hex literal in it that it refuses in a
@@ -278,8 +260,8 @@ TEST_CASE("codegen: CREATE VIEW - a hex literal too big leaves the view ungenera
     auto result = generateFull("CREATE VIEW v AS SELECT 0x10000000000000000;");
     REQUIRE(result.code == "/* CREATE VIEW v — not supported for sqlite_orm */");
     REQUIRE(result.warnings ==
-        std::vector<CodegenWarning>{
-            {"CREATE VIEW v uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the view "
-             "but refuses every query against it, and C++ has no literal for it, so the view is not generated"}});
+            std::vector<CodegenWarning>{
+                {"CREATE VIEW v uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the view "
+                 "but refuses every query against it, and C++ has no literal for it, so the view is not generated"}});
     REQUIRE(result.errors.empty());
 }

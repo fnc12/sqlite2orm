@@ -57,7 +57,7 @@ namespace codegen_test_helpers {
     int TempBuildDir::run(const std::string& command) {
         const int rawStatus = std::system(command.c_str());
 #if defined(__unix__) || defined(__APPLE__)
-        if(rawStatus != -1) {
+        if (rawStatus != -1) {
             return WEXITSTATUS(rawStatus);
         }
 #endif

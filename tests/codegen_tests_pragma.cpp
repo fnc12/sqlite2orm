@@ -45,7 +45,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 01") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 01: SQLite reads this as true; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 2}},
+                                          SourceLocation{1, 29},
+                                          2}},
                           {}});
 }
 
@@ -55,7 +56,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 00") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 00: SQLite reads this as false; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 2}},
+                                          SourceLocation{1, 29},
+                                          2}},
                           {}});
 }
 
@@ -80,7 +82,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 2 is true, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 2: SQLite reads this as true; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 1}},
+                                          SourceLocation{1, 29},
+                                          1}},
                           {}});
 }
 
@@ -90,7 +93,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 010 is true, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 010: SQLite reads this as true; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 3}},
+                                          SourceLocation{1, 29},
+                                          3}},
                           {}});
 }
 
@@ -100,7 +104,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 1.5 is true, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 1.5: SQLite reads this as true; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 3}},
+                                          SourceLocation{1, 29},
+                                          3}},
                           {}});
 }
 
@@ -110,7 +115,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 0x7FFFFFFF is true, like SQLite"
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 0x7FFFFFFF: SQLite reads this as true; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 10}},
+                                          SourceLocation{1, 29},
+                                          10}},
                           {}});
 }
 
@@ -120,7 +126,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 0x80000000 is false, like SQLite
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 0x80000000: SQLite reads this as false; spell "
                                           "it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 10}},
+                                          SourceLocation{1, 29},
+                                          10}},
                           {}});
 }
 
@@ -130,7 +137,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 2147483648 is false, like SQLite
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 2147483648: SQLite reads this as false; spell "
                                           "it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 10}},
+                                          SourceLocation{1, 29},
+                                          10}},
                           {}});
 }
 
@@ -140,7 +148,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = -1 is false, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = -1: SQLite reads this as false; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 2}},
+                                          SourceLocation{1, 29},
+                                          2}},
                           {}});
 }
 
@@ -150,7 +159,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = an unknown name is false, like S
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = blah: SQLite reads this as false; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 4}},
+                                          SourceLocation{1, 29},
+                                          4}},
                           {}});
 }
 
@@ -160,7 +170,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = '2abc' is true, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = '2abc': SQLite reads this as true; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 6}},
+                                          SourceLocation{1, 29},
+                                          6}},
                           {}});
 }
 
@@ -170,7 +181,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 255 is true, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 255: SQLite reads this as true; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 3}},
+                                          SourceLocation{1, 29},
+                                          3}},
                           {}});
 }
 
@@ -180,7 +192,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 256 is false, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 256: SQLite reads this as false; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 3}},
+                                          SourceLocation{1, 29},
+                                          3}},
                           {}});
 }
 
@@ -190,7 +203,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 257 is true, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 257: SQLite reads this as true; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 3}},
+                                          SourceLocation{1, 29},
+                                          3}},
                           {}});
 }
 
@@ -200,7 +214,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 511 is true, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 511: SQLite reads this as true; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 3}},
+                                          SourceLocation{1, 29},
+                                          3}},
                           {}});
 }
 
@@ -210,7 +225,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 0x100 is false, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 0x100: SQLite reads this as false; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 5}},
+                                          SourceLocation{1, 29},
+                                          5}},
                           {}});
 }
 
@@ -220,7 +236,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 65536 is false, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 65536: SQLite reads this as false; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 5}},
+                                          SourceLocation{1, 29},
+                                          5}},
                           {}});
 }
 
@@ -230,7 +247,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 2147483392 is false, like SQLite
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 2147483392: SQLite reads this as false; spell "
                                           "it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 10}},
+                                          SourceLocation{1, 29},
+                                          10}},
                           {}});
 }
 
@@ -240,7 +258,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = '256' is false, like SQLite") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = '256': SQLite reads this as false; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 5}},
+                                          SourceLocation{1, 29},
+                                          5}},
                           {}});
 }
 
@@ -250,7 +269,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = '  1' warns about the value as w
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = '  1': SQLite reads this as false; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 5}},
+                                          SourceLocation{1, 29},
+                                          5}},
                           {}});
 }
 
@@ -260,7 +280,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = '' warns about the value as writ
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = '': SQLite reads this as false; spell it 0/1, "
                                           "TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 2}},
+                                          SourceLocation{1, 29},
+                                          2}},
                           {}});
 }
 
@@ -270,7 +291,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = a double-quoted 256 warns about 
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = \"256\": SQLite reads this as false; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 5}},
+                                          SourceLocation{1, 29},
+                                          5}},
                           {}});
 }
 
@@ -284,7 +306,8 @@ TEST_CASE("codegen: PRAGMA user_version = a string literal written across two li
                           {},
                           {CodegenWarning{"PRAGMA user_version = 'a\nb': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 2}},
+                                          SourceLocation{1, 23},
+                                          2}},
                           {}});
 }
 
@@ -294,7 +317,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = a quoted name written across two
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = \"a\nb\": SQLite reads this as false; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 2}},
+                                          SourceLocation{1, 29},
+                                          2}},
                           {}});
 }
 
@@ -315,7 +339,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 2147483649 is false, like SQLite
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 2147483649: SQLite reads this as false; spell "
                                           "it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 10}},
+                                          SourceLocation{1, 29},
+                                          10}},
                           {}});
 }
 
@@ -327,7 +352,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 0x1FFFFFFFF is false, like SQLit
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 0x1FFFFFFFF: SQLite reads this as false; spell "
                                           "it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 11}},
+                                          SourceLocation{1, 29},
+                                          11}},
                           {}});
 }
 
@@ -337,7 +363,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = 0x1FFFFFFF is true, like SQLite"
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 0x1FFFFFFF: SQLite reads this as true; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 10}},
+                                          SourceLocation{1, 29},
+                                          10}},
                           {}});
 }
 
@@ -351,7 +378,8 @@ TEST_CASE("codegen: PRAGMA user_version = a hex literal too big for an int64") {
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0x10000000000000000: SQLite reads a PRAGMA value "
                                           "as a 32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 19}},
+                                          SourceLocation{1, 23},
+                                          19}},
                           {}});
     REQUIRE(generateFull("PRAGMA max_page_count = 0x1_0000_0000_0000_0000;") ==
             CodeGenResult{"storage.pragma.max_page_count(0);",
@@ -359,7 +387,8 @@ TEST_CASE("codegen: PRAGMA user_version = a hex literal too big for an int64") {
                           {CodegenWarning{"PRAGMA max_page_count = 0x10000000000000000: SQLite reads a PRAGMA "
                                           "value as a 32-bit integer and this hex literal does not fit one, so it "
                                           "sets 0",
-                                          SourceLocation{1, 25}, 23}},
+                                          SourceLocation{1, 25},
+                                          23}},
                           {}});
 }
 
@@ -382,7 +411,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = a hex literal too big for an int
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 0x10000000000000000: SQLite reads this as "
                                           "false; spell it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 19}},
+                                          SourceLocation{1, 29},
+                                          19}},
                           {}});
 }
 
@@ -398,14 +428,16 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = a keyword") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = full: SQLite reads this as false; spell it "
                                           "0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 4}},
+                                          SourceLocation{1, 29},
+                                          4}},
                           {}});
     REQUIRE(generateFull("PRAGMA recursive_triggers = DEFAULT;") ==
             CodeGenResult{"storage.pragma.recursive_triggers(false);",
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = DEFAULT: SQLite reads this as false; spell "
                                           "it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 7}},
+                                          SourceLocation{1, 29},
+                                          7}},
                           {}});
 }
 
@@ -417,7 +449,8 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = CURRENT_TIMESTAMP") {
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = current_timestamp: SQLite reads this as "
                                           "false; spell it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{1, 29}, 17}},
+                                          SourceLocation{1, 29},
+                                          17}},
                           {}});
 }
 
@@ -474,8 +507,7 @@ TEST_CASE("codegen: PRAGMA table_info of a table named after a keyword") {
             CodeGenResult{R"(storage.pragma.table_info("row");)", {}, {}, {}});
     // ON, TRUE, FALSE and CURRENT_DATE are names here too — SQLite's `nmnum` rule takes them for
     // one, and `PRAGMA table_info(on)` describes a table called `on`, empty when there is none.
-    REQUIRE(generateFull("PRAGMA table_info(on);") ==
-            CodeGenResult{R"(storage.pragma.table_info("on");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA table_info(on);") == CodeGenResult{R"(storage.pragma.table_info("on");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA table_xinfo(TRUE);") ==
             CodeGenResult{R"(storage.pragma.table_xinfo("TRUE");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA table_info(current_date);") ==
@@ -516,21 +548,24 @@ TEST_CASE("codegen: PRAGMA user_version = a hex literal past the int32 range set
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0x80000000: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 10}},
+                                          SourceLocation{1, 23},
+                                          10}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = 0xFFFFFFFF;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0xFFFFFFFF: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 10}},
+                                          SourceLocation{1, 23},
+                                          10}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = 0x100000000;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0x100000000: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 11}},
+                                          SourceLocation{1, 23},
+                                          11}},
                           {}});
 }
 
@@ -541,21 +576,24 @@ TEST_CASE("codegen: PRAGMA user_version = a decimal literal past the int32 range
                           {},
                           {CodegenWarning{"PRAGMA user_version = 2147483648: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 10}},
+                                          SourceLocation{1, 23},
+                                          10}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = 4294967296;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = 4294967296: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 10}},
+                                          SourceLocation{1, 23},
+                                          10}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = -2147483649;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = -2147483649: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 11}},
+                                          SourceLocation{1, 23},
+                                          11}},
                           {}});
 }
 
@@ -578,7 +616,8 @@ TEST_CASE("codegen: PRAGMA user_version = a negated hex literal sets 0, like SQL
                           {},
                           {CodegenWarning{"PRAGMA user_version = -0x10: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 0",
-                                          SourceLocation{1, 23}, 5}},
+                                          SourceLocation{1, 23},
+                                          5}},
                           {}});
 }
 
@@ -590,21 +629,24 @@ TEST_CASE("codegen: PRAGMA user_version = a value that is not an integer literal
                           {},
                           {CodegenWarning{"PRAGMA user_version = 1.5: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 1",
-                                          SourceLocation{1, 23}, 3}},
+                                          SourceLocation{1, 23},
+                                          3}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = '12';") ==
             CodeGenResult{"storage.pragma.user_version(12);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = '12': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 12",
-                                          SourceLocation{1, 23}, 4}},
+                                          SourceLocation{1, 23},
+                                          4}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = abc;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = abc: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 3}},
+                                          SourceLocation{1, 23},
+                                          3}},
                           {}});
 }
 
@@ -612,11 +654,7 @@ TEST_CASE("codegen: PRAGMA user_version = a value that is not an integer literal
 // `near "NULL": syntax error`.
 TEST_CASE("codegen: PRAGMA user_version = NULL is an error, not nullptr") {
     REQUIRE(generateFull("PRAGMA user_version = NULL;") ==
-            CodeGenResult{"",
-                          {},
-                          {},
-                          {"PRAGMA user_version = …: expected a number, a string or a name"},
-                          {}});
+            CodeGenResult{"", {}, {}, {"PRAGMA user_version = …: expected a number, a string or a name"}, {}});
 }
 
 // `application_id` and `busy_timeout` reach `sqlite3Atoi()` the same way `user_version` does, so
@@ -627,14 +665,16 @@ TEST_CASE("codegen: the other sqlite3Atoi PRAGMAs fold a value past the int32 ra
                           {},
                           {CodegenWarning{"PRAGMA application_id = 2147483648: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 25}, 10}},
+                                          SourceLocation{1, 25},
+                                          10}},
                           {}});
     REQUIRE(generateFull("PRAGMA busy_timeout = 0x80000000;") ==
             CodeGenResult{"storage.pragma.busy_timeout(0);",
                           {},
                           {CodegenWarning{"PRAGMA busy_timeout = 0x80000000: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 10}},
+                                          SourceLocation{1, 23},
+                                          10}},
                           {}});
 }
 
@@ -683,14 +723,16 @@ TEST_CASE("codegen: PRAGMA user_version = a separated hex literal past the int32
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0x8_0000000: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 11}},
+                                          SourceLocation{1, 23},
+                                          11}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = 2_147_483_648;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = 2_147_483_648: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 13}},
+                                          SourceLocation{1, 23},
+                                          13}},
                           {}});
     REQUIRE(generateFull("PRAGMA integrity_check = 0x8_0000000;") ==
             CodeGenResult{{},
@@ -708,7 +750,8 @@ TEST_CASE("codegen: PRAGMA user_version = a string whose digits stop at an under
                           {},
                           {CodegenWarning{"PRAGMA user_version = '1_2': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 1",
-                                          SourceLocation{1, 23}, 5}},
+                                          SourceLocation{1, 23},
+                                          5}},
                           {}});
 }
 
@@ -724,7 +767,8 @@ TEST_CASE("codegen: PRAGMA user_version = a hex literal whose leading zeros prec
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0x000000000080000000: SQLite reads a PRAGMA value "
                                           "as a 32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 20}},
+                                          SourceLocation{1, 23},
+                                          20}},
                           {}});
 }
 
@@ -737,28 +781,32 @@ TEST_CASE("codegen: PRAGMA user_version = a string SQLite reads by its own rules
                           {},
                           {CodegenWarning{"PRAGMA user_version = ' 12': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 5}},
+                                          SourceLocation{1, 23},
+                                          5}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = '+12';") ==
             CodeGenResult{"storage.pragma.user_version(12);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = '+12': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 12",
-                                          SourceLocation{1, 23}, 5}},
+                                          SourceLocation{1, 23},
+                                          5}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = '0x10';") ==
             CodeGenResult{"storage.pragma.user_version(16);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = '0x10': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 16",
-                                          SourceLocation{1, 23}, 6}},
+                                          SourceLocation{1, 23},
+                                          6}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = '';") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = '': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 2}},
+                                          SourceLocation{1, 23},
+                                          2}},
                           {}});
 }
 
@@ -770,14 +818,16 @@ TEST_CASE("codegen: PRAGMA user_version = a REAL is read by its leading digits o
                           {},
                           {CodegenWarning{"PRAGMA user_version = 1e3: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 1",
-                                          SourceLocation{1, 23}, 3}},
+                                          SourceLocation{1, 23},
+                                          3}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = 0.9;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = 0.9: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 0",
-                                          SourceLocation{1, 23}, 3}},
+                                          SourceLocation{1, 23},
+                                          3}},
                           {}});
 }
 
@@ -792,7 +842,8 @@ TEST_CASE("codegen: a PRAGMA value warning is anchored at the value as written")
                           {},
                           {CodegenWarning{"PRAGMA user_version = '12': SQLite reads a PRAGMA value as a 32-bit "
                                           "integer, so it sets 12",
-                                          SourceLocation{1, 23}, 4}},
+                                          SourceLocation{1, 23},
+                                          4}},
                           {}});
     // The minus sign belongs to the value the message quotes, so the underline starts at the sign
     // and covers the space between it and the digits.
@@ -801,7 +852,8 @@ TEST_CASE("codegen: a PRAGMA value warning is anchored at the value as written")
                           {},
                           {CodegenWarning{"PRAGMA user_version = -2147483649: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 12}},
+                                          SourceLocation{1, 23},
+                                          12}},
                           {}});
     // The message strips the digit separators SQLite refuses; the underline keeps them, because it
     // stands under the characters the user wrote.
@@ -811,7 +863,8 @@ TEST_CASE("codegen: a PRAGMA value warning is anchored at the value as written")
                           {CodegenWarning{"PRAGMA max_page_count = 0x10000000000000000: SQLite reads a PRAGMA "
                                           "value as a 32-bit integer and this hex literal does not fit one, so it "
                                           "sets 0",
-                                          SourceLocation{1, 25}, 23}},
+                                          SourceLocation{1, 25},
+                                          23}},
                           {}});
     // A value on a line of its own is anchored there, not at the statement.
     REQUIRE(generateFull("PRAGMA recursive_triggers =\n    0x80000000;") ==
@@ -819,7 +872,8 @@ TEST_CASE("codegen: a PRAGMA value warning is anchored at the value as written")
                           {},
                           {CodegenWarning{"PRAGMA recursive_triggers = 0x80000000: SQLite reads this as false; "
                                           "spell it 0/1, TRUE/FALSE or ON/OFF instead",
-                                          SourceLocation{2, 5}, 10}},
+                                          SourceLocation{2, 5},
+                                          10}},
                           {}});
     // An underline spans one line, so a sign the user left on the line above is not covered by it:
     // the literal alone carries the anchor.
@@ -828,7 +882,8 @@ TEST_CASE("codegen: a PRAGMA value warning is anchored at the value as written")
                           {},
                           {CodegenWarning{"PRAGMA user_version = -2147483649: SQLite reads a PRAGMA value as a "
                                           "32-bit integer and cannot read this one, so it sets 0",
-                                          SourceLocation{2, 5}, 10}},
+                                          SourceLocation{2, 5},
+                                          10}},
                           {}});
 }
 
@@ -841,7 +896,8 @@ TEST_CASE("codegen: a keyword PRAGMA value is spelled back and underlined as wri
                           {},
                           {CodegenWarning{"PRAGMA user_version = ON: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 2}},
+                                          SourceLocation{1, 23},
+                                          2}},
                           {}});
     // The case the keyword came in is carried through untouched.
     REQUIRE(generateFull("PRAGMA busy_timeout = On;") ==
@@ -849,7 +905,8 @@ TEST_CASE("codegen: a keyword PRAGMA value is spelled back and underlined as wri
                           {},
                           {CodegenWarning{"PRAGMA busy_timeout = On: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 2}},
+                                          SourceLocation{1, 23},
+                                          2}},
                           {}});
     // TRUE and FALSE are the same bool literal node, and neither is spelled back as the other.
     REQUIRE(generateFull("PRAGMA user_version = TRUE;") ==
@@ -857,14 +914,16 @@ TEST_CASE("codegen: a keyword PRAGMA value is spelled back and underlined as wri
                           {},
                           {CodegenWarning{"PRAGMA user_version = TRUE: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 4}},
+                                          SourceLocation{1, 23},
+                                          4}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = FALSE;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
                           {CodegenWarning{"PRAGMA user_version = FALSE: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
-                                          SourceLocation{1, 23}, 5}},
+                                          SourceLocation{1, 23},
+                                          5}},
                           {}});
 }
 
@@ -892,7 +951,7 @@ namespace {
                    "int main() {\n"
                    "    auto storage = sqlite_orm::make_storage(\n"
                    "        \"\", sqlite_orm::make_table(\"users\", sqlite_orm::make_column(\"id\", &User::id)));\n";
-        for(const auto& statement: statements) {
+        for (const auto& statement: statements) {
             program << "    " << statement << '\n';
         }
         program << "    return 0;\n"
@@ -905,7 +964,7 @@ namespace {
         cmd << TempBuildDir::compilerCommand() << " -fsyntax-only " << cpppath.string() << " 2>&1";
 
         const int exitCode = TempBuildDir::run(cmd.str());
-        if(exitCode != 0) {
+        if (exitCode != 0) {
             WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
         }
         REQUIRE(exitCode == 0);
@@ -939,13 +998,13 @@ namespace {
                    "int main() {\n"
                    "    auto storage = sqlite_orm::make_storage(\n"
                    "        \"\", sqlite_orm::make_table(\"users\", sqlite_orm::make_column(\"id\", &User::id))";
-        if(!extraTableName.empty()) {
+        if (!extraTableName.empty()) {
             program << ",\n        sqlite_orm::make_table(\"" << extraTableName
                     << "\", sqlite_orm::make_column(\"id\", &Other::id))";
         }
         program << ");\n"
                    "    storage.sync_schema();\n";
-        for(const auto& statement: statements) {
+        for (const auto& statement: statements) {
             // The generated call ends in its own semicolon, so binding its result needs no more
             // than the assignment in front of it.
             program << "    try {\n"
@@ -980,11 +1039,11 @@ namespace {
         std::vector<std::string> outcomes;
         {
             std::ifstream out(outpath);
-            for(std::string line; std::getline(out, line);) {
+            for (std::string line; std::getline(out, line);) {
                 outcomes.push_back(line);
             }
         }
-        if(exitCode != 0) {
+        if (exitCode != 0) {
             WARN("building the generated PRAGMA calls failed (exit "
                  << exitCode << "); ensure c++, sqlite_orm headers and libsqlite3 are usable");
         }
@@ -1009,10 +1068,10 @@ TEST_CASE("codegen: generated journal_mode calls compile with the Windows DELETE
     };
 
     std::vector<std::string> statements;
-    for(const std::string mode: {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}) {
+    for (const std::string mode: {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}) {
         statements.push_back(generateCall("PRAGMA journal_mode = " + mode + ";"));
     }
-    for(const std::string mode: {"NORMAL", "EXCLUSIVE"}) {
+    for (const std::string mode: {"NORMAL", "EXCLUSIVE"}) {
         statements.push_back(generateCall("PRAGMA locking_mode = " + mode + ";"));
     }
     requireCompilesWithWindowsDeleteMacro(statements);

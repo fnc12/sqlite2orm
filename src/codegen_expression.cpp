@@ -655,6 +655,20 @@ namespace sqlite2orm {
                 appendUniqueString(operandResult.comments, kCommentNegatedConditionCast);
             }
 
+            // A concatenation needs the same CAST for the same reason — a `conc_t` is
+            // `binary_operator<L, R, conc_string>` and nothing else, so it is neither negatable nor
+            // an operator argument — but it has to be a CAST to REAL rather than to INTEGER. A
+            // concatenation answers TEXT (or NULL), and SQLite reads the truth of a text value
+            // through its real value, not its integer one: `NOT ('0' || '.5')` is 0, where
+            // `NOT CAST('0' || '.5' AS INTEGER)` is 1. A CAST to REAL parses the text exactly as
+            // that truth test does, so the two agree for every value.
+            const bool castsConcatenatedOperand = unaryOp->unaryOperator == UnaryOperator::logicalNot &&
+                                                  generatesConcatenation(*unaryOp->operand);
+            if(castsConcatenatedOperand) {
+                operandResult.code = "cast<" + sqliteTypeToCpp("REAL") + ">(" + operandResult.code + ")";
+                appendUniqueString(operandResult.comments, kCommentConcatenationCast);
+            }
+
             // A column reference under a NOT is generated as a column pointer rather than wrapped in
             // `c(...)`; the two forms stand in the same place, so the wrapper is skipped for it.
             const bool wrapsOperandInC =
@@ -678,7 +692,7 @@ namespace sqlite2orm {
             }
 
             std::string operandStr;
-            if(castsNegatedOperand) {
+            if(castsNegatedOperand || castsConcatenatedOperand) {
                 // A CAST delimits itself, both in C++ and in the SQL sqlite_orm serializes.
                 operandStr = operandResult.code;
             } else if(operandIsAddedToZeroUnderNot) {

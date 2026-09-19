@@ -282,7 +282,10 @@ namespace sqlite2orm {
             return this->ddlCodeGenerator->generateCreateView(*createView);
         }
 
-        return CodeGenResult{"/* unsupported node */", {}, {}};
+        // ALTER TABLE, ANALYZE, ATTACH, DETACH, EXPLAIN and REINDEX end up here: sqlite_orm has no
+        // form for any of them, so the statement generates a placeholder and says so.
+        return unsupportedPlaceholder("unsupported node", "this statement is not mapped to sqlite_orm codegen",
+                                      astNode);
     }
 
     CodeGenResult CodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode) {

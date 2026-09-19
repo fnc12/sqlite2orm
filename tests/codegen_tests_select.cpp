@@ -295,7 +295,8 @@ TEST_CASE("codegen: an unmapped subquery in LIMIT is warned about") {
     REQUIRE(generateFull("SELECT name FROM users LIMIT (SELECT a FROM users GROUP BY a)") ==
             CodeGenResult{"auto rows = storage.select(&Users::name, limit(/* (SELECT ...) */));",
                           {columnRefStyleDp(1, "&Users::name")},
-                          {"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                          {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 30}, 32},
                            "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
 }
 
@@ -355,7 +356,8 @@ TEST_CASE("codegen: derived FROM emits stub and warning") {
     REQUIRE(generateFull("SELECT n FROM (SELECT 1 AS n) t") ==
             CodeGenResult{"/* SELECT with derived FROM */",
                           {},
-                          {"subselect in FROM is not supported in sqlite_orm codegen"}});
+                          {CodegenWarning{"subselect in FROM is not supported in sqlite_orm codegen",
+                                          SourceLocation{1, 16}, 13}}});
 }
 
 TEST_CASE("codegen: ORDER BY COLLATE") {

@@ -13,11 +13,16 @@ namespace sqlite2orm {
         auto inner = this->tryCodegenCompoundSelectSubexpression(compoundNode);
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if(inner.code.empty()) {
-            compoundWarnings.insert(compoundWarnings.begin(),
-                                    "compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
-                                    "codegen");
-            return CodeGenResult{"/* compound SELECT */", std::move(inner.decisionPoints),
-                                 std::move(compoundWarnings), {}, std::move(inner.comments)};
+            auto placeholder = unsupportedPlaceholder("compound SELECT",
+                                                      "compound SELECT (UNION / INTERSECT / EXCEPT) is not "
+                                                      "mapped to sqlite_orm codegen",
+                                                      compoundNode);
+            placeholder.decisionPoints = std::move(inner.decisionPoints);
+            placeholder.warnings.insert(placeholder.warnings.end(),
+                                        std::make_move_iterator(compoundWarnings.begin()),
+                                        std::make_move_iterator(compoundWarnings.end()));
+            placeholder.comments = std::move(inner.comments);
+            return placeholder;
         }
         return CodeGenResult{"auto " + this->context.statementVariableName("rows") + " = storage.select(" +
                                  inner.code + ");",
@@ -35,9 +40,13 @@ namespace sqlite2orm {
         this->context.withOuterSelect = false;
         for(const auto& fromItem : selectNode.fromClause) {
             if(fromItem.table.derivedSelect) {
-                selectWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
-                return CodeGenResult{"/* SELECT with derived FROM */", std::move(selectDecisionPoints),
-                                     std::move(selectWarnings), {}, std::move(selectComments)};
+                CodeGenResult carried;
+                carried.decisionPoints = std::move(selectDecisionPoints);
+                carried.warnings = std::move(selectWarnings);
+                carried.comments = std::move(selectComments);
+                return unsupportedPlaceholder("SELECT with derived FROM",
+                                              "subselect in FROM is not supported in sqlite_orm codegen",
+                                              *fromItem.table.derivedSelect, std::move(carried));
             }
         }
         this->context.fromTableAliasToStructName.clear();

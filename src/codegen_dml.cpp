@@ -212,8 +212,13 @@ namespace sqlite2orm {
                        std::make_move_iterator(sub.decisionPoints.end()));
             if(sub.code.empty()) {
                 this->context.structName = savedStruct;
-                return CodeGenResult{"/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */",
-                                     std::move(dps), std::move(warnings)};
+                CodeGenResult carried;
+                carried.decisionPoints = std::move(dps);
+                carried.warnings = std::move(warnings);
+                return unsupportedPlaceholder(
+                    "INSERT ... SELECT: inner SELECT not mapped to sqlite_orm",
+                    "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
+                    *insertNode.selectStatement, std::move(carried));
             }
             if(!insertNode.columnNames.empty()) {
                 std::string cols = "columns(";

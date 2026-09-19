@@ -127,6 +127,28 @@ The upstream [sqlite_orm](https://github.com/fnc12/sqlite_orm) checkout may
 still contain this tree under `sqlite2orm/`; the same sources are intended to
 work as the root of a **standalone** sqlite2orm repository after a future move.
 
+## Several worktrees over one clone
+
+`git worktree` checkouts of one clone can sit behind paths only the process owning them can see — a
+container mount, a network share, a disk that is not always attached. Every other process reads
+those worktrees as `prunable`, and a single `git worktree prune` (including the one `git gc` runs)
+deletes their administrative files. The owning checkout then answers every command with
+`fatal: not a git repository: .../worktrees/<id>`, although no commit was lost.
+
+`scripts/git-worktree-guard.sh` keeps that from happening, and repairs a clone where it already did:
+
+| Command | Effect |
+|---|---|
+| `protect` | lock every registered worktree and record it in `.git/worktrees.manifest` |
+| `check` | name every recorded worktree that lost its administrative files or its lock |
+| `restore` | rebuild the administrative files of every recorded worktree that lost them |
+| `unlock <id>` | drop one worktree's lock, so `git worktree remove` accepts it again |
+
+Run `protect` from anywhere inside the repository whenever a worktree is added — a locked worktree
+is one `git worktree prune` leaves alone. `restore` rebuilds `HEAD`, `gitdir`, `commondir` and the
+index from the manifest, so the owning checkout comes back on its branch and clean; the worktree
+does not have to be visible from where `restore` runs.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

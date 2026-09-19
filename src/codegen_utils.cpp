@@ -1469,7 +1469,11 @@ namespace sqlite2orm {
 
     std::optional<std::string> journalModeSqlTokenToCppEnum(std::string_view token) {
         const std::string lower = toLowerAscii(stripIdentifierQuotes(token));
-        if(lower == "delete") return std::string{"sqlite_orm::journal_mode::DELETE"};
+        // `DELETE_` rather than `DELETE`: the Windows SDK defines `DELETE` as a macro, and
+        // sqlite_orm's journal_mode header only hides it while the enum is being declared, so in a
+        // user translation unit that included <windows.h> the name is a macro again. sqlite_orm
+        // declares `DELETE_ = DELETE` for exactly that, and it spells the same value everywhere.
+        if(lower == "delete") return std::string{"sqlite_orm::journal_mode::DELETE_"};
         if(lower == "truncate") return std::string{"sqlite_orm::journal_mode::TRUNCATE"};
         if(lower == "persist") return std::string{"sqlite_orm::journal_mode::PERSIST"};
         if(lower == "memory") return std::string{"sqlite_orm::journal_mode::MEMORY"};
@@ -1603,20 +1607,26 @@ namespace sqlite2orm {
 
     std::optional<PragmaValue> pragmaValue(const AstNode& valueNode) {
         if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
-            return PragmaValue{std::string(integerLiteral->value), std::string(integerLiteral->value)};
+            return PragmaValue{std::string(integerLiteral->value), std::string(integerLiteral->value),
+                               integerLiteral->location, integerLiteral->value.size()};
         }
         if(const auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&valueNode)) {
-            return PragmaValue{std::string(realLiteral->value), std::string(realLiteral->value)};
+            return PragmaValue{std::string(realLiteral->value), std::string(realLiteral->value),
+                               realLiteral->location, realLiteral->value.size()};
         }
         if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
+            // `ON` is a bool literal too, and it is shorter than the `true` the message spells
+            // back, so the underline is measured on the keyword the user wrote.
             const std::string written = boolLiteral->value ? "true" : "false";
-            return PragmaValue{written, written};
+            return PragmaValue{written, written, boolLiteral->location, boolLiteral->spelling.size()};
         }
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
-            return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value)};
+            return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value),
+                               stringLiteral->location, stringLiteral->value.size()};
         }
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
-            return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName)};
+            return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName),
+                               columnRef->location, columnRef->columnName.size()};
         }
         if(const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
             // `CURRENT_DATE` and its two siblings are names to a PRAGMA — SQLite's `nmnum` rule
@@ -1626,7 +1636,7 @@ namespace sqlite2orm {
                                         : currentDatetime->kind == CurrentDatetimeKind::time
                                             ? "current_time"
                                             : "current_timestamp";
-            return PragmaValue{written, written};
+            return PragmaValue{written, written, currentDatetime->location, written.size()};
         }
         if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             const bool numericOperand =
@@ -1634,10 +1644,34 @@ namespace sqlite2orm {
                                            dynamic_cast<const RealLiteralNode*>(unaryOperator->operand.get()));
             if(unaryOperator->unaryOperator == UnaryOperator::minus && numericOperand) {
                 const PragmaValue operand = *pragmaValue(*unaryOperator->operand);
-                return PragmaValue{"-" + operand.text, "-" + operand.sqlText};
+                // The minus sign belongs to the value the message quotes, so the underline starts
+                // at the sign — as far as it shares the literal's line, the operand alone otherwise.
+                SourceLocation location = operand.location;
+                size_t length = operand.length;
+                if(unaryOperator->location.line == location.line &&
+                   unaryOperator->location.column < location.column) {
+                    length = location.column + length - unaryOperator->location.column;
+                    location = unaryOperator->location;
+                }
+                return PragmaValue{"-" + operand.text, "-" + operand.sqlText, location, length};
             }
         }
         return std::nullopt;
+    }
+
+    CodegenWarning pragmaValueWarning(std::string message, const PragmaValue& value) {
+        if(value.length == 0) {
+            return CodegenWarning{std::move(message)};
+        }
+        return CodegenWarning{std::move(message), value.location, value.length};
+    }
+
+    CodegenWarning pragmaValueWarning(std::string message, const AstNode& valueNode) {
+        const std::optional<PragmaValue> value = pragmaValue(valueNode);
+        if(!value) {
+            return CodegenWarning{std::move(message)};
+        }
+        return pragmaValueWarning(std::move(message), *value);
     }
 
 }  // namespace sqlite2orm

@@ -927,11 +927,12 @@ namespace sqlite2orm {
                 size_t underlineLength = 0;
                 if(selectColumn.expression) {
                     inferred = inferrer.infer(*selectColumn.expression);
-                    // The underline covers the column reference the field was taken from, as the
-                    // source spells it. A field name the SELECT does not write out that way — one
-                    // from the view's column list, an alias, a qualified reference or a synthesized
-                    // `column_N` — measures no text standing at the expression's location, so such
-                    // a warning is left unanchored rather than underlining whatever is there.
+                    // The underline covers the SELECT expression whose type could not be
+                    // inferred, as the source spells it, and only when that expression is a bare
+                    // column reference — whatever name the field ends up carrying, be it one from
+                    // the view's column list or an alias. A qualified reference, or any other
+                    // expression, has no single token to measure at that location, so such a
+                    // warning is left unanchored rather than underlining whatever is there.
                     if(const auto* columnRef =
                            dynamic_cast<const ColumnRefNode*>(selectColumn.expression.get())) {
                         columnLocation = columnRef->location;

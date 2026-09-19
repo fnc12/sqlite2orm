@@ -201,6 +201,27 @@ TEST_CASE("codegen: a view column quoted across two lines underlines its first l
                 cpp26ViewWarning("v", 1)});
 }
 
+// The name the field ends up carrying does not move the underline: it stays on the expression
+// whose type could not be inferred, so a view column list longer than the expression it renames
+// still underlines the expression.
+TEST_CASE("codegen: a view column list renaming a column underlines the column, not the name") {
+    auto result = generateFull("CREATE VIEW v(averylongname) AS SELECT id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `averylongname` could not be inferred; defaulting to int",
+                 SourceLocation{1, 40}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
+TEST_CASE("codegen: a view column alias underlines the aliased column, not the alias") {
+    auto result = generateFull("CREATE VIEW v AS SELECT id AS averylongalias FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `averylongalias` could not be inferred; defaulting to int",
+                 SourceLocation{1, 25}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
 // The field name a qualified reference gives the view stands nowhere in the SELECT by itself: `id`
 // is written after `users.`, and the expression starts at the table name. Underlining the name's
 // length from there would cover text the message is not about, so the warning carries no span.

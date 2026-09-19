@@ -924,11 +924,21 @@ namespace sqlite2orm {
                 }
                 std::optional<InferredFieldType> inferred;
                 std::optional<SourceLocation> columnLocation;
+                size_t underlineLength = 0;
                 if(selectColumn.expression) {
                     inferred = inferrer.infer(*selectColumn.expression);
-                    columnLocation = selectColumn.expression->location;
+                    // The underline covers the SELECT expression whose type could not be
+                    // inferred, as the source spells it, and only when that expression is a bare
+                    // column reference — whatever name the field ends up carrying, be it one from
+                    // the view's column list or an alias. A qualified reference, or any other
+                    // expression, has no single token to measure at that location, so such a
+                    // warning is left unanchored rather than underlining whatever is there.
+                    if(const auto* columnRef =
+                           dynamic_cast<const ColumnRefNode*>(selectColumn.expression.get())) {
+                        columnLocation = columnRef->location;
+                        underlineLength = underlineLengthOf(columnRef->columnName);
+                    }
                 }
-                const size_t underlineLength = sqlName.size();
                 appendField(std::move(sqlName), inferred, columnLocation, underlineLength);
             }
         }
@@ -951,13 +961,19 @@ namespace sqlite2orm {
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
         appendUniqueString(parts.comments, kCommentViewReflection);
         // sqlite_orm maps views to C++26 reflection (make_view + [[= "…"_orm_name]]); there is no
-        // pre-C++26 form. Surface a visible warning (anchored at CREATE VIEW) when the target is lower.
+        // pre-C++26 form. Surface a visible warning (anchored at the statement's opening keywords,
+        // as the source spells them) when the target is lower.
         if(policyTargetCppStandard(this->context.codeGenPolicy) < 26) {
-            parts.warnings.push_back(CodegenWarning{
+            std::string message =
                 "CREATE VIEW " + displayName +
-                    ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
-                    "requires C++26 and will not compile under the selected C++ standard",
-                node.location, std::string_view("CREATE VIEW").size()});
+                ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
+                "requires C++26 and will not compile under the selected C++ standard";
+            if(node.headerText.empty()) {
+                parts.warnings.push_back(CodegenWarning{std::move(message)});
+            } else {
+                parts.warnings.push_back(
+                    CodegenWarning{std::move(message), node.location, underlineLengthOf(node.headerText)});
+            }
         }
         return parts;
     }

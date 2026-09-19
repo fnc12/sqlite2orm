@@ -36,11 +36,8 @@ namespace sqlite2orm::parser_test_helpers {
     AstNodePointer makeFunc(std::string name, bool distinct, bool star, Args&&... args) {
         std::vector<AstNodePointer> arguments;
         (arguments.push_back(std::forward<Args>(args)), ...);
-        return std::make_unique<FunctionCallNode>(std::move(name),
-                                                  std::move(arguments),
-                                                  distinct,
-                                                  star,
-                                                  SourceLocation{});
+        return std::make_unique<FunctionCallNode>(
+            std::move(name), std::move(arguments), distinct, star, SourceLocation{});
     }
 
     template<typename NodeType, typename... Args>

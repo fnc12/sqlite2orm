@@ -13,33 +13,34 @@ namespace sqlite2orm {
     }  // namespace
 
     std::optional<std::string> validatePragmaForSqliteOrm(const PragmaNode& node) {
-        if (node.schemaName) {
-            return std::string{"schema-qualified PRAGMA is not represented in sqlite_orm::storage::pragma "
-                               "(use the main database connection only)"};
+        if(node.schemaName) {
+            return std::string{
+                "schema-qualified PRAGMA is not represented in sqlite_orm::storage::pragma "
+                "(use the main database connection only)"};
         }
         const std::string name = toLowerAscii(node.pragmaName);
-        if (name == "module_list" || name == "quick_check") {
-            if (node.value) {
+        if(name == "module_list" || name == "quick_check") {
+            if(node.value) {
                 return "PRAGMA " + name + " does not take an argument in this form";
             }
             return std::nullopt;
         }
-        if (name == "table_info" || name == "table_xinfo") {
-            if (!node.value) {
+        if(name == "table_info" || name == "table_xinfo") {
+            if(!node.value) {
                 return "PRAGMA " + name + " requires a table name argument";
             }
             return std::nullopt;
         }
-        if (name == "integrity_check") {
+        if(name == "integrity_check") {
             return std::nullopt;
         }
-        if (isIntPragma(name)) {
-            if (node.value) {
+        if(isIntPragma(name)) {
+            if(node.value) {
                 return std::nullopt;
             }
             return std::nullopt;
         }
-        if (name == "recursive_triggers" || name == "journal_mode" || name == "locking_mode") {
+        if(name == "recursive_triggers" || name == "journal_mode" || name == "locking_mode") {
             return std::nullopt;
         }
         return std::string("PRAGMA ") + name +

@@ -23,7 +23,7 @@ Statuses:
 
 **Database introspection (phase 21.2):** `sqlite2orm/schema_reader.h` — `SqliteSchemaReader` (read-only open) exposes `sqlite_master` plus `PRAGMA table_xinfo`, `foreign_key_list`, `index_list`, `index_info`.
 
-**Schema pipeline (phases 21.3–21.7):** `schema_process.h` (`processSqliteSchema`), `schema_header.h` (`generateSqliteSchemaHeader`), `codegen_policy.h` + `processSql(..., const CodeGenPolicy*)`, `json_emit.h` (`sqliteSchemaResultToJson`, via **nlohmann/json** single header downloaded at CMake configure). CLI: `sqlite2orm --db path.db` (header), `--db path.db --json`; both render through `schema_report.h` (`reportSqliteSchema`), so a schema with a statement that did not generate prints its diagnostics on stderr and exits 1 in either mode. Merged header uses `using namespace sqlite_orm` inside `make_sqlite_schema_storage`; `CREATE VIRTUAL TABLE` is warned and omitted from `make_storage`.
+**Schema pipeline (phases 21.3–21.7):** `schema_process.h` (`processSqliteSchema`), `schema_header.h` (`generateSqliteSchemaHeader`), `codegen_policy.h` + `processSql(..., const CodeGenPolicy*)`, `json_emit.h` (`sqliteSchemaResultToJson`, via **nlohmann/json** single header downloaded at CMake configure). CLI: `sqlite2orm --db path.db` (header), `--db path.db --json`; both render through `schema_report.h` (`reportSqliteSchema`), so a schema with a statement that did not generate prints its diagnostics on stderr and exits 1 in either mode. That statement is left out of `make_storage()` with a warning rather than taking the header with it — SQLite only compiles a view or trigger body when the object is used, so it stores bodies sqlite2orm refuses — and the name it created joins the ungeneratable set so nothing resting on it is emitted with a dangling reference. Merged header uses `using namespace sqlite_orm` inside `make_sqlite_schema_storage`; `CREATE VIRTUAL TABLE` is warned and omitted from `make_storage`.
 
 ---
 
@@ -31,7 +31,7 @@ Statuses:
 
 ### Literals
 - [x] numeric-literal (integer) — leading zeros (and the separators between them) are dropped so the C++ literal stays decimal like SQLite (`010` → `10`, `0009` → `9`, `0_9` → `9`); `0x0FF` and reals keep their spelling
-- [x] numeric-literal (integer) beyond int64 — SQLite reads it as a REAL, so the C++ literal gets a fractional part (`9223372036854775808` → `9223372036854775808.0`); a hex literal wraps around instead (`0xFFFFFFFFFFFFFFFF` → `static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)`, i.e. -1); a negated `0x8000000000000000` leaves the int64 range and is `hex literal too big`, as in SQLite (validator error; a DDL clause SQLite stores without compiling reaches codegen instead, where the sign is kept out of the C++ constant that could not hold it and the clause carries a warning)
+- [x] numeric-literal (integer) beyond int64 — SQLite reads it as a REAL, so the C++ literal gets a fractional part (`9223372036854775808` → `9223372036854775808.0`); a hex literal wraps around instead (`0xFFFFFFFFFFFFFFFF` → `static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)`, i.e. -1); a negated `0x8000000000000000` leaves the int64 range and is `hex literal too big`, as in SQLite (validator error; a DDL clause SQLite stores without compiling reaches codegen instead, where the sign is kept out of the C++ constant that could not hold it and the clause carries a warning). The sign is folded into the literal before its range is read, the way SQLite's own `codeInteger()` folds it, so `-9223372036854775808` is an INTEGER while `9223372036854775808` is a REAL. In an `INSERT ... VALUES` over a table this batch declared such a literal also decides the form of the generated statement (see insert-stmt), because the object form would send it through a struct field that cannot hold it
 - [x] hex literal past int64 (more than 16 significant digits) — refused as `hex literal too big` wherever the statement compiles the expression (SELECT / DML / `CREATE INDEX`), which is where SQLite raises it too (`codeInteger()`); the clauses SQLite only stores the text of keep it and warn instead, leaving that clause out: a column `DEFAULT`, a column or table `CHECK`, a view body, a trigger body, and a `STORED` generated column — the last one warns and drops the whole table, because a column that lost its `as(...)` would be an ordinary column instead of a generated one, and everything resting on that table — a foreign key into it, an index, a trigger or a view naming it, however indirectly (a subquery in any expression, a trigger `WHEN` clause, a CTE) — is left out with it, because sqlite_orm cannot reference a type it does not map — in the header `--db` generates and in the snippet a `.sql` file, stdin or `-e` generates alike, where a statement may even name a table declared after it; a view that is left out is a name without a type in the same way, whether it is dropped for a hex literal in its own body, for resting on such a table, or for a `SELECT` sqlite_orm cannot spell, so a trigger `INSTEAD OF` it and a view selecting from it go with it; on its own such a `CREATE TABLE` generates `/* CREATE TABLE g — not supported for sqlite_orm */`, as an ungeneratable `CREATE VIEW` does. A `VIRTUAL` generated column (the spelling `AS (...)` defaults to) is compiled at `CREATE TABLE` time and refused, so it stays an error. A `PRAGMA` value is read with `sqlite3GetInt32()`, which answers 0 for it, so `PRAGMA user_version = 0x10000000000000000` generates `user_version(0)` with a warning, and `PRAGMA integrity_check` is an error because SQLite falls back to reading the value as a table name
 - [x] numeric-literal (real / float)
 - [x] numeric-literal `_` digit separators (SQLite 3.46+) — `1_000_000` → `1'000'000`, `0x1_ffff` → `0x1'ffff`; a misplaced separator (`100_`, `1__0`, `0x_1f`) is an unrecognized token, as in SQLite
@@ -53,7 +53,7 @@ Statuses:
 - [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works — the generated code does not compile: codegen warning)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
-- [x] `NOT`
+- [~] `NOT` — `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walk that collects a statement's tables and binds its values stops at such a wrapper. A column under a NOT is therefore generated as `column<T>(&T::x)` — the same SQL, but a form the walk reads, where `not c(&T::x)` came out with no FROM clause and threw `SQL logic error`; a column that names a SELECT alias stays `c(get<Alias>())`, because the aliased result column names the table already — and a value as `(c(0) + value)`, because an unbound literal made `NOT 0` answer NULL and `0 + x` is the numeric coercion SQLite applies in a boolean context anyway. A NOT over a NOT (or over the `!predicate` spelling of a negated `BETWEEN` / `LIKE` / `GLOB` / `MATCH`) is generated as `not cast<int64_t>(…)`: sqlite_orm's `negated_condition_t` is neither negatable nor an operator argument, so a second NOT over it does not compile. Partial because a NOT over a concatenation (`NOT (a || 'x')`) still has no sqlite_orm form: `conc_t` is not negatable either and that code does not compile. A NOT over an OR does compile, because an OR is generated as the `or_condition_t` sqlite_orm negates. Prefix `NOT` is also weaker than every binary operator SQLite has bar `AND` and `OR`, so its operand runs down to the `=` level: `NOT a + 1` is `NOT (a + 1)` and `NOT a IN (1, 2)` is `NOT (a IN (1, 2))`
 
 ### Binary operators (arithmetic)
 - [x] `+` (add)
@@ -79,7 +79,7 @@ Statuses:
 - [x] `>=`
 
 ### Binary operators (string / pattern)
-- [x] `||` (concatenation)
+- [~] `||` (concatenation) — generated as `conc(left, right)` when an operand is a sqlite_orm condition, as `left || right` otherwise. C++ spells `or` and the concatenation with the same token, and sqlite_orm's two `operator||` overloads pick between `or_condition_t` and `conc_t` by the operands: `(a = 1) || 'x'` spelled `c(&T::a) == 1 || "x"` came out as `(a = 1) OR 'x'`. A predicate operand is delimited with a `cast<int64_t>(…)` already — the grouping the serialized SQL needs — and a `cast_t` is not a condition, so it keeps the operator spelling. Partial because a `conc_t` is `binary_operator<L, R, conc_string>` and nothing else — not negatable, not an `arithmetic_t`, not an operator argument at all — so a concatenation that really is one does not compile under anything: `NOT ((a = 1) || 'x')`, `((a = 1) || 'x') = 1`, `((a = 1) || 'x') AND 1` and `(EXISTS(SELECT 1) || 'x') = 1` all stop at the compiler where the accidental `or_condition_t` they used to build compiled and answered the wrong value
 - [x] `LIKE`
 - [x] `LIKE ... ESCAPE`
 - [x] `GLOB`
@@ -88,11 +88,13 @@ Statuses:
 
 ### Binary operators (logical)
 - [x] `AND`
-- [x] `OR`
+- [~] `OR` — generated as `or_(left, right)` when neither operand is a sqlite_orm condition, as `left or right` otherwise. `or` is the C++ token `||`, which sqlite_orm reads as its concatenation unless one of the operands is a condition: `SELECT 1 OR 0` spelled `c(1) or 0` ran as `SELECT 1 || 0` and answered '10'. An operand spelled as a call takes the rest of the chain with it, so one OR reads one way throughout. Partial because `MATCH` is not merely absent from the conditions: `match_t` derives from nothing at all, so it is not an operand `or_()` accepts either — `a MATCH 'x' OR b` is generated as the `or_(match(…), &T::b)` it stands for and does not compile (`or_() arguments must be bindable values or sqlite_orm-recognized operands`), where the operator spelling before it had no `operator||` to pick at all
 
 ### IS operators
-- [x] `IS NULL`
-- [x] `IS NOT NULL`
+- [x] `IS NULL` — `IS` is a binary operator on the `=` level and `NULL` an ordinary right operand,
+  so the operand keeps parsing: `a IS NULL - 1` is `a IS (NULL - 1)`, a binary IS, and gets the
+  validator error below. `is_null(a)` is generated for a right operand that is exactly `NULL`
+- [x] `IS NOT NULL` — the same rule: `a IS NOT NULL - 1` is `a IS NOT (NULL - 1)`
 - [x] `ISNULL` (single keyword)
 - [x] `NOTNULL` (single keyword)
 - [x] `NOT NULL` (two keywords)
@@ -102,12 +104,12 @@ Statuses:
 - [!] `IS NOT DISTINCT FROM expr` — not supported in sqlite_orm; validator error
 
 ### Special operators
-- [x] `BETWEEN expr AND expr`
-- [x] `NOT BETWEEN expr AND expr`
-- [x] `IN (expr-list)`
+- [~] `BETWEEN expr AND expr` — generated as `between(operand, low, high)`, and sqlite_orm declares it `between(A, T, T)`: both bounds have to reach C++ as one type, so `x BETWEEN 1 AND 3000000000` (an `int` next to a `long`) does not compile, and neither does an integer bound next to a real, a string, a column or a nested expression. Independent of the field the prefix infers for the column, which widens to the wider bound
+- [~] `NOT BETWEEN expr AND expr` — the same bounds rule
+- [~] `IN (expr-list)` — generated as `in(operand, {...})`, one braced-init-list, so every value has to reach C++ as one type: `x IN (1, 3000000000)` does not compile, nor does a list mixing an integer with a real, a string, a column or a nested expression. Independent of the field the prefix infers, which widens to the widest value
 - [x] `IN (select-stmt)`
 - [!] `IN table-name` (table-valued IN — not in sqlite_orm; validator error)
-- [x] `NOT IN (expr-list)`
+- [~] `NOT IN (expr-list)` — the same list rule
 - [x] `NOT IN (select-stmt)` (via `InNode` + subquery)
 - [x] `EXISTS (select-stmt)`
 - [x] `NOT EXISTS (select-stmt)`
@@ -126,19 +128,40 @@ Statuses:
 - [x] `(select-stmt)` as scalar subquery
 
 ### Parenthesized expression
-- [x] `(expr)` — grouping
+- [~] `(expr)` — grouping. The parentheses do not survive into the AST; the generated code spells the
+  grouping out in C++ terms instead, because C++ ranks the emitted operators differently (SQL binds
+  `||` tightest of the binary operators and C++ binds it loosest, and SQL gives `<<` `>>` `&` `|` one
+  level below `+` and `-`) and because every one of them is left-associative there too, so a nested
+  right operand would regroup even at equal precedence. An operand C++ would regroup is parenthesized,
+  which is what tells `1 - (2 - 3)` from `1 - 2 - 3`; the functional spelling passes its operands as
+  arguments and needs none. The C++ grouping is only half of it: sqlite_orm serializes the statement
+  back into SQL, and there it parenthesizes an operand only when that operand is a binary operator or
+  condition of its own, so a predicate (`IN`, `BETWEEN`, `LIKE`, `GLOB`, `MATCH`, `IS [NOT] NULL`,
+  `NOT`) under an operator SQLite binds tighter is generated as `cast<int64_t>(predicate)` — the CAST
+  delimits it in the serialized SQL and keeps what it stands for, which is `0`, `1` or `NULL` either
+  way. The predicates take the same CAST the other way round: a predicate serializer parenthesizes
+  none of its arguments, and SQLite binds `AND` and `OR` looser than every predicate, so an `AND` or
+  an `OR` in the argument slot of `IN`, `BETWEEN`, `LIKE`, `GLOB`, `MATCH` or `IS [NOT] NULL` is
+  generated as `cast<int64_t>(…)` as well — `is_null(or_(1, 0))` would come out `1 OR 0 IS NULL`,
+  which SQLite reads as `1 OR (0 IS NULL)`, and `between(1, or_(1, 0), 3)` would come out
+  `1 BETWEEN 1 OR 0 AND 3`, which SQLite does not parse at all. The values of an `IN` list are
+  delimited by their commas and stay bare. Partial because a grouping that makes a comparison or a
+  concatenation the operand of an arithmetic or a bitwise operator has no sqlite_orm form: that code
+  does not compile; and because a predicate or a `NOT` standing in one of those same argument slots
+  still comes out bare, which is the other half of the rank order (`a LIKE (b IS NULL)`,
+  `(NOT a) IS NULL`) and is on master in the same shape
 
 ### Function call
 - [x] `function-name(args)`
 - [x] `function-name(DISTINCT arg)`
 - [x] `function-name(*)`
 - [x] `function-name()` — no args
-- [x] `function-name(...) FILTER (WHERE expr)` → `.filter(where(...))` before `.over(...)` when present
+- [~] `function-name(...) FILTER (WHERE expr)` → `.filter(where(...))` before `.over(...)` when present; sqlite_orm gives a `filter()` to `count(*)` and the aggregate function calls only, so a FILTER over a window function generates a call that does not exist — SQLite refuses the same thing at prepare (`FILTER clause may only be used with aggregate window functions`) while storing a trigger or a view that holds it, so the code is generated with a codegen warning
 - [x] `function-name() OVER window-name`
 - [x] `function-name() OVER (window-defn)` — PARTITION BY, ORDER BY, ROWS|RANGE|GROUPS frame, EXCLUDE
 
 ### Collation
-- [x] `expr COLLATE collation-name` (parsed as CollateNode; codegen passes through + warning)
+- [x] `expr COLLATE collation-name` (parsed as CollateNode; codegen passes through + warning) — the dropped node leaves the operand under it exactly as it comes out bare: the `c(...)` wrap, the grouping, the `as_optional` a result column is widened with, the field a compared, BETWEEN'd, IN'd, LIKE'd, GLOB'd or MATCH'd column gets, and the name and type of an argument handed to a user-defined function. The one thing it does change is SQLite's own folding of a sign into a literal, which goes through parentheses but not through a COLLATE, so a minus over one keeps the `0 - x` subtraction form
 
 ### Trigger references
 - [x] `NEW.column-name`
@@ -171,6 +194,7 @@ Statuses:
 - [x] ORDER BY ordering-term → `order_by(&T::col).asc()` / `.desc()`
 - [x] LIMIT expr → `limit(n)`
 - [x] LIMIT expr OFFSET expr → `limit(n, offset(m))`
+- [x] LIMIT expr `,` expr → `limit(count, offset(off))` (SQLite's comma form puts the offset first)
 
 ### Result columns
 - [x] `*` → `get_all<T>()`
@@ -178,6 +202,9 @@ Statuses:
 - [x] `schema.table.*` → parsed; codegen `asterisk<Struct>()` + warning (schema qualifier not represented in sqlite_orm mapping)
 - [x] expr → `select(expr)` / `select(columns(...))`
 - [x] expr AS alias (parsed, alias stored in AST)
+- [x] expr whose value can be NULL → `select(as_optional(expr))`, so the row reads back as a `std::optional`. sqlite_orm types an operator expression from the operator alone — `double` for the arithmetic ones, `std::string` for `||`, `bool` for a comparison —, a BETWEEN, an IN, a LIKE and a GLOB (negated or not) `bool`, a CAST the type the CAST asks for, and a call of a built-in function the return type that function declares, and a NULL row would come back as 0 / "" / false. Widened only where SQLite can answer NULL: a literal cannot, nor can a predicate or a CAST over operands the SQL spells out, and `hex`, `quote`, `typeof`, `char`, `pi`, `randomblob`, `zeroblob`, `count`, `total`, `changes`, `random`, `last_insert_rowid`, `total_changes`, `json_quote`, `json_object`, `json_group_array` and `json_group_object` answer a value for a NULL argument at all. A call is ruled out only for the built-ins that answer NULL for no reason other than a NULL argument — `abs`, `coalesce`, `glob`, `ifnull`, `iif`, `instr`, `json`, `json_array`, `json_patch`, `json_valid`, `length`, `like`, `likelihood`, `likely`, `lower`, `ltrim`, `replace`, `round`, `rtrim`, `soundex`, `trim`, `unlikely` and `upper`, the list SQLite answered a value for over every non-NULL argument of a 11.7M expression corpus — `iif` for its three-argument form alone, the `iif(X, Y)` SQLite 3.48 added being `iif(X, Y, NULL)` and so NULL whenever X is false. Every other known function is widened whatever its arguments hold, because it answers NULL over arguments the SQL spells out — `nullif(1, 1)`, `date('bogus')`, `unicode('')`, `sign('abc')`, `substr(x'', 1)`, `printf('')`, `json_extract('{}', '$.a')`, `sqrt(-1)`, `ln(0)`, `sin('a')` — or, being an aggregate, over an empty rowset: `avg`, `group_concat`, `max`, `min` and `sum`. The corpus runs against libsqlite3 3.45.1, the version this project links, which unlike the `sqlite3` CLI in the image carries the math functions; the two directions do not cost the same, a widening for nothing being an `std::optional` that is always engaged and a missing one a silent 0. Left alone where sqlite_orm reports a nullable type already: a column carries its field's type, `abs`, `max`, `min` and `sum` are a `std::unique_ptr`, `coalesce`, `ifnull`, `nullif`, `iif`, `likely`, `unlikely` and `likelihood` carry the result of an argument, NULL itself is a `std::nullptr_t`, a window function is either its argument's type or a rank SQLite always answers, and a user-defined function comes back as the type the generated `operator()` declares. A `/` or `%` counts whatever its operands are, because SQLite answers a division by zero with NULL. The SQL is unchanged — `as_optional` serializes to its argument — and a WHERE / ORDER BY / GROUP BY expression, which is not read back, is left alone
+- [x] a bitwise result column → `select(cast<int64_t>(expr))`, so the whole int64 reaches the caller. sqlite_orm types `&`, `|`, `<<`, `>>` and `~` as `int`, which truncated every result past the int32 range: `SELECT a & -1` over `a = 9223372036854775807` read back as -1. SQLite answers a bitwise operator with an INTEGER or a NULL whatever its operands hold — checked over 1463 operand pairs against sqlite3 3.51, no REAL or TEXT among them — so the CAST keeps the value, `typeof` included, and only widens the C++ type. A random cross-check of 250 expressions against sqlite3 3.51 went from 18 wrong out of 172 to 1, the one left being the REAL `-9223372036854775808` generates. The CAST is a result column's alone: a WHERE / ORDER BY / GROUP BY expression is not read back and is left as it was, and only the top-level operator of a result column decides, so `(a & -1) + 1` is read back as the `+` is
+- [ ] a `+`, `-`, `*`, `/` or `%` result column is read back through sqlite_orm's `double`, so an INTEGER result past 2^53 comes back rounded: `SELECT a + 0` over `a = 9223372036854775807` hands the caller 9223372036854775808. Nothing in sqlite_orm reads such a column as an int64 without a CAST, and a CAST to INTEGER cannot be added the way the bitwise one can: these operators answer a REAL as soon as an operand is one (checked over 1710 operand pairs against sqlite3 3.51) and the CAST would truncate it, and an overflowing `*` answers a REAL as well. So the column is generated as it was and carries a warning naming the operator, anchored at its token. The warning is left out where the SQL already bounds the result inside the range a double holds exactly. That bound is an upper bound on the magnitude of an INTEGER answer and is computed in the int64 domain SQLite computes in — carried in a `double` it would round itself down past 2^53 and go quiet on `9007199254740993 + 0`, the very first value that loses anything — and every step saturates rather than grows, an INTEGER SQLite cannot hold being a REAL the caller reads back exactly. A REAL or a NULL operand takes the whole expression out of the warning: `+`, `-`, `*`, `/` and `%` answer a REAL or a NULL whenever an operand is one, so there is no INTEGER left to lose and the `as_optional` already generated carries the NULL. Otherwise both operands have to be spelled out for `+`, `-` and `*`, except that a factor of zero bounds a `*` on its own; a dividend bounds `/`; and either operand bounds `%`. `~` is not one of them: it casts its operand to an INTEGER first, so `1 + ~9007199254740994.0` is reported. Closing it needs a type-only integer wrapper in sqlite_orm, the way `as_optional` is one for nullability
 
 ### Table or subquery
 - [x] table-name
@@ -210,10 +237,16 @@ Statuses:
 - [!] NULLS LAST (parsed into `OrderByTerm::nulls`; validator error — not in sqlite_orm)
 
 ### Compound SELECT
-- [x] UNION
-- [x] UNION ALL
-- [x] INTERSECT
-- [x] EXCEPT
+- [~] UNION
+- [~] UNION ALL
+- [~] INTERSECT
+- [~] EXCEPT
+
+Each branch is generated through the subexpression path, which is shared with subqueries, so a
+result column of a compound SELECT is not widened to `as_optional` the way a plain SELECT's is: a
+branch like `SELECT a + 1 FROM users UNION SELECT a FROM users` still reads a NULL row back as 0.
+Widening compiles only if every branch is widened together — sqlite_orm requires the branches to
+share one result type — so it needs a decision taken across the branches at once.
 
 ### WITH (CTE)
 - [x] WITH cte AS (select-stmt)
@@ -231,6 +264,7 @@ Statuses:
 ## insert-stmt (https://www.sqlite.org/lang_insert.html)
 
 - [x] INSERT INTO table (columns) VALUES (...)
+- [x] INSERT INTO table VALUES (...) — the object form `storage.insert(T{...})`, except when a value cannot pass through the field it would reach in a table this batch declared, in which case the statement spells its column list out instead — `storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1)))` — which binds the value and leaves the affinity to SQLite, exactly as the SQL does. The object form sends every value through a struct field, and a field holds one storage class, while SQLite types a value by itself and applies the column affinity only afterwards, so the column list takes over for: a value of a storage class the field was not declared for (a number or a string into the `std::vector<char>` of a column with no type, a number or a blob into a `std::string`, a string or a blob into an `int64_t`, `double` or `bool`); `NULL` where the column is `NOT NULL`, so the field is not optional and `std::nullopt` does not initialize it; an expression (`1+1`), whose value only SQLite knows and which initializes no field at all; a decimal integer literal past the int64 range (`99999999999999999999`) or any REAL literal (`1.5`, `2.0`) reaching a field that holds whole numbers only (`int64_t` and `int`, and `bool` for a BOOLEAN column); a whole number no `double` holds exactly (`9223372036854775807`, `9007199254740993`) reaching a `double` field, which a braced initializer refuses outright; and any whole number besides 0 and 1 (`5`, `-1`, `1_0`, `0xFFFFFFFFFFFFFFFF`, `9223372036854775807`) reaching the `bool` field of a BOOLEAN column, whose NUMERIC affinity stores the number as SQLite typed it while the field turns it into 1 — or, over a `NOT NULL` column, does not compile at all. `TRUE` and `FALSE` are the 1 and 0 SQLite stores for them, so they keep the object form. A value the field does carry keeps the object form: a blob literal into a column with no type stays `T{std::vector<char>{'\x41'}}`, a string into a TEXT column stays `T{"a"}`, `NULL` into a nullable column stays `T{std::nullopt}` and `9007199254740992` into a REAL one stays `T{9007199254740992}`. A generated column is left out of that column list, as SQLite computes it, whichever of `AS (...)`, `... VIRTUAL`, `... STORED` and `GENERATED ALWAYS AS (...)` the DDL spells. Only the past-range literal carries a warning, naming the column and the form; the other switches are silent, because the bound statement stores exactly what SQLite stores (`1` into a column with no type is `integer|1`, `1.5` stays `real|1.5`, `2.0` becomes `integer|2`) and only the shape of the generated call changes. Left alone: a table this batch never declared (nothing is known about the field), `INSERT ... SELECT`, the explicit-column form above and a `DEFAULT` clause, which all bind the value already.
 - [x] INSERT INTO table (columns) SELECT ...
 - [x] INSERT INTO table DEFAULT VALUES
 - [x] INSERT OR ABORT
@@ -361,8 +395,10 @@ Statuses:
 - [x] indexed-column DESC
 - [x] WHERE expr (partial index)
 - [x] COLLATE / ASC|DESC in either order (SQLite-compatible loop)
+- [x] an index whose first indexed column is an expression names the table it is made for — `make_index<T>(...)` — because `make_index` deduces that table from its first argument alone and only a column reference carries one
 - [!] SQL without `IF NOT EXISTS` vs sqlite_orm always emitting `IF NOT EXISTS` in serialized DDL (codegen warns)
 - [!] schema-qualified index or `ON` table (parsed; codegen warns)
+- [!] a UNIQUE index whose first indexed column is an expression: `make_unique_index` takes that table as a template parameter defaulted behind its argument pack, which no explicit template argument list can reach, so the index has no form in sqlite_orm and is left out of the storage (codegen warns); its indexed columns and its partial `WHERE` are still generated, so everything they decide and warn about is reported
 
 ---
 
@@ -397,7 +433,7 @@ Statuses:
 - [x] UPDATE OF column-list
 - [x] ON table-name
 - [x] FOR EACH ROW
-- [x] WHEN expr
+- [~] WHEN expr — `trigger_base_t::when()` keeps the expression in an `optional_container`, whose field is default-constructed before the expression is assigned to it, so only a WHEN clause whose every sqlite_orm type has a default constructor compiles. The comparisons, `AND` and `OR` produce a `binary_condition`, which declares one — an `OR` only because it is spelled `or_(...)`, since the `||` token it shares with a concatenation reads as the `binary_operator` behind `conc_t` — and a `CAST`, a `CASE`, a `COLLATE`, `MATCH` in either spelling, `CURRENT_*`, `RAISE()`, `count(*)` — including one wrapped in a `FILTER` or an `OVER`, since `count_asterisk_t::filter()` keeps only the expression of its `where` and `over_t` is an aggregate — the window functions (`row_number`, `rank`, `dense_rank`, `percent_rank`, `cume_dist`, `ntile`, `lag`, `lead`, `first_value`, `last_value`, `nth_value`), each of which generates an aggregate of its own rather than the `builtin_function_t` behind every other function call, and a subquery over a bare `FROM` (with `LIMIT`) hold only what they are given — those generate as before. The predicates (`NOT`, `IS [NOT] NULL`, `IN`, `BETWEEN`, `LIKE`, `GLOB`, `EXISTS` — but not `MATCH`, whose `match_t` is an aggregate), every arithmetic, bit and concatenation operator, the JSON arrows, every function call other than those, and a subquery carrying a `WHERE`, an `ORDER BY` — the one of a window definition included, the rest of which (`PARTITION BY`, the frame) is made of aggregates — a `DISTINCT`, a join constraint or a compound arm do not: SQLite stores such a trigger and the generated code does not compile (`use of deleted function optional_container<…>::optional_container()`), so it is generated with a codegen warning naming each form
 - [x] BEGIN ... END
 - [x] trigger-body: UPDATE statement
 - [x] trigger-body: INSERT statement
@@ -614,6 +650,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] RETURNING clause
 - [!] Unary plus (`+expr`)
 - [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-`; the generated negation does not compile (codegen warning)
+- [!] A trigger `WHEN` clause over anything but a comparison, an `AND`/`OR`, a `CAST`, a `CASE`, a `COLLATE`, `MATCH`, `CURRENT_*`, `RAISE()`, `count(*)` (with a `FILTER` or an `OVER` that has no `ORDER BY`) or a window function (with an `OVER` that has no `ORDER BY`; a `FILTER` over one has no sqlite_orm form at all) or a subquery over a bare `FROM` — sqlite_orm holds the WHEN expression in an `optional_container`, which default-constructs it, and none of the predicate, operator or function types it would hold has a default constructor; the generated trigger does not compile (codegen warning naming each form, see create-trigger-stmt)
 - [x] DROP TABLE — `storage.drop_table("name")` / `storage.drop_table_if_exists("name")`
 - [x] DROP INDEX — `storage.drop_index("name")` / `storage.drop_index_if_exists("name")`
 - [x] DROP TRIGGER — `storage.drop_trigger("name")` / `storage.drop_trigger_if_exists("name")`
@@ -626,7 +663,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] REINDEX (parsed as `ReindexNode`; validator error)
 - [!] EXPLAIN (parsed as `ExplainNode`; validator error)
 - [!] EXPLAIN QUERY PLAN (parsed as `ExplainNode`; validator error)
-- [x] PRAGMA — parsed as `PragmaNode`; supported names map to `storage.pragma` in sqlite_orm (`journal_mode`, `locking_mode`, `user_version`, `synchronous`, `application_id`, `busy_timeout`, `auto_vacuum`, `max_page_count`, `recursive_triggers`, `module_list`, `quick_check`, `integrity_check`, `table_info`, `table_xinfo`); schema-qualified `PRAGMA main.xxx` is a validator error; other pragma names are validator errors
+- [x] PRAGMA — parsed as `PragmaNode`; supported names map to `storage.pragma` in sqlite_orm (`journal_mode`, `locking_mode`, `user_version`, `synchronous`, `application_id`, `busy_timeout`, `auto_vacuum`, `max_page_count`, `recursive_triggers`, `module_list`, `quick_check`, `integrity_check`, `table_info`, `table_xinfo`); schema-qualified `PRAGMA main.xxx` is a validator error; other pragma names are validator errors. The value is a name to SQLite (`nmnum`), not an expression, so every keyword its parser falls back to an identifier stands as one, `ON`, `DELETE` and `DEFAULT` included — `PRAGMA journal_mode = DELETE`, `PRAGMA locking_mode = EXCLUSIVE` and `PRAGMA recursive_triggers = no` are statements, while the 55 reserved words are a syntax error there
 - [!] SAVEPOINT (parsed as `SavepointNode`; validator error)
 - [!] RELEASE (parsed as `ReleaseNode`; validator error)
 - [!] snippet() — FTS5 (not in sqlite_orm)

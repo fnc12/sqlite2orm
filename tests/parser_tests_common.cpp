@@ -19,9 +19,9 @@ namespace sqlite2orm::parser_test_helpers {
 
     std::vector<FromClauseItem> fromOne(std::string_view tableName) {
         return {FromClauseItem{JoinKind::none,
-                               FromTableClause{std::nullopt, std::string(tableName), std::nullopt},
-                               nullptr,
-                               {}}};
+                              FromTableClause{std::nullopt, std::string(tableName), std::nullopt},
+                              nullptr,
+                              {}}};
     }
 
 }  // namespace sqlite2orm::parser_test_helpers

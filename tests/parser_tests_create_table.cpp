@@ -3,54 +3,56 @@ using namespace sqlite2orm::parser_test_helpers;
 
 TEST_CASE("parser: CREATE TABLE - basic") {
     auto parseResult = parse("CREATE TABLE users (id INTEGER, name TEXT)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("users", {ColumnDef{"id", "INTEGER"}, ColumnDef{"name", "TEXT"}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "users",
+        {ColumnDef{"id", "INTEGER"}, ColumnDef{"name", "TEXT"}},
+        false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE IF NOT EXISTS") {
     auto parseResult = parse("CREATE TABLE IF NOT EXISTS users (id INTEGER)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("users", {ColumnDef{"id", "INTEGER"}}, true, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "users",
+        {ColumnDef{"id", "INTEGER"}},
+        true, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - multi-word type") {
     auto parseResult = parse("CREATE TABLE t (x UNSIGNED BIG INT)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"x", "UNSIGNED BIG INT"}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"x", "UNSIGNED BIG INT"}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - type with size") {
     auto parseResult = parse("CREATE TABLE t (name VARCHAR(255))");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"name", "VARCHAR(255)"}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"name", "VARCHAR(255)"}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - type with precision") {
     auto parseResult = parse("CREATE TABLE t (price DECIMAL(10, 2))");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"price", "DECIMAL(10, 2)"}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"price", "DECIMAL(10, 2)"}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - no type") {
     auto parseResult = parse("CREATE TABLE t (x)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {ColumnDef{"x", ""}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"x", ""}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - many columns") {
     auto parseResult = parse("CREATE TABLE users (id INTEGER, name TEXT, email TEXT, age INTEGER)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("users",
-                                                                         {ColumnDef{"id", "INTEGER"},
-                                                                          ColumnDef{"name", "TEXT"},
-                                                                          ColumnDef{"email", "TEXT"},
-                                                                          ColumnDef{"age", "INTEGER"}},
-                                                                         false,
-                                                                         {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "users",
+        {ColumnDef{"id", "INTEGER"}, ColumnDef{"name", "TEXT"}, ColumnDef{"email", "TEXT"}, ColumnDef{"age", "INTEGER"}},
+        false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - schema prefix ignored") {
     auto parseResult = parse("CREATE TABLE main.users (id INTEGER)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("users", {ColumnDef{"id", "INTEGER"}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "users", {ColumnDef{"id", "INTEGER"}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - semicolon allowed") {
@@ -60,125 +62,119 @@ TEST_CASE("parser: CREATE TABLE - semicolon allowed") {
 
 TEST_CASE("parser: CREATE TABLE - PRIMARY KEY") {
     auto parseResult = parse("CREATE TABLE t (id INTEGER PRIMARY KEY)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"id", "INTEGER", true, false, false}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"id", "INTEGER", true, false, false}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - PRIMARY KEY AUTOINCREMENT") {
     auto parseResult = parse("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"id", "INTEGER", true, true, false}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"id", "INTEGER", true, true, false}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - NOT NULL") {
     auto parseResult = parse("CREATE TABLE t (name TEXT NOT NULL)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"name", "TEXT", false, false, true}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"name", "TEXT", false, false, true}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - mixed constraints") {
-    auto parseResult = parse("CREATE TABLE users ("
-                             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                             "name TEXT NOT NULL, "
-                             "email TEXT)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("users",
-                            {
-                                ColumnDef{"id", "INTEGER", true, true, false},
-                                ColumnDef{"name", "TEXT", false, false, true},
-                                ColumnDef{"email", "TEXT", false, false, false},
-                            },
-                            false,
-                            {}));
+    auto parseResult = parse(
+        "CREATE TABLE users ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "name TEXT NOT NULL, "
+        "email TEXT)");
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "users",
+        {
+            ColumnDef{"id", "INTEGER", true, true, false},
+            ColumnDef{"name", "TEXT", false, false, true},
+            ColumnDef{"email", "TEXT", false, false, false},
+        },
+        false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - PRIMARY KEY with conflict clause") {
-    auto action = GENERATE(std::pair{"ROLLBACK", ConflictClause::rollback},
-                           std::pair{"ABORT", ConflictClause::abort},
-                           std::pair{"FAIL", ConflictClause::fail},
-                           std::pair{"IGNORE", ConflictClause::ignore},
-                           std::pair{"REPLACE", ConflictClause::replace});
+    auto action = GENERATE(
+        std::pair{"ROLLBACK", ConflictClause::rollback},
+        std::pair{"ABORT", ConflictClause::abort},
+        std::pair{"FAIL", ConflictClause::fail},
+        std::pair{"IGNORE", ConflictClause::ignore},
+        std::pair{"REPLACE", ConflictClause::replace});
     auto sql = "CREATE TABLE t (id INTEGER PRIMARY KEY ON CONFLICT " + std::string(action.first) + ")";
     auto parseResult = parse(sql);
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"id", "INTEGER", true, false, false, action.second}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"id", "INTEGER", true, false, false, action.second}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - PRIMARY KEY conflict clause + AUTOINCREMENT") {
     auto parseResult = parse("CREATE TABLE t (id INTEGER PRIMARY KEY ON CONFLICT REPLACE AUTOINCREMENT)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"id", "INTEGER", true, true, false, ConflictClause::replace}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"id", "INTEGER", true, true, false, ConflictClause::replace}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - NOT NULL with conflict clause") {
     auto parseResult = parse("CREATE TABLE t (name TEXT NOT NULL ON CONFLICT ABORT)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"name", "TEXT", false, false, true}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"name", "TEXT", false, false, true}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - CONSTRAINT name prefix") {
     auto parseResult = parse("CREATE TABLE t (id INTEGER CONSTRAINT pk PRIMARY KEY)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"id", "INTEGER", true, false, false}}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"id", "INTEGER", true, false, false}}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT integer") {
     auto parseResult = parse("CREATE TABLE t (x INTEGER DEFAULT 42)");
-    REQUIRE(
-        requireNode<CreateTableNode>(parseResult) ==
-        CreateTableNode("t", {columnWithDefault("x", "INTEGER", makeSharedNode<IntegerLiteralNode>("42"))}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {columnWithDefault("x", "INTEGER", makeSharedNode<IntegerLiteralNode>("42"))}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT string") {
     auto parseResult = parse("CREATE TABLE t (x TEXT DEFAULT 'hello')");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t",
-                            {columnWithDefault("x", "TEXT", makeSharedNode<StringLiteralNode>("'hello'"))},
-                            false,
-                            {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {columnWithDefault("x", "TEXT", makeSharedNode<StringLiteralNode>("'hello'"))}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT negative number") {
     auto parseResult = parse("CREATE TABLE t (x INTEGER DEFAULT -1)");
-    auto expected =
-        std::make_shared<UnaryOperatorNode>(UnaryOperator::minus, makeNode<IntegerLiteralNode>("1"), SourceLocation{});
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {columnWithDefault("x", "INTEGER", std::move(expected))}, false, {}));
+    auto expected = std::make_shared<UnaryOperatorNode>(
+        UnaryOperator::minus, makeNode<IntegerLiteralNode>("1"), SourceLocation{});
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {columnWithDefault("x", "INTEGER", std::move(expected))}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT real") {
     auto parseResult = parse("CREATE TABLE t (x REAL DEFAULT 3.14)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {columnWithDefault("x", "REAL", makeSharedNode<RealLiteralNode>("3.14"))}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {columnWithDefault("x", "REAL", makeSharedNode<RealLiteralNode>("3.14"))}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT TRUE") {
     auto parseResult = parse("CREATE TABLE t (x INTEGER DEFAULT TRUE)");
-    REQUIRE(
-        requireNode<CreateTableNode>(parseResult) ==
-        CreateTableNode("t", {columnWithDefault("x", "INTEGER", makeSharedNode<BoolLiteralNode>(true))}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {columnWithDefault("x", "INTEGER", makeSharedNode<BoolLiteralNode>(true, "TRUE"))}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT NULL") {
     auto parseResult = parse("CREATE TABLE t (x TEXT DEFAULT NULL)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {columnWithDefault("x", "TEXT", makeSharedNode<NullLiteralNode>())}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {columnWithDefault("x", "TEXT", makeSharedNode<NullLiteralNode>())}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT expression") {
     auto parseResult = parse("CREATE TABLE t (x TEXT DEFAULT (date('now')))");
     auto dateCall = std::make_shared<FunctionCallNode>(
         "date",
-        [] {
+        []{
             std::vector<AstNodePointer> args;
             args.push_back(std::make_unique<StringLiteralNode>("'now'", SourceLocation{}));
             return args;
         }(),
-        false,
-        false,
-        SourceLocation{});
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {columnWithDefault("x", "TEXT", std::move(dateCall))}, false, {}));
+        false, false, SourceLocation{});
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {columnWithDefault("x", "TEXT", std::move(dateCall))}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - DEFAULT with other constraints") {
@@ -188,7 +184,8 @@ TEST_CASE("parser: CREATE TABLE - DEFAULT with other constraints") {
     expected.typeName = "INTEGER";
     expected.notNull = true;
     expected.defaultValue = makeSharedNode<IntegerLiteralNode>("0");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - UNIQUE") {
@@ -197,7 +194,8 @@ TEST_CASE("parser: CREATE TABLE - UNIQUE") {
     expected.name = "email";
     expected.typeName = "TEXT";
     expected.unique = true;
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - UNIQUE with conflict clause") {
@@ -207,7 +205,8 @@ TEST_CASE("parser: CREATE TABLE - UNIQUE with conflict clause") {
     expected.typeName = "TEXT";
     expected.unique = true;
     expected.uniqueConflict = ConflictClause::ignore;
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - CHECK constraint") {
@@ -215,10 +214,10 @@ TEST_CASE("parser: CREATE TABLE - CHECK constraint") {
     ColumnDef expected;
     expected.name = "age";
     expected.typeName = "INTEGER";
-    expected.checkExpression = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                  makeNode<ColumnRefNode>("age"),
-                                                                  makeNode<IntegerLiteralNode>("0"));
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    expected.checkExpression = makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::greaterThan, makeNode<ColumnRefNode>("age"), makeNode<IntegerLiteralNode>("0"));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - CHECK with complex expression") {
@@ -226,19 +225,14 @@ TEST_CASE("parser: CREATE TABLE - CHECK with complex expression") {
     ColumnDef expected;
     expected.name = "x";
     expected.typeName = "INTEGER";
-    auto lhs = std::make_unique<BinaryOperatorNode>(BinaryOperator::greaterOrEqual,
-                                                    makeNode<ColumnRefNode>("x"),
-                                                    makeNode<IntegerLiteralNode>("0"),
-                                                    SourceLocation{});
-    auto rhs = std::make_unique<BinaryOperatorNode>(BinaryOperator::lessOrEqual,
-                                                    makeNode<ColumnRefNode>("x"),
-                                                    makeNode<IntegerLiteralNode>("100"),
-                                                    SourceLocation{});
-    expected.checkExpression = std::make_shared<BinaryOperatorNode>(BinaryOperator::logicalAnd,
-                                                                    std::move(lhs),
-                                                                    std::move(rhs),
-                                                                    SourceLocation{});
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    auto lhs = std::make_unique<BinaryOperatorNode>(
+        BinaryOperator::greaterOrEqual, makeNode<ColumnRefNode>("x"), makeNode<IntegerLiteralNode>("0"), SourceLocation{});
+    auto rhs = std::make_unique<BinaryOperatorNode>(
+        BinaryOperator::lessOrEqual, makeNode<ColumnRefNode>("x"), makeNode<IntegerLiteralNode>("100"), SourceLocation{});
+    expected.checkExpression = std::make_shared<BinaryOperatorNode>(
+        BinaryOperator::logicalAnd, std::move(lhs), std::move(rhs), SourceLocation{});
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - CHECK with function") {
@@ -248,19 +242,16 @@ TEST_CASE("parser: CREATE TABLE - CHECK with function") {
     expected.typeName = "TEXT";
     auto lengthCall = std::make_unique<FunctionCallNode>(
         "length",
-        [] {
+        []{
             std::vector<AstNodePointer> args;
             args.push_back(std::make_unique<ColumnRefNode>("name", SourceLocation{}));
             return args;
         }(),
-        false,
-        false,
-        SourceLocation{});
-    expected.checkExpression = std::make_shared<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                    std::move(lengthCall),
-                                                                    makeNode<IntegerLiteralNode>("0"),
-                                                                    SourceLocation{});
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+        false, false, SourceLocation{});
+    expected.checkExpression = std::make_shared<BinaryOperatorNode>(
+        BinaryOperator::greaterThan, std::move(lengthCall), makeNode<IntegerLiteralNode>("0"), SourceLocation{});
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - COLLATE NOCASE") {
@@ -269,7 +260,8 @@ TEST_CASE("parser: CREATE TABLE - COLLATE NOCASE") {
     expected.name = "name";
     expected.typeName = "TEXT";
     expected.collation = "NOCASE";
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - COLLATE BINARY") {
@@ -278,7 +270,8 @@ TEST_CASE("parser: CREATE TABLE - COLLATE BINARY") {
     expected.name = "name";
     expected.typeName = "TEXT";
     expected.collation = "BINARY";
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - COLLATE RTRIM") {
@@ -287,7 +280,8 @@ TEST_CASE("parser: CREATE TABLE - COLLATE RTRIM") {
     expected.name = "name";
     expected.typeName = "TEXT";
     expected.collation = "RTRIM";
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - CHECK + COLLATE + NOT NULL combined") {
@@ -298,20 +292,17 @@ TEST_CASE("parser: CREATE TABLE - CHECK + COLLATE + NOT NULL combined") {
     expected.notNull = true;
     auto lengthCall = std::make_unique<FunctionCallNode>(
         "length",
-        [] {
+        []{
             std::vector<AstNodePointer> args;
             args.push_back(std::make_unique<ColumnRefNode>("name", SourceLocation{}));
             return args;
         }(),
-        false,
-        false,
-        SourceLocation{});
-    expected.checkExpression = std::make_shared<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                    std::move(lengthCall),
-                                                                    makeNode<IntegerLiteralNode>("0"),
-                                                                    SourceLocation{});
+        false, false, SourceLocation{});
+    expected.checkExpression = std::make_shared<BinaryOperatorNode>(
+        BinaryOperator::greaterThan, std::move(lengthCall), makeNode<IntegerLiteralNode>("0"), SourceLocation{});
     expected.collation = "NOCASE";
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES simple") {
@@ -320,7 +311,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES simple") {
     expected.name = "user_id";
     expected.typeName = "INTEGER";
     expected.foreignKey = ForeignKeyClause{"users", "id"};
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES without column") {
@@ -329,7 +321,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES without column") {
     expected.name = "user_id";
     expected.typeName = "INTEGER";
     expected.foreignKey = ForeignKeyClause{"users", ""};
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES ON DELETE CASCADE") {
@@ -338,7 +331,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES ON DELETE CASCADE") {
     expected.name = "user_id";
     expected.typeName = "INTEGER";
     expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::none};
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES ON UPDATE SET NULL") {
@@ -347,17 +341,19 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES ON UPDATE SET NULL") {
     expected.name = "user_id";
     expected.typeName = "INTEGER";
     expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::none, ForeignKeyAction::setNull};
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES both actions") {
-    auto parseResult =
-        parse("CREATE TABLE posts (user_id INTEGER REFERENCES users(id) ON DELETE CASCADE ON UPDATE SET DEFAULT)");
+    auto parseResult = parse(
+        "CREATE TABLE posts (user_id INTEGER REFERENCES users(id) ON DELETE CASCADE ON UPDATE SET DEFAULT)");
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
     expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::setDefault};
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES NO ACTION") {
@@ -366,7 +362,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES NO ACTION") {
     expected.name = "user_id";
     expected.typeName = "INTEGER";
     expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::noAction, ForeignKeyAction::none};
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES RESTRICT") {
@@ -375,56 +372,55 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES RESTRICT") {
     expected.name = "user_id";
     expected.typeName = "INTEGER";
     expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::restrict_, ForeignKeyAction::none};
-    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - table-level FOREIGN KEY") {
-    auto parseResult = parse("CREATE TABLE posts ("
-                             "id INTEGER PRIMARY KEY, "
-                             "user_id INTEGER, "
-                             "FOREIGN KEY(user_id) REFERENCES users(id))");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("posts",
-                            {ColumnDef{"id", "INTEGER", true}, ColumnDef{"user_id", "INTEGER"}},
-                            {TableForeignKey{"user_id", ForeignKeyClause{"users", "id"}}},
-                            false,
-                            {}));
+    auto parseResult = parse(
+        "CREATE TABLE posts ("
+        "id INTEGER PRIMARY KEY, "
+        "user_id INTEGER, "
+        "FOREIGN KEY(user_id) REFERENCES users(id))");
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts",
+        {ColumnDef{"id", "INTEGER", true}, ColumnDef{"user_id", "INTEGER"}},
+        {TableForeignKey{"user_id", ForeignKeyClause{"users", "id"}}},
+        false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - table-level FOREIGN KEY with actions") {
-    auto parseResult = parse("CREATE TABLE posts ("
-                             "id INTEGER PRIMARY KEY, "
-                             "user_id INTEGER, "
-                             "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE SET NULL)");
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("posts",
-                            {ColumnDef{"id", "INTEGER", true}, ColumnDef{"user_id", "INTEGER"}},
-                            {TableForeignKey{
-                                "user_id",
-                                ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::setNull}}},
-                            false,
-                            {}));
+    auto parseResult = parse(
+        "CREATE TABLE posts ("
+        "id INTEGER PRIMARY KEY, "
+        "user_id INTEGER, "
+        "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE SET NULL)");
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "posts",
+        {ColumnDef{"id", "INTEGER", true}, ColumnDef{"user_id", "INTEGER"}},
+        {TableForeignKey{"user_id", ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::setNull}}},
+        false, {}));
 }
 
 // --- GENERATED ---
 
 TEST_CASE("parser: CREATE TABLE - GENERATED ALWAYS AS STORED") {
-    auto parseResult = parse("CREATE TABLE products (id INTEGER, full_name TEXT GENERATED ALWAYS AS (first_name || ' ' "
-                             "|| last_name) STORED)");
+    auto parseResult = parse("CREATE TABLE products (id INTEGER, full_name TEXT GENERATED ALWAYS AS (first_name || ' ' || last_name) STORED)");
     REQUIRE(parseResult);
     ColumnDef generated;
     generated.name = "full_name";
     generated.typeName = "TEXT";
     generated.generatedAlways = true;
     generated.generatedStorage = ColumnDef::GeneratedStorage::stored;
-    generated.generatedExpression =
-        makeSharedNode<BinaryOperatorNode>(BinaryOperator::concatenate,
-                                           makeNode<BinaryOperatorNode>(BinaryOperator::concatenate,
-                                                                        makeNode<ColumnRefNode>("first_name"),
-                                                                        makeNode<StringLiteralNode>("' '")),
-                                           makeNode<ColumnRefNode>("last_name"));
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("products", {ColumnDef{"id", "INTEGER"}, std::move(generated)}, false, {}));
+    generated.generatedExpression = makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::concatenate,
+        makeNode<BinaryOperatorNode>(
+            BinaryOperator::concatenate,
+            makeNode<ColumnRefNode>("first_name"),
+            makeNode<StringLiteralNode>("' '")),
+        makeNode<ColumnRefNode>("last_name"));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "products", {ColumnDef{"id", "INTEGER"}, std::move(generated)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - AS VIRTUAL shorthand") {
@@ -435,11 +431,12 @@ TEST_CASE("parser: CREATE TABLE - AS VIRTUAL shorthand") {
     generated.typeName = "TEXT";
     generated.generatedAlways = false;
     generated.generatedStorage = ColumnDef::GeneratedStorage::virtual_;
-    generated.generatedExpression = makeSharedNode<BinaryOperatorNode>(BinaryOperator::add,
-                                                                       makeNode<ColumnRefNode>("id"),
-                                                                       makeNode<IntegerLiteralNode>("1"));
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"id", "INTEGER"}, std::move(generated)}, false, {}));
+    generated.generatedExpression = makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::add,
+        makeNode<ColumnRefNode>("id"),
+        makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"id", "INTEGER"}, std::move(generated)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - GENERATED ALWAYS AS no storage") {
@@ -450,11 +447,12 @@ TEST_CASE("parser: CREATE TABLE - GENERATED ALWAYS AS no storage") {
     generated.typeName = "TEXT";
     generated.generatedAlways = true;
     generated.generatedStorage = ColumnDef::GeneratedStorage::none;
-    generated.generatedExpression = makeSharedNode<BinaryOperatorNode>(BinaryOperator::multiply,
-                                                                       makeNode<ColumnRefNode>("id"),
-                                                                       makeNode<IntegerLiteralNode>("2"));
-    REQUIRE(requireNode<CreateTableNode>(parseResult) ==
-            CreateTableNode("t", {ColumnDef{"id", "INTEGER"}, std::move(generated)}, false, {}));
+    generated.generatedExpression = makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::multiply,
+        makeNode<ColumnRefNode>("id"),
+        makeNode<IntegerLiteralNode>("2"));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode(
+        "t", {ColumnDef{"id", "INTEGER"}, std::move(generated)}, false, {}));
 }
 
 // --- Table-level PRIMARY KEY ---
@@ -491,14 +489,10 @@ TEST_CASE("parser: CREATE TABLE - table-level CHECK") {
     auto parseResult = parse("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a > 0 AND b > 0))");
     REQUIRE(parseResult);
     CreateTableNode expected("t", {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "INTEGER"}}, false, {});
-    expected.checks = {TableCheck{
-        makeSharedNode<BinaryOperatorNode>(BinaryOperator::logicalAnd,
-                                           makeNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                        makeNode<ColumnRefNode>("a"),
-                                                                        makeNode<IntegerLiteralNode>("0")),
-                                           makeNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                        makeNode<ColumnRefNode>("b"),
-                                                                        makeNode<IntegerLiteralNode>("0")))}};
+    expected.checks = {TableCheck{makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::logicalAnd,
+        makeNode<BinaryOperatorNode>(BinaryOperator::greaterThan, makeNode<ColumnRefNode>("a"), makeNode<IntegerLiteralNode>("0")),
+        makeNode<BinaryOperatorNode>(BinaryOperator::greaterThan, makeNode<ColumnRefNode>("b"), makeNode<IntegerLiteralNode>("0")))}};
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 
@@ -506,19 +500,17 @@ TEST_CASE("parser: CREATE TABLE - table-level CHECK") {
 
 TEST_CASE("parser: CREATE TABLE - mixed table-level constraints") {
     auto parseResult = parse("CREATE TABLE t (a INTEGER, b TEXT, c INTEGER, "
-                             "PRIMARY KEY (a, b), UNIQUE (b, c), CHECK (a > 0), "
-                             "FOREIGN KEY (c) REFERENCES other(id))");
+        "PRIMARY KEY (a, b), UNIQUE (b, c), CHECK (a > 0), "
+        "FOREIGN KEY (c) REFERENCES other(id))");
     REQUIRE(parseResult);
     CreateTableNode expected("t",
-                             {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "TEXT"}, ColumnDef{"c", "INTEGER"}},
-                             {TableForeignKey{"c", ForeignKeyClause{"other", "id"}}},
-                             false,
-                             {});
+        {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "TEXT"}, ColumnDef{"c", "INTEGER"}},
+        {TableForeignKey{"c", ForeignKeyClause{"other", "id"}}},
+        false, {});
     expected.primaryKeys = {TablePrimaryKey{{"a", "b"}}};
     expected.uniques = {TableUnique{{"b", "c"}}};
-    expected.checks = {TableCheck{makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                     makeNode<ColumnRefNode>("a"),
-                                                                     makeNode<IntegerLiteralNode>("0"))}};
+    expected.checks = {TableCheck{makeSharedNode<BinaryOperatorNode>(
+        BinaryOperator::greaterThan, makeNode<ColumnRefNode>("a"), makeNode<IntegerLiteralNode>("0"))}};
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 
@@ -582,15 +574,18 @@ TEST_CASE("parser: CREATE TABLE - WITHOUT ROWID, STRICT") {
 // --- FK DEFERRABLE ---
 
 TEST_CASE("parser: CREATE TABLE - FK DEFERRABLE INITIALLY DEFERRED") {
-    auto parseResult =
-        parse("CREATE TABLE t (id INT, FOREIGN KEY (id) REFERENCES p(id) DEFERRABLE INITIALLY DEFERRED)");
+    auto parseResult = parse(
+        "CREATE TABLE t (id INT, FOREIGN KEY (id) REFERENCES p(id) DEFERRABLE INITIALLY DEFERRED)");
     REQUIRE(parseResult);
     ForeignKeyClause fk;
     fk.table = "p";
     fk.column = "id";
     fk.deferrability = Deferrability::deferrable;
     fk.initially = InitialConstraintMode::deferred;
-    CreateTableNode expected("t", {ColumnDef{"id", "INT"}}, {TableForeignKey{"id", fk}}, false, {});
+    CreateTableNode expected("t",
+        {ColumnDef{"id", "INT"}},
+        {TableForeignKey{"id", fk}},
+        false, {});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 

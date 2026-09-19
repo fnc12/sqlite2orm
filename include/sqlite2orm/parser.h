@@ -17,12 +17,10 @@ namespace sqlite2orm {
         AstNodePointer astNodePointer;
         std::vector<ParseError> errors;
 
-        explicit operator bool() const {
-            return astNodePointer != nullptr && errors.empty();
-        }
+        explicit operator bool() const { return astNodePointer != nullptr && errors.empty(); }
 
         bool operator==(const ParseResult& other) const {
-            if (this->errors != other.errors) {
+            if(this->errors != other.errors) {
                 return false;
             }
             return astNodesEqual(this->astNodePointer, other.astNodePointer);
@@ -44,12 +42,8 @@ namespace sqlite2orm {
         ParseResult parse(std::vector<Token> tokens);
         std::vector<ParseResult> parseAll(std::vector<Token> tokens);
 
-        TokenStream& tokens() {
-            return this->tokenStream;
-        }
-        const TokenStream& tokens() const {
-            return this->tokenStream;
-        }
+        TokenStream& tokens() { return this->tokenStream; }
+        const TokenStream& tokens() const { return this->tokenStream; }
 
         AstNodePointer parseExpression();
         AstNodePointer parsePrimary();

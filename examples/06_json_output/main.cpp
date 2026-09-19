@@ -4,11 +4,12 @@
 #include <fmt/format.h>
 
 int main() {
-    auto result = sqlite2orm::processSql("SELECT u.id, u.name, o.total "
-                                         "FROM users u JOIN orders o ON u.id = o.user_id "
-                                         "WHERE o.total > 100;");
+    auto result = sqlite2orm::processSql(
+        "SELECT u.id, u.name, o.total "
+        "FROM users u JOIN orders o ON u.id = o.user_id "
+        "WHERE o.total > 100;");
 
-    if (!result.ok()) {
+    if(!result.ok()) {
         fmt::print(stderr, "pipeline failed\n");
         return 1;
     }

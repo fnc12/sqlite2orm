@@ -14,6 +14,11 @@ namespace codegen_test_helpers {
 
     std::string generate(std::string_view sql);
     CodeGenResult generateFull(std::string_view sql);
+    /**
+     *  Codegen of the last statement of a multi-statement batch, so that a DML statement is
+     *  generated with the CREATE TABLE statements before it already known.
+     */
+    CodeGenResult generateLastOfBatch(std::string_view sql);
     CodeGenResult generateWithPolicy(std::string_view sql, const CodeGenPolicy& policy);
     /** Same as `generateWithPolicy`, but omits the `with_cte_style` decision point (matches alternative regeneration). */
     CodeGenResult generateWithPolicySuppressWithCteDp(std::string_view sql, const CodeGenPolicy& policy);
@@ -26,11 +31,8 @@ namespace codegen_test_helpers {
 
     DecisionPoint apiLevelStarSelectDp(int id, const std::string& structName, const std::string& trailingArgs);
 
-    CodeGenResult expectedBinaryLeaf(std::string_view leftCode,
-                                     std::string_view rightCode,
-                                     std::string_view op,
-                                     std::string_view funcName,
-                                     int firstId = 1);
+    CodeGenResult expectedBinaryLeaf(std::string_view leftCode, std::string_view rightCode,
+                                       std::string_view op, std::string_view funcName, int firstId = 1);
 
 }  // namespace codegen_test_helpers
 

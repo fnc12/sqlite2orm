@@ -65,11 +65,9 @@ TEST_CASE("parser: INSERT INTO SELECT") {
     auto selectAst = std::make_unique<SelectNode>(SourceLocation{});
     selectAst->columns.push_back({makeSharedNode<ColumnRefNode>("id"), ""});
     selectAst->fromClause = fromOne("users");
-    selectAst->whereClause =
-        std::make_shared<BinaryOperatorNode>(BinaryOperator::equals,
-                                             std::make_unique<ColumnRefNode>("active", SourceLocation{}),
-                                             std::make_unique<IntegerLiteralNode>("0", SourceLocation{}),
-                                             SourceLocation{});
+    selectAst->whereClause = std::make_shared<BinaryOperatorNode>(
+        BinaryOperator::equals, std::make_unique<ColumnRefNode>("active", SourceLocation{}),
+        std::make_unique<IntegerLiteralNode>("0", SourceLocation{}), SourceLocation{});
     InsertNode expected({});
     expected.tableName = "archive";
     expected.columnNames = {"id"};
@@ -84,9 +82,9 @@ TEST_CASE("parser: UPDATE SET WHERE") {
     UpdateNode expected({});
     expected.tableName = "users";
     expected.assignments.push_back(UpdateAssignment{"name", makeNode<StringLiteralNode>("'x'")});
-    expected.whereClause = makeNode<BinaryOperatorNode>(BinaryOperator::equals,
-                                                        makeNode<ColumnRefNode>("id"),
-                                                        makeNode<IntegerLiteralNode>("1"));
+    expected.whereClause =
+        makeNode<BinaryOperatorNode>(BinaryOperator::equals, makeNode<ColumnRefNode>("id"),
+                                      makeNode<IntegerLiteralNode>("1"));
     REQUIRE(requireNode<UpdateNode>(parseResult) == expected);
 }
 
@@ -105,9 +103,9 @@ TEST_CASE("parser: DELETE FROM WHERE") {
     REQUIRE(parseResult);
     DeleteNode expected({});
     expected.tableName = "users";
-    expected.whereClause = makeNode<BinaryOperatorNode>(BinaryOperator::equals,
-                                                        makeNode<ColumnRefNode>("id"),
-                                                        makeNode<IntegerLiteralNode>("1"));
+    expected.whereClause =
+        makeNode<BinaryOperatorNode>(BinaryOperator::equals, makeNode<ColumnRefNode>("id"),
+                                      makeNode<IntegerLiteralNode>("1"));
     REQUIRE(requireNode<DeleteNode>(parseResult) == expected);
 }
 
@@ -141,10 +139,11 @@ TEST_CASE("parser: UPDATE FROM") {
     UpdateNode expected({});
     expected.tableName = "t";
     expected.assignments.push_back(UpdateAssignment{"a", makeNode<QualifiedColumnRefNode>("b", "a")});
-    expected.fromClause = {
-        FromClauseItem{JoinKind::none, FromTableClause{std::nullopt, std::string("b"), std::nullopt}, nullptr, {}}};
-    expected.whereClause = makeNode<BinaryOperatorNode>(BinaryOperator::equals,
-                                                        makeNode<QualifiedColumnRefNode>("t", "id"),
-                                                        makeNode<QualifiedColumnRefNode>("b", "id"));
+    expected.fromClause = {FromClauseItem{JoinKind::none,
+        FromTableClause{std::nullopt, std::string("b"), std::nullopt}, nullptr, {}}};
+    expected.whereClause = makeNode<BinaryOperatorNode>(
+        BinaryOperator::equals,
+        makeNode<QualifiedColumnRefNode>("t", "id"),
+        makeNode<QualifiedColumnRefNode>("b", "id"));
     REQUIRE(requireNode<UpdateNode>(parseResult) == expected);
 }

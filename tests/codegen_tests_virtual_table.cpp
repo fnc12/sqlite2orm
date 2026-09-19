@@ -1,10 +1,11 @@
 #include "codegen_tests_common.hpp"
 
 TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5") {
-    REQUIRE(generate("CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(title, body)") ==
-            "struct PostsFts {\n    std::string title;\n    std::string body;\n};\n\nauto vtab = "
-            "make_virtual_table<PostsFts>(\"posts_fts\", using_fts5(make_column(\"title\", &PostsFts::title), "
-            "make_column(\"body\", &PostsFts::body)));\n");
+    REQUIRE(
+        generate("CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(title, body)") ==
+        "struct PostsFts {\n    std::string title;\n    std::string body;\n};\n\nauto vtab = "
+        "make_virtual_table<PostsFts>(\"posts_fts\", using_fts5(make_column(\"title\", &PostsFts::title), "
+        "make_column(\"body\", &PostsFts::body)));\n");
 }
 
 TEST_CASE("codegen: CREATE VIRTUAL TABLE without IF NOT EXISTS warns") {
@@ -12,8 +13,7 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE without IF NOT EXISTS warns") {
         "struct X {\n    std::string a;\n};\n\nauto vtab = make_virtual_table<X>(\"x\", using_fts5(make_column(\"a\", "
         "&X::a)));\n",
         {columnRefStyleDp(1, "&X::a")},
-        {"sqlite_orm serializes virtual tables as CREATE VIRTUAL TABLE IF NOT EXISTS; SQL without IF NOT EXISTS "
-         "differs "
+        {"sqlite_orm serializes virtual tables as CREATE VIRTUAL TABLE IF NOT EXISTS; SQL without IF NOT EXISTS differs "
          "from serialized output"}};
     REQUIRE(generateFull("CREATE VIRTUAL TABLE x USING fts5(a)") == expected);
 }
@@ -40,12 +40,11 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE rtree five columns") {
 }
 
 TEST_CASE("codegen: CREATE VIRTUAL TABLE rtree_i32") {
-    REQUIRE(
-        generate("CREATE VIRTUAL TABLE IF NOT EXISTS g2 USING rtree_i32(i, a, b, c, d)") ==
-        "struct G2 {\n    int64_t i = 0;\n    int32_t a = 0;\n    int32_t b = 0;\n    int32_t c = 0;\n    int32_t d "
-        "= 0;\n};\n\nauto vtab = make_virtual_table<G2>(\"g2\", using_rtree_i32(make_column(\"i\", &G2::i), "
-        "make_column(\"a\", &G2::a), make_column(\"b\", &G2::b), make_column(\"c\", &G2::c), "
-        "make_column(\"d\", &G2::d)));\n");
+    REQUIRE(generate("CREATE VIRTUAL TABLE IF NOT EXISTS g2 USING rtree_i32(i, a, b, c, d)") ==
+            "struct G2 {\n    int64_t i = 0;\n    int32_t a = 0;\n    int32_t b = 0;\n    int32_t c = 0;\n    int32_t d "
+            "= 0;\n};\n\nauto vtab = make_virtual_table<G2>(\"g2\", using_rtree_i32(make_column(\"i\", &G2::i), "
+            "make_column(\"a\", &G2::a), make_column(\"b\", &G2::b), make_column(\"c\", &G2::c), "
+            "make_column(\"d\", &G2::d)));\n");
 }
 
 TEST_CASE("codegen: CREATE VIRTUAL TABLE schema and temp warn") {
@@ -57,7 +56,8 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE schema and temp warn") {
          "name only",
          "TEMP/TEMPORARY VIRTUAL TABLE is not represented in sqlite_orm virtual table mapping; generated code does "
          "not mark the table as temporary"}};
-    REQUIRE(generateFull("CREATE TEMP VIRTUAL TABLE IF NOT EXISTS main.posts_fts USING fts5(body)") == expected);
+    REQUIRE(generateFull(
+                "CREATE TEMP VIRTUAL TABLE IF NOT EXISTS main.posts_fts USING fts5(body)") == expected);
 }
 
 TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 non-column args stub") {
@@ -69,8 +69,9 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 non-column args stub") {
 }
 
 TEST_CASE("codegen: unknown virtual table module") {
-    const CodeGenResult expected{"/* CREATE VIRTUAL TABLE: unknown module */",
-                                 {},
-                                 {"virtual table module \"noop\" has no sqlite_orm mapping in sqlite2orm codegen"}};
+    const CodeGenResult expected{
+        "/* CREATE VIRTUAL TABLE: unknown module */",
+        {},
+        {"virtual table module \"noop\" has no sqlite_orm mapping in sqlite2orm codegen"}};
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS z USING noop") == expected);
 }

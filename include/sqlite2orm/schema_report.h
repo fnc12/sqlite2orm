@@ -27,7 +27,7 @@ namespace sqlite2orm {
      *  JSON decision points on `out`; the diagnostics and the exit code are the same either way,
      *  so a script can tell a failed schema from a good one without reading the JSON.
      */
-    SchemaReport
-    reportSqliteSchema(const ProcessSqliteSchemaResult& schema, bool jsonOnly, const CodeGenPolicy* policy = nullptr);
+    SchemaReport reportSqliteSchema(const ProcessSqliteSchemaResult& schema, bool jsonOnly,
+                                    const CodeGenPolicy* policy = nullptr);
 
 }  // namespace sqlite2orm

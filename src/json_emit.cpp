@@ -6,19 +6,19 @@ namespace sqlite2orm {
 
     void to_json(nlohmann::json& out, const Option& alternative) {
         out = nlohmann::json{{"value", alternative.value},
-                             {"code", alternative.code},
-                             {"description", alternative.description},
-                             {"hidden", alternative.hidden},
-                             {"comments", alternative.comments},
-                             {"minCppStandard", alternative.minCppStandard}};
+                            {"code", alternative.code},
+                            {"description", alternative.description},
+                            {"hidden", alternative.hidden},
+                            {"comments", alternative.comments},
+                            {"minCppStandard", alternative.minCppStandard}};
     }
 
     void to_json(nlohmann::json& out, const DecisionPoint& decisionPoint) {
         out = nlohmann::json{{"id", decisionPoint.id},
-                             {"category", decisionPoint.category},
-                             {"chosenValue", decisionPoint.chosenValue},
-                             {"chosenCode", decisionPoint.chosenCode},
-                             {"options", decisionPoint.options}};
+                            {"category", decisionPoint.category},
+                            {"chosenValue", decisionPoint.chosenValue},
+                            {"chosenCode", decisionPoint.chosenCode},
+                            {"options", decisionPoint.options}};
     }
 
     std::string decisionPointsToJson(const std::vector<DecisionPoint>& decisionPoints) {
@@ -27,12 +27,12 @@ namespace sqlite2orm {
 
     std::string sqliteSchemaResultToJson(const ProcessSqliteSchemaResult& schema) {
         nlohmann::json statements = nlohmann::json::array();
-        for (const SchemaStatementResult& statement: schema.statements) {
+        for(const SchemaStatementResult& statement : schema.statements) {
             nlohmann::json row = {{"type", statement.meta.type},
-                                  {"name", statement.meta.name},
-                                  {"tableName", statement.meta.tableName},
-                                  {"ok", statement.pipeline.ok()}};
-            if (statement.pipeline.ok()) {
+                                 {"name", statement.meta.name},
+                                 {"tableName", statement.meta.tableName},
+                                 {"ok", statement.pipeline.ok()}};
+            if(statement.pipeline.ok()) {
                 row["decisionPoints"] = statement.pipeline.codegen.decisionPoints;
                 row["comments"] = statement.pipeline.codegen.comments;
             } else {

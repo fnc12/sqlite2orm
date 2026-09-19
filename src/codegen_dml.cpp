@@ -9,12 +9,119 @@
 
 namespace sqlite2orm {
 
-    DmlCodeGenerator::DmlCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
-        coordinator(coordinator), context(context) {}
+    namespace {
+
+        /**
+         *  The C++ field types that hold whole numbers only, so a value SQLite keeps a REAL reaches
+         *  the database converted. `bool`, which a BOOLEAN column maps to, holds no whole number
+         *  besides 0 and 1 and belongs here all the more; `boolFieldCarriesValue` rules on the
+         *  range of that field, this predicate on the storage class alone.
+         */
+        bool isWholeNumberFieldType(std::string_view cppType) {
+            return cppType == "int64_t" || cppType == "int" || cppType == "bool";
+        }
+
+        /**
+         *  True when the object form of an insert hands `column` exactly the value SQLite gives
+         *  `value`. The form sends every value through a struct field, which holds one storage
+         *  class: a text or blob literal does not even initialize a numeric field — `CREATE TABLE
+         *  ch(x); INSERT INTO ch VALUES (1)` generated `Ch{1}` for a `std::vector<char>` field,
+         *  which does not compile — and an expression, whose value only SQLite knows, initializes
+         *  no field at all. A field of the right storage class still has a range: a braced
+         *  initializer refuses a whole number past the int64 range, a `double` one refuses every
+         *  integer constant it would round, and a `bool` one holds no number besides 0 and 1.
+         */
+        bool objectFormCarriesValue(const SourceTableColumn& column, const AstNode& value) {
+            const ValueStorageClass fieldClass = fieldTypeStorageClass(column.cppType);
+            if(fieldClass == ValueStorageClass::unknown) {
+                // A field type this rule knows nothing about: leave the statement the way it was.
+                return true;
+            }
+            const ValueStorageClass storageClass = valueStorageClass(value);
+            if(storageClass == ValueStorageClass::null) {
+                // `std::nullopt` initializes an optional field; a NOT NULL column has a bare one.
+                return column.nullable;
+            }
+            if(storageClass != fieldClass) {
+                return false;
+            }
+            if(column.cppType == "bool") {
+                return boolFieldCarriesValue(value);
+            }
+            if(isWholeNumberFieldType(column.cppType)) {
+                return integerFieldCarriesValue(value);
+            }
+            return column.cppType != "double" || doubleFieldCarriesValue(value);
+        }
+
+    }  // namespace
+
+    DmlCodeGenerator::DmlCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context)
+        : coordinator(coordinator), context(context) {}
+
+    std::vector<std::string>
+    DmlCodeGenerator::columnListForcedByFieldTypes(const InsertNode& insertNode,
+                                                   std::vector<CodegenWarning>& warnings) const {
+        const auto tableIterator =
+            this->context.sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(insertNode.tableName));
+        if(tableIterator == this->context.sourceTableColumnsByNormalizedName.end()) {
+            return {};
+        }
+        // A generated column is computed by SQLite, so a VALUES row never holds one and the column
+        // list of such an insert leaves it out.
+        std::vector<const SourceTableColumn*> columns;
+        for(const SourceTableColumn& column : tableIterator->second) {
+            if(!column.generated) {
+                columns.push_back(&column);
+            }
+        }
+
+        std::vector<CodegenWarning> pastRangeWarnings;
+        bool columnListForced = false;
+        for(const std::vector<AstNodePointer>& row : insertNode.valueRows) {
+            if(row.size() != columns.size()) {
+                // A row that does not line up with the columns is a statement SQLite refuses
+                // anyway, and says nothing about which field a value reaches.
+                return {};
+            }
+            for(size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
+                const SourceTableColumn& column = *columns[columnIndex];
+                const AstNode& value = *row[columnIndex];
+                if(objectFormCarriesValue(column, value)) {
+                    continue;
+                }
+                columnListForced = true;
+                if(isWholeNumberFieldType(column.cppType) && isIntegerLiteralPastIntegerFieldRange(value)) {
+                    pastRangeWarnings.push_back(numericLiteralWarning(
+                        "INSERT into column '" + column.sqlName + "' of table '" + insertNode.tableName +
+                            "' uses " + numericLiteralSqlText(value) +
+                            ", past the signed 64-bit integer range: SQLite types a value before it applies "
+                            "the column affinity and keeps such a one a REAL, and the " + column.cppType +
+                            " field cannot hold it, so the row is generated through columns()/values(), which "
+                            "writes the value SQLite stores, rather than as a struct, which would write a "
+                            "different one",
+                        value));
+                }
+            }
+        }
+        if(!columnListForced) {
+            return {};
+        }
+
+        std::vector<std::string> columnNames;
+        columnNames.reserve(columns.size());
+        for(const SourceTableColumn* column : columns) {
+            columnNames.push_back(column->sqlName);
+        }
+        warnings.insert(warnings.end(),
+                        std::make_move_iterator(pastRangeWarnings.begin()),
+                        std::make_move_iterator(pastRangeWarnings.end()));
+        return columnNames;
+    }
 
     CodeGenResult DmlCodeGenerator::generateInsert(const InsertNode& insertNode) {
         std::vector<CodegenWarning> warnings;
-        if (insertNode.schemaName) {
+        if(insertNode.schemaName) {
             warnings.push_back("schema-qualified table in INSERT is not represented in sqlite_orm mapping");
         }
         std::string tableStruct = this->context.structNameForTable(insertNode.tableName);
@@ -24,23 +131,28 @@ namespace sqlite2orm {
         std::string verb = insertNode.replaceInto ? "replace" : "insert";
         std::string orPrefix = insertNode.replaceInto ? std::string() : dmlInsertOrPrefix(insertNode.orConflict);
 
+        std::vector<std::string> valueColumnNames = insertNode.columnNames;
+        if(insertNode.dataKind == InsertDataKind::values && valueColumnNames.empty()) {
+            valueColumnNames = this->columnListForcedByFieldTypes(insertNode, warnings);
+        }
+
         std::vector<DecisionPoint> dps;
         std::string middle;
-        if (insertNode.dataKind == InsertDataKind::defaultValues) {
+        if(insertNode.dataKind == InsertDataKind::defaultValues) {
             middle = "default_values()";
-        } else if (insertNode.dataKind == InsertDataKind::values && insertNode.columnNames.empty()) {
+        } else if(insertNode.dataKind == InsertDataKind::values && valueColumnNames.empty()) {
             std::string code;
-            for (size_t valueRowIndex = 0; valueRowIndex < insertNode.valueRows.size(); ++valueRowIndex) {
-                if (valueRowIndex > 0) {
+            for(size_t valueRowIndex = 0; valueRowIndex < insertNode.valueRows.size(); ++valueRowIndex) {
+                if(valueRowIndex > 0) {
                     code += "\n";
                 }
                 code += "storage." + verb + "(" + tableStruct + "{";
                 const auto& row = insertNode.valueRows[valueRowIndex];
-                for (size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
-                    if (columnIndex > 0) {
+                for(size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
+                    if(columnIndex > 0) {
                         code += ", ";
                     }
-                    if (dynamic_cast<const NullLiteralNode*>(row[columnIndex].get())) {
+                    if(dynamic_cast<const NullLiteralNode*>(row[columnIndex].get())) {
                         code += "std::nullopt";
                     } else {
                         auto cell = this->coordinator.generateNode(*row[columnIndex]);
@@ -57,24 +169,24 @@ namespace sqlite2orm {
             }
             this->context.structName = savedStruct;
             return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
-        } else if (insertNode.dataKind == InsertDataKind::values) {
+        } else if(insertNode.dataKind == InsertDataKind::values) {
             std::string cols = "columns(";
-            for (size_t columnIndex = 0; columnIndex < insertNode.columnNames.size(); ++columnIndex) {
-                if (columnIndex > 0) {
+            for(size_t columnIndex = 0; columnIndex < valueColumnNames.size(); ++columnIndex) {
+                if(columnIndex > 0) {
                     cols += ", ";
                 }
-                cols += "&" + tableStruct + "::" + toCppIdentifier(insertNode.columnNames[columnIndex]);
+                cols += "&" + tableStruct + "::" + toCppIdentifier(valueColumnNames[columnIndex]);
             }
             cols += ")";
             std::string vals = "values(";
-            for (size_t rowIndex = 0; rowIndex < insertNode.valueRows.size(); ++rowIndex) {
-                if (rowIndex > 0) {
+            for(size_t rowIndex = 0; rowIndex < insertNode.valueRows.size(); ++rowIndex) {
+                if(rowIndex > 0) {
                     vals += ", ";
                 }
                 vals += "std::make_tuple(";
                 const auto& row = insertNode.valueRows[rowIndex];
-                for (size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
-                    if (columnIndex > 0) {
+                for(size_t columnIndex = 0; columnIndex < row.size(); ++columnIndex) {
+                    if(columnIndex > 0) {
                         vals += ", ";
                     }
                     auto cell = this->coordinator.generateNode(*row[columnIndex]);
@@ -98,16 +210,15 @@ namespace sqlite2orm {
             dps.insert(dps.end(),
                        std::make_move_iterator(sub.decisionPoints.begin()),
                        std::make_move_iterator(sub.decisionPoints.end()));
-            if (sub.code.empty()) {
+            if(sub.code.empty()) {
                 this->context.structName = savedStruct;
                 return CodeGenResult{"/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */",
-                                     std::move(dps),
-                                     std::move(warnings)};
+                                     std::move(dps), std::move(warnings)};
             }
-            if (!insertNode.columnNames.empty()) {
+            if(!insertNode.columnNames.empty()) {
                 std::string cols = "columns(";
-                for (size_t columnIndex = 0; columnIndex < insertNode.columnNames.size(); ++columnIndex) {
-                    if (columnIndex > 0) {
+                for(size_t columnIndex = 0; columnIndex < insertNode.columnNames.size(); ++columnIndex) {
+                    if(columnIndex > 0) {
                         cols += ", ";
                     }
                     cols += "&" + tableStruct + "::" + toCppIdentifier(insertNode.columnNames[columnIndex]);
@@ -120,22 +231,22 @@ namespace sqlite2orm {
         }
 
         std::string upsertSuffix;
-        if (insertNode.hasUpsertClause) {
-            if (insertNode.upsertConflictWhere) {
+        if(insertNode.hasUpsertClause) {
+            if(insertNode.upsertConflictWhere) {
                 warnings.push_back(
                     "ON CONFLICT target WHERE is not represented in sqlite_orm on_conflict(); generated code "
                     "omits that predicate");
             }
             std::string onTarget;
-            if (insertNode.upsertConflictColumns.empty()) {
+            if(insertNode.upsertConflictColumns.empty()) {
                 onTarget = "on_conflict()";
-            } else if (insertNode.upsertConflictColumns.size() == 1u) {
-                onTarget =
-                    "on_conflict(&" + tableStruct + "::" + toCppIdentifier(insertNode.upsertConflictColumns[0]) + ")";
+            } else if(insertNode.upsertConflictColumns.size() == 1u) {
+                onTarget = "on_conflict(&" + tableStruct + "::" +
+                           toCppIdentifier(insertNode.upsertConflictColumns[0]) + ")";
             } else {
                 onTarget = "on_conflict(columns(";
-                for (size_t upsertIndex = 0; upsertIndex < insertNode.upsertConflictColumns.size(); ++upsertIndex) {
-                    if (upsertIndex > 0) {
+                for(size_t upsertIndex = 0; upsertIndex < insertNode.upsertConflictColumns.size(); ++upsertIndex) {
+                    if(upsertIndex > 0) {
                         onTarget += ", ";
                     }
                     onTarget +=
@@ -143,13 +254,13 @@ namespace sqlite2orm {
                 }
                 onTarget += "))";
             }
-            if (insertNode.upsertAction == InsertUpsertAction::doNothing) {
+            if(insertNode.upsertAction == InsertUpsertAction::doNothing) {
                 upsertSuffix = ", " + onTarget + ".do_nothing()";
-            } else if (insertNode.upsertAction == InsertUpsertAction::doUpdate) {
+            } else if(insertNode.upsertAction == InsertUpsertAction::doUpdate) {
                 std::string setArgs;
-                for (size_t assignmentIndex = 0; assignmentIndex < insertNode.upsertUpdateAssignments.size();
-                     ++assignmentIndex) {
-                    if (assignmentIndex > 0) {
+                for(size_t assignmentIndex = 0; assignmentIndex < insertNode.upsertUpdateAssignments.size();
+                    ++assignmentIndex) {
+                    if(assignmentIndex > 0) {
                         setArgs += ", ";
                     }
                     auto valueResult =
@@ -165,7 +276,7 @@ namespace sqlite2orm {
                     setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
                 }
                 upsertSuffix = ", " + onTarget + ".do_update(set(" + setArgs + ")";
-                if (insertNode.upsertUpdateWhere) {
+                if(insertNode.upsertUpdateWhere) {
                     auto whereResult = this->coordinator.generateNode(*insertNode.upsertUpdateWhere);
                     dps.insert(dps.end(),
                                std::make_move_iterator(whereResult.decisionPoints.begin()),
@@ -182,32 +293,32 @@ namespace sqlite2orm {
         this->context.structName = savedStruct;
         std::string code =
             "storage." + verb + "(" + orPrefix + "into<" + tableStruct + ">(), " + middle + upsertSuffix + ");";
-        if (insertNode.replaceInto) {
+        if(insertNode.replaceInto) {
             std::string insertOrReplace =
                 "storage.insert(or_replace(), into<" + tableStruct + ">(), " + middle + upsertSuffix + ");";
             // options lists every variant (the chosen one included).
-            dps.push_back(DecisionPoint{this->context.nextDecisionPointId++,
-                                        "replace_style",
-                                        "replace_call",
-                                        code,
-                                        {Option{"replace_call", code, "storage.replace(into<T>(), ...)"},
-                                         Option{"insert_or_replace",
-                                                insertOrReplace,
-                                                "same semantics via raw insert(or_replace(), into<T>(), ...)"}}});
+            dps.push_back(DecisionPoint{
+                this->context.nextDecisionPointId++,
+                "replace_style",
+                "replace_call",
+                code,
+                {Option{"replace_call", code, "storage.replace(into<T>(), ...)"},
+                 Option{"insert_or_replace", insertOrReplace,
+                        "same semantics via raw insert(or_replace(), into<T>(), ...)"}}});
         }
         return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
     }
 
     CodeGenResult DmlCodeGenerator::generateUpdate(const UpdateNode& updateNode) {
         std::vector<CodegenWarning> warnings;
-        if (updateNode.schemaName) {
+        if(updateNode.schemaName) {
             warnings.push_back("schema-qualified table in UPDATE is not represented in sqlite_orm mapping");
         }
-        if (updateNode.orConflict != ConflictClause::none) {
+        if(updateNode.orConflict != ConflictClause::none) {
             warnings.push_back(
                 "UPDATE OR modifier is not represented in sqlite_orm; generated code uses update_all(...) without OR");
         }
-        if (!updateNode.fromClause.empty()) {
+        if(!updateNode.fromClause.empty()) {
             warnings.push_back("UPDATE ... FROM ... is not supported in sqlite_orm — "
                                "FROM clause is ignored in codegen");
         }
@@ -216,8 +327,8 @@ namespace sqlite2orm {
         this->context.structName = tableStruct;
         std::vector<DecisionPoint> dps;
         std::string setArgs;
-        for (size_t assignmentIndex = 0; assignmentIndex < updateNode.assignments.size(); ++assignmentIndex) {
-            if (assignmentIndex > 0) {
+        for(size_t assignmentIndex = 0; assignmentIndex < updateNode.assignments.size(); ++assignmentIndex) {
+            if(assignmentIndex > 0) {
                 setArgs += ", ";
             }
             auto valueResult = this->coordinator.generateNode(*updateNode.assignments[assignmentIndex].value);
@@ -231,7 +342,7 @@ namespace sqlite2orm {
             setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
         }
         std::string code = "storage.update_all(set(" + setArgs + ")";
-        if (updateNode.whereClause) {
+        if(updateNode.whereClause) {
             auto whereResult = this->coordinator.generateNode(*updateNode.whereClause);
             dps.insert(dps.end(),
                        std::make_move_iterator(whereResult.decisionPoints.begin()),
@@ -248,7 +359,7 @@ namespace sqlite2orm {
 
     CodeGenResult DmlCodeGenerator::generateDelete(const DeleteNode& deleteNode) {
         std::vector<CodegenWarning> warnings;
-        if (deleteNode.schemaName) {
+        if(deleteNode.schemaName) {
             warnings.push_back("schema-qualified table in DELETE is not represented in sqlite_orm mapping");
         }
         std::string tableStruct = this->context.structNameForTable(deleteNode.tableName);
@@ -256,7 +367,7 @@ namespace sqlite2orm {
         this->context.structName = tableStruct;
         std::vector<DecisionPoint> dps;
         std::string code = "storage.remove_all<" + tableStruct + ">()";
-        if (deleteNode.whereClause) {
+        if(deleteNode.whereClause) {
             auto whereResult = this->coordinator.generateNode(*deleteNode.whereClause);
             dps.insert(dps.end(),
                        std::make_move_iterator(whereResult.decisionPoints.begin()),
@@ -280,10 +391,10 @@ namespace sqlite2orm {
             std::map<std::string, std::string> savedColumnAliases;
             std::map<std::string, std::string> savedColumnAliasCpp20Vars;
 
-            TriggerStepScope(CodeGeneratorContext* ctx, const std::string& subject) :
-                ctx(ctx), savedStruct(ctx->structName), savedAliases(ctx->fromTableAliasToStructName),
-                savedColumnAliases(ctx->activeSelectColumnAliases),
-                savedColumnAliasCpp20Vars(ctx->activeSelectColumnAliasCpp20Vars) {
+            TriggerStepScope(CodeGeneratorContext* ctx, const std::string& subject)
+                : ctx(ctx), savedStruct(ctx->structName), savedAliases(ctx->fromTableAliasToStructName),
+                  savedColumnAliases(ctx->activeSelectColumnAliases),
+                  savedColumnAliasCpp20Vars(ctx->activeSelectColumnAliasCpp20Vars) {
                 ctx->structName = subject;
                 ctx->triggerSubjectStructName = subject;
                 ctx->fromTableAliasToStructName.clear();
@@ -299,25 +410,25 @@ namespace sqlite2orm {
             }
         } scope{&this->context, subjectTableStruct};
 
-        if (auto* selectNode = dynamic_cast<const SelectNode*>(&statement)) {
+        if(auto* selectNode = dynamic_cast<const SelectNode*>(&statement)) {
             return this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode);
         }
-        if (auto* compoundSelectNode = dynamic_cast<const CompoundSelectNode*>(&statement)) {
+        if(auto* compoundSelectNode = dynamic_cast<const CompoundSelectNode*>(&statement)) {
             return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundSelectNode);
         }
         auto outer = this->coordinator.generateNode(statement);
         std::string code = outer.code;
         static constexpr std::string_view kStoragePrefix = "storage.";
-        if (code.size() >= kStoragePrefix.size() && code.compare(0, kStoragePrefix.size(), kStoragePrefix) == 0) {
+        if(code.size() >= kStoragePrefix.size() && code.compare(0, kStoragePrefix.size(), kStoragePrefix) == 0) {
             code.erase(0, kStoragePrefix.size());
         }
-        while (!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
+        while(!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
             code.pop_back();
         }
-        if (!code.empty() && code.back() == ';') {
+        if(!code.empty() && code.back() == ';') {
             code.pop_back();
         }
-        while (!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
+        while(!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
             code.pop_back();
         }
         return CodeGenResult{std::move(code), std::move(outer.decisionPoints), std::move(outer.warnings)};

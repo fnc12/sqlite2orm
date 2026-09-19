@@ -12,20 +12,27 @@ namespace sqlite2orm {
      *  A codegen warning, optionally anchored to a span of the source SQL so a consumer can
      *  underline the relevant text. Implicitly constructible from a string, so the many plain
      *  `warnings.push_back("…")` sites keep compiling; only sites with a known location set one.
-     *  Equality ignores the location (advisory), so existing message-based comparisons still hold.
+     *  Equality covers the span as well as the message, so a test that pins a warning pins what it
+     *  underlines: anchoring a warning that was plain updates every expectation of it.
      */
     struct CodegenWarning {
         std::string message;
         /** Start of the relevant SQL token; `length` characters from here should be underlined. */
         std::optional<SourceLocation> location;
-        /** Number of characters to underline from `location` (0 when unknown). */
+        /**
+         *  Number of characters to underline from `location` (0 when unknown). The span stays on
+         *  the line `location` names: a token written across lines — a quoted name or a string
+         *  literal holding a newline, keywords split by one — is underlined up to the end of that
+         *  line only, so a consumer drawing `length` characters from `location` within the line
+         *  never runs past its end.
+         */
         size_t length = 0;
 
         CodegenWarning() = default;
         CodegenWarning(std::string message) : message(std::move(message)) {}
         CodegenWarning(const char* message) : message(message) {}
-        CodegenWarning(std::string message, SourceLocation location, size_t length) :
-            message(std::move(message)), location(location), length(length) {}
+        CodegenWarning(std::string message, SourceLocation location, size_t length)
+            : message(std::move(message)), location(location), length(length) {}
 
         bool operator==(const CodegenWarning&) const = default;
     };

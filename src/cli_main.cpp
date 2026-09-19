@@ -38,15 +38,15 @@ namespace {
 
     std::string readFile(const std::string& path) {
         std::ifstream stream(path, std::ios::binary);
-        if (!stream) {
+        if(!stream) {
             throw std::runtime_error("cannot open file: " + path);
         }
         return readStream(stream);
     }
 
     int indexOfArg(int argc, char** argv, std::string_view flag) {
-        for (int i = 1; i < argc; ++i) {
-            if (std::string_view(argv[i]) == flag) {
+        for(int i = 1; i < argc; ++i) {
+            if(std::string_view(argv[i]) == flag) {
                 return i;
             }
         }
@@ -62,10 +62,10 @@ namespace {
             fmt::print(stderr, "{}", report.err);
             fmt::print("{}", report.out);
             return report.exitCode;
-        } catch (const SchemaReadError& e) {
+        } catch(const SchemaReadError& e) {
             fmt::print(stderr, "sqlite2orm: cannot open database: {}\n", e.what());
             return 2;
-        } catch (const std::exception& ex) {
+        } catch(const std::exception& ex) {
             fmt::print(stderr, "sqlite2orm: {}\n", ex.what());
             return 2;
         }
@@ -77,8 +77,8 @@ int main(int argc, char** argv) {
     using namespace sqlite2orm;
 
     const int dbFlag = indexOfArg(argc, argv, "--db");
-    if (dbFlag >= 0) {
-        if (dbFlag + 1 >= argc) {
+    if(dbFlag >= 0) {
+        if(dbFlag + 1 >= argc) {
             fmt::print(stderr, "sqlite2orm: --db requires a path\n");
             printUsage(stderr);
             return 2;
@@ -89,14 +89,14 @@ int main(int argc, char** argv) {
 
     std::string sql;
     try {
-        if (argc >= 2) {
+        if(argc >= 2) {
             const std::string_view arg1 = argv[1];
-            if (arg1 == "-h" || arg1 == "--help") {
+            if(arg1 == "-h" || arg1 == "--help") {
                 printUsage(stdout);
                 return EXIT_SUCCESS;
             }
-            if (arg1 == "-e") {
-                if (argc < 3) {
+            if(arg1 == "-e") {
+                if(argc < 3) {
                     fmt::print(stderr, "sqlite2orm: -e requires a SQL argument\n");
                     printUsage(stderr);
                     return 2;
@@ -108,43 +108,43 @@ int main(int argc, char** argv) {
         } else {
             sql = readStream(std::cin);
         }
-    } catch (const std::exception& ex) {
+    } catch(const std::exception& ex) {
         fmt::print(stderr, "sqlite2orm: {}\n", ex.what());
         return 2;
     }
 
-    if (sql.empty()) {
+    if(sql.empty()) {
         fmt::print(stderr, "sqlite2orm: empty SQL input\n");
         return 2;
     }
 
     const auto results = processMultiSql(sql);
     int exitCode = EXIT_SUCCESS;
-    for (const ProcessSqlResult& result: results) {
-        for (const auto& warning: result.codegen.warnings) {
+    for(const ProcessSqlResult& result : results) {
+        for(const auto& warning : result.codegen.warnings) {
             fmt::print(stderr, "warning: {}\n", warning.message);
         }
-        if (!result.parseResult.errors.empty()) {
-            for (const auto& err: result.parseResult.errors) {
+        if(!result.parseResult.errors.empty()) {
+            for(const auto& err : result.parseResult.errors) {
                 fmt::print(stderr, "parse error: {} at {}:{}\n", err.message, err.location.line, err.location.column);
             }
             exitCode = 1;
         }
-        if (!result.validationErrors.empty()) {
-            for (const auto& err: result.validationErrors) {
+        if(!result.validationErrors.empty()) {
+            for(const auto& err : result.validationErrors) {
                 fmt::print(stderr, "validation: {} ({})\n", err.message, err.nodeType);
             }
             exitCode = 1;
         }
-        if (!result.codegen.errors.empty()) {
-            for (const auto& err: result.codegen.errors) {
+        if(!result.codegen.errors.empty()) {
+            for(const auto& err : result.codegen.errors) {
                 fmt::print(stderr, "codegen error: {}\n", err);
             }
             exitCode = 1;
         }
     }
     const auto code = joinGeneratedCode(results);
-    if (!code.empty()) {
+    if(!code.empty()) {
         fmt::print("{}", code);
     }
     return exitCode;

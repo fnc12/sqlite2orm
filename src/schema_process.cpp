@@ -11,16 +11,16 @@ namespace sqlite2orm {
     namespace {
 
         int masterTypeOrder(std::string_view type) {
-            if (type == "table") {
+            if(type == "table") {
                 return 0;
             }
-            if (type == "view") {
+            if(type == "view") {
                 return 1;
             }
-            if (type == "index") {
+            if(type == "index") {
                 return 2;
             }
-            if (type == "trigger") {
+            if(type == "trigger") {
                 return 3;
             }
             return 4;
@@ -29,8 +29,8 @@ namespace sqlite2orm {
     }  // namespace
 
     bool ProcessSqliteSchemaResult::allOk() const {
-        for (const SchemaStatementResult& statement: statements) {
-            if (!statement.pipeline.ok()) {
+        for(const SchemaStatementResult& statement : statements) {
+            if(!statement.pipeline.ok()) {
                 return false;
             }
         }
@@ -42,26 +42,23 @@ namespace sqlite2orm {
         std::stable_sort(rows.begin(), rows.end(), [](const SqliteMasterRow& leftRow, const SqliteMasterRow& rightRow) {
             const int orderLeft = masterTypeOrder(leftRow.type);
             const int orderRight = masterTypeOrder(rightRow.type);
-            if (orderLeft != orderRight) {
+            if(orderLeft != orderRight) {
                 return orderLeft < orderRight;
             }
             const auto compareNamesCaseInsensitive = [](const std::string& left, const std::string& right) {
-                return std::lexicographical_compare(left.begin(),
-                                                    left.end(),
-                                                    right.begin(),
-                                                    right.end(),
-                                                    [](char leftChar, char rightChar) {
-                                                        return std::tolower(static_cast<unsigned char>(leftChar)) <
-                                                               std::tolower(static_cast<unsigned char>(rightChar));
-                                                    });
+                return std::lexicographical_compare(
+                    left.begin(), left.end(), right.begin(), right.end(), [](char leftChar, char rightChar) {
+                        return std::tolower(static_cast<unsigned char>(leftChar)) <
+                               std::tolower(static_cast<unsigned char>(rightChar));
+                    });
             };
             return compareNamesCaseInsensitive(leftRow.name, rightRow.name);
         });
 
         ProcessSqliteSchemaResult out;
         std::map<std::string, std::vector<SourceTableColumn>> sourceTables;
-        for (const auto& row: rows) {
-            if (row.sql.empty()) {
+        for(const auto& row: rows) {
+            if(row.sql.empty()) {
                 continue;
             }
             SchemaStatementResult one;
@@ -70,8 +67,8 @@ namespace sqlite2orm {
             one.meta.tableName = row.tableName;
             one.meta.sql = row.sql;
             one.pipeline = processSqlWithSourceTables(one.meta.sql, nullptr, sourceTables);
-            if (const auto* createTable =
-                    dynamic_cast<const CreateTableNode*>(one.pipeline.parseResult.astNodePointer.get())) {
+            if(const auto* createTable = dynamic_cast<const CreateTableNode*>(
+                   one.pipeline.parseResult.astNodePointer.get())) {
                 sourceTables[normalizeSqlIdentifier(stripIdentifierQuotes(createTable->tableName))] =
                     sourceTableColumnsFromCreateTable(*createTable);
             }

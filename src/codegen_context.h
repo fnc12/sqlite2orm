@@ -23,6 +23,8 @@ namespace sqlite2orm {
         std::string sqlName;
         std::string cppType;
         bool nullable = false;
+        /** A generated column, which SQLite computes and an INSERT never supplies a value for. */
+        bool generated = false;
     };
 
     struct Cpp20TableAliasDeclaration {
@@ -33,11 +35,11 @@ namespace sqlite2orm {
 
     /** A user-defined / extension function referenced in a statement, turned into a func<>() call. */
     struct CustomFunctionUse {
-        std::string sqlName;  // original SQL name, e.g. "morton_encode"
-        std::string structName;  // C++ struct name, e.g. "MortonEncode"
-        std::vector<std::string> argTypes;  // best-effort C++ type per argument
-        std::vector<std::string> argNames;  // parameter names (column name when known, else argN)
-        std::string returnType = "int";  // best-effort result type
+        std::string sqlName;                 // original SQL name, e.g. "morton_encode"
+        std::string structName;              // C++ struct name, e.g. "MortonEncode"
+        std::vector<std::string> argTypes;   // best-effort C++ type per argument
+        std::vector<std::string> argNames;   // parameter names (column name when known, else argN)
+        std::string returnType = "int";      // best-effort result type
 
         bool operator==(const CustomFunctionUse&) const = default;
     };
@@ -63,6 +65,14 @@ namespace sqlite2orm {
          *  code with a warning instead of failing the whole statement.
          */
         std::vector<std::string> storedHexLiteralsTooBig;
+        /**
+         *  The expressions emitted since the last reset whose sqlite_orm type has no default
+         *  constructor, named as SQLite spells them. `make_trigger()` keeps a trigger's WHEN
+         *  expression in an `optional_container`, which default-constructs the expression before
+         *  assigning it, so a WHEN clause built from any of these does not compile at all. The
+         *  trigger generator clears this around the WHEN clause and warns about what it finds.
+         */
+        std::vector<std::string> formsWithoutDefaultConstructor;
         /**
          *  The tables of the current batch that cannot be mapped at all — a STORED generated
          *  column holding such a hex literal leaves the whole table out, because a column that
@@ -120,12 +130,38 @@ namespace sqlite2orm {
          *  (a storage method that cannot be a `with()` argument). Consumed once by the outer select.
          */
         bool withOuterSelect = false;
+        /**
+         *  Set while generating the operand of a logical NOT. `operator!` is the one sqlite_orm
+         *  operator that keeps the `c(...)` wrapper its operand carries instead of unwrapping it,
+         *  and the walker that collects the tables a statement reads stops at such a wrapper. A
+         *  column reference generated here therefore takes the `column<T>(&T::x)` form, which
+         *  names the same column and which that walker does read.
+         */
+        bool columnRefUnderLogicalNot = false;
+        /**
+         *  Set by the column reference branch when `columnRefUnderLogicalNot` made it emit that
+         *  column-pointer form, and read back by the NOT that asked for it. A column naming a
+         *  SELECT alias answers earlier, with `get<Alias>()`, and leaves this false: no column
+         *  pointer came out of it, so it keeps the wrapper and the explanation that form replaces.
+         */
+        bool emittedColumnPointerUnderLogicalNot = false;
+        /**
+         *  Set by the column reference branch when the form it emitted names the table the column
+         *  belongs to — `&T::x` or `column<T>(&T::x)`. A SELECT alias answers earlier with
+         *  `get<Alias>()`, and a CTE column with a form naming the CTE, and both leave it false.
+         *  `make_index` deduces the table an index is made for from its first argument, so an index
+         *  that starts with anything else has to spell that table out.
+         */
+        bool emittedTableTypedColumnRef = false;
 
         /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
         std::vector<CustomFunctionUse> customFunctions;
 
         /** Records a custom function use if its struct name is not already present. */
         void registerCustomFunction(CustomFunctionUse use);
+
+        /** Records a form whose sqlite_orm type has no default constructor, once per spelling. */
+        void recordFormWithoutDefaultConstructor(std::string form);
 
         /**
          *  How many statements of the current batch already declared each result variable
@@ -166,7 +202,8 @@ namespace sqlite2orm {
         /** Struct name of a referenced table, recording the reference when the table is not generated. */
         std::string structNameForTable(std::string_view tableName);
 
-        const SourceTableColumn* findSourceTableColumn(std::string_view tableName, std::string_view columnName) const;
+        const SourceTableColumn* findSourceTableColumn(std::string_view tableName,
+                                                       std::string_view columnName) const;
 
         /** Best-effort C++ type for a custom-function argument: schema type when known, else the name heuristic. */
         std::string customFunctionArgType(const AstNode& argument) const;

@@ -53,12 +53,15 @@ namespace sqlite2orm {
 
     struct BoolLiteralNode : AstNode {
         bool value;
+        /** The keyword as written: `TRUE`, `FALSE` or `ON`, whichever case it came in. */
+        std::string_view spelling;
 
-        BoolLiteralNode(bool value, SourceLocation location) : AstNode(location), value(value) {}
+        BoolLiteralNode(bool value, std::string_view spelling, SourceLocation location)
+            : AstNode(location), value(value), spelling(spelling) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const BoolLiteralNode*>(&other);
-            return o && this->value == o->value;
+            return o && this->value == o->value && this->spelling == o->spelling;
         }
     };
 
@@ -76,8 +79,7 @@ namespace sqlite2orm {
     struct ColumnRefNode : AstNode {
         std::string_view columnName;
 
-        ColumnRefNode(std::string_view columnName, SourceLocation location) :
-            AstNode(location), columnName(columnName) {}
+        ColumnRefNode(std::string_view columnName, SourceLocation location) : AstNode(location), columnName(columnName) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const ColumnRefNode*>(&other);
@@ -91,14 +93,12 @@ namespace sqlite2orm {
         std::string_view tableName;
         std::string_view columnName;
 
-        QualifiedColumnRefNode(std::string_view tableName, std::string_view columnName, SourceLocation location) :
-            AstNode(location), tableName(tableName), columnName(columnName) {}
+        QualifiedColumnRefNode(std::string_view tableName, std::string_view columnName, SourceLocation location)
+            : AstNode(location), tableName(tableName), columnName(columnName) {}
 
-        QualifiedColumnRefNode(std::string_view schemaName,
-                               std::string_view tableName,
-                               std::string_view columnName,
-                               SourceLocation location) :
-            AstNode(location), schemaName(schemaName), tableName(tableName), columnName(columnName) {}
+        QualifiedColumnRefNode(std::string_view schemaName, std::string_view tableName, std::string_view columnName,
+                               SourceLocation location)
+            : AstNode(location), schemaName(schemaName), tableName(tableName), columnName(columnName) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const QualifiedColumnRefNode*>(&other);
@@ -110,7 +110,8 @@ namespace sqlite2orm {
     struct CurrentDatetimeLiteralNode : AstNode {
         CurrentDatetimeKind kind;
 
-        CurrentDatetimeLiteralNode(CurrentDatetimeKind kind, SourceLocation location) : AstNode(location), kind(kind) {}
+        CurrentDatetimeLiteralNode(CurrentDatetimeKind kind, SourceLocation location)
+            : AstNode(location), kind(kind) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const CurrentDatetimeLiteralNode*>(&other);
@@ -122,11 +123,11 @@ namespace sqlite2orm {
         std::optional<std::string> schemaName;
         std::string tableName;
 
-        QualifiedAsteriskNode(std::string tableName, SourceLocation location) :
-            AstNode(location), tableName(std::move(tableName)) {}
+        QualifiedAsteriskNode(std::string tableName, SourceLocation location)
+            : AstNode(location), tableName(std::move(tableName)) {}
 
-        QualifiedAsteriskNode(std::string schemaName, std::string tableName, SourceLocation location) :
-            AstNode(location), schemaName(std::move(schemaName)), tableName(std::move(tableName)) {}
+        QualifiedAsteriskNode(std::string schemaName, std::string tableName, SourceLocation location)
+            : AstNode(location), schemaName(std::move(schemaName)), tableName(std::move(tableName)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const QualifiedAsteriskNode*>(&other);
@@ -160,8 +161,8 @@ namespace sqlite2orm {
     struct ExcludedRefNode : AstNode {
         std::string_view columnName;
 
-        ExcludedRefNode(std::string_view columnName, SourceLocation location) :
-            AstNode(location), columnName(columnName) {}
+        ExcludedRefNode(std::string_view columnName, SourceLocation location)
+            : AstNode(location), columnName(columnName) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const ExcludedRefNode*>(&other);
@@ -174,16 +175,13 @@ namespace sqlite2orm {
         AstNodePointer lhs;
         AstNodePointer rhs;
 
-        BinaryOperatorNode(BinaryOperator binaryOperator,
-                           AstNodePointer lhs,
-                           AstNodePointer rhs,
-                           SourceLocation location) :
-            AstNode(location), binaryOperator(binaryOperator), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
+        BinaryOperatorNode(BinaryOperator binaryOperator, AstNodePointer lhs, AstNodePointer rhs, SourceLocation location)
+            : AstNode(location), binaryOperator(binaryOperator), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const BinaryOperatorNode*>(&other);
-            return o && this->binaryOperator == o->binaryOperator && astNodesEqual(this->lhs, o->lhs) &&
-                   astNodesEqual(this->rhs, o->rhs);
+            return o && this->binaryOperator == o->binaryOperator &&
+                   astNodesEqual(this->lhs, o->lhs) && astNodesEqual(this->rhs, o->rhs);
         }
     };
 
@@ -191,8 +189,8 @@ namespace sqlite2orm {
         UnaryOperator unaryOperator;
         AstNodePointer operand;
 
-        UnaryOperatorNode(UnaryOperator unaryOperator, AstNodePointer operand, SourceLocation location) :
-            AstNode(location), unaryOperator(unaryOperator), operand(std::move(operand)) {}
+        UnaryOperatorNode(UnaryOperator unaryOperator, AstNodePointer operand, SourceLocation location)
+            : AstNode(location), unaryOperator(unaryOperator), operand(std::move(operand)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const UnaryOperatorNode*>(&other);
@@ -203,7 +201,8 @@ namespace sqlite2orm {
     struct IsNullNode : AstNode {
         AstNodePointer operand;
 
-        IsNullNode(AstNodePointer operand, SourceLocation location) : AstNode(location), operand(std::move(operand)) {}
+        IsNullNode(AstNodePointer operand, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const IsNullNode*>(&other);
@@ -214,8 +213,8 @@ namespace sqlite2orm {
     struct IsNotNullNode : AstNode {
         AstNodePointer operand;
 
-        IsNotNullNode(AstNodePointer operand, SourceLocation location) :
-            AstNode(location), operand(std::move(operand)) {}
+        IsNotNullNode(AstNodePointer operand, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const IsNotNullNode*>(&other);
@@ -229,17 +228,15 @@ namespace sqlite2orm {
         AstNodePointer high;
         bool negated;
 
-        BetweenNode(AstNodePointer operand,
-                    AstNodePointer low,
-                    AstNodePointer high,
-                    bool negated,
-                    SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), low(std::move(low)), high(std::move(high)),
-            negated(negated) {}
+        BetweenNode(AstNodePointer operand, AstNodePointer low, AstNodePointer high,
+                     bool negated, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)), low(std::move(low)),
+              high(std::move(high)), negated(negated) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const BetweenNode*>(&other);
-            return o && this->negated == o->negated && astNodesEqual(this->operand, o->operand) &&
+            return o && this->negated == o->negated &&
+                   astNodesEqual(this->operand, o->operand) &&
                    astNodesEqual(this->low, o->low) && astNodesEqual(this->high, o->high);
         }
     };
@@ -247,7 +244,8 @@ namespace sqlite2orm {
     struct SubqueryNode : AstNode {
         AstNodePointer select;
 
-        SubqueryNode(AstNodePointer select, SourceLocation location) : AstNode(location), select(std::move(select)) {}
+        SubqueryNode(AstNodePointer select, SourceLocation location)
+            : AstNode(location), select(std::move(select)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const SubqueryNode*>(&other);
@@ -258,7 +256,8 @@ namespace sqlite2orm {
     struct ExistsNode : AstNode {
         AstNodePointer select;
 
-        ExistsNode(AstNodePointer select, SourceLocation location) : AstNode(location), select(std::move(select)) {}
+        ExistsNode(AstNodePointer select, SourceLocation location)
+            : AstNode(location), select(std::move(select)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const ExistsNode*>(&other);
@@ -273,30 +272,23 @@ namespace sqlite2orm {
         std::string tableName;
         bool negated;
 
-        InNode(AstNodePointer operand,
-               std::vector<AstNodePointer> values,
-               AstNodePointer subquerySelect,
-               bool negated,
-               SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), values(std::move(values)),
-            subquerySelect(std::move(subquerySelect)), negated(negated) {}
+        InNode(AstNodePointer operand, std::vector<AstNodePointer> values, AstNodePointer subquerySelect,
+               bool negated, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)), values(std::move(values)),
+              subquerySelect(std::move(subquerySelect)), negated(negated) {}
 
-        InNode(AstNodePointer operand, std::string tableName, bool negated, SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), tableName(std::move(tableName)), negated(negated) {}
+        InNode(AstNodePointer operand, std::string tableName, bool negated, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)), tableName(std::move(tableName)), negated(negated) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const InNode*>(&other);
-            if (!o || this->negated != o->negated || !astNodesEqual(this->operand, o->operand))
+            if(!o || this->negated != o->negated || !astNodesEqual(this->operand, o->operand))
                 return false;
-            if (this->tableName != o->tableName)
-                return false;
-            if (!astNodesEqual(this->subquerySelect, o->subquerySelect))
-                return false;
-            if (this->values.size() != o->values.size())
-                return false;
-            for (size_t i = 0; i < this->values.size(); ++i) {
-                if (!astNodesEqual(this->values.at(i), o->values.at(i)))
-                    return false;
+            if(this->tableName != o->tableName) return false;
+            if(!astNodesEqual(this->subquerySelect, o->subquerySelect)) return false;
+            if(this->values.size() != o->values.size()) return false;
+            for(size_t i = 0; i < this->values.size(); ++i) {
+                if(!astNodesEqual(this->values.at(i), o->values.at(i))) return false;
             }
             return true;
         }
@@ -308,18 +300,17 @@ namespace sqlite2orm {
         AstNodePointer escape;
         bool negated;
 
-        LikeNode(AstNodePointer operand,
-                 AstNodePointer pattern,
-                 AstNodePointer escape,
-                 bool negated,
-                 SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), pattern(std::move(pattern)), escape(std::move(escape)),
-            negated(negated) {}
+        LikeNode(AstNodePointer operand, AstNodePointer pattern, AstNodePointer escape,
+                  bool negated, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)), pattern(std::move(pattern)),
+              escape(std::move(escape)), negated(negated) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const LikeNode*>(&other);
-            return o && this->negated == o->negated && astNodesEqual(this->operand, o->operand) &&
-                   astNodesEqual(this->pattern, o->pattern) && astNodesEqual(this->escape, o->escape);
+            return o && this->negated == o->negated &&
+                   astNodesEqual(this->operand, o->operand) &&
+                   astNodesEqual(this->pattern, o->pattern) &&
+                   astNodesEqual(this->escape, o->escape);
         }
     };
 
@@ -328,12 +319,15 @@ namespace sqlite2orm {
         AstNodePointer pattern;
         bool negated;
 
-        GlobNode(AstNodePointer operand, AstNodePointer pattern, bool negated, SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), pattern(std::move(pattern)), negated(negated) {}
+        GlobNode(AstNodePointer operand, AstNodePointer pattern,
+                  bool negated, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)),
+              pattern(std::move(pattern)), negated(negated) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const GlobNode*>(&other);
-            return o && this->negated == o->negated && astNodesEqual(this->operand, o->operand) &&
+            return o && this->negated == o->negated &&
+                   astNodesEqual(this->operand, o->operand) &&
                    astNodesEqual(this->pattern, o->pattern);
         }
     };
@@ -343,12 +337,15 @@ namespace sqlite2orm {
         AstNodePointer pattern;
         bool negated;
 
-        MatchNode(AstNodePointer operand, AstNodePointer pattern, bool negated, SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), pattern(std::move(pattern)), negated(negated) {}
+        MatchNode(AstNodePointer operand, AstNodePointer pattern,
+                   bool negated, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)),
+              pattern(std::move(pattern)), negated(negated) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const MatchNode*>(&other);
-            return o && this->negated == o->negated && astNodesEqual(this->operand, o->operand) &&
+            return o && this->negated == o->negated &&
+                   astNodesEqual(this->operand, o->operand) &&
                    astNodesEqual(this->pattern, o->pattern);
         }
     };
@@ -364,12 +361,10 @@ namespace sqlite2orm {
         AstNodePointer filterWhere;
         std::unique_ptr<OverClause> over;
 
-        FunctionCallNode(std::string name,
-                         std::vector<AstNodePointer> arguments,
-                         bool distinct,
-                         bool star,
-                         SourceLocation location) :
-            AstNode(location), name(std::move(name)), arguments(std::move(arguments)), distinct(distinct), star(star) {}
+        FunctionCallNode(std::string name, std::vector<AstNodePointer> arguments,
+                          bool distinct, bool star, SourceLocation location)
+            : AstNode(location), name(std::move(name)), arguments(std::move(arguments)),
+              distinct(distinct), star(star) {}
 
         bool operator==(const AstNode& other) const override;
     };
@@ -378,12 +373,13 @@ namespace sqlite2orm {
         AstNodePointer operand;
         std::string typeName;
 
-        CastNode(AstNodePointer operand, std::string typeName, SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), typeName(std::move(typeName)) {}
+        CastNode(AstNodePointer operand, std::string typeName, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)), typeName(std::move(typeName)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const CastNode*>(&other);
-            return o && this->typeName == o->typeName && astNodesEqual(this->operand, o->operand);
+            return o && this->typeName == o->typeName &&
+                   astNodesEqual(this->operand, o->operand);
         }
     };
 
@@ -392,7 +388,8 @@ namespace sqlite2orm {
         AstNodePointer result;
 
         bool operator==(const CaseBranch& other) const {
-            return astNodesEqual(this->condition, other.condition) && astNodesEqual(this->result, other.result);
+            return astNodesEqual(this->condition, other.condition) &&
+                   astNodesEqual(this->result, other.result);
         }
     };
 
@@ -401,16 +398,15 @@ namespace sqlite2orm {
         std::vector<CaseBranch> branches;
         AstNodePointer elseResult;
 
-        CaseNode(AstNodePointer operand,
-                 std::vector<CaseBranch> branches,
-                 AstNodePointer elseResult,
-                 SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), branches(std::move(branches)),
-            elseResult(std::move(elseResult)) {}
+        CaseNode(AstNodePointer operand, std::vector<CaseBranch> branches,
+                  AstNodePointer elseResult, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)),
+              branches(std::move(branches)), elseResult(std::move(elseResult)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const CaseNode*>(&other);
-            return o && astNodesEqual(this->operand, o->operand) && this->branches == o->branches &&
+            return o && astNodesEqual(this->operand, o->operand) &&
+                   this->branches == o->branches &&
                    astNodesEqual(this->elseResult, o->elseResult);
         }
     };
@@ -430,8 +426,8 @@ namespace sqlite2orm {
         AstNodePointer operand;
         std::string collationName;
 
-        CollateNode(AstNodePointer operand, std::string collationName, SourceLocation location) :
-            AstNode(location), operand(std::move(operand)), collationName(std::move(collationName)) {}
+        CollateNode(AstNodePointer operand, std::string collationName, SourceLocation location)
+            : AstNode(location), operand(std::move(operand)), collationName(std::move(collationName)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const CollateNode*>(&other);
@@ -443,8 +439,8 @@ namespace sqlite2orm {
         RaiseKind kind = RaiseKind::ignore;
         AstNodePointer message;
 
-        RaiseNode(RaiseKind kind, AstNodePointer message, SourceLocation location) :
-            AstNode(location), kind(kind), message(std::move(message)) {}
+        RaiseNode(RaiseKind kind, AstNodePointer message, SourceLocation location)
+            : AstNode(location), kind(kind), message(std::move(message)) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const RaiseNode*>(&other);
@@ -461,12 +457,11 @@ namespace sqlite2orm {
         NullsOrdering nulls = NullsOrdering::none;
 
         bool operator==(const OrderByTerm& other) const {
-            if (this->direction != other.direction || this->collation != other.collation || this->nulls != other.nulls)
+            if(this->direction != other.direction || this->collation != other.collation ||
+               this->nulls != other.nulls)
                 return false;
-            if (!this->expression && !other.expression)
-                return true;
-            if (!this->expression || !other.expression)
-                return false;
+            if(!this->expression && !other.expression) return true;
+            if(!this->expression || !other.expression) return false;
             return *this->expression == *other.expression;
         }
     };
@@ -498,20 +493,14 @@ namespace sqlite2orm {
         std::unique_ptr<WindowFrameSpec> frame;
 
         bool operator==(const OverClause& other) const {
-            if (namedWindow != other.namedWindow)
-                return false;
-            if (partitionBy.size() != other.partitionBy.size())
-                return false;
-            for (size_t i = 0; i < partitionBy.size(); ++i) {
-                if (!astNodesEqual(partitionBy.at(i), other.partitionBy.at(i)))
-                    return false;
+            if(namedWindow != other.namedWindow) return false;
+            if(partitionBy.size() != other.partitionBy.size()) return false;
+            for(size_t i = 0; i < partitionBy.size(); ++i) {
+                if(!astNodesEqual(partitionBy.at(i), other.partitionBy.at(i))) return false;
             }
-            if (orderBy != other.orderBy)
-                return false;
-            if (static_cast<bool>(frame) != static_cast<bool>(other.frame))
-                return false;
-            if (frame && other.frame && *frame != *other.frame)
-                return false;
+            if(orderBy != other.orderBy) return false;
+            if(static_cast<bool>(frame) != static_cast<bool>(other.frame)) return false;
+            if(frame && other.frame && *frame != *other.frame) return false;
             return true;
         }
     };

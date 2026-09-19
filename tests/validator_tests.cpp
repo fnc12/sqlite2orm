@@ -19,7 +19,8 @@ namespace {
 
 TEST_CASE("validator: unary plus not supported") {
     REQUIRE(validate("+5") == std::vector<ValidationError>{
-                                  {"unary plus (+expr) is not supported in sqlite_orm", {1, 1}, "UnaryOperatorNode"}});
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 1}, "UnaryOperatorNode"}
+    });
 }
 
 TEST_CASE("validator: unary minus is valid") {
@@ -30,17 +31,22 @@ TEST_CASE("validator: unary minus is valid") {
 // negation: `SELECT -0x8000000000000000` is `hex literal too big` in sqlite3 3.51, through
 // parentheses and a second sign too, while every neighbouring value is accepted.
 TEST_CASE("validator: negating the hex literal for INT64_MIN is rejected") {
-    REQUIRE(validate("-0x8000000000000000") ==
-            std::vector<ValidationError>{{"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}});
-    REQUIRE(validate("-(0x8000000000000000)") ==
-            std::vector<ValidationError>{{"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}});
-    REQUIRE(validate("- -0x8000000000000000") ==
-            std::vector<ValidationError>{{"hex literal too big: -0x8000000000000000", {1, 3}, "UnaryOperatorNode"}});
+    REQUIRE(validate("-0x8000000000000000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("-(0x8000000000000000)") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("- -0x8000000000000000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 3}, "UnaryOperatorNode"}
+    });
     // SQLite spells the literal back with the separators taken out and the leading zeros left in.
-    REQUIRE(validate("-0x8000_0000_0000_0000") ==
-            std::vector<ValidationError>{{"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}});
-    REQUIRE(validate("-0x0_8000_0000_0000_0000") ==
-            std::vector<ValidationError>{{"hex literal too big: -0x08000000000000000", {1, 1}, "UnaryOperatorNode"}});
+    REQUIRE(validate("-0x8000_0000_0000_0000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("-0x0_8000_0000_0000_0000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x08000000000000000", {1, 1}, "UnaryOperatorNode"}
+    });
     REQUIRE(validate("0x8000000000000000").empty());
     REQUIRE(validate("-0x8000000000000001").empty());
     REQUIRE(validate("-0x7FFFFFFFFFFFFFFF").empty());
@@ -53,9 +59,9 @@ TEST_CASE("validator: bitwise not is valid") {
 }
 
 TEST_CASE("validator: nested unary plus in expression") {
-    REQUIRE(validate("a + +b") ==
-            std::vector<ValidationError>{
-                {"unary plus (+expr) is not supported in sqlite_orm", {1, 5}, "UnaryOperatorNode"}});
+    REQUIRE(validate("a + +b") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 5}, "UnaryOperatorNode"}
+    });
 }
 
 TEST_CASE("validator: no errors for binary operators") {
@@ -94,24 +100,29 @@ TEST_CASE("validator: CAST is valid") {
 }
 
 TEST_CASE("validator: CAST validates operand") {
-    REQUIRE(validate("CAST(+a AS INTEGER)") ==
-            std::vector<ValidationError>{
-                {"unary plus (+expr) is not supported in sqlite_orm", {1, 6}, "UnaryOperatorNode"}});
+    REQUIRE(validate("CAST(+a AS INTEGER)") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 6}, "UnaryOperatorNode"}
+    });
 }
 
 TEST_CASE("validator: NATURAL LEFT JOIN not supported") {
     REQUIRE(validate("SELECT * FROM users NATURAL LEFT JOIN posts") ==
-            std::vector<ValidationError>{{"NATURAL LEFT JOIN is not supported in sqlite_orm", {1, 1}, "SelectNode"}});
+        std::vector<ValidationError>{
+            {"NATURAL LEFT JOIN is not supported in sqlite_orm", {1, 1}, "SelectNode"}
+        });
 }
 
 TEST_CASE("validator: INNER JOIN without ON fails") {
     REQUIRE(validate("SELECT * FROM users INNER JOIN posts") ==
-            std::vector<ValidationError>{{"JOIN requires ON or USING clause", {1, 1}, "SelectNode"}});
+        std::vector<ValidationError>{
+            {"JOIN requires ON or USING clause", {1, 1}, "SelectNode"}
+        });
 }
 
 TEST_CASE("validator: subselect in FROM not supported") {
     REQUIRE(validate("SELECT n FROM (SELECT 1 AS n) AS t") ==
-            std::vector<ValidationError>{{"subselect in FROM is not supported in sqlite_orm", {1, 16}, "SelectNode"}});
+        std::vector<ValidationError>{
+            {"subselect in FROM is not supported in sqlite_orm", {1, 16}, "SelectNode"}});
 }
 
 TEST_CASE("validator: CASE is valid") {
@@ -119,15 +130,36 @@ TEST_CASE("validator: CASE is valid") {
 }
 
 TEST_CASE("validator: CASE validates branches") {
-    REQUIRE(validate("CASE WHEN +a THEN 1 END") ==
-            std::vector<ValidationError>{
-                {"unary plus (+expr) is not supported in sqlite_orm", {1, 11}, "UnaryOperatorNode"}});
+    REQUIRE(validate("CASE WHEN +a THEN 1 END") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 11}, "UnaryOperatorNode"}
+    });
 }
 
 TEST_CASE("validator: validates function arguments recursively") {
-    REQUIRE(validate("abs(+a)") ==
-            std::vector<ValidationError>{
-                {"unary plus (+expr) is not supported in sqlite_orm", {1, 5}, "UnaryOperatorNode"}});
+    REQUIRE(validate("abs(+a)") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 5}, "UnaryOperatorNode"}
+    });
+}
+
+// LIMIT and OFFSET hold whole expressions, so the same rules apply there as in any other clause.
+TEST_CASE("validator: validates the LIMIT expression") {
+    REQUIRE(validate("SELECT a FROM users LIMIT +1") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 27}, "UnaryOperatorNode"}
+    });
+    REQUIRE(validate("SELECT a FROM users LIMIT 5, +1") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 30}, "UnaryOperatorNode"}
+    });
+}
+
+TEST_CASE("validator: validates the OFFSET expression") {
+    REQUIRE(validate("SELECT a FROM users LIMIT 1 OFFSET +2") == std::vector<ValidationError>{
+        {"unary plus (+expr) is not supported in sqlite_orm", {1, 36}, "UnaryOperatorNode"}
+    });
+}
+
+TEST_CASE("validator: an expression LIMIT is valid") {
+    REQUIRE(validate("SELECT a FROM users LIMIT -1").empty());
+    REQUIRE(validate("SELECT a FROM users LIMIT 2 * 3 OFFSET -1").empty());
 }
 
 // --- Phase 9: CREATE TABLE ---
@@ -138,13 +170,16 @@ TEST_CASE("validator: CREATE TABLE is valid") {
 
 TEST_CASE("validator: CREATE TABLE - duplicate column") {
     auto errors = validate("CREATE TABLE t (a INTEGER, a TEXT)");
-    REQUIRE(errors == std::vector<ValidationError>{{"duplicate column name: a", {}, "CreateTableNode"}});
+    REQUIRE(errors == std::vector<ValidationError>{
+        {"duplicate column name: a", {}, "CreateTableNode"}
+    });
 }
 
 TEST_CASE("validator: CREATE TABLE - AUTOINCREMENT without PRIMARY KEY") {
     auto errors = validate("CREATE TABLE t (id INTEGER AUTOINCREMENT)");
-    REQUIRE(errors ==
-            std::vector<ValidationError>{{"AUTOINCREMENT requires PRIMARY KEY on column: id", {}, "CreateTableNode"}});
+    REQUIRE(errors == std::vector<ValidationError>{
+        {"AUTOINCREMENT requires PRIMARY KEY on column: id", {}, "CreateTableNode"}
+    });
 }
 
 TEST_CASE("validator: CREATE TABLE - PRIMARY KEY AUTOINCREMENT is valid") {
@@ -245,8 +280,9 @@ TEST_CASE("validator: ALTER TABLE points to sync_schema") {
 
 TEST_CASE("validator: table-function in FROM gives validation error") {
     REQUIRE(validate("SELECT * FROM generate_series(1, 10)") ==
-            std::vector<ValidationError>{
-                {"table-valued function in FROM is not supported in sqlite_orm codegen", {1, 1}, "SelectNode"}});
+        std::vector<ValidationError>{
+            {"table-valued function in FROM is not supported in sqlite_orm codegen",
+             {1, 1}, "SelectNode"}});
 }
 
 TEST_CASE("validator: bind parameter is allowed") {
@@ -255,42 +291,66 @@ TEST_CASE("validator: bind parameter is allowed") {
 
 TEST_CASE("validator: IN table-name gives validation error") {
     REQUIRE(validate("SELECT * FROM t WHERE x IN tbl") ==
-            std::vector<ValidationError>{{"IN table-name is not supported in sqlite_orm", {1, 25}, "InNode"}});
+        std::vector<ValidationError>{
+            {"IN table-name is not supported in sqlite_orm", {1, 25}, "InNode"}});
 }
 
 TEST_CASE("validator: IN single-quoted table-name gives validation error") {
     REQUIRE(validate("SELECT * FROM t WHERE x IN 'tbl'") ==
-            std::vector<ValidationError>{{"IN table-name is not supported in sqlite_orm", {1, 25}, "InNode"}});
+        std::vector<ValidationError>{
+            {"IN table-name is not supported in sqlite_orm", {1, 25}, "InNode"}});
 }
 
 TEST_CASE("validator: IN CTE table-name is valid") {
-    REQUIRE(validate("WITH c AS (SELECT 1 AS a) SELECT * FROM t WHERE x IN c").empty());
+    REQUIRE(validate(
+        "WITH c AS (SELECT 1 AS a) SELECT * FROM t WHERE x IN c").empty());
 }
 
 TEST_CASE("validator: IN single-quoted CTE table-name is valid") {
-    REQUIRE(validate("WITH c AS (SELECT 1 AS a) SELECT * FROM t WHERE x IN 'c'").empty());
+    REQUIRE(validate(
+        "WITH c AS (SELECT 1 AS a) SELECT * FROM t WHERE x IN 'c'").empty());
 }
 
 TEST_CASE("validator: IS expr gives validation error") {
     REQUIRE(validate("SELECT a IS b FROM t") ==
-            std::vector<ValidationError>{{"binary IS / IS NOT is not supported in sqlite_orm "
-                                          "(only is_null / is_not_null for NULL checks)",
-                                          {1, 10},
-                                          "BinaryOperatorNode"}});
+        std::vector<ValidationError>{
+            {"binary IS / IS NOT is not supported in sqlite_orm "
+             "(only is_null / is_not_null for NULL checks)",
+             {1, 10}, "BinaryOperatorNode"}});
 }
 
 TEST_CASE("validator: IS NOT expr gives validation error") {
     REQUIRE(validate("SELECT a IS NOT b FROM t") ==
-            std::vector<ValidationError>{{"binary IS / IS NOT is not supported in sqlite_orm "
-                                          "(only is_null / is_not_null for NULL checks)",
-                                          {1, 10},
-                                          "BinaryOperatorNode"}});
+        std::vector<ValidationError>{
+            {"binary IS / IS NOT is not supported in sqlite_orm "
+             "(only is_null / is_not_null for NULL checks)",
+             {1, 10}, "BinaryOperatorNode"}});
+}
+
+// `a IS NULL - 1` is `a IS (NULL - 1)` in SQLite, i.e. a binary IS over an expression and not the
+// is_null predicate, so the same rule has to catch it. sqlite3 3.51 answers `SELECT 7 IS NULL - 1`
+// with 0 and `SELECT 7 IS NOT NULL - 1` with 1.
+TEST_CASE("validator: IS NULL over an expression gives validation error") {
+    REQUIRE(validate("SELECT a IS NULL - 1 FROM t") ==
+        std::vector<ValidationError>{
+            {"binary IS / IS NOT is not supported in sqlite_orm "
+             "(only is_null / is_not_null for NULL checks)",
+             {1, 10}, "BinaryOperatorNode"}});
+}
+
+TEST_CASE("validator: IS NOT NULL over an expression gives validation error") {
+    REQUIRE(validate("SELECT a IS NOT NULL - 1 FROM t") ==
+        std::vector<ValidationError>{
+            {"binary IS / IS NOT is not supported in sqlite_orm "
+             "(only is_null / is_not_null for NULL checks)",
+             {1, 10}, "BinaryOperatorNode"}});
 }
 
 TEST_CASE("validator: IS DISTINCT FROM gives validation error") {
     REQUIRE(validate("SELECT a IS DISTINCT FROM b FROM t") ==
-            std::vector<ValidationError>{
-                {"IS [NOT] DISTINCT FROM is not supported in sqlite_orm", {1, 10}, "BinaryOperatorNode"}});
+        std::vector<ValidationError>{
+            {"IS [NOT] DISTINCT FROM is not supported in sqlite_orm",
+             {1, 10}, "BinaryOperatorNode"}});
 }
 
 TEST_CASE("validator: STRICT table passes validation (codegen warns instead)") {
@@ -299,7 +359,9 @@ TEST_CASE("validator: STRICT table passes validation (codegen warns instead)") {
 
 TEST_CASE("validator: UPDATE FROM gives validation error") {
     REQUIRE(validate("UPDATE t SET a = 1 FROM b WHERE t.id = b.id") ==
-            std::vector<ValidationError>{{"UPDATE ... FROM ... is not supported in sqlite_orm", {1, 1}, "UpdateNode"}});
+        std::vector<ValidationError>{
+            {"UPDATE ... FROM ... is not supported in sqlite_orm",
+             {1, 1}, "UpdateNode"}});
 }
 
 TEST_CASE("validator: SAVEPOINT is supported") {
@@ -315,25 +377,31 @@ TEST_CASE("validator: ROLLBACK TO SAVEPOINT is supported") {
 }
 
 TEST_CASE("validator: ATTACH DATABASE gives validation error") {
-    REQUIRE(
-        validate("ATTACH 'test.db' AS aux") ==
-        std::vector<ValidationError>{{"ATTACH DATABASE is not supported in sqlite_orm", {1, 1}, "AttachDatabaseNode"}});
+    REQUIRE(validate("ATTACH 'test.db' AS aux") ==
+        std::vector<ValidationError>{
+            {"ATTACH DATABASE is not supported in sqlite_orm",
+             {1, 1}, "AttachDatabaseNode"}});
 }
 
 TEST_CASE("validator: DETACH DATABASE gives validation error") {
-    REQUIRE(
-        validate("DETACH aux") ==
-        std::vector<ValidationError>{{"DETACH DATABASE is not supported in sqlite_orm", {1, 1}, "DetachDatabaseNode"}});
+    REQUIRE(validate("DETACH aux") ==
+        std::vector<ValidationError>{
+            {"DETACH DATABASE is not supported in sqlite_orm",
+             {1, 1}, "DetachDatabaseNode"}});
 }
 
 TEST_CASE("validator: ANALYZE gives validation error") {
     REQUIRE(validate("ANALYZE") ==
-            std::vector<ValidationError>{{"ANALYZE is not supported in sqlite_orm", {1, 1}, "AnalyzeNode"}});
+        std::vector<ValidationError>{
+            {"ANALYZE is not supported in sqlite_orm",
+             {1, 1}, "AnalyzeNode"}});
 }
 
 TEST_CASE("validator: REINDEX gives validation error") {
     REQUIRE(validate("REINDEX") ==
-            std::vector<ValidationError>{{"REINDEX is not supported in sqlite_orm", {1, 1}, "ReindexNode"}});
+        std::vector<ValidationError>{
+            {"REINDEX is not supported in sqlite_orm",
+             {1, 1}, "ReindexNode"}});
 }
 
 TEST_CASE("validator: PRAGMA journal_mode is allowed") {
@@ -342,37 +410,44 @@ TEST_CASE("validator: PRAGMA journal_mode is allowed") {
 
 TEST_CASE("validator: unknown PRAGMA gives validation error") {
     REQUIRE(validate("PRAGMA foreign_keys") ==
-            std::vector<ValidationError>{{"PRAGMA foreign_keys is not wrapped by sqlite_orm::storage::pragma "
-                                          "(see sqlite_orm dev/pragma.h for supported pragmas)",
-                                          {1, 1},
-                                          "PragmaNode"}});
+        std::vector<ValidationError>{
+            {"PRAGMA foreign_keys is not wrapped by sqlite_orm::storage::pragma "
+             "(see sqlite_orm dev/pragma.h for supported pragmas)",
+             {1, 1}, "PragmaNode"}});
 }
 
 TEST_CASE("validator: schema-qualified PRAGMA gives validation error") {
     REQUIRE(validate("PRAGMA main.journal_mode") ==
-            std::vector<ValidationError>{{"schema-qualified PRAGMA is not represented in sqlite_orm::storage::pragma "
-                                          "(use the main database connection only)",
-                                          {1, 1},
-                                          "PragmaNode"}});
+        std::vector<ValidationError>{
+            {"schema-qualified PRAGMA is not represented in sqlite_orm::storage::pragma "
+             "(use the main database connection only)",
+             {1, 1}, "PragmaNode"}});
 }
 
 TEST_CASE("validator: EXPLAIN gives validation error") {
     REQUIRE(validate("EXPLAIN SELECT 1") ==
-            std::vector<ValidationError>{{"EXPLAIN is not supported in sqlite_orm", {1, 1}, "ExplainNode"}});
+        std::vector<ValidationError>{
+            {"EXPLAIN is not supported in sqlite_orm",
+             {1, 1}, "ExplainNode"}});
 }
 
 TEST_CASE("validator: NULLS FIRST gives validation error") {
     REQUIRE(validate("SELECT * FROM t ORDER BY a NULLS FIRST") ==
-            std::vector<ValidationError>{
-                {"NULLS FIRST / NULLS LAST is not supported in sqlite_orm", {1, 1}, "SelectNode"}});
+        std::vector<ValidationError>{
+            {"NULLS FIRST / NULLS LAST is not supported in sqlite_orm",
+             {1, 1}, "SelectNode"}});
 }
 
 TEST_CASE("validator: INSERT RETURNING gives validation error") {
     REQUIRE(validate("INSERT INTO t (a) VALUES (1) RETURNING id") ==
-            std::vector<ValidationError>{{"RETURNING clause is not supported in sqlite_orm", {1, 1}, "InsertNode"}});
+        std::vector<ValidationError>{
+            {"RETURNING clause is not supported in sqlite_orm",
+             {1, 1}, "InsertNode"}});
 }
 
 TEST_CASE("validator: DELETE RETURNING gives validation error") {
     REQUIRE(validate("DELETE FROM t WHERE id = 1 RETURNING id") ==
-            std::vector<ValidationError>{{"RETURNING clause is not supported in sqlite_orm", {1, 1}, "DeleteNode"}});
+        std::vector<ValidationError>{
+            {"RETURNING clause is not supported in sqlite_orm",
+             {1, 1}, "DeleteNode"}});
 }

@@ -21,34 +21,34 @@ namespace sqlite2orm {
         bindParameter,
 
         // Operators
-        plus,  // +
-        minus,  // -
-        star,  // *
-        slash,  // /
-        percent,  // %
-        pipe2,  // ||
-        eq,  // =
-        eq2,  // ==
-        ne,  // !=
-        ltGt,  // <>
-        lt,  // <
-        le,  // <=
-        gt,  // >
-        ge,  // >=
-        ampersand,  // &
-        pipe,  // |
-        tilde,  // ~
-        shiftLeft,  // <<
-        shiftRight,  // >>
-        arrow,  // ->
-        arrow2,  // ->>
+        plus,            // +
+        minus,           // -
+        star,            // *
+        slash,           // /
+        percent,         // %
+        pipe2,           // ||
+        eq,              // =
+        eq2,             // ==
+        ne,              // !=
+        ltGt,            // <>
+        lt,              // <
+        le,              // <=
+        gt,              // >
+        ge,              // >=
+        ampersand,       // &
+        pipe,            // |
+        tilde,           // ~
+        shiftLeft,       // <<
+        shiftRight,      // >>
+        arrow,           // ->
+        arrow2,          // ->>
 
         // Punctuation
-        leftParen,  // (
-        rightParen,  // )
-        comma,  // ,
-        dot,  // .
-        semicolon,  // ;
+        leftParen,       // (
+        rightParen,      // )
+        comma,           // ,
+        dot,             // .
+        semicolon,       // ;
 
         // Keywords (alphabetical)
         kwAbort,
@@ -228,5 +228,14 @@ namespace sqlite2orm {
     std::string_view tokenTypeName(TokenType type);
 
     std::optional<TokenType> keywordFromIdentifier(std::string_view word);
+
+    /**
+     *  Whether SQLite folds this keyword back into an identifier, so that it stands wherever the
+     *  grammar asks for a name. Its parser does this with a `%fallback ID …` list, and the join
+     *  keywords reach the same rule through `idj`. `ON`, `DELETE` and `DEFAULT` are not among
+     *  these — they are reserved, and the rules that take them anyway, `nmnum` of a PRAGMA value
+     *  for one, name them on top of a name.
+     */
+    bool isKeywordUsableAsName(TokenType type);
 
 }  // namespace sqlite2orm

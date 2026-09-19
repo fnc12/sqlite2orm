@@ -122,6 +122,21 @@ namespace sqlite2orm {
          *  (a storage method that cannot be a `with()` argument). Consumed once by the outer select.
          */
         bool withOuterSelect = false;
+        /**
+         *  Set while generating the operand of a logical NOT. `operator!` is the one sqlite_orm
+         *  operator that keeps the `c(...)` wrapper its operand carries instead of unwrapping it,
+         *  and the walker that collects the tables a statement reads stops at such a wrapper. A
+         *  column reference generated here therefore takes the `column<T>(&T::x)` form, which
+         *  names the same column and which that walker does read.
+         */
+        bool columnRefUnderLogicalNot = false;
+        /**
+         *  Set by the column reference branch when `columnRefUnderLogicalNot` made it emit that
+         *  column-pointer form, and read back by the NOT that asked for it. A column naming a
+         *  SELECT alias answers earlier, with `get<Alias>()`, and leaves this false: no column
+         *  pointer came out of it, so it keeps the wrapper and the explanation that form replaces.
+         */
+        bool emittedColumnPointerUnderLogicalNot = false;
 
         /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
         std::vector<CustomFunctionUse> customFunctions;

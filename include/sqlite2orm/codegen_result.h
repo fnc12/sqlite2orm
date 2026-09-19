@@ -12,7 +12,8 @@ namespace sqlite2orm {
      *  A codegen warning, optionally anchored to a span of the source SQL so a consumer can
      *  underline the relevant text. Implicitly constructible from a string, so the many plain
      *  `warnings.push_back("…")` sites keep compiling; only sites with a known location set one.
-     *  Equality ignores the location (advisory), so existing message-based comparisons still hold.
+     *  Equality covers the span as well as the message, so a test that pins a warning pins what it
+     *  underlines: anchoring a warning that was plain updates every expectation of it.
      */
     struct CodegenWarning {
         std::string message;

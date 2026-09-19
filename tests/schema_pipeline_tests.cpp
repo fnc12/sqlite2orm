@@ -701,6 +701,52 @@ storage.insert(into<T>(), columns(&T::id, &T::name), values(std::make_tuple(1, "
     REQUIRE(header == expected);
 }
 
+// A whole schema follows the same decision: targeting C++26, every table it merges into
+// make_storage() is mapped by reflection, and the decision points of the tables reach the caller
+// along with those of the views and the indices.
+TEST_CASE("generateSqliteSchemaHeader: targeting C++26 merges reflected tables") {
+    auto pipelines = processMultiSql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);");
+    REQUIRE(pipelines.size() == 1);
+    REQUIRE(pipelines[0].ok());
+
+    ProcessSqliteSchemaResult schema;
+    for (auto& p: pipelines) {
+        SchemaStatementResult s;
+        s.meta.type = "table";
+        s.pipeline = std::move(p);
+        schema.statements.push_back(std::move(s));
+    }
+
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    const CodeGenResult header = generateSqliteSchemaHeader(schema, &policy);
+    REQUIRE(header.code == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct [[= "t"_orm_name]] T {
+    [[= primary_key()]] int64_t id = 0;
+    std::optional<std::string> name;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table<T>());
+}
+)");
+    REQUIRE(header.decisionPoints.size() == 1);
+    REQUIRE(header.decisionPoints.at(0).category == "table_mapping_style");
+    REQUIRE(header.decisionPoints.at(0).chosenValue == "reflection");
+    REQUIRE(header.warnings.empty());
+    REQUIRE(header.errors.empty());
+}
+
 TEST_CASE("sqliteSchemaResultToJson: shape") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");

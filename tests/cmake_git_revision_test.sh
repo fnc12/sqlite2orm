@@ -52,6 +52,15 @@ test "[]" = "$(revision_of "$dir/outer/build/_deps/headers-src/include")"
 ln -s "$dir/outer/build/_deps/headers-src" "$dir/headers-link"
 test "[$headers_head]" = "$(revision_of "$dir/headers-link")"
 
+# GIT_DIR in the environment -- a hook, `git bisect run` -- makes `-C <dir> rev-parse
+# --show-toplevel` answer with <dir> itself whatever <dir> is, which would walk the check above
+# straight past a directory that is no checkout and hand back the commit of the repository GIT_DIR
+# names. The queries run without it, so the answers do not change.
+test "[]" = "$(GIT_DIR="$dir/outer/.git" && export GIT_DIR &&
+    revision_of "$dir/outer/build/_deps/headers-nogit")"
+test "[$headers_head]" = "$(GIT_WORK_TREE="$dir/outer" && export GIT_WORK_TREE &&
+    revision_of "$dir/outer/build/_deps/headers-src")"
+
 # Outside any repository, and pointed at a directory that does not exist at all.
 test "[]" = "$(revision_of "$dir")"
 test "[]" = "$(revision_of "$dir/missing")"

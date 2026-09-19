@@ -435,9 +435,37 @@ TEST_CASE("codegen: PRAGMA journal_mode = 'delete'") {
             CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::DELETE_);", {}, {}, {}});
 }
 
+// The remaining journal modes SQLite has, each an enumerator of its own in sqlite_orm. Checked
+// against libsqlite3 3.45.1: `PRAGMA journal_mode = <mode>` reads back the mode it was given for
+// every one of them.
+TEST_CASE("codegen: PRAGMA journal_mode = TRUNCATE") {
+    REQUIRE(generateFull("PRAGMA journal_mode = TRUNCATE;") ==
+            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::TRUNCATE);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA journal_mode = PERSIST") {
+    REQUIRE(generateFull("PRAGMA journal_mode = PERSIST;") ==
+            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::PERSIST);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA journal_mode = MEMORY") {
+    REQUIRE(generateFull("PRAGMA journal_mode = MEMORY;") ==
+            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::MEMORY);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA journal_mode = OFF") {
+    REQUIRE(generateFull("PRAGMA journal_mode = OFF;") ==
+            CodeGenResult{"storage.pragma.journal_mode(sqlite_orm::journal_mode::OFF);", {}, {}, {}});
+}
+
 TEST_CASE("codegen: PRAGMA locking_mode = EXCLUSIVE") {
     REQUIRE(generateFull("PRAGMA locking_mode = EXCLUSIVE;") ==
             CodeGenResult{"storage.pragma.locking_mode(sqlite_orm::locking_mode::EXCLUSIVE);", {}, {}, {}});
+}
+
+TEST_CASE("codegen: PRAGMA locking_mode = NORMAL") {
+    REQUIRE(generateFull("PRAGMA locking_mode = NORMAL;") ==
+            CodeGenResult{"storage.pragma.locking_mode(sqlite_orm::locking_mode::NORMAL);", {}, {}, {}});
 }
 
 TEST_CASE("codegen: PRAGMA table_info of a table named after a keyword") {
@@ -864,12 +892,22 @@ namespace {
 // the Windows SDK has taken, but a mode name is only ever an enumerator in someone else's
 // translation unit, so the probe covers the whole set rather than that one name.
 TEST_CASE("codegen: generated journal_mode calls compile with the Windows DELETE macro in scope") {
+    // A mode codegen has no enumerator for becomes an error, and an errored result carries no code
+    // at all — the probe would then compile a program with nothing in it and pass on an empty set.
+    // Every statement handed to the compiler has to be a call codegen really produced.
+    const auto generateCall = [](const std::string& sql) {
+        const CodeGenResult result = generateFull(sql);
+        REQUIRE(result.errors == std::vector<std::string>{});
+        REQUIRE(result.code != std::string{});
+        return result.code;
+    };
+
     std::vector<std::string> statements;
     for(const std::string mode: {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}) {
-        statements.push_back(generateFull("PRAGMA journal_mode = " + mode + ";").code);
+        statements.push_back(generateCall("PRAGMA journal_mode = " + mode + ";"));
     }
     for(const std::string mode: {"NORMAL", "EXCLUSIVE"}) {
-        statements.push_back(generateFull("PRAGMA locking_mode = " + mode + ";").code);
+        statements.push_back(generateCall("PRAGMA locking_mode = " + mode + ";"));
     }
     requireCompilesWithWindowsDeleteMacro(statements);
 }

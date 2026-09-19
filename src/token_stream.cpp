@@ -1,6 +1,7 @@
 #include <sqlite2orm/token_stream.h>
 
 #include <algorithm>
+#include <string>
 
 namespace sqlite2orm {
 
@@ -43,7 +44,7 @@ namespace sqlite2orm {
             return SourceSpan{};
         }
         const size_t length = static_cast<size_t>(last.value.data() + last.value.size() - first.value.data());
-        return SourceSpan{first.location, std::string_view(first.value.data(), length)};
+        return SourceSpan{first.location, std::string(first.value.data(), length)};
     }
 
     bool TokenStream::atEnd() const {

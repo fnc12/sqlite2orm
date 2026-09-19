@@ -53,12 +53,15 @@ namespace sqlite2orm {
 
     struct BoolLiteralNode : AstNode {
         bool value;
+        /** The keyword as written: `TRUE`, `FALSE` or `ON`, whichever case it came in. */
+        std::string_view spelling;
 
-        BoolLiteralNode(bool value, SourceLocation location) : AstNode(location), value(value) {}
+        BoolLiteralNode(bool value, std::string_view spelling, SourceLocation location)
+            : AstNode(location), value(value), spelling(spelling) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const BoolLiteralNode*>(&other);
-            return o && this->value == o->value;
+            return o && this->value == o->value && this->spelling == o->spelling;
         }
     };
 

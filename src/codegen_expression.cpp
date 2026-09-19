@@ -1193,8 +1193,7 @@ namespace sqlite2orm {
             } else {
                 // A marker with nothing behind it — a lone `:`, which SQLite refuses outright —
                 // names no variable, so a placeholder stands where the value would have gone.
-                return unsupportedPlaceholder(paramStr, bindParameterMessage(placeholderCode(paramStr)),
-                                              *bindParam);
+                return unsupportedPlaceholder(paramStr, bindParameterMessage, *bindParam);
             }
             return CodeGenResult{cppVar, {}, {bindParameterMessage(cppVar)}};
         } else if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {

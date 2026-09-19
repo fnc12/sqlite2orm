@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -254,8 +255,6 @@ namespace sqlite2orm {
      *  is a node no parse built — one a test constructed by hand, say.
      */
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
-    /** The `/*` … `*\/` placeholder text `unsupportedPlaceholder` generates for `label`. */
-    std::string placeholderCode(std::string_view label);
     /**
      *  The code generated in place of a construct sqlite_orm has no form for: a `/*` … `*\/`
      *  placeholder named by `label`, and `message` anchored at the construct appended to the
@@ -270,6 +269,15 @@ namespace sqlite2orm {
      */
     CodeGenResult unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode,
                                          CodeGenResult carried = {});
+    /** A placeholder's message built from the placeholder text itself. */
+    using PlaceholderMessage = std::function<std::string(const std::string& placeholder)>;
+    /**
+     *  The same, for a message that quotes the placeholder text itself: `message` is handed the
+     *  `/*` … `*\/` the placeholder generates, so that the shape of a placeholder stays known to
+     *  this one function and a caller cannot spell a second one of its own.
+     */
+    CodeGenResult unsupportedPlaceholder(std::string_view label, const PlaceholderMessage& message,
+                                         const AstNode& astNode, CodeGenResult carried = {});
     /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.

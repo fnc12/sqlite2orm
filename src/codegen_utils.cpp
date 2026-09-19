@@ -853,14 +853,26 @@ namespace sqlite2orm {
                               underlineLengthOf(astNode.sourceSpan.text)};
     }
 
-    std::string placeholderCode(std::string_view label) {
-        return "/* " + std::string(label) + " */";
-    }
+    namespace {
+
+        /** The `/*` … `*\/` placeholder text a funnelled placeholder generates for `label`. */
+        std::string placeholderCode(std::string_view label) {
+            return "/* " + std::string(label) + " */";
+        }
+
+    }  // namespace
 
     CodeGenResult unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode,
                                          CodeGenResult carried) {
         carried.code = placeholderCode(label);
         carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
+        return carried;
+    }
+
+    CodeGenResult unsupportedPlaceholder(std::string_view label, const PlaceholderMessage& message,
+                                         const AstNode& astNode, CodeGenResult carried) {
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(message(carried.code), astNode));
         return carried;
     }
 

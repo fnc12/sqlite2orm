@@ -217,19 +217,25 @@ namespace sqlite2orm {
 
     /**
      *  A stretch of the SQL something was parsed from: where it starts and the text it covers. The
-     *  text points into the very SQL the tokens were made from, so it names the characters a
-     *  diagnostic about that something underlines rather than a spelling built for the message.
-     *  Empty for anything no parse recorded a span for, a node a test builds by hand among them.
+     *  text is a copy of the very characters a diagnostic about that something underlines, not a
+     *  spelling built for the message, and it is owned: the AST a span sits on stays readable once
+     *  the SQL it was parsed from is gone. Empty for anything no parse recorded a span for, a node
+     *  a test builds by hand among them.
      */
     struct SourceSpan {
         SourceLocation location;
-        std::string_view text;
+        std::string text;
 
         bool operator==(const SourceSpan&) const = default;
     };
 
     struct Token {
         TokenType type = TokenType::eof;
+        /**
+         *  The token as written, a view into the SQL it was tokenized from: that SQL has to outlive
+         *  every token made from it. What a parse keeps, on the other hand, does not view the SQL —
+         *  see `ParseResult`.
+         */
         std::string_view value;
         SourceLocation location;
 

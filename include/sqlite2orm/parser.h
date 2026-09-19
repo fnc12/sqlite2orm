@@ -13,6 +13,11 @@
 
 namespace sqlite2orm {
 
+    /**
+     *  What one parse answers with. Everything in it owns its text: the AST keeps no view into the
+     *  SQL the tokens were made from, so a consumer is free to parse once, let the SQL go, and
+     *  generate from the AST whenever it likes.
+     */
     struct ParseResult {
         AstNodePointer astNodePointer;
         std::vector<ParseError> errors;
@@ -41,7 +46,13 @@ namespace sqlite2orm {
         Parser(const Parser&) = delete;
         Parser& operator=(const Parser&) = delete;
 
+        /**
+         *  Parses the first statement of `tokens`. The SQL those tokens view into has to be alive
+         *  for the call; the AST that comes back copies what it needs out of it and is readable
+         *  afterwards on its own.
+         */
         ParseResult parse(std::vector<Token> tokens);
+        /** Same, for every semicolon-separated statement; the same lifetimes hold. */
         std::vector<ParseResult> parseAll(std::vector<Token> tokens);
 
         TokenStream& tokens() {

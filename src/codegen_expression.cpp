@@ -919,6 +919,10 @@ namespace sqlite2orm {
             this->context.recordFormWithoutDefaultConstructor("EXISTS");
             return CodeGenResult{"exists(" + sub.code + ")", std::move(sub.decisionPoints), std::move(sub.warnings)};
         } else if (auto* inNode = dynamic_cast<const InNode*>(&astNode)) {
+            // An IN whose right-hand side sqlite_orm has no form for generates a placeholder, and
+            // the operand generated for it goes with the rest of the node: the comments recorded
+            // from here on explain forms that are then not in the generated code at all.
+            const size_t inCommentMark = this->context.commentMark();
             if (!inNode->tableName.empty()) {
                 auto operandResult = this->coordinator.generateNode(*inNode->operand);
                 const std::string normalizedTableKey = normalizeSqlIdentifier(inNode->tableName);
@@ -999,6 +1003,7 @@ namespace sqlite2orm {
                 CodeGenResult carried;
                 carried.decisionPoints = std::move(operandResult.decisionPoints);
                 carried.warnings = std::move(operandResult.warnings);
+                this->context.discardCommentsSince(inCommentMark);
                 return unsupportedPlaceholder(operandResult.code + " IN " + inNode->tableName,
                                               "IN table-name is not supported in sqlite_orm codegen",
                                               *inNode,
@@ -1022,6 +1027,7 @@ namespace sqlite2orm {
                     CodeGenResult carried;
                     carried.decisionPoints = std::move(decisionPoints);
                     carried.warnings = std::move(inSubWarnings);
+                    this->context.discardCommentsSince(inCommentMark);
                     return unsupportedPlaceholder("IN (SELECT ...)",
                                                   "IN (SELECT ...) is not mapped to sqlite_orm codegen",
                                                   *inNode,

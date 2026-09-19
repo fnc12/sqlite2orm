@@ -203,6 +203,15 @@ namespace sqlite2orm {
         std::vector<std::string> takeCommentsSince(size_t mark);
 
         /**
+         *  Drops the comments recorded past `mark`, leaving the earlier ones in place. A generator
+         *  that throws away what it generated — a fragment replaced by a placeholder, a statement
+         *  that ends up with no code at all — marks before it starts and drops here: a comment
+         *  explains the form some generated code took, and a consumer shown one for code it did not
+         *  get reads it as a statement about the code it did.
+         */
+        void discardCommentsSince(size_t mark);
+
+        /**
          *  How many statements of the current batch already declared each result variable
          *  (`rows`, `vtab`, …). `processMultiSql` carries it from one statement to the next so
          *  that every statement gets its own name.

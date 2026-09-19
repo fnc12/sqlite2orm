@@ -10,7 +10,7 @@ namespace sqlite2orm {
         coordinator(coordinator), context(context) {}
 
     CodeGenResult SelectCodeGenerator::generateCompoundSelect(const CompoundSelectNode& compoundNode) {
-        auto inner = this->tryCodegenCompoundSelectSubexpression(compoundNode);
+        auto inner = this->coordinator.tryCodegenCompoundSelectSubexpression(compoundNode);
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if (inner.code.empty()) {
             auto placeholder = unsupportedPlaceholder("compound SELECT",
@@ -1018,7 +1018,7 @@ namespace sqlite2orm {
         if (!firstSelect) {
             return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
         }
-        CodeGenResult accumulated = this->tryCodegenSqliteSelectSubexpression(*firstSelect);
+        CodeGenResult accumulated = this->coordinator.tryCodegenSqliteSelectSubexpression(*firstSelect);
         if (accumulated.code.empty()) {
             return accumulated;
         }
@@ -1027,7 +1027,7 @@ namespace sqlite2orm {
             if (!nextSelect) {
                 return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
             }
-            CodeGenResult nextArm = this->tryCodegenSqliteSelectSubexpression(*nextSelect);
+            CodeGenResult nextArm = this->coordinator.tryCodegenSqliteSelectSubexpression(*nextSelect);
             accumulated.decisionPoints.insert(accumulated.decisionPoints.end(),
                                               std::make_move_iterator(nextArm.decisionPoints.begin()),
                                               std::make_move_iterator(nextArm.decisionPoints.end()));
@@ -1046,13 +1046,13 @@ namespace sqlite2orm {
 
     CodeGenResult SelectCodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node) {
         if (auto* selectNode = dynamic_cast<const SelectNode*>(&node)) {
-            return this->tryCodegenSqliteSelectSubexpression(*selectNode);
+            return this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode);
         }
         if (auto* compoundNode = dynamic_cast<const CompoundSelectNode*>(&node)) {
-            return this->tryCodegenCompoundSelectSubexpression(*compoundNode);
+            return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundNode);
         }
         if (auto* withQueryNode = dynamic_cast<const WithQueryNode*>(&node)) {
-            auto inner = this->tryCodegenSelectLikeSubquery(*withQueryNode->statement);
+            auto inner = this->coordinator.tryCodegenSelectLikeSubquery(*withQueryNode->statement);
             std::vector<CodegenWarning> subWarnings = std::move(inner.warnings);
             subWarnings.insert(subWarnings.begin(),
                                "nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs; generated code "

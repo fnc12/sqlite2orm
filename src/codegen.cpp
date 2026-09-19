@@ -206,9 +206,7 @@ namespace sqlite2orm {
 
     CodeGenResult CodeGenerator::generateNode(const AstNode& astNode) {
         const size_t mark = this->generatorContext->commentMark();
-        CodeGenResult result = this->dispatchNode(astNode);
-        appendUniqueStrings(result.comments, this->generatorContext->commentsRecordedSince(mark));
-        return result;
+        return this->withRecordedComments(this->dispatchNode(astNode), mark);
     }
 
     CodeGenResult CodeGenerator::dispatchNode(const AstNode& astNode) {
@@ -322,6 +320,15 @@ namespace sqlite2orm {
     }
 
     CodeGenResult CodeGenerator::withRecordedComments(CodeGenResult result, size_t mark) const {
+        if (result.code.empty()) {
+            // Nothing was generated, so there is no form left for a comment recorded here to
+            // explain: a node that answers with no code has its comments dropped along with the
+            // code the generation of it threw away. An index sqlite_orm has no form for is the
+            // whole statement doing this — it generates its expression, drops the statement and
+            // would otherwise explain a `0 - expr` the consumer never gets.
+            this->generatorContext->discardCommentsSince(mark);
+            return result;
+        }
         appendUniqueStrings(result.comments, this->generatorContext->commentsRecordedSince(mark));
         return result;
     }

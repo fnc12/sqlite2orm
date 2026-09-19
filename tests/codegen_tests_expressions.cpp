@@ -1894,3 +1894,45 @@ TEST_CASE("codegen: a statement entry point takes only the comments its own body
     REQUIRE(reusedGenerator.createViewParts(*createViewNode).comments == viewComments);
     REQUIRE(reusedGenerator.createTableParts(*createTableNode).comments == tableComments);
 }
+
+// A comment explains the form some generated code took, so it belongs with the code a consumer is
+// given. A fragment the generator throws away — a subquery sqlite_orm has no form for, an index it
+// cannot map at all — takes the comments recorded while generating it with it, and the code the
+// statement did generate around that fragment keeps its own.
+TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") {
+    // sqlite_orm deduces the table an index is made for from its columns and `make_unique_index`
+    // has no overload naming that table, so a UNIQUE index over an expression generates the
+    // expression and then leaves the whole statement out: nothing the comment explains is emitted.
+    const CodeGenResult uniqueIndex = generateFull("CREATE UNIQUE INDEX i ON t (-a);");
+    REQUIRE(uniqueIndex.code.empty());
+    REQUIRE(uniqueIndex.comments == std::vector<std::string>{});
+
+    // The first arm of a compound SELECT is generated before the second one turns out not to be
+    // mapped, and the placeholder that stands for the compound stands for that arm as well.
+    const CodeGenResult compound = generateFull("SELECT -a FROM t UNION SELECT -a FROM t GROUP BY a;");
+    REQUIRE(compound.code == "/* compound SELECT */");
+    REQUIRE(compound.comments == std::vector<std::string>{});
+
+    // The operand of an IN is generated before its subquery turns out not to be mapped, and the
+    // placeholder replaces the whole predicate, the operand included.
+    const CodeGenResult inOperand = generateFull("SELECT b FROM t WHERE -a IN (SELECT b FROM t GROUP BY b);");
+    REQUIRE(inOperand.code == "auto rows = storage.select(&T::b, where(/* IN (SELECT ...) */));");
+    REQUIRE(inOperand.comments == std::vector<std::string>{});
+
+    // What the statement generated around the thrown-away fragment keeps the comments it recorded.
+    const CodeGenResult aroundPlaceholder =
+        generateFull("SELECT 1 - (b LIKE 'x') FROM t WHERE a IN (SELECT -a FROM t UNION SELECT -a FROM t GROUP BY a);");
+    REQUIRE(aroundPlaceholder.code ==
+            "auto rows = storage.select(as_optional(c(1) - cast<int64_t>(like(&T::b, \"x\"))), "
+            "where(/* IN (SELECT ...) */));");
+    REQUIRE(aroundPlaceholder.comments == std::vector<std::string>{kPredicateCastComment});
+
+    // The same comment on both sides of the line: the negation of the trigger's WHEN clause is
+    // generated and keeps it, and the negation of the step that is replaced by a placeholder does
+    // not — a thrown-away fragment loses its own comments and no more than those.
+    const CodeGenResult triggerWhen = generateFull(
+        "CREATE TRIGGER tr AFTER INSERT ON t WHEN -a BEGIN SELECT -a FROM t UNION SELECT a FROM t GROUP BY a; END;");
+    REQUIRE(triggerWhen.code == "make_trigger(\"tr\", after().insert().on<T>().when((c(0) - c(&T::a)))"
+                                ".begin(/* trigger step not mapped to sqlite_orm */));");
+    REQUIRE(triggerWhen.comments == std::vector<std::string>{kZeroMinusComment});
+}

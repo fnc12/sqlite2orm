@@ -272,10 +272,14 @@ namespace sqlite2orm {
 
     std::vector<std::string> CodeGeneratorContext::takeCommentsSince(size_t mark) {
         std::vector<std::string> taken = this->commentsRecordedSince(mark);
+        this->discardCommentsSince(mark);
+        return taken;
+    }
+
+    void CodeGeneratorContext::discardCommentsSince(size_t mark) {
         if (mark < this->comments.size()) {
             this->comments.erase(this->comments.begin() + static_cast<std::ptrdiff_t>(mark), this->comments.end());
         }
-        return taken;
     }
 
     void CodeGeneratorContext::markUngeneratableTable(std::string_view tableName) {

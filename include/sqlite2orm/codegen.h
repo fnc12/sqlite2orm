@@ -81,6 +81,8 @@ namespace sqlite2orm {
         /**
          *  `result` with the comments the context recorded past `mark` appended: the comments the
          *  call that produced it recorded, and none of the ones its statement recorded around it.
+         *  A `result` with no code generated nothing for a comment to explain, so the ones recorded
+         *  past `mark` are dropped instead — they belong to the fragment that was thrown away.
          */
         CodeGenResult withRecordedComments(CodeGenResult result, size_t mark) const;
 

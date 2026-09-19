@@ -64,8 +64,15 @@ namespace sqlite2orm {
         return this->dmlParser->parseDmlQualifiedTable(schemaOut, tableOut);
     }
 
+    void Parser::reportError(ParseError error) {
+        if (!this->pendingError) {
+            this->pendingError = std::move(error);
+        }
+    }
+
     ParseResult Parser::parse(std::vector<Token> tokens) {
         this->tokenStream.reset(std::move(tokens));
+        this->pendingError.reset();
 
         // The statement's own span, recorded here because only this function sees where it began;
         // the terminating semicolon is left to the caller, so it stays out of the span.
@@ -113,6 +120,13 @@ namespace sqlite2orm {
             astNodePointer = this->ddlParser->parseExplainStatement();
         } else {
             astNodePointer = parseExpression();
+        }
+
+        // A helper that gave up says why here, and says it whatever the statement did afterwards:
+        // the part it refused to build is missing from the tree, so what came back is not the
+        // parse of this input even when the rest of it lined up.
+        if (this->pendingError) {
+            return ParseResult{nullptr, {*this->pendingError}};
         }
 
         if (!astNodePointer) {

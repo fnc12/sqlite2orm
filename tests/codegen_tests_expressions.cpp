@@ -1784,6 +1784,18 @@ TEST_CASE("codegen: the sixteen-digit hex literals around the boundary still gen
     REQUIRE(generate("0x0000FFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0x0000FFFFFFFFFFFFFFFF)");
 }
 
+// A tree at the depth limit still has to survive every recursive pass over it — the validator and
+// the generator included - since that limit is exactly the promise the parser makes to them.
+TEST_CASE("codegen: an expression at the depth limit still generates") {
+    std::string sql = "1";
+    std::string expected = "c(1)";
+    for (size_t i = 1; i < kMaxExpressionDepth; ++i) {
+        sql += " + 1";
+        expected += " + 1";
+    }
+    REQUIRE(generate(sql) == expected);
+}
+
 // A comment explains why the generator picked the form it did, and a consumer reads it from the
 // statement it belongs to — `statements[].comments` of `--db --json`, `comments` of the generated
 // header. Every clause there is generates expressions, not only a SELECT's result column, so a

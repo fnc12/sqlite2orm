@@ -3,6 +3,7 @@
 
 #include <cctype>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace sqlite2orm {
@@ -83,7 +84,28 @@ namespace sqlite2orm {
         return parseBinaryExpression(0);
     }
 
+    bool ExpressionParser::enterExpressionLevel() {
+        ++this->expressionDepth;
+        if (this->expressionDepth <= kMaxExpressionDepth) {
+            return true;
+        }
+        this->parser.reportError(
+            ParseError{"expression tree is too large (maximum depth " + std::to_string(kMaxExpressionDepth) + ")",
+                       current().location});
+        return false;
+    }
+
     AstNodePointer ExpressionParser::parseBinaryExpression(int minPrecedence) {
+        // The levels the loop takes for the nodes it stacks on the left operand stay taken until
+        // this whole expression is read, since everything the loop reads afterwards hangs under
+        // them; giving them back is this wrapper's job rather than the loop's.
+        const size_t enclosingDepth = this->expressionDepth;
+        AstNodePointer node = parseBinaryExpressionCore(minPrecedence);
+        this->expressionDepth = enclosingDepth;
+        return node;
+    }
+
+    AstNodePointer ExpressionParser::parseBinaryExpressionCore(int minPrecedence) {
         // Every node this loop builds stands for the operand it started on together with what has
         // been read since, so each one takes its span from here rather than from the operator token
         // it is located at.
@@ -97,6 +119,9 @@ namespace sqlite2orm {
             if (operatorInfo && operatorInfo->precedence >= minPrecedence) {
                 auto location = current().location;
                 advanceToken();
+
+                if (!enterExpressionLevel())
+                    return nullptr;
 
                 auto right = parseBinaryExpression(operatorInfo->precedence + 1);
                 if (!right)
@@ -113,6 +138,8 @@ namespace sqlite2orm {
             if (check(TokenType::kwCollate)) {
                 auto collateLoc = current().location;
                 advanceToken();
+                if (!enterExpressionLevel())
+                    return nullptr;
                 if (!isColumnNameToken())
                     return nullptr;
                 std::string collation(current().value);
@@ -123,12 +150,18 @@ namespace sqlite2orm {
             }
 
             if (minPrecedence <= 2) {
+                // A postfix reads its own operands, so its level has to be taken before the
+                // attempt — and given back when there turns out to be no postfix here at all.
+                const size_t depthBeforeAttempt = this->expressionDepth;
+                if (!enterExpressionLevel())
+                    return nullptr;
                 auto special = tryParseSpecialPostfix(left);
                 if (special) {
                     left = std::move(special);
                     left->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
                     continue;
                 }
+                this->expressionDepth = depthBeforeAttempt;
             }
 
             break;
@@ -309,11 +342,20 @@ namespace sqlite2orm {
     }
 
     AstNodePointer ExpressionParser::parsePrimary() {
+        // Every way down into an expression — an operand, a parenthesized group, an argument, a
+        // subquery — comes through here exactly once per level, so this is where a level is taken
+        // and where it is given back.
+        const size_t enclosingDepth = this->expressionDepth;
+        if (!enterExpressionLevel()) {
+            this->expressionDepth = enclosingDepth;
+            return nullptr;
+        }
         const size_t firstTokenIndex = this->tokenStream.currentPosition();
         auto node = parsePrimaryCore();
         if (node) {
             node->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
         }
+        this->expressionDepth = enclosingDepth;
         return node;
     }
 

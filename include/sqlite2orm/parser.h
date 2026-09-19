@@ -14,6 +14,14 @@
 namespace sqlite2orm {
 
     /**
+     *  How deeply expression nodes may nest. SQLite refuses anything deeper than its own
+     *  SQLITE_MAX_EXPR_DEPTH with "Expression tree is too large (maximum depth 1000)", and every
+     *  pass over the tree here — the parser, the validator, code generation, even the destructor —
+     *  recurses once per level, so a deeper tree would take the whole host process down with it.
+     */
+    inline constexpr size_t kMaxExpressionDepth = 1000;
+
+    /**
      *  What one parse answers with. Everything in it owns its text: the AST keeps no view into the
      *  SQL the tokens were made from, so a consumer is free to parse once, let the SQL go, and
      *  generate from the AST whenever it likes.
@@ -75,8 +83,16 @@ namespace sqlite2orm {
         bool parseDmlQualifiedTable(std::optional<std::string>& schemaOut, std::string& tableOut);
         std::vector<FromClauseItem> parseFromClause();
 
+        /**
+         *  Hands `parse` an error a recursive-descent helper hit. Those helpers answer with a null
+         *  node and nothing else, which `parse` would otherwise report as "unexpected token"; the
+         *  first error reported this way is the one the statement is refused with.
+         */
+        void reportError(ParseError error);
+
       private:
         TokenStream tokenStream;
+        std::optional<ParseError> pendingError;
         std::unique_ptr<ExpressionParser> expressionParser;
         std::unique_ptr<SelectParser> selectParser;
         std::unique_ptr<DmlParser> dmlParser;

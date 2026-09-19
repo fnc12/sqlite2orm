@@ -570,6 +570,26 @@ namespace sqlite2orm {
                                       "— return type may differ from sqlite");
             }
 
+            // Only a comparison reads the affinity of its operands, so only there does dropping a
+            // unary plus over a column change what SQLite answers. The operands are reported in
+            // the order they are written in.
+            switch (binaryOp->binaryOperator) {
+                case BinaryOperator::equals:
+                case BinaryOperator::notEquals:
+                case BinaryOperator::lessThan:
+                case BinaryOperator::lessOrEqual:
+                case BinaryOperator::greaterThan:
+                case BinaryOperator::greaterOrEqual:
+                    for (const AstNode* operand: {binaryOp->lhs.get(), binaryOp->rhs.get()}) {
+                        if (auto warning = comparisonUnaryPlusAffinityWarning(*operand)) {
+                            binWarnings.push_back(std::move(*warning));
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+
             // A trigger keeps its WHEN expression in an `optional_container`, which default-constructs
             // it, so the WHEN clause of a generated trigger only compiles while every sqlite_orm type
             // in it has a default constructor. `binary_operator` — what the arithmetic, bit and
@@ -589,11 +609,20 @@ namespace sqlite2orm {
             }
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings)};
         } else if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            if (unaryOp->unaryOperator == UnaryOperator::plus) {
+                // A unary plus generates its operand and nothing else, so it has to be transparent
+                // for what the surrounding generation asks of that operand as well: an operator
+                // over `+a` is an operator over `a`. Generating the operand in a context the plus
+                // had reset is how `NOT +a` came out as `not c(&User::a)` while `NOT a` came out
+                // as `not column<User>(&User::a)` — the form the table walker reads — and the
+                // generated select then ran with no FROM clause at all.
+                return this->coordinator.generateNode(*unaryOp->operand);
+            }
             // A COLLATE generates its operand and nothing else, so the operand standing under one
             // is the operand this unary operator really applies to in the generated code. The sign
             // a minus folds into a literal is the exception — SQLite's parser does not read one
-            // through a COLLATE either, which is why `negationFormFor` is asked about the operand
-            // as written.
+            // through a COLLATE either — which is why `negationFormFor` is asked about the operand
+            // as written and steps through the pluses alone.
             const AstNode& operandNode = generatedOperandNode(*unaryOp->operand);
             const bool operandLeaf = isLeafNode(operandNode);
 
@@ -617,13 +646,6 @@ namespace sqlite2orm {
             this->context.emittedColumnPointerUnderLogicalNot = outerEmittedColumnPointer;
             auto decisionPoints = std::move(operandResult.decisionPoints);
 
-            if (unaryOp->unaryOperator == UnaryOperator::plus) {
-                return CodeGenResult{operandResult.code,
-                                     std::move(decisionPoints),
-                                     std::move(operandResult.warnings),
-                                     std::move(operandResult.errors)};
-            }
-
             // sqlite_orm's unary_minus_t reports a wrong result type, so `-c(2)` serializes to the
             // right SQL and still reads the row back as 0. A minus over a numeric constant is folded
             // into it the way SQLite's own parser does, which is why `-2` is the constant -2 rather
@@ -634,8 +656,9 @@ namespace sqlite2orm {
                     : std::nullopt;
             if (negationForm == NegationForm::foldedIntoConstant) {
                 // A constant that already carries a sign needs the parentheses C++ has no `--` for.
-                std::string folded =
-                    isNumericLiteral(*unaryOp->operand) ? "-" + operandResult.code : "-(" + operandResult.code + ")";
+                std::string folded = isNumericLiteral(withoutUnaryPluses(*unaryOp->operand))
+                                         ? "-" + operandResult.code
+                                         : "-(" + operandResult.code + ")";
                 return CodeGenResult{std::move(folded),
                                      std::move(decisionPoints),
                                      std::move(operandResult.warnings),

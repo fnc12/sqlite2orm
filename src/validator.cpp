@@ -128,17 +128,20 @@ namespace sqlite2orm {
         std::vector<ValidationError> errors;
 
         if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
-            if (unaryOp->unaryOperator == UnaryOperator::plus) {
-                errors.push_back(ValidationError{"unary plus (+expr) is not supported in sqlite_orm",
-                                                 unaryOp->location,
-                                                 "UnaryOperatorNode"});
-            }
+            // A unary plus is an identity SQLite applies to any expression, so a statement that
+            // carries one is a statement sqlite_orm can be given: codegen emits the operand and
+            // nothing else. The one thing the plus does carry is the column affinity it takes away
+            // from a comparison, which codegen warns about where it matters.
             if (unaryOp->unaryOperator == UnaryOperator::minus) {
-                if (auto* literal = dynamic_cast<const IntegerLiteralNode*>(unaryOp->operand.get())) {
+                // SQLite reads the sign down to the literal through parentheses, which the AST does
+                // not carry at all, and through a unary plus, which it does: `-0x8000000000000000`,
+                // `-(+0x8000000000000000)` and `- + + 0x8000000000000000` are one and the same
+                // refusal. Only the innermost sign is read as part of the literal, so a minus under
+                // the pluses reports for itself and this one stays quiet.
+                if (auto* literal = dynamic_cast<const IntegerLiteralNode*>(&withoutUnaryPluses(*unaryOp->operand))) {
                     // `0x8000000000000000` is INT64_MIN, so negating it leaves the range an integer
                     // literal lives in and SQLite refuses the statement: `SELECT -0x8000000000000000`
-                    // is `hex literal too big`, while the literal on its own is accepted. SQLite
-                    // reads the sign through parentheses too, and so does the AST here.
+                    // is `hex literal too big`, while the literal on its own is accepted.
                     if (hexLiteralIsInt64Min(literal->value)) {
                         errors.push_back(
                             ValidationError{"hex literal too big: -" + withoutDigitSeparators(literal->value),

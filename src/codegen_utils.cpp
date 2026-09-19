@@ -1225,7 +1225,7 @@ namespace sqlite2orm {
          *  corpus run through libsqlite3 3.45.1, the version this project links, which unlike the
          *  `sqlite3` CLI in the image carries the math functions. `iif` belongs here for its
          *  three-argument form alone, which is why the name is not enough to answer with — see
-         *  `iifWithoutAnElseArgument`.
+         *  `iifNotInItsThreeArgumentForm`.
          */
         bool sqliteFunctionOnlyPropagatesANullArgument(std::string_view functionLower) {
             return isOneOfFunctions(functionLower, {"abs", "coalesce", "glob", "ifnull", "iif", "instr",
@@ -1236,7 +1236,7 @@ namespace sqlite2orm {
         }
 
         /**
-         *  Whether `functionCall` is an `iif` without the third argument. SQLite 3.48 added
+         *  Whether `functionCall` is an `iif` in any arity but three. SQLite 3.48 added
          *  `iif(X, Y)` as a spelling of `iif(X, Y, NULL)`, so it answers NULL whenever X is false
          *  whatever the two arguments hold — `SELECT iif(0, 1)` is NULL — while the three-argument
          *  form merely propagates a NULL. sqlite_orm declares the three-argument form alone, as the
@@ -1244,7 +1244,7 @@ namespace sqlite2orm {
          *  either; that it has no overload at all is what an arity check would report, and this file
          *  does not run one.
          */
-        bool iifWithoutAnElseArgument(const FunctionCallNode& functionCall, std::string_view functionLower) {
+        bool iifNotInItsThreeArgumentForm(const FunctionCallNode& functionCall, std::string_view functionLower) {
             return functionLower == "iif" && functionCall.arguments.size() != 3;
         }
 
@@ -1285,7 +1285,7 @@ namespace sqlite2orm {
             if(sqliteFunctionNeverAnswersNull(functionLower)) {
                 return false;
             }
-            if(iifWithoutAnElseArgument(functionCall, functionLower)) {
+            if(iifNotInItsThreeArgumentForm(functionCall, functionLower)) {
                 return true;
             }
             if(!sqliteFunctionOnlyPropagatesANullArgument(functionLower)) {
@@ -1300,13 +1300,17 @@ namespace sqlite2orm {
          *  `expressionMayBeNull` — so a name can belong to both lists. `abs`, `max`,
          *  `min` and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif`
          *  (its three-argument form, the only one sqlite_orm declares), `likely`, `unlikely` and
-         *  `likelihood` are declared as the result of an argument, which is a `std::optional` as
-         *  soon as that argument is a nullable column. Widening one of those would nest a second
-         *  nullable around the first.
+         *  `likelihood` are declared as the result of an argument, so the call is nullable exactly
+         *  when sqlite_orm types that argument nullably — a nullable column makes it an
+         *  `std::optional`. Widening one of those would nest a second nullable around the first.
+         *  This answers over the name alone, and that is also the hole it leaves: `length(a)` and
+         *  `CAST(a AS INT)` are typed `int` however NULL the row is, so `iif(1, length(a), 2)` and
+         *  `likely(length(a))` are typed `int` too and read a NULL back as 0. Asking the argument
+         *  rather than the name is a rule of its own; a known hole, carded separately.
          */
         bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall) {
             const std::string functionLower = toLowerAscii(functionCall.name);
-            if(iifWithoutAnElseArgument(functionCall, functionLower)) {
+            if(iifNotInItsThreeArgumentForm(functionCall, functionLower)) {
                 return false;
             }
             return isOneOfFunctions(functionLower, {"abs", "coalesce", "ifnull", "iif", "likelihood",
@@ -1693,10 +1697,13 @@ namespace sqlite2orm {
         }
         if(auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
             if(functionCall->over) {
-                // A window function needs no widening: `row_number`, `rank`, `dense_rank`,
+                // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
                 // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
-                // `first_value`, `last_value` and `nth_value` are typed as their argument, which
-                // already carries its nullability.
+                // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
+                // nullable argument carries its nullability through on its own. What this arm does
+                // not cover is the NULL the window itself answers: over a NOT NULL column the
+                // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
+                // first row, and that NULL still reads back as 0. A known hole, carded separately.
                 return false;
             }
             if(generatedFunctionResultIsAlreadyNullable(*functionCall)) {

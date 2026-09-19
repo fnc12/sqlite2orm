@@ -837,13 +837,19 @@ TEST_CASE("codegen: an iif without its ELSE argument is widened, the three-argum
 // no NULL to report either, as long as the function answers NULL for no reason other than a NULL
 // argument — `abs`, `instr`, `length`, `round`, `upper` and the rest of the list in
 // `sqliteFunctionOnlyPropagatesANullArgument`. `abs`, `max`, `min` and `sum` are declared
-// `std::unique_ptr` in sqlite_orm and `coalesce`, `ifnull`, `nullif`, `iif`, `likely`, `unlikely` and `likelihood` as
-// the result of an argument, so widening one of those would nest a second nullable around the
-// first. A window function is typed either as its argument — `lag`, `lead`, `first_value`,
-// `last_value`, `nth_value` — or as a rank SQLite always answers. A MATCH has no widening either:
-// SQLite refuses `a MATCH 'x'` as a result column outside an FTS table, and sqlite_orm has no
-// result type for `match_t`. A user-defined function is left alone too — it is called through the
-// generated struct's `operator()`, and the row carries back the type that operator declares — which
+// `std::unique_ptr` in sqlite_orm and `coalesce`, `ifnull`, `nullif`, `iif`, `likely`, `unlikely`
+// and `likelihood` as the result of an argument, so widening one of those would nest a second
+// nullable around the first. That answer is given over the name alone, and the two `length(a)`
+// cases are what it leaves behind: `length` is typed `int` however NULL the row is, so
+// `iif(1, length(a), 2)` and `likely(length(a))` are typed `int` too and still read a NULL back as
+// 0 — a known hole with a card of its own, not one this widening reaches. A window function is
+// left alone as well: `row_number` and the other ranks are never NULL, and `lag`, `lead`,
+// `first_value`, `last_value` and `nth_value` are typed as their argument, which leaves the NULL
+// an empty window answers over a NOT NULL argument — `lag(b) OVER (ORDER BY b)` is NULL on the
+// first row — also carded. A MATCH has no widening either: SQLite refuses `a MATCH 'x'` as a
+// result column outside an FTS table, and sqlite_orm has no result type for `match_t`.
+// A user-defined function is left alone too — it is called through the generated struct's
+// `operator()`, and the row carries back the type that operator declares — which
 // "codegen: an argument under a dropped COLLATE keeps its name and type" spells out in full.
 TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL keeps the type sqlite_orm gives it") {
     REQUIRE(generate("SELECT 1 BETWEEN 2 AND 3;") == "auto rows = storage.select(between(1, 2, 3));");
@@ -865,7 +871,13 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT coalesce(a, 1) FROM users;") ==
             "auto rows = storage.select(coalesce(&Users::a, 1));");
     REQUIRE(generate("SELECT iif(a, 1, 2) FROM users;") == "auto rows = storage.select(iif(&Users::a, 1, 2));");
+    REQUIRE(generate("SELECT iif(1, length(a), 2) FROM users;") ==
+            "auto rows = storage.select(iif(1, length(&Users::a), 2));");
+    REQUIRE(generate("SELECT likely(length(a)) FROM users;") ==
+            "auto rows = storage.select(likely(length(&Users::a)));");
     REQUIRE(generate("SELECT lag(a) OVER () FROM users;") == "auto rows = storage.select(lag(&Users::a).over());");
+    REQUIRE(generate("SELECT lag(a) OVER (ORDER BY a) FROM users;") ==
+            "auto rows = storage.select(lag(&Users::a).over(order_by(&Users::a)));");
     REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
             "auto rows = storage.select(row_number().over());");
     REQUIRE(generate("SELECT a MATCH 'x' FROM users;") == "auto rows = storage.select(match(&Users::a, \"x\"));");

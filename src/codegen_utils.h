@@ -85,6 +85,15 @@ namespace sqlite2orm {
     bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star);
 
     /**
+     *  True when a call of `lowerFunctionName` is generated as a form sqlite_orm gives no
+     *  `filter()`: the window functions and a MATCH in its function spelling hold their arguments
+     *  and an `over()` and nothing else, while `count(*)` and the aggregate function calls do have
+     *  one. SQLite refuses a FILTER on the same calls — `FILTER clause may only be used with
+     *  aggregate window functions` — but stores a trigger or a view that holds one.
+     */
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName);
+
+    /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
      *  `internal::condition_t`: a comparison, AND, OR, IN, BETWEEN, LIKE, GLOB, IS [NOT] NULL,
      *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.

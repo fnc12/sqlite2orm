@@ -156,7 +156,7 @@ Statuses:
 - [x] `function-name(DISTINCT arg)`
 - [x] `function-name(*)`
 - [x] `function-name()` — no args
-- [x] `function-name(...) FILTER (WHERE expr)` → `.filter(where(...))` before `.over(...)` when present
+- [~] `function-name(...) FILTER (WHERE expr)` → `.filter(where(...))` before `.over(...)` when present; sqlite_orm gives a `filter()` to `count(*)` and the aggregate function calls only, so a FILTER over a window function generates a call that does not exist — SQLite refuses the same thing at prepare (`FILTER clause may only be used with aggregate window functions`) while storing a trigger or a view that holds it, so the code is generated with a codegen warning
 - [x] `function-name() OVER window-name`
 - [x] `function-name() OVER (window-defn)` — PARTITION BY, ORDER BY, ROWS|RANGE|GROUPS frame, EXCLUDE
 
@@ -650,7 +650,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] RETURNING clause
 - [!] Unary plus (`+expr`)
 - [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-`; the generated negation does not compile (codegen warning)
-- [!] A trigger `WHEN` clause over anything but a comparison, an `AND`/`OR`, a `CAST`, a `CASE`, a `COLLATE`, `MATCH`, `CURRENT_*`, `RAISE()`, `count(*)` or a window function (with a `FILTER` or an `OVER` that has no `ORDER BY`) or a subquery over a bare `FROM` — sqlite_orm holds the WHEN expression in an `optional_container`, which default-constructs it, and none of the predicate, operator or function types it would hold has a default constructor; the generated trigger does not compile (codegen warning naming each form, see create-trigger-stmt)
+- [!] A trigger `WHEN` clause over anything but a comparison, an `AND`/`OR`, a `CAST`, a `CASE`, a `COLLATE`, `MATCH`, `CURRENT_*`, `RAISE()`, `count(*)` (with a `FILTER` or an `OVER` that has no `ORDER BY`) or a window function (with an `OVER` that has no `ORDER BY`; a `FILTER` over one has no sqlite_orm form at all) or a subquery over a bare `FROM` — sqlite_orm holds the WHEN expression in an `optional_container`, which default-constructs it, and none of the predicate, operator or function types it would hold has a default constructor; the generated trigger does not compile (codegen warning naming each form, see create-trigger-stmt)
 - [x] DROP TABLE — `storage.drop_table("name")` / `storage.drop_table_if_exists("name")`
 - [x] DROP INDEX — `storage.drop_index("name")` / `storage.drop_index_if_exists("name")`
 - [x] DROP TRIGGER — `storage.drop_trigger("name")` / `storage.drop_trigger_if_exists("name")`

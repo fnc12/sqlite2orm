@@ -1264,6 +1264,13 @@ namespace sqlite2orm {
                                     std::make_move_iterator(filterResult.warnings.begin()),
                                     std::make_move_iterator(filterResult.warnings.end()));
                 baseCode += ".filter(where(" + filterResult.code + "))";
+                if(functionCallFormHasNoFilter(funcName)) {
+                    funcWarnings.push_back(std::string(funcCall->name) +
+                                           "() has no filter() in sqlite_orm: only the aggregate function calls "
+                                           "and count(*) take a FILTER, so the generated code does not compile. "
+                                           "SQLite refuses the same call — FILTER clause may only be used with "
+                                           "aggregate window functions — but stores a trigger or a view holding it");
+                }
             }
             if(funcCall->over) {
                 std::string overArgs = this->codegenOverClause(*funcCall->over, decisionPoints, funcWarnings);

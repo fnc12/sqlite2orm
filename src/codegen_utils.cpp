@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdint>
 #include <limits>
+#include <span>
 
 namespace sqlite2orm {
 
@@ -460,28 +461,35 @@ namespace sqlite2orm {
         return {};
     }
 
-    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
-        // These take no argument, so the `name()` a star is generated as is the same call.
-        static constexpr std::array<std::string_view, 5> kNullaryWindowFunctions{{
+    namespace {
+        // The window functions that take no argument, so the `name()` a star is generated as is the
+        // same call as the one written without one.
+        constexpr std::array<std::string_view, 5> kNullaryWindowFunctions{{
             "row_number", "rank", "dense_rank", "percent_rank", "cume_dist",
         }};
-        for(std::string_view windowFunction : kNullaryWindowFunctions) {
-            if(lowerFunctionName == windowFunction) {
-                return true;
-            }
+        // The window functions that take arguments, and MATCH in its function spelling.
+        constexpr std::array<std::string_view, 7> kArgumentTakingAggregateForms{{
+            "ntile", "lag", "lead", "first_value", "last_value", "nth_value", "match",
+        }};
+
+        bool nameIsIn(std::string_view name, std::span<const std::string_view> names) {
+            return std::find(names.begin(), names.end(), name) != names.end();
+        }
+    }
+
+    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
+        if(nameIsIn(lowerFunctionName, kNullaryWindowFunctions)) {
+            return true;
         }
         if(star) {
             return lowerFunctionName == "count";
         }
-        static constexpr std::array<std::string_view, 7> kArgumentTakingAggregateForms{{
-            "ntile", "lag", "lead", "first_value", "last_value", "nth_value", "match",
-        }};
-        for(std::string_view aggregateForm : kArgumentTakingAggregateForms) {
-            if(lowerFunctionName == aggregateForm) {
-                return true;
-            }
-        }
-        return false;
+        return nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
+    }
+
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName) {
+        return nameIsIn(lowerFunctionName, kNullaryWindowFunctions) ||
+               nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
     }
 
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {

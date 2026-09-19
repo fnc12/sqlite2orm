@@ -72,9 +72,16 @@ TEST_CASE("processSql: tokenizer error becomes parseResult.errors") {
     REQUIRE(processSql("'") == expectedOutcome);
 }
 
-TEST_CASE("processSql: validator rejects unary plus") {
-    const ProcessSqlResult expectedOutcome = expectedFromPipeline("+1");
-    REQUIRE(processSql("+1") == expectedOutcome);
+// A unary plus is an identity SQLite applies to any expression, so the pipeline carries the
+// statement through to code instead of stopping at validation the way it used to: `sqlite2orm -e
+// \'SELECT +a;\'` exited 1 on `unary plus (+expr) is not supported in sqlite_orm`, which took the
+// statement out of a generated schema altogether.
+TEST_CASE("processSql: a unary plus reaches codegen") {
+    const ProcessSqlResult result = processSql("SELECT +a;");
+    REQUIRE(result.parseResult.errors.empty());
+    REQUIRE(result.validationErrors.empty());
+    REQUIRE(result.ok());
+    REQUIRE(result.codegen.code == "auto rows = storage.select(&User::a);");
 }
 
 TEST_CASE("processSql: CREATE VIEW generates make_view") {

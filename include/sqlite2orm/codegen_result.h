@@ -85,6 +85,14 @@ namespace sqlite2orm {
     struct CreateTableParts {
         std::string structDeclaration;
         std::string makeTableExpression;
+        /**
+         *  The `table_mapping_style` decision point, offered only when the policy targets C++26:
+         *  `make_table` (the classical form) against `reflection` (an annotated struct mapped by
+         *  `make_table<T>()`). Each option's `code` is the pair these parts hold — the struct
+         *  declaration, a blank line and the make_table expression — so an option stands for the
+         *  whole mapping of the table, not for one of the two halves.
+         */
+        std::vector<DecisionPoint> decisionPoints;
         std::vector<CodegenWarning> warnings;
         /**
          *  Optional hints for the generated table, from its CHECK, DEFAULT and generated-column
@@ -92,6 +100,13 @@ namespace sqlite2orm {
          *  storage is code the consumer never gets, so nothing is left for a hint to explain.
          */
         std::vector<std::string> comments;
+        /**
+         *  Whether `structDeclaration` is the reflected form, i.e. whether it carries sqlite_orm
+         *  annotations. Whoever places the declaration has to know: the names inside an annotation
+         *  get unqualified lookup at the point of the struct, not inside whatever function uses the
+         *  mapping, so such a struct needs sqlite_orm's names visible where it is written.
+         */
+        bool structIsReflected = false;
     };
 
     struct CreateViewParts {

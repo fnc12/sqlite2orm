@@ -16,6 +16,16 @@ namespace sqlite2orm {
      *  column<cte_0>("…")), `legacy_colalias` (using name from SQL + colalias_i… + column<T>(var)), or
      *  `cpp20_monikers` (constexpr orm_cte_moniker / orm_column_alias + ->*).
      *
+     *  `table_mapping_style` (CREATE TABLE, offered only when `targetCppStandard` is 26 or newer):
+     *  `make_table` (the classical `make_table("name", make_column(…))` over a plain struct) or
+     *  `reflection` (an annotated struct mapped by `make_table<T>()`, which requires C++26
+     *  reflection). `reflection` is the chosen one unless this category says `make_table`, which a
+     *  consumer targeting C++26 on a compiler that does not implement reflection yet asks for. A
+     *  table holding a construct that has no annotation form — a column whose name is not the C++
+     *  identifier the generator gives its member, a DEFAULT that is not a folded literal, a column
+     *  CHECK or a generated column (both name members of the struct being declared) — keeps
+     *  `make_table` chosen and is not offered the reflected variant at all.
+     *
      *  `custom_function_style` (unknown/user-defined function): `scalar` (default: struct +
      *  create_scalar_function + stub body), `aggregate` (struct with step/fin + create_aggregate_function),
      *  or `func_only` (declaration only, for a function provided by a loaded extension — no registration).

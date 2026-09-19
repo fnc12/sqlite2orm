@@ -18,7 +18,8 @@ TEST_CASE("parser: UNION two SELECT literals") {
     std::vector<AstNodePointer> arms;
     arms.push_back(selectLiteralInt("1"));
     arms.push_back(selectLiteralInt("2"));
-    CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionDistinct},
+    CompoundSelectNode expected(std::move(arms),
+                                std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionDistinct},
                                 SourceLocation{});
     REQUIRE(requireNode<CompoundSelectNode>(parseResult) == expected);
 }
@@ -29,7 +30,8 @@ TEST_CASE("parser: UNION ALL") {
     std::vector<AstNodePointer> arms;
     arms.push_back(selectLiteralInt("1"));
     arms.push_back(selectLiteralInt("2"));
-    CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll},
+    CompoundSelectNode expected(std::move(arms),
+                                std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll},
                                 SourceLocation{});
     REQUIRE(requireNode<CompoundSelectNode>(parseResult) == expected);
 }
@@ -40,7 +42,8 @@ TEST_CASE("parser: INTERSECT") {
     std::vector<AstNodePointer> arms;
     arms.push_back(selectLiteralInt("1"));
     arms.push_back(selectLiteralInt("2"));
-    CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::intersect},
+    CompoundSelectNode expected(std::move(arms),
+                                std::vector<CompoundSelectOperator>{CompoundSelectOperator::intersect},
                                 SourceLocation{});
     REQUIRE(requireNode<CompoundSelectNode>(parseResult) == expected);
 }
@@ -51,7 +54,8 @@ TEST_CASE("parser: EXCEPT") {
     std::vector<AstNodePointer> arms;
     arms.push_back(selectLiteralInt("1"));
     arms.push_back(selectLiteralInt("2"));
-    CompoundSelectNode expected(std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::except},
+    CompoundSelectNode expected(std::move(arms),
+                                std::vector<CompoundSelectOperator>{CompoundSelectOperator::except},
                                 SourceLocation{});
     REQUIRE(requireNode<CompoundSelectNode>(parseResult) == expected);
 }
@@ -63,9 +67,9 @@ TEST_CASE("parser: chained UNION and UNION ALL") {
     arms.push_back(selectLiteralInt("1"));
     arms.push_back(selectLiteralInt("2"));
     arms.push_back(selectLiteralInt("3"));
-    CompoundSelectNode expected(std::move(arms),
-                                std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionDistinct,
-                                                                    CompoundSelectOperator::unionAll},
-                                SourceLocation{});
+    CompoundSelectNode expected(
+        std::move(arms),
+        std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionDistinct, CompoundSelectOperator::unionAll},
+        SourceLocation{});
     REQUIRE(requireNode<CompoundSelectNode>(parseResult) == expected);
 }

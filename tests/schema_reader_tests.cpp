@@ -16,8 +16,7 @@ namespace {
     [[nodiscard]] std::filesystem::path makeTempDbPath() {
         static thread_local std::mt19937 gen{std::random_device{}()};
         std::uniform_int_distribution<std::uint64_t> dist{};
-        return std::filesystem::temp_directory_path() /
-               ("sqlite2orm_schema_" + std::to_string(dist(gen)) + ".db");
+        return std::filesystem::temp_directory_path() / ("sqlite2orm_schema_" + std::to_string(dist(gen)) + ".db");
     }
 
     struct TempDbFile {
@@ -66,17 +65,17 @@ TEST_CASE("SqliteSchemaReader: master, table_xinfo, foreign keys, indexes") {
     bool sawParent = false;
     bool sawChild = false;
     bool sawIndex = false;
-    for(const auto& row: master) {
-        if(row.type == "table" && row.name == "parent") {
+    for (const auto& row: master) {
+        if (row.type == "table" && row.name == "parent") {
             sawParent = true;
             REQUIRE(row.tableName == "parent");
             REQUIRE_FALSE(row.sql.empty());
         }
-        if(row.type == "table" && row.name == "child") {
+        if (row.type == "table" && row.name == "child") {
             sawChild = true;
             REQUIRE(row.tableName == "child");
         }
-        if(row.type == "index" && row.name == "idx_child_parent") {
+        if (row.type == "index" && row.name == "idx_child_parent") {
             sawIndex = true;
             REQUIRE(row.tableName == "child");
         }
@@ -100,8 +99,8 @@ TEST_CASE("SqliteSchemaReader: master, table_xinfo, foreign keys, indexes") {
 
     const auto indexes = reader.indexList("child");
     bool sawNamedIndex = false;
-    for(const auto& ix: indexes) {
-        if(ix.name == "idx_child_parent") {
+    for (const auto& ix: indexes) {
+        if (ix.name == "idx_child_parent") {
             sawNamedIndex = true;
             REQUIRE_FALSE(ix.unique);
         }

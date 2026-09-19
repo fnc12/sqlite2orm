@@ -21,34 +21,34 @@ namespace sqlite2orm {
         bindParameter,
 
         // Operators
-        plus,            // +
-        minus,           // -
-        star,            // *
-        slash,           // /
-        percent,         // %
-        pipe2,           // ||
-        eq,              // =
-        eq2,             // ==
-        ne,              // !=
-        ltGt,            // <>
-        lt,              // <
-        le,              // <=
-        gt,              // >
-        ge,              // >=
-        ampersand,       // &
-        pipe,            // |
-        tilde,           // ~
-        shiftLeft,       // <<
-        shiftRight,      // >>
-        arrow,           // ->
-        arrow2,          // ->>
+        plus,  // +
+        minus,  // -
+        star,  // *
+        slash,  // /
+        percent,  // %
+        pipe2,  // ||
+        eq,  // =
+        eq2,  // ==
+        ne,  // !=
+        ltGt,  // <>
+        lt,  // <
+        le,  // <=
+        gt,  // >
+        ge,  // >=
+        ampersand,  // &
+        pipe,  // |
+        tilde,  // ~
+        shiftLeft,  // <<
+        shiftRight,  // >>
+        arrow,  // ->
+        arrow2,  // ->>
 
         // Punctuation
-        leftParen,       // (
-        rightParen,      // )
-        comma,           // ,
-        dot,             // .
-        semicolon,       // ;
+        leftParen,  // (
+        rightParen,  // )
+        comma,  // ,
+        dot,  // .
+        semicolon,  // ;
 
         // Keywords (alphabetical)
         kwAbort,

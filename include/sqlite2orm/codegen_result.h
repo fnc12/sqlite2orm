@@ -86,7 +86,11 @@ namespace sqlite2orm {
         std::string structDeclaration;
         std::string makeTableExpression;
         std::vector<CodegenWarning> warnings;
-        /** Optional hints for the generated table, from its CHECK, DEFAULT and generated-column expressions. */
+        /**
+         *  Optional hints for the generated table, from its CHECK, DEFAULT and generated-column
+         *  expressions. Empty when `makeTableExpression` is: a table that is not merged into the
+         *  storage is code the consumer never gets, so nothing is left for a hint to explain.
+         */
         std::vector<std::string> comments;
     };
 
@@ -95,6 +99,11 @@ namespace sqlite2orm {
         std::string makeViewExpression;
         std::vector<DecisionPoint> decisionPoints;
         std::vector<CodegenWarning> warnings;
+        /**
+         *  Optional hints for the generated view, from the expressions of its body. Empty when
+         *  `makeViewExpression` is, for the same reason as the table's: a view that is not merged
+         *  into the storage leaves no generated form for a hint to be about.
+         */
         std::vector<std::string> comments;
     };
 

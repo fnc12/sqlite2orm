@@ -1935,4 +1935,22 @@ TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") 
     REQUIRE(triggerWhen.code == "make_trigger(\"tr\", after().insert().on<T>().when((c(0) - c(&T::a)))"
                                 ".begin(/* trigger step not mapped to sqlite_orm */));");
     REQUIRE(triggerWhen.comments == std::vector<std::string>{kZeroMinusComment});
+
+    // The two DDL statements reach their placeholder by another road: the clauses around the one
+    // that gives the statement up generate and record as usual, and the parts producer then hands
+    // back an empty make-expression. A STORED generated column holding a hex literal past int64 is
+    // what gives the table up here, and the CHECK beside it is generated before that is known.
+    const CodeGenResult ungeneratableTable =
+        generateLastOfBatch("CREATE TABLE t (a INTEGER, b TEXT);\n"
+                            "CREATE TABLE q (a INTEGER CHECK(NOT a), g AS (0x1FFFFFFFFFFFFFFFFF) STORED);");
+    REQUIRE(ungeneratableTable.code == "/* CREATE TABLE q — not supported for sqlite_orm */");
+    REQUIRE(ungeneratableTable.comments == std::vector<std::string>{});
+
+    // The same for a view: SQLite stores a body holding that literal and refuses every query
+    // against it, so the view is not generated although its SELECT list generated the negation.
+    const CodeGenResult ungeneratableView =
+        generateLastOfBatch("CREATE TABLE t (a INTEGER, b TEXT);\n"
+                            "CREATE VIEW v AS SELECT -a, 0x1FFFFFFFFFFFFFFFFF FROM t;");
+    REQUIRE(ungeneratableView.code == "/* CREATE VIEW v — not supported for sqlite_orm */");
+    REQUIRE(ungeneratableView.comments == std::vector<std::string>{});
 }

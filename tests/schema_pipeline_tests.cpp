@@ -760,6 +760,36 @@ TEST_CASE("processSqliteSchema: a comment from a view body reaches its statement
                 "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
 }
 
+// The other side of the same channel: a statement that ends up as a `not supported` placeholder has
+// no generated form left for a comment to explain, and both DDL paths reach that placeholder after
+// their clauses have generated and recorded. A STORED generated column holding a hex literal past
+// int64 takes the whole table out, and the CHECK beside it is generated before that is known.
+TEST_CASE("sqliteSchemaResultToJson: a table that generates nothing reports no comment") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE q (a INTEGER CHECK(NOT a), g AS (0x1FFFFFFFFFFFFFFFFF) STORED);");
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(
+        sqliteSchemaResultToJson(schema) ==
+        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":true,"tableName":"q","type":"table"}]})");
+    REQUIRE(generateSqliteSchemaHeader(schema).comments == std::vector<std::string>{});
+}
+
+// The view path of the same rule: SQLite stores a body holding that literal and refuses every query
+// against it, so the view is not generated although its SELECT list generated the negation.
+TEST_CASE("sqliteSchemaResultToJson: a view that generates nothing reports no comment") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER, b TEXT);"
+            "CREATE VIEW v AS SELECT -a AS x, 0x1FFFFFFFFFFFFFFFFF AS y FROM t;");
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(sqliteSchemaResultToJson(schema) ==
+            R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t",)"
+            R"("type":"table"},{"comments":[],"decisionPoints":[],"name":"v","ok":true,"tableName":"v",)"
+            R"("type":"view"}]})");
+}
+
 // A DEFAULT or a STORED generated-column expression is stored by SQLite without being compiled, so
 // a real database carries `-0x8000000000000000` and codegen sees it where the validator never does.
 // Folding that sign into the C++ constant would emit `-static_cast<int64_t>(0x8000000000000000)`,

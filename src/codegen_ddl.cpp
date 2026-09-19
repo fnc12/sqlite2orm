@@ -833,13 +833,18 @@ namespace sqlite2orm {
         // view's.
         const size_t commentMark = this->context.commentMark();
         CreateViewParts parts = this->viewParts(node);
-        parts.comments = this->context.takeCommentsSince(commentMark);
         if (parts.makeViewExpression.empty()) {
+            // The body may well have generated and recorded before the view was given up on — a
+            // stored hex literal past int64 stops it after that — but the statement ends up as a
+            // placeholder, so the comment has no form left to explain and goes with the code.
+            this->context.discardCommentsSince(commentMark);
             // A view sqlite_orm has no make_view() for is a name it has no type for either, so
             // whatever rests on the view — a trigger INSTEAD OF it, a view selecting from it —
             // has to go with it, exactly as it does for a table left out of the storage.
             this->context.markUngeneratableView(node.viewName);
+            return parts;
         }
+        parts.comments = this->context.takeCommentsSince(commentMark);
         return parts;
     }
 
@@ -1392,15 +1397,20 @@ namespace sqlite2orm {
                                stripIdentifierQuotes(createTable.tableName) + " (converted as a regular table)");
         }
 
-        // A CREATE TABLE is a whole statement, so this is where the comments its clauses recorded —
-        // every CHECK, DEFAULT and generated-column expression included — are taken out of the context.
-        std::vector<std::string> comments = this->context.takeCommentsSince(commentMark);
         if (!tableIsGeneratable) {
+            // The clauses around the one that gave the table up generate and record as usual, and
+            // the statement still ends up a placeholder, so their comments go with the code that
+            // is not there: a CHECK explained next to a table the consumer never gets reads as a
+            // comment about the storage it does get.
+            this->context.discardCommentsSince(commentMark);
             // Nothing sqlite_orm can map this table to, so every statement naming it is left out
             // by whoever assembles the batch; the mark is what tells them which name that is.
             this->context.markUngeneratableTable(createTable.tableName);
-            return CreateTableParts{{}, {}, std::move(warnings), std::move(comments)};
+            return CreateTableParts{{}, {}, std::move(warnings), {}};
         }
+        // A CREATE TABLE is a whole statement, so this is where the comments its clauses recorded —
+        // every CHECK, DEFAULT and generated-column expression included — are taken out of the context.
+        std::vector<std::string> comments = this->context.takeCommentsSince(commentMark);
         return CreateTableParts{std::move(structDeclaration),
                                 std::move(makeExpression),
                                 std::move(warnings),

@@ -1223,7 +1223,9 @@ namespace sqlite2orm {
          *  aggregate, over an empty rowset: `avg`, `group_concat`, `max`, `min` and `sum`. This is
          *  the list SQLite answered a value for over every non-NULL argument of a 11.7M expression
          *  corpus run through libsqlite3 3.45.1, the version this project links, which unlike the
-         *  `sqlite3` CLI in the image carries the math functions.
+         *  `sqlite3` CLI in the image carries the math functions. `iif` belongs here for its
+         *  three-argument form alone, which is why the name is not enough to answer with — see
+         *  `iifWithoutAnElseArgument`.
          */
         bool sqliteFunctionOnlyPropagatesANullArgument(std::string_view functionLower) {
             return isOneOfFunctions(functionLower, {"abs", "coalesce", "glob", "ifnull", "iif", "instr",
@@ -1231,6 +1233,19 @@ namespace sqlite2orm {
                                                     "length", "like", "likelihood", "likely", "lower",
                                                     "ltrim", "replace", "round", "rtrim", "soundex",
                                                     "trim", "unlikely", "upper"});
+        }
+
+        /**
+         *  Whether `functionCall` is an `iif` without the third argument. SQLite 3.48 added
+         *  `iif(X, Y)` as a spelling of `iif(X, Y, NULL)`, so it answers NULL whenever X is false
+         *  whatever the two arguments hold — `SELECT iif(0, 1)` is NULL — while the three-argument
+         *  form merely propagates a NULL. sqlite_orm declares the three-argument form alone, as the
+         *  common type of the second and third argument, so the short one is not typed nullably
+         *  either; that it has no overload at all is what an arity check would report, and this file
+         *  does not run one.
+         */
+        bool iifWithoutAnElseArgument(const FunctionCallNode& functionCall, std::string_view functionLower) {
+            return functionLower == "iif" && functionCall.arguments.size() != 3;
         }
 
         /** Whether any of `nodes`, the absent ones skipped, may be NULL. */
@@ -1270,6 +1285,9 @@ namespace sqlite2orm {
             if(sqliteFunctionNeverAnswersNull(functionLower)) {
                 return false;
             }
+            if(iifWithoutAnElseArgument(functionCall, functionLower)) {
+                return true;
+            }
             if(!sqliteFunctionOnlyPropagatesANullArgument(functionLower)) {
                 return true;
             }
@@ -1280,12 +1298,17 @@ namespace sqlite2orm {
          *  Whether sqlite_orm already types a call of this built-in function nullably. This asks
          *  what the generated C++ carries back, not what SQLite can answer — that one is
          *  `expressionMayBeNull` — so a name can belong to both lists. `abs`, `max`,
-         *  `min` and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif`,
-         *  `likely`, `unlikely` and `likelihood` are declared as the result of an argument, which is
-         *  a `std::optional` as soon as that argument is a nullable column. Widening one of those
-         *  would nest a second nullable around the first.
+         *  `min` and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif`
+         *  (its three-argument form, the only one sqlite_orm declares), `likely`, `unlikely` and
+         *  `likelihood` are declared as the result of an argument, which is a `std::optional` as
+         *  soon as that argument is a nullable column. Widening one of those would nest a second
+         *  nullable around the first.
          */
-        bool generatedFunctionResultIsAlreadyNullable(std::string_view functionLower) {
+        bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall) {
+            const std::string functionLower = toLowerAscii(functionCall.name);
+            if(iifWithoutAnElseArgument(functionCall, functionLower)) {
+                return false;
+            }
             return isOneOfFunctions(functionLower, {"abs", "coalesce", "ifnull", "iif", "likelihood",
                                                     "likely", "max", "min", "nullif", "sum", "unlikely"});
         }
@@ -1676,7 +1699,7 @@ namespace sqlite2orm {
                 // already carries its nullability.
                 return false;
             }
-            if(generatedFunctionResultIsAlreadyNullable(toLowerAscii(functionCall->name))) {
+            if(generatedFunctionResultIsAlreadyNullable(*functionCall)) {
                 return false;
             }
             return expressionMayBeNull(generatedNode);

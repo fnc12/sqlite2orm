@@ -301,7 +301,9 @@ namespace sqlite2orm {
      *  rather than an error. A call is ruled out only for the built-ins that answer NULL for no
      *  reason other than a NULL argument; every other one — `nullif`, `date`, `unicode`, `sign`,
      *  `substr`, `printf`, `json_extract`, the math functions, and an aggregate over an empty
-     *  rowset — counts as nullable whatever its arguments hold.
+     *  rowset — counts as nullable whatever its arguments hold. `iif` propagates for its
+     *  three-argument form alone: the `iif(X, Y)` SQLite 3.48 added is `iif(X, Y, NULL)`, NULL
+     *  whenever X is false.
      */
     bool expressionMayBeNull(const AstNode& astNode);
     /**

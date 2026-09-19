@@ -253,9 +253,7 @@ namespace sqlite2orm {
     }
 
     std::vector<std::string> CodeGeneratorContext::takeComments() {
-        std::vector<std::string> taken = this->commentsRecordedSince(0);
-        this->comments.clear();
-        return taken;
+        return this->takeCommentsSince(0);
     }
 
     size_t CodeGeneratorContext::commentMark() const {
@@ -263,13 +261,21 @@ namespace sqlite2orm {
     }
 
     std::vector<std::string> CodeGeneratorContext::commentsRecordedSince(size_t mark) const {
-        // A `takeComments()` in between leaves fewer than `mark` behind: the statement the comments
-        // belong to has carried them off already, so there is nothing left for this node to report.
+        // A take in between leaves fewer than `mark` behind: the statement the comments belong to
+        // has carried them off already, so there is nothing left for this node to report.
         std::vector<std::string> recorded;
         for (size_t index = mark; index < this->comments.size(); ++index) {
             appendUniqueString(recorded, this->comments[index]);
         }
         return recorded;
+    }
+
+    std::vector<std::string> CodeGeneratorContext::takeCommentsSince(size_t mark) {
+        std::vector<std::string> taken = this->commentsRecordedSince(mark);
+        if (mark < this->comments.size()) {
+            this->comments.erase(this->comments.begin() + static_cast<std::ptrdiff_t>(mark), this->comments.end());
+        }
+        return taken;
     }
 
     void CodeGeneratorContext::markUngeneratableTable(std::string_view tableName) {

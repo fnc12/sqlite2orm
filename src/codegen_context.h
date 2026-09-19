@@ -75,15 +75,16 @@ namespace sqlite2orm {
         std::vector<std::string> formsWithoutDefaultConstructor;
         /**
          *  The comments explaining the generated forms met since the last reset, in the order they
-         *  were recorded and a form met twice recorded twice — `takeComments` and
-         *  `commentsRecordedSince` are what deduplicate, so that each of them answers with the
-         *  distinct comments of its own stretch of the generation.
+         *  were recorded and a form met twice recorded twice — the readers (`takeComments`,
+         *  `takeCommentsSince` and `commentsRecordedSince`) are what deduplicate, so that each of
+         *  them answers with the distinct comments of its own stretch of the generation.
          *  A comment belongs to the statement whose body the expression was generated in, and
          *  an expression is generated from every clause there is — a CHECK, a column DEFAULT, a
          *  view body, a trigger WHEN, a subquery, a CTE — so the clause generators would each have
          *  to carry the list up by hand to keep it. They do not have to: the generator records the
          *  comment here, and the statement-level entry points (`CodeGenerator::generate`,
-         *  `createTableParts`, `createViewParts`) take what was recorded into their result.
+         *  `createTableParts`, `createViewParts`) take what was recorded since they started into
+         *  their result.
          */
         std::vector<std::string> comments;
         /**
@@ -191,6 +192,15 @@ namespace sqlite2orm {
          *  without taking the ones its statement had already recorded around it.
          */
         std::vector<std::string> commentsRecordedSince(size_t mark) const;
+
+        /**
+         *  Moves out the distinct comments recorded past `mark`, leaving what was recorded before it
+         *  in place. This is how a statement generated from a generator that was handed something
+         *  else first carries off its own comments only: the earlier ones stay with whoever marked
+         *  before them, so no mark taken further out ever names a stretch that has been emptied
+         *  under it.
+         */
+        std::vector<std::string> takeCommentsSince(size_t mark);
 
         /**
          *  How many statements of the current batch already declared each result variable

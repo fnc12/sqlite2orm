@@ -386,8 +386,10 @@ share one result type — so it needs a decision taken across the branches at on
 - [x] indexed-column DESC
 - [x] WHERE expr (partial index)
 - [x] COLLATE / ASC|DESC in either order (SQLite-compatible loop)
+- [x] an index whose first indexed column is an expression names the table it is made for — `make_index<T>(...)` — because `make_index` deduces that table from its first argument alone and only a column reference carries one
 - [!] SQL without `IF NOT EXISTS` vs sqlite_orm always emitting `IF NOT EXISTS` in serialized DDL (codegen warns)
 - [!] schema-qualified index or `ON` table (parsed; codegen warns)
+- [!] a UNIQUE index whose first indexed column is an expression: `make_unique_index` takes that table as a template parameter defaulted behind its argument pack, which no explicit template argument list can reach, so the index has no form in sqlite_orm and is left out of the storage (codegen warns); its indexed columns and its partial `WHERE` are still generated, so everything they decide and warn about is reported
 
 ---
 

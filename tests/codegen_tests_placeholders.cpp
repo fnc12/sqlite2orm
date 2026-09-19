@@ -35,6 +35,9 @@ namespace {
         return codeGenerator.generateNode(*parseResult.astNodePointer);
     }
 
+    const std::string kTriggerStepMessage = "a statement in the trigger body is not mapped to sqlite_orm "
+                                            "codegen";
+
 }  // namespace
 
 TEST_CASE("codegen: a statement with no sqlite_orm form at all is placeheld and underlined") {
@@ -366,7 +369,63 @@ TEST_CASE("codegen: a subquery selecting a `*` next to other columns is left unm
                            CodegenWarning{"CREATE VIEW v: SELECT is not supported for sqlite_orm "
                                           "code generation"}}});
     REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t; END") ==
-            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin());",
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
+                          "sqlite_orm */));",
                           {},
-                          {CodegenWarning{message, SourceLocation{1, 43}, 18}}});
+                          {CodegenWarning{message, SourceLocation{1, 43}, 18},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{1, 43}, 18}}});
+}
+
+// `make_trigger(...).begin(step, step)` joins the steps with commas, so a step answering with no
+// code at all used to leave a dangling comma behind — `begin(select(&T::b), )`, which is not C++ —
+// or, as the only step, to leave `begin()` installing a trigger that does less than the schema it
+// was read from, with nothing in the generated code saying so. A step is a placeholder site like
+// every other one, wherever in the body it stands.
+TEST_CASE("codegen: a trigger step with no sqlite_orm form is placeheld and underlined") {
+    const std::string starMessage = "a `*` result column next to other result columns is not mapped to "
+                                    "sqlite_orm select(...)";
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; END") ==
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
+                          "/* trigger step not mapped to sqlite_orm */));",
+                          {columnRefStyleDp(1, "&T::b")},
+                          {CodegenWarning{starMessage, SourceLocation{1, 60}, 18},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{1, 60}, 18}}});
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; "
+                         "SELECT b FROM t; END") ==
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
+                          "/* trigger step not mapped to sqlite_orm */, select(&T::b)));",
+                          {columnRefStyleDp(1, "&T::b"), columnRefStyleDp(2, "&T::b")},
+                          {CodegenWarning{starMessage, SourceLocation{1, 60}, 18},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{1, 60}, 18}}});
+    // The step that generated nothing is the first one: it used to disappear from the body without
+    // a trace, leaving a trigger that compiles and runs and does less than the one imported.
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t; SELECT b FROM t; END") ==
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
+                          "sqlite_orm */, select(&T::b)));",
+                          {columnRefStyleDp(1, "&T::b")},
+                          {CodegenWarning{starMessage, SourceLocation{1, 43}, 18},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{1, 43}, 18}}});
+    // A compound step is underlined whole, arms included.
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t UNION "
+                         "SELECT b FROM t; END") ==
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
+                          "sqlite_orm */));",
+                          {},
+                          {CodegenWarning{starMessage, SourceLocation{1, 43}, 18},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{1, 43}, 40}}});
+    // The arm that answered with no code before this branch existed: a `*` needs a FROM to name the
+    // row type `asterisk<T>()` is taken over, and a step of one is a placeholder site all the same.
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *; END") ==
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
+                          "/* trigger step not mapped to sqlite_orm */));",
+                          {columnRefStyleDp(1, "&T::b")},
+                          {CodegenWarning{"SELECT * subexpression requires FROM for sqlite_orm asterisk<...>()"},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{1, 60}, 8}}});
+    // The underline stops at the end of the line the step starts on.
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN\nSELECT *,\na FROM t; END") ==
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
+                          "sqlite_orm */));",
+                          {},
+                          {CodegenWarning{starMessage, SourceLocation{2, 1}, 9},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{2, 1}, 9}}});
 }

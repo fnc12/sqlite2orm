@@ -415,11 +415,31 @@ namespace sqlite2orm {
             }
         } scope{&this->context, subjectTableStruct};
 
+        // `make_trigger(...).begin(step, step)` joins the steps with commas, so a step answering
+        // with no code at all would leave a dangling comma behind — and, as the only step of a
+        // trigger, would leave `begin()` installing a trigger that does less than the schema it was
+        // read from, with nothing in the generated code saying so. A step is a placeholder site
+        // like every other one: the placeholder stands where the step would have, and its warning
+        // names the SQL to underline.
+        auto stepOrPlaceholder = [&statement](CodeGenResult step) {
+            if(!step.code.empty()) {
+                return step;
+            }
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(step.decisionPoints);
+            carried.warnings = std::move(step.warnings);
+            carried.comments = std::move(step.comments);
+            return unsupportedPlaceholder("trigger step not mapped to sqlite_orm",
+                                          "a statement in the trigger body is not mapped to sqlite_orm codegen",
+                                          statement, std::move(carried));
+        };
+
         if(auto* selectNode = dynamic_cast<const SelectNode*>(&statement)) {
-            return this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode);
+            return stepOrPlaceholder(this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode));
         }
         if(auto* compoundSelectNode = dynamic_cast<const CompoundSelectNode*>(&statement)) {
-            return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundSelectNode);
+            return stepOrPlaceholder(
+                this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundSelectNode));
         }
         auto outer = this->coordinator.generateNode(statement);
         std::string code = outer.code;
@@ -436,7 +456,8 @@ namespace sqlite2orm {
         while(!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
             code.pop_back();
         }
-        return CodeGenResult{std::move(code), std::move(outer.decisionPoints), std::move(outer.warnings)};
+        return stepOrPlaceholder(
+            CodeGenResult{std::move(code), std::move(outer.decisionPoints), std::move(outer.warnings)});
     }
 
 }  // namespace sqlite2orm

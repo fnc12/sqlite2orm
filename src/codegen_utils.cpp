@@ -856,6 +856,37 @@ namespace sqlite2orm {
         return lineBreak == std::string_view::npos ? sourceText.size() : lineBreak;
     }
 
+    CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
+        if(astNode.sourceSpan.text.empty()) {
+            return CodegenWarning{std::move(message)};
+        }
+        return CodegenWarning{std::move(message), astNode.sourceSpan.location,
+                              underlineLengthOf(astNode.sourceSpan.text)};
+    }
+
+    namespace {
+
+        /** The `/*` … `*\/` placeholder text a funnelled placeholder generates for `label`. */
+        std::string placeholderCode(std::string_view label) {
+            return "/* " + std::string(label) + " */";
+        }
+
+    }  // namespace
+
+    CodeGenResult unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode,
+                                         CodeGenResult carried) {
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
+        return carried;
+    }
+
+    CodeGenResult unsupportedPlaceholder(std::string_view label, const PlaceholderMessage& message,
+                                         const AstNode& astNode, CodeGenResult carried) {
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(message(carried.code), astNode));
+        return carried;
+    }
+
     std::string numericLiteralSqlText(const AstNode& value) {
         std::size_t foldedSigns = 0;
         const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, foldedSigns));

@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -249,6 +250,35 @@ namespace sqlite2orm {
      *  by one — is underlined up to the end of the line it starts on and no further.
      */
     size_t underlineLengthOf(std::string_view sourceText);
+    /**
+     *  `message` anchored at the source span `astNode` was parsed from, so that a consumer
+     *  underlines the very SQL the message is about. Unanchored for a node carrying no span, which
+     *  is a node no parse built — one a test constructed by hand, say.
+     */
+    CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
+    /**
+     *  The code generated in place of a construct sqlite_orm has no form for: a `/*` … `*\/`
+     *  placeholder named by `label`, and `message` anchored at the construct appended to the
+     *  warnings of `carried`, which brings along whatever was collected before the construct turned
+     *  out to be unmappable. Such a placeholder stands where an expression or a statement would
+     *  have, so the generated code does not compile there; going through one funnel is what keeps
+     *  every one of them saying which SQL to underline (`codegen: every generated placeholder is
+     *  funnelled through unsupportedPlaceholder` pins that). The placeholders standing for a WHOLE
+     *  statement do not come here — the PRAGMA ones and the `CREATE TABLE` / `CREATE VIEW` headers:
+     *  each leaves the generated code compiling and already carries the warning saying why the
+     *  statement generated nothing.
+     */
+    CodeGenResult unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode,
+                                         CodeGenResult carried = {});
+    /** A placeholder's message built from the placeholder text itself. */
+    using PlaceholderMessage = std::function<std::string(const std::string& placeholder)>;
+    /**
+     *  The same, for a message that quotes the placeholder text itself: `message` is handed the
+     *  `/*` … `*\/` the placeholder generates, so that the shape of a placeholder stays known to
+     *  this one function and a caller cannot spell a second one of its own.
+     */
+    CodeGenResult unsupportedPlaceholder(std::string_view label, const PlaceholderMessage& message,
+                                         const AstNode& astNode, CodeGenResult carried = {});
     /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.

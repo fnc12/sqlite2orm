@@ -8,8 +8,8 @@
 
 namespace {
 
-    // The revision CMakeLists.txt pins. Spelled out here so that bumping it takes updating every
-    // place that promises it: the build, the README table and this test.
+    // The revision cmake/SqliteOrmPinnedRevision.cmake pins. Spelled out here so that bumping it
+    // takes updating every place that promises it: the build, the README table and this test.
     constexpr std::string_view pinnedRevision = "eb77998ef5e27350b25977b061e46e202742ecc8";
 
     [[nodiscard]] std::string readSourceFile(std::string_view name) {
@@ -49,13 +49,23 @@ namespace {
 }
 
 // sqlite_orm's `dev` branch moves, and the runtime tests compile the generated code against it, so
-// a branch name would let the same commit of this repository pass today and fail tomorrow.
-TEST_CASE("CMakeLists pins sqlite_orm to a revision") {
+// a branch name would let the same commit of this repository pass today and fail tomorrow. The
+// revision defaults as a plain variable: a `CACHE STRING` default is written on the first configure
+// and outranks the file afterwards, so a bump would move CI and leave every tree that had already
+// configured on the old headers, with the guard below skipping instead of catching it.
+TEST_CASE("the pinned revision module pins sqlite_orm to a revision") {
     const std::string expected =
-        "    set(SQLITE2ORM_SQLITE_ORM_PINNED_REVISION "
+        "set(SQLITE2ORM_SQLITE_ORM_PINNED_REVISION "
         "\"eb77998ef5e27350b25977b061e46e202742ecc8\")\n"
-        "    set(SQLITE2ORM_SQLITE_ORM_REVISION \"${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}\"\n"
-        "        CACHE STRING \"Revision of fnc12/sqlite_orm the runtime tests compile against\")\n";
+        "if(NOT DEFINED SQLITE2ORM_SQLITE_ORM_REVISION)\n"
+        "    set(SQLITE2ORM_SQLITE_ORM_REVISION \"${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}\")\n"
+        "elseif(NOT SQLITE2ORM_SQLITE_ORM_REVISION STREQUAL "
+        "SQLITE2ORM_SQLITE_ORM_PINNED_REVISION)\n";
+    REQUIRE(countOccurrences(readSourceFile("cmake/SqliteOrmPinnedRevision.cmake"), expected) == 1);
+}
+
+TEST_CASE("CMakeLists takes the revision from the pinned revision module") {
+    const std::string expected = "    include(\"${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmPinnedRevision.cmake\")\n";
     REQUIRE(countOccurrences(readSourceFile("CMakeLists.txt"), expected) == 1);
 }
 
@@ -70,19 +80,18 @@ TEST_CASE("CMakeLists fetches the configured sqlite_orm revision") {
     REQUIRE(countOccurrences(readSourceFile("CMakeLists.txt"), expected) == 1);
 }
 
-// SQLITE2ORM_SQLITE_ORM_REVISION is a cache entry: a tree configured once against `dev` keeps it,
-// and from then on the guard below can only skip. Such a tree has to say at configure time that
-// its guard is off, or it stays green while checking nothing.
-TEST_CASE("CMakeLists reports a tree configured off the pin") {
-    const std::string expected =
-        "    if(NOT SQLITE2ORM_SQLITE_ORM_REVISION STREQUAL "
-        "\"${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}\")\n"
-        "        message(STATUS \"[sqlite2orm] This tree is configured against sqlite_orm \"\n"
-        "                       \"${SQLITE2ORM_SQLITE_ORM_REVISION}, not the pinned \"\n"
-        "                       \"${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}: the revision guard is "
-        "off here.\")\n"
-        "    endif()\n";
-    REQUIRE(countOccurrences(readSourceFile("CMakeLists.txt"), expected) == 1);
+// A tree configured with -DSQLITE2ORM_SQLITE_ORM_REVISION keeps that revision across bumps, and
+// from then on the guard below can only skip. Such a tree has to say at configure time that its
+// guard is off, or it stays green while checking nothing.
+TEST_CASE("the pinned revision module reports a tree configured off the pin") {
+    const std::string expected = "    message(STATUS \"[sqlite2orm] This tree is configured against sqlite_orm \"\n"
+                                 "                   \"${SQLITE2ORM_SQLITE_ORM_REVISION}, not the pinned \"\n"
+                                 "                   \"${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}: the revision guard is "
+                                 "off here. \"\n"
+                                 "                   \"Run cmake -U SQLITE2ORM_SQLITE_ORM_REVISION to follow the pin "
+                                 "again.\")\n"
+                                 "endif()\n";
+    REQUIRE(countOccurrences(readSourceFile("cmake/SqliteOrmPinnedRevision.cmake"), expected) == 1);
 }
 
 TEST_CASE("README quotes the pinned sqlite_orm revision") {

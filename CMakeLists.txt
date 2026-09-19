@@ -95,20 +95,10 @@ if(SQLITE2ORM_BUILD_TESTS)
 
     # The runtime tests compile the generated code against these headers, so following the moving
     # `dev` branch made the same commit of this repository pass or fail depending on when the
-    # checkout was populated, and the failures read like a bug in whatever was under test. Bump the
-    # revision deliberately, together with the ones README.md and
-    # tests/sqlite_orm_revision_tests.cpp quote. A commit hash rules out GIT_SHALLOW, which CMake
-    # accepts only for branch and tag names.
-    set(SQLITE2ORM_SQLITE_ORM_PINNED_REVISION "eb77998ef5e27350b25977b061e46e202742ecc8")
-    set(SQLITE2ORM_SQLITE_ORM_REVISION "${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}"
-        CACHE STRING "Revision of fnc12/sqlite_orm the runtime tests compile against")
-    # The revision is a cache entry, so a tree configured once against another one keeps it and the
-    # guard below can then only skip. A tree whose guard is off should say so out loud.
-    if(NOT SQLITE2ORM_SQLITE_ORM_REVISION STREQUAL "${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}")
-        message(STATUS "[sqlite2orm] This tree is configured against sqlite_orm "
-                       "${SQLITE2ORM_SQLITE_ORM_REVISION}, not the pinned "
-                       "${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}: the revision guard is off here.")
-    endif()
+    # checkout was populated, and the failures read like a bug in whatever was under test. The
+    # revision lives in its own module, together with the rule that decides which one a tree uses;
+    # a commit hash rules out GIT_SHALLOW, which CMake accepts only for branch and tag names.
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmPinnedRevision.cmake")
     message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (${SQLITE2ORM_SQLITE_ORM_REVISION})...")
     FetchContent_Declare(
         sqlite_orm_headers
@@ -196,6 +186,11 @@ if(SQLITE2ORM_BUILD_TESTS)
                         "${SQLITE2ORM_GIT_EXECUTABLE}"
                         "${CMAKE_COMMAND}")
         endif()
+        add_test(
+            NAME sqlite2orm_tests_pinned_revision
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_pinned_revision_test.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmPinnedRevision.cmake"
+                    "${CMAKE_COMMAND}")
     endif()
 
     if(SQLITE2ORM_BUILD_CLI)

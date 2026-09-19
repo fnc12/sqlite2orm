@@ -71,8 +71,24 @@ TEST_CASE("reportSqliteSchema: a codegen error reads the same without --json") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE q (a INTEGER CHECK (a IS NOT 1));");
     const SchemaReport result = report(file.path, false);
-    REQUIRE(result.out.empty());
-    REQUIRE(result.err == "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not "
+    // The statement that did not generate is left out of `make_storage()` rather than swallowing
+    // the header, so the only table of this schema leaves an empty storage behind.
+    REQUIRE(result.out == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path);
+}
+)");
+    REQUIRE(result.err == "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
+                          "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not "
                           "supported in sqlite_orm\n");
     REQUIRE(result.exitCode == 1);
 }
@@ -114,4 +130,114 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 )");
     REQUIRE(result.err.empty());
     REQUIRE(result.exitCode == 0);
+}
+
+// SQLite compiles a view body only when the view is used, so it accepts and stores bodies
+// sqlite2orm refuses: `CREATE VIEW v AS SELECT -0x8000000000000000` returns 0 and sits in
+// sqlite_master, and only `SELECT * FROM v` reports `hex literal too big`. Such a view used to take
+// the header for every other table with it, so a schema holding one generated nothing at all.
+TEST_CASE("reportSqliteSchema: a view body sqlite2orm refuses keeps the other tables generated") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY);"
+            "CREATE VIEW v AS SELECT -0x8000000000000000;");
+    const SchemaReport result = report(file.path, false);
+    REQUIRE(result.out == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct T {
+    int64_t id = 0;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("t",
+        make_column("id", &T::id, primary_key())));
+}
+)");
+    REQUIRE(result.err == "warning: CREATE VIEW `v` did not generate and is not merged into make_storage()\n"
+            "validation [view v]: hex literal too big: -0x8000000000000000 (UnaryOperatorNode)\n");
+    REQUIRE(result.exitCode == 1);
+}
+
+// The dropped view is a name sqlite_orm has no type for, exactly as an ungeneratable table is, so
+// a trigger resting on it has to go too rather than be emitted with a dangling `struct V`.
+TEST_CASE("reportSqliteSchema: a trigger on a view that did not generate goes with it") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY);"
+            "CREATE VIEW v AS SELECT +id AS id FROM t;"
+            "CREATE TRIGGER iv INSTEAD OF INSERT ON v BEGIN SELECT 1; END;");
+    const SchemaReport result = report(file.path, false);
+    REQUIRE(result.out == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct T {
+    int64_t id = 0;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("t",
+        make_column("id", &T::id, primary_key())));
+}
+)");
+    REQUIRE(result.err == "warning: CREATE VIEW `v` did not generate and is not merged into make_storage()\n"
+            "warning: `iv` rests on a view that is not generated and is not merged into make_storage()\n"
+            "validation [view v]: unary plus (+expr) is not supported in sqlite_orm (UnaryOperatorNode)\n");
+    REQUIRE(result.exitCode == 1);
+}
+
+// A table that did not generate is marked before anything else is generated, so a view selecting
+// from it is dropped by the same funnel while the table beside it still reaches make_storage().
+TEST_CASE("reportSqliteSchema: a view on a table that did not generate goes with it") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE q (a INTEGER CHECK (a IS NOT 1));"
+            "CREATE TABLE t (id INTEGER PRIMARY KEY);"
+            "CREATE VIEW vq AS SELECT a FROM q;");
+    const SchemaReport result = report(file.path, false);
+    REQUIRE(result.out == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct T {
+    int64_t id = 0;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("t",
+        make_column("id", &T::id, primary_key())));
+}
+)");
+    REQUIRE(result.err == "warning: CREATE VIEW vq: sqlite_orm views use C++26 reflection (make_view + "
+            "[[= \"…\"_orm_name]]); this code requires C++26 and will not compile under the selected "
+            "C++ standard\n"
+            "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
+            "warning: `vq` rests on a table that is not generated and is not merged into "
+            "make_storage()\n"
+            "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not supported in "
+            "sqlite_orm\n");
+    REQUIRE(result.exitCode == 1);
 }

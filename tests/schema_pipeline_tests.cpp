@@ -828,3 +828,24 @@ TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view comp
                     "using namespace sqlite_orm;\n" +
                     joinGeneratedCode(results));
 }
+
+// A statement the pipeline refuses is left out of the header now instead of taking the header with
+// it, so the names it created have to be left out too: the trigger on `bad_v` and the view on
+// `bad_t` would otherwise reach a compiler as `.on<BadV>()` and `&BadT::a` with no struct behind
+// them, at a header that looks fine as text. SQLite accepts every statement below — it stores a
+// view body and a CHECK without compiling them — so this whole schema comes back from sqlite_master.
+TEST_CASE("generateSqliteSchemaHeader: a schema with a statement that did not generate still compiles") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok_t (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE bad_t (a INTEGER CHECK (a IS NOT 1));"
+            "CREATE VIEW bad_v AS SELECT +id AS id FROM ok_t;"
+            "CREATE VIEW on_bad_t AS SELECT a FROM bad_t;"
+            "CREATE TRIGGER on_bad_v INSTEAD OF INSERT ON bad_v BEGIN DELETE FROM ok_t; END;");
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE_FALSE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    requireCompiles(header.code);
+}

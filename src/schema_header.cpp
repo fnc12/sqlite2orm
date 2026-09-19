@@ -118,6 +118,23 @@ namespace sqlite2orm {
             return ordered;
         }
 
+        /** The DDL keyword behind a `sqlite_master` type, for a warning that reads like the SQL. */
+        std::string_view createStatementLabel(std::string_view masterType) {
+            if(masterType == "table") {
+                return "CREATE TABLE";
+            }
+            if(masterType == "view") {
+                return "CREATE VIEW";
+            }
+            if(masterType == "index") {
+                return "CREATE INDEX";
+            }
+            if(masterType == "trigger") {
+                return "CREATE TRIGGER";
+            }
+            return masterType;
+        }
+
         void trimTrailingSemicolon(std::string& line) {
             while(!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
                 line.pop_back();
@@ -161,6 +178,28 @@ namespace sqlite2orm {
         std::vector<DecisionPoint> allDecisionPoints;
         std::vector<CodegenWarning> allWarnings;
         std::vector<std::string> allComments;
+
+        // A statement the pipeline could not carry through — a parse error, a rule sqlite_orm has
+        // no spelling for, a codegen error — is left out of the storage instead of taking the whole
+        // schema with it. SQLite only compiles a view or trigger body when it is used, so it stores
+        // bodies sqlite2orm refuses (`CREATE VIEW v AS SELECT -0x8000000000000000` is accepted and
+        // fails only on `SELECT * FROM v`), and one of them says nothing about the rest of the
+        // schema. The name such a statement created has no C++ type behind it either, exactly as an
+        // ungeneratable table has none, so it is marked here — before anything is generated — and
+        // the existing funnel drops whatever rests on it.
+        for(const SchemaStatementResult& statementResult : schema.statements) {
+            if(statementResult.pipeline.ok()) {
+                continue;
+            }
+            if(statementResult.meta.type == "view") {
+                gen.context().markUngeneratableView(statementResult.meta.name);
+            } else if(statementResult.meta.type == "table") {
+                gen.context().markUngeneratableTable(statementResult.meta.name);
+            }
+            allWarnings.push_back(std::string(createStatementLabel(statementResult.meta.type)) + " `" +
+                                  statementResult.meta.name +
+                                  "` did not generate and is not merged into make_storage()");
+        }
 
         std::vector<CreateTableParts> tableParts;
         tableParts.reserve(sortedTables.size());

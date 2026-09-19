@@ -75,8 +75,16 @@ namespace sqlite2orm {
         bool parseDmlQualifiedTable(std::optional<std::string>& schemaOut, std::string& tableOut);
         std::vector<FromClauseItem> parseFromClause();
 
+        /**
+         *  Hands `parse` an error a recursive-descent helper hit. Those helpers answer with a null
+         *  node and nothing else, which `parse` would otherwise report as "unexpected token"; the
+         *  first error reported this way is the one the statement is refused with.
+         */
+        void reportError(ParseError error);
+
       private:
         TokenStream tokenStream;
+        std::optional<ParseError> pendingError;
         std::unique_ptr<ExpressionParser> expressionParser;
         std::unique_ptr<SelectParser> selectParser;
         std::unique_ptr<DmlParser> dmlParser;

@@ -12,7 +12,7 @@ namespace sqlite2orm {
          *  The SQL this node was parsed from, recorded by the parser that built it. `location` is
          *  the token a node is *named* by — the operator of a binary expression, say — while the
          *  span covers everything the node stands for, which is what a diagnostic about the node
-         *  underlines.
+         *  underlines. Like every other piece of text a node carries, it is a copy the node owns.
          */
         SourceSpan sourceSpan;
 

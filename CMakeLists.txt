@@ -152,6 +152,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/codegen_tests_savepoint.cpp
         tests/validator_tests.cpp
         tests/process_tests.cpp
+        tests/ast_lifetime_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp
         tests/schema_report_tests.cpp

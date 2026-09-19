@@ -188,6 +188,13 @@ namespace sqlite2orm {
      */
     bool doubleFieldCarriesValue(const AstNode& value);
     /**
+     *  True when a `bool` field is known to hold exactly the value SQLite gives `value`: a BOOLEAN
+     *  column has NUMERIC affinity, which leaves every number the way SQLite typed it, while the
+     *  field holds no number besides 0 and 1 and turns `2` into `1`. TRUE and FALSE are the 1 and
+     *  0 SQLite stores for them, so they pass.
+     */
+    bool boolFieldCarriesValue(const AstNode& value);
+    /**
      *  The storage class SQLite gives a value before it applies any column affinity, as far as the
      *  SQL spells it out. A value that is not a literal is an expression SQLite computes while it
      *  runs the statement, and `unknown` stands for it.

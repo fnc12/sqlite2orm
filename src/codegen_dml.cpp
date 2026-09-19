@@ -14,7 +14,8 @@ namespace sqlite2orm {
         /**
          *  The C++ field types that hold whole numbers only, so a value SQLite keeps a REAL reaches
          *  the database converted. `bool`, which a BOOLEAN column maps to, holds no whole number
-         *  besides 0 and 1 and belongs here all the more.
+         *  besides 0 and 1 and belongs here all the more; `boolFieldCarriesValue` rules on the
+         *  range of that field, this predicate on the storage class alone.
          */
         bool isWholeNumberFieldType(std::string_view cppType) {
             return cppType == "int64_t" || cppType == "int" || cppType == "bool";
@@ -27,8 +28,8 @@ namespace sqlite2orm {
          *  ch(x); INSERT INTO ch VALUES (1)` generated `Ch{1}` for a `std::vector<char>` field,
          *  which does not compile — and an expression, whose value only SQLite knows, initializes
          *  no field at all. A field of the right storage class still has a range: a braced
-         *  initializer refuses a whole number past the int64 range, and a `double` one refuses
-         *  every integer constant it would round.
+         *  initializer refuses a whole number past the int64 range, a `double` one refuses every
+         *  integer constant it would round, and a `bool` one holds no number besides 0 and 1.
          */
         bool objectFormCarriesValue(const SourceTableColumn& column, const AstNode& value) {
             const ValueStorageClass fieldClass = fieldTypeStorageClass(column.cppType);
@@ -43,6 +44,9 @@ namespace sqlite2orm {
             }
             if(storageClass != fieldClass) {
                 return false;
+            }
+            if(column.cppType == "bool") {
+                return boolFieldCarriesValue(value);
             }
             if(isWholeNumberFieldType(column.cppType)) {
                 return integerFieldCarriesValue(value);

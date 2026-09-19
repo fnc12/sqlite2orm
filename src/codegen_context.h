@@ -74,6 +74,20 @@ namespace sqlite2orm {
          */
         std::vector<std::string> formsWithoutDefaultConstructor;
         /**
+         *  The comments explaining the generated forms met since the last reset, in the order they
+         *  were recorded and a form met twice recorded twice — the readers (`takeCommentsSince`
+         *  and `commentsRecordedSince`) are what deduplicate, so that each of them answers with
+         *  the distinct comments of its own stretch of the generation.
+         *  A comment belongs to the statement whose body the expression was generated in, and
+         *  an expression is generated from every clause there is — a CHECK, a column DEFAULT, a
+         *  view body, a trigger WHEN, a subquery, a CTE — so the clause generators would each have
+         *  to carry the list up by hand to keep it. They do not have to: the generator records the
+         *  comment here, and the statement-level entry points (`CodeGenerator::generate`,
+         *  `createTableParts`, `createViewParts`) take what was recorded since they started into
+         *  their result.
+         */
+        std::vector<std::string> comments;
+        /**
          *  The tables of the current batch that cannot be mapped at all — a STORED generated
          *  column holding such a hex literal leaves the whole table out, because a column that
          *  lost its `as(...)` would be an ordinary column. sqlite_orm cannot reference a type it
@@ -162,6 +176,37 @@ namespace sqlite2orm {
 
         /** Records a form whose sqlite_orm type has no default constructor, once per spelling. */
         void recordFormWithoutDefaultConstructor(std::string form);
+
+        /** Records a comment explaining a generated form. */
+        void recordComment(std::string_view comment);
+
+        /** The count `commentsRecordedSince` measures from: how many comments stand recorded now. */
+        size_t commentMark() const;
+
+        /**
+         *  Copies out the distinct comments recorded past `commentMark()`, i.e. the ones whatever ran since
+         *  recorded. This is how an entry point reports the comments of the node it was handed
+         *  without taking the ones its statement had already recorded around it.
+         */
+        std::vector<std::string> commentsRecordedSince(size_t mark) const;
+
+        /**
+         *  Moves out the distinct comments recorded past `mark`, leaving what was recorded before it
+         *  in place. This is how a statement generated from a generator that was handed something
+         *  else first carries off its own comments only: the earlier ones stay with whoever marked
+         *  before them, so no mark taken further out ever names a stretch that has been emptied
+         *  under it.
+         */
+        std::vector<std::string> takeCommentsSince(size_t mark);
+
+        /**
+         *  Drops the comments recorded past `mark`, leaving the earlier ones in place. A generator
+         *  that throws away what it generated — a fragment replaced by a placeholder, a statement
+         *  that ends up with no code at all — marks before it starts and drops here: a comment
+         *  explains the form some generated code took, and a consumer shown one for code it did not
+         *  get reads it as a statement about the code it did.
+         */
+        void discardCommentsSince(size_t mark);
 
         /**
          *  How many statements of the current batch already declared each result variable

@@ -154,6 +154,62 @@ The upstream [sqlite_orm](https://github.com/fnc12/sqlite_orm) checkout may
 still contain this tree under `sqlite2orm/`; the same sources are intended to
 work as the root of a **standalone** sqlite2orm repository after a future move.
 
+## Several worktrees over one clone
+
+`git worktree` checkouts of one clone can sit behind paths only the process owning them can see — a
+container mount, a network share, a disk that is not always attached. Every other process reads
+those worktrees as `prunable`, and a single `git worktree prune` (including the one `git gc` runs)
+deletes their administrative files. The owning checkout then answers every command with
+`fatal: not a git repository: .../worktrees/<id>`, although no commit was lost.
+
+`scripts/git-worktree-guard.sh` keeps that from happening, and repairs a clone where it already did:
+
+| Command | Effect |
+|---|---|
+| `protect` | lock every registered worktree and record it in `.git/worktrees.manifest` |
+| `check` | name every recorded worktree that lost its files or its lock, or has moved since |
+| `restore` | rebuild the administrative files of every recorded worktree that lost them |
+| `forget <id>` | drop one worktree from the manifest, for a checkout that is finished with |
+| `unlock <id>` | drop one worktree's lock, so `git worktree remove` accepts it again |
+
+Run `protect` from anywhere inside the repository, and run it again whenever a worktree's `HEAD`
+moves — not only when one is added. What it records is a snapshot, so a worktree that has committed
+since is recorded at the commit it left behind. It is cheap and idempotent, which is why it belongs
+on every commit, checkout and branch switch a shared clone makes. Nothing enforces that rule, so
+`check` compares each recorded `HEAD` with the one the worktree holds now and reports a record that
+has fallen behind as `stale <id>`. A worktree on a branch does not go stale as the branch moves —
+`ref: refs/heads/<branch>` stays true, and a restore from it loses nothing — but a detached one, or
+one that switched branches, does.
+
+`restore` rebuilds `HEAD`, `gitdir`, `commondir` and the index from the manifest, and names the
+commit or branch it used (`restored <id> at <head>`). That is the recorded `HEAD`, which is not
+necessarily the one the worktree had when it lost its files: **anything committed after the last
+`protect` is not recovered**, and has to be found with `git fsck --lost-found`. The worktree itself
+does not have to be visible from where `restore` runs. `protect` also writes
+`refs/worktree-guard/<id>` for every worktree it records, so the commit in the manifest stays
+reachable even once no worktree points at it, and the owner has something to compare a restored
+checkout against. The first column of a manifest line is a directory name under `.git/worktrees`
+and `restore` removes what it names, so an entry that is not a single path component — the kind of
+slip a hand-edited path invites — is refused as `invalid id <id>` before anything is removed.
+
+A locked worktree is one `git worktree prune` leaves alone — which is the point, and which also
+means that once every worktree is protected, `git worktree prune` and `git gc` are safe to run in
+this clone again. The price is that locked worktrees are held against removal as firmly as against
+pruning: `git worktree remove` refuses one, and re-adding at the path of a locked missing worktree
+fails with `fatal: '<path>' is a missing but locked worktree` and needs `add -f -f` where `add -f`
+used to be enough. Run `unlock <id>` first in both cases. `forget <id>` then drops a worktree the
+clone is really finished with from the manifest, and releases its ref; without it a retired
+worktree stays `missing` in `check` for good and the next `restore` registers it again. Releasing
+the ref is the half that matters beyond a green `check`: until `forget` runs, the recorded commit
+and everything reachable from it are held against `git gc` for good. A worktree that is still
+registered stays out of the manifest only until the next `protect`, and `check` reports it as
+`unrecorded` in the meantime.
+
+The manifest is keyed by the id git assigned the worktree, and git hands out the first free one by
+basename (`work`, `work1`, …). Once a prune has emptied `.git/worktrees`, a worktree added at a
+different path can therefore be given the id of a lost one, and the next `protect` overwrites that
+entry — one more reason to `forget` a checkout the clone is finished with rather than leave it.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

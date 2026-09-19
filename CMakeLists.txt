@@ -132,6 +132,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/codegen_tests_savepoint.cpp
         tests/validator_tests.cpp
         tests/process_tests.cpp
+        tests/ast_lifetime_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp
         tests/schema_report_tests.cpp
@@ -151,6 +152,17 @@ if(SQLITE2ORM_BUILD_TESTS)
         SQLITE2ORM_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)
     add_test(NAME sqlite2orm_tests COMMAND sqlite2orm_tests)
+
+    if(UNIX)
+        find_program(SQLITE2ORM_GIT_EXECUTABLE git)
+        if(SQLITE2ORM_GIT_EXECUTABLE)
+            add_test(
+                NAME sqlite2orm_tests_worktree_guard
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/git_worktree_guard.sh"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/git-worktree-guard.sh"
+                        "${SQLITE2ORM_GIT_EXECUTABLE}")
+        endif()
+    endif()
 
     if(SQLITE2ORM_BUILD_CLI)
         add_test(NAME sqlite2orm_cli_help COMMAND $<TARGET_FILE:sqlite2orm_cli> --help)

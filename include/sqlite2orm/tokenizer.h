@@ -19,6 +19,11 @@ namespace sqlite2orm {
 
     class Tokenizer {
       public:
+        /**
+         *  Every token's `value` views into `sql`, so `sql` has to stay alive for as long as the
+         *  tokens are used, the parse that consumes them included. The AST that parse answers with
+         *  outlives `sql` on its own — see `ParseResult`.
+         */
         std::vector<Token> tokenize(std::string_view sql);
 
       private:

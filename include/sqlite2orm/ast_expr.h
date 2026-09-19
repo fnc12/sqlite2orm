@@ -11,7 +11,7 @@
 namespace sqlite2orm {
 
     struct IntegerLiteralNode : AstNode {
-        std::string_view value;
+        std::string value;
 
         IntegerLiteralNode(std::string_view value, SourceLocation location) : AstNode(location), value(value) {}
 
@@ -22,7 +22,7 @@ namespace sqlite2orm {
     };
 
     struct RealLiteralNode : AstNode {
-        std::string_view value;
+        std::string value;
 
         RealLiteralNode(std::string_view value, SourceLocation location) : AstNode(location), value(value) {}
 
@@ -33,7 +33,7 @@ namespace sqlite2orm {
     };
 
     struct StringLiteralNode : AstNode {
-        std::string_view value;
+        std::string value;
 
         StringLiteralNode(std::string_view value, SourceLocation location) : AstNode(location), value(value) {}
 
@@ -54,7 +54,7 @@ namespace sqlite2orm {
     struct BoolLiteralNode : AstNode {
         bool value;
         /** The keyword as written: `TRUE`, `FALSE` or `ON`, whichever case it came in. */
-        std::string_view spelling;
+        std::string spelling;
 
         BoolLiteralNode(bool value, std::string_view spelling, SourceLocation location) :
             AstNode(location), value(value), spelling(spelling) {}
@@ -66,7 +66,7 @@ namespace sqlite2orm {
     };
 
     struct BlobLiteralNode : AstNode {
-        std::string_view value;
+        std::string value;
 
         BlobLiteralNode(std::string_view value, SourceLocation location) : AstNode(location), value(value) {}
 
@@ -77,7 +77,7 @@ namespace sqlite2orm {
     };
 
     struct ColumnRefNode : AstNode {
-        std::string_view columnName;
+        std::string columnName;
 
         ColumnRefNode(std::string_view columnName, SourceLocation location) :
             AstNode(location), columnName(columnName) {}
@@ -90,9 +90,9 @@ namespace sqlite2orm {
 
     struct QualifiedColumnRefNode : AstNode {
         /** When set, `schema.table.column` (SQLite); otherwise `table.column`. */
-        std::optional<std::string_view> schemaName;
-        std::string_view tableName;
-        std::string_view columnName;
+        std::optional<std::string> schemaName;
+        std::string tableName;
+        std::string columnName;
 
         QualifiedColumnRefNode(std::string_view tableName, std::string_view columnName, SourceLocation location) :
             AstNode(location), tableName(tableName), columnName(columnName) {}
@@ -138,7 +138,7 @@ namespace sqlite2orm {
     };
 
     struct NewRefNode : AstNode {
-        std::string_view columnName;
+        std::string columnName;
 
         NewRefNode(std::string_view columnName, SourceLocation location) : AstNode(location), columnName(columnName) {}
 
@@ -149,7 +149,7 @@ namespace sqlite2orm {
     };
 
     struct OldRefNode : AstNode {
-        std::string_view columnName;
+        std::string columnName;
 
         OldRefNode(std::string_view columnName, SourceLocation location) : AstNode(location), columnName(columnName) {}
 
@@ -161,7 +161,7 @@ namespace sqlite2orm {
 
     /** UPSERT: excluded.column in DO UPDATE SET */
     struct ExcludedRefNode : AstNode {
-        std::string_view columnName;
+        std::string columnName;
 
         ExcludedRefNode(std::string_view columnName, SourceLocation location) :
             AstNode(location), columnName(columnName) {}
@@ -430,7 +430,7 @@ namespace sqlite2orm {
     };
 
     struct BindParameterNode : AstNode {
-        std::string_view value;
+        std::string value;
 
         BindParameterNode(std::string_view value, SourceLocation location) : AstNode(location), value(value) {}
 

@@ -234,10 +234,10 @@ namespace sqlite2orm {
          *  The statement's opening keywords as written, from `CREATE` through `VIEW`, which a
          *  warning about the view as a whole underlines. They are not always the 11 characters of
          *  `CREATE VIEW` — `CREATE TEMP VIEW` names three, and any amount of whitespace, a newline
-         *  included, may sit between them — so the span is taken from the source, not assumed.
+         *  included, may sit between them — so the span is copied out of the source, not assumed.
          *  Empty for a node built by hand rather than parsed; the warning then goes unanchored.
          */
-        std::string_view headerText;
+        std::string headerText;
 
         CreateViewNode(SourceLocation location,
                        bool ifNotExists,

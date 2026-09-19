@@ -466,6 +466,48 @@ TEST_CASE("runtime: an INSERT value out of reach of a bool field keeps the value
             std::vector<std::string>{"real|1.0e+20", "real|1.5", "integer|2"});
 }
 
+// A whole number is out of reach of a `bool` field as soon as it is neither 0 nor 1, and the
+// NUMERIC affinity of a BOOLEAN column keeps every one of these as SQLite typed it. Expected rows
+// checked against sqlite3 3.51 with the same five INSERT statements over `t(x BOOLEAN)`.
+TEST_CASE("runtime: an INSERT of a whole number no bool holds keeps the value SQLite stores") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (5);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (9223372036854775807);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1_0);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (0xFFFFFFFFFFFFFFFF);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1);").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(5)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775807)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1'0)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(static_cast<int64_t>("
+                "0xFFFFFFFFFFFFFFFF))));",
+                "storage.insert(T{1});",
+            });
+    REQUIRE(insertedColumnRows(statements, "bool") ==
+            std::vector<std::string>{"integer|5",
+                                     "integer|9223372036854775807",
+                                     "integer|10",
+                                     "integer|-1",
+                                     "integer|1"});
+}
+
+// The bare `bool` field of a NOT NULL column refuses the value at compile time rather than
+// converting it — "narrowing conversion of '2' from 'int' to 'bool'" — so this one only builds
+// through the column list. sqlite3 3.51 stores `integer|2`.
+TEST_CASE("runtime: an INSERT of a whole number no bool holds into a NOT NULL BOOLEAN column") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN NOT NULL); INSERT INTO t VALUES (2);").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(2)));",
+            });
+    REQUIRE(insertedColumnRows(statements, "bool", false) == std::vector<std::string>{"integer|2"});
+}
+
 // A column with no type maps to a `std::vector<char>` field, which only a blob literal initializes:
 // `CREATE TABLE ch(x); INSERT INTO ch VALUES (1);` generated `Ch{1}`, and a compiler said
 // "could not convert '1' from 'int' to 'std::optional<std::vector<char> >'". SQLite stores a value

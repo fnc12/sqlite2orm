@@ -762,11 +762,87 @@ TEST_CASE("codegen: INSERT VALUES - a fractional literal into a BOOLEAN column")
     REQUIRE(result.errors.empty());
 }
 
-// An integer a `bool` field cannot hold either is a separate story: the object form writes 1 where
-// SQLite stores 5, and the fix for that belongs with the literal the field carries, not here.
-TEST_CASE("codegen: INSERT VALUES - a whole number into a BOOLEAN column keeps the object form") {
+// A BOOLEAN column has NUMERIC affinity, which leaves an integer the way SQLite typed it: sqlite3
+// 3.51 stores `integer|5` here, while the object form sends the 5 through the `bool` field and
+// stores 1.
+TEST_CASE("codegen: INSERT VALUES - a whole number no bool holds into a BOOLEAN column") {
     auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (5);");
-    REQUIRE(result.code == "storage.insert(T{5});");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(5)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// The int64 maximum is inside the range of the column, and of every field but this one; sqlite3
+// 3.51 stores `integer|9223372036854775807`.
+TEST_CASE("codegen: INSERT VALUES - the int64 maximum into a BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (9223372036854775807);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775807)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A `bool` field holds no negative number either: sqlite3 3.51 stores `integer|-1`.
+TEST_CASE("codegen: INSERT VALUES - a negative one into a BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (-1);");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(-1)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// The digits alone do not say which value a literal denotes: `1_0` is ten, and SQLite stores
+// `integer|10`.
+TEST_CASE("codegen: INSERT VALUES - a literal with digit separators into a BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1_0);");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1'0)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// SQLite reads a hex literal as a signed 64-bit integer and wraps it around, so the value of
+// `0xFFFFFFFFFFFFFFFF` is -1 — `integer|-1` in sqlite3 3.51 — and no `bool` field carries it.
+TEST_CASE("codegen: INSERT VALUES - a hex literal into a BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (0xFFFFFFFFFFFFFFFF);");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x), "
+            "values(std::make_tuple(static_cast<int64_t>(0xFFFFFFFFFFFFFFFF))));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// The object form stays where the field carries the value: 0 and 1 are the whole range of a `bool`,
+// spelled in any base.
+TEST_CASE("codegen: INSERT VALUES - a bool the field holds keeps the object form") {
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1);").code ==
+            "storage.insert(T{1});");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (0);").code ==
+            "storage.insert(T{0});");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (0x1);").code ==
+            "storage.insert(T{0x1});");
+}
+
+// SQLite reads TRUE and FALSE as the integers 1 and 0, which is exactly what the field holds.
+TEST_CASE("codegen: INSERT VALUES - a boolean keyword into a BOOLEAN column keeps the object form") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (TRUE);");
+    REQUIRE(result.code == "storage.insert(T{true});");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A NOT NULL column has a bare `bool` field, which a braced initializer refuses the 2 for outright:
+// "narrowing conversion of '2' from 'int' to 'bool'". The column list is the same answer.
+TEST_CASE("codegen: INSERT VALUES - a whole number no bool holds into a NOT NULL BOOLEAN column") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN NOT NULL); INSERT INTO t VALUES (2);");
+    REQUIRE(result.code == "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(2)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// One value out of reach of its field spells out every column of the row, the neighbours included.
+TEST_CASE("codegen: INSERT VALUES - a whole number no bool holds beside a string") {
+    auto result = generateLastOfBatch("CREATE TABLE t(x BOOLEAN, y TEXT); INSERT INTO t VALUES (2, 'a');");
+    REQUIRE(result.code ==
+            "storage.insert(into<T>(), columns(&T::x, &T::y), values(std::make_tuple(2, \"a\")));");
     REQUIRE(result.warnings.empty());
     REQUIRE(result.errors.empty());
 }

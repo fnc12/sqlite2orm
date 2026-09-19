@@ -918,6 +918,15 @@ namespace sqlite2orm {
         return static_cast<std::int64_t>(asDouble) == *number;
     }
 
+    bool boolFieldCarriesValue(const AstNode& value) {
+        if(dynamic_cast<const BoolLiteralNode*>(&value)) {
+            // SQLite stores TRUE and FALSE as the integers 1 and 0, the whole range of the field.
+            return true;
+        }
+        const std::optional<std::int64_t> number = integerLiteralInt64Value(value);
+        return number && (*number == 0 || *number == 1);
+    }
+
     ValueStorageClass valueStorageClass(const AstNode& value) {
         if(dynamic_cast<const NullLiteralNode*>(&value)) {
             return ValueStorageClass::null;

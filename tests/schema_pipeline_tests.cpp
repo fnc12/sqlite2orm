@@ -62,6 +62,19 @@ namespace {
         REQUIRE(exitCode == 0);
     }
 
+    /**
+     *  One `sqlite_master` row, run through the pipeline as `processSqliteSchema` would run it.
+     *  A CREATE VIRTUAL TABLE only reaches a database when its module is compiled into the
+     *  sqlite3 the tests link, and which modules those are differs per platform, so the row that
+     *  SQLite would have stored is handed to the header generator directly.
+     */
+    [[nodiscard]] SchemaStatementResult masterRow(std::string type, std::string name, std::string sql) {
+        SchemaStatementResult statement;
+        statement.meta = SchemaStatementMeta{std::move(type), name, name, sql};
+        statement.pipeline = processSql(sql);
+        return statement;
+    }
+
     void execSql(const std::filesystem::path& dbPath, std::string_view sql) {
         sqlite3* db = nullptr;
         REQUIRE(sqlite3_open(dbPath.string().c_str(), &db) == SQLITE_OK);
@@ -975,5 +988,99 @@ TEST_CASE("generateSqliteSchemaHeader: a schema with a statement that did not ge
     REQUIRE_FALSE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
+    requireCompiles(header.code);
+}
+
+// A view SQLite keeps but sqlite_orm has no spelling for is left out of the storage, and a foreign
+// key into it would name a struct the header never declares — `foreign_key(&T::r).references(&V1::a)`
+// with no `struct V1`, at exit 0. Which views are left out is only known after the tables have been
+// generated, so the whole header is generated again once that name is in. SQLite itself takes this
+// schema: a foreign key into a view is created without complaint and only `PRAGMA foreign_keys=ON`
+// plus an INSERT reports `foreign key mismatch - "t" referencing "v1"`. Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a foreign key into a view that is left out goes with it") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER PRIMARY KEY);"
+            "CREATE VIEW v1 AS SELECT a FROM ok1 GROUP BY a HAVING count(*) > 1;"
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, r INTEGER REFERENCES v1(a));");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    int64_t a = 0;\n"
+            "};\n\n"
+            "struct T {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> r;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a, primary_key())),\n"
+            "        make_table(\"t\",\n"
+            "        make_column(\"id\", &T::id, primary_key()),\n"
+            "        make_column(\"r\", &T::r)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"foreign key on column 'r' references v1, which is not generated, so the generated "
+                 "table has no foreign_key()"},
+                {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"},
+                {"CREATE VIEW v1: SELECT is not supported for sqlite_orm code generation"},
+                {"CREATE VIEW `v1` is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// A virtual table is never merged into make_storage() — sqlite_orm spells one `make_virtual_table`,
+// which is not a storage argument — so the header declares no struct for it, and a foreign key into
+// it or a view over it used to name `Ft` anyway, at exit 0. Its name is marked before the first
+// table is generated, because a virtual table is left out whatever it generates.
+TEST_CASE("generateSqliteSchemaHeader: nothing that names a virtual table is merged into the storage") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "ft", "CREATE VIRTUAL TABLE ft USING fts5(a)"));
+    schema.statements.push_back(
+        masterRow("table", "tv", "CREATE TABLE tv(id INTEGER PRIMARY KEY, r INTEGER REFERENCES ft(a))"));
+    schema.statements.push_back(masterRow("view", "vv", "CREATE VIEW vv AS SELECT a FROM ft"));
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Tv {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> r;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"tv\",\n"
+            "        make_column(\"id\", &Tv::id, primary_key()),\n"
+            "        make_column(\"r\", &Tv::r)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"foreign key on column 'r' references ft, which is not generated, so the generated "
+                 "table has no foreign_key()"},
+                {"CREATE VIRTUAL TABLE `ft` is not merged into make_storage(); run sqlite2orm on its "
+                 "SQL separately"},
+                {"`vv` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
     requireCompiles(header.code);
 }

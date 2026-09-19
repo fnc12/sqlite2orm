@@ -322,14 +322,17 @@ TEST_CASE("codegen: unary minus") {
 
 // The signed literal is a plain C++ value again, so an operator around it needs the usual `c()`.
 // The `~` column carries the int64 widening of
-// "codegen: a bitwise result column is cast to an int64_t" on top of that.
+// "codegen: a bitwise result column is cast to an int64_t" on top of that, and the BETWEEN column
+// the nullable widening of "codegen: a result column typed by a predicate, a CAST or a function
+// call is widened".
 TEST_CASE("codegen: negative literal as an operand") {
     REQUIRE(generate("SELECT -2;") == "auto rows = storage.select(-2);");
     REQUIRE(generate("SELECT 100 / -2;") == "auto rows = storage.select(as_optional(c(100) / -2));");
     REQUIRE(generate("SELECT -2 + 3;") == "auto rows = storage.select(c(-2) + 3);");
     REQUIRE(generate("SELECT a * -2;") == "auto rows = storage.select(as_optional(c(&User::a) * -2));");
     REQUIRE(generate("SELECT ~ -2;") == "auto rows = storage.select(cast<int64_t>(~c(-2)));");
-    REQUIRE(generate("SELECT a BETWEEN -1 AND 5;") == "auto rows = storage.select(between(&User::a, -1, 5));");
+    REQUIRE(generate("SELECT a BETWEEN -1 AND 5;") ==
+            "auto rows = storage.select(as_optional(between(&User::a, -1, 5)));");
 }
 
 // A second minus has no literal to fold into; parenthesizing keeps it out of `c()`, which would
@@ -715,8 +718,9 @@ TEST_CASE("codegen: double unary minus parenthesized") {
 TEST_CASE("codegen: unary minus over a general operand becomes a subtraction from zero") {
     REQUIRE(generate("SELECT -(2+3);") == "auto rows = storage.select((c(0) - (c(2) + 3)));");
     REQUIRE(generate("SELECT - ~2;") == "auto rows = storage.select((c(0) - (~c(2))));");
-    REQUIRE(generate("SELECT -length('abc');") ==
-            "auto rows = storage.select(as_optional((c(0) - (length(\"abc\")))));");
+    // `length('abc')` is spelled out in the SQL and SQLite propagates a NULL argument, so the
+    // subtraction over it has no NULL to report and keeps the type sqlite_orm gives it.
+    REQUIRE(generate("SELECT -length('abc');") == "auto rows = storage.select((c(0) - (length(\"abc\"))));");
     REQUIRE(generate("SELECT -x'31';") ==
             "auto rows = storage.select((c(0) - c(std::vector<char>{'\\x31'})));");
     REQUIRE(generate("SELECT -(SELECT 1);") ==

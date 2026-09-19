@@ -363,8 +363,8 @@ TEST_CASE("runtime: a negation over a general operand keeps its value") {
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select((c(0) - (c(2) + 3)));",
                               "auto rows = storage.select((c(0) - (~c(2))));",
-                              "auto rows = storage.select(as_optional((c(0) - (length(\"abc\")))));",
-                              "auto rows = storage.select(as_optional((c(0) - (cast<int64_t>(1)))));",
+                              "auto rows = storage.select((c(0) - (length(\"abc\"))));",
+                              "auto rows = storage.select((c(0) - (cast<int64_t>(1))));",
                               "auto rows = storage.select(c(1) - (c(0) - (c(2) + 3)));",
                               "auto rows = storage.select(as_optional((c(0) - c(&User::a))));",
                               "auto rows = storage.select(as_optional((c(0) - (c(&User::a) + 1))));",
@@ -958,13 +958,90 @@ TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQ
                               "auto rows = storage.select(is_null(cast<int64_t>(or_(nullptr, 0))));",
                               "auto rows = storage.select(is_not_null(cast<int64_t>(or_(&User::a, 0))));",
                               "auto rows = storage.select(like(cast<int64_t>(or_(1, 0)), \"x\"));",
-                              "auto rows = storage.select(!like(cast<int64_t>(or_(&User::a, 0)), \"x\"));",
+                              "auto rows = storage.select(as_optional(!like(cast<int64_t>(or_(&User::a, 0)), \"x\")));",
                               "auto rows = storage.select(glob(cast<int64_t>(or_(1, 0)), \"x\"));",
                               "auto rows = storage.select(in(cast<int64_t>(or_(1, 0)), {0, 1}));",
                               "auto rows = storage.select(in(cast<int64_t>(c(1) and 0), {0, 1}));",
-                              "auto rows = storage.select(not_in(cast<int64_t>(or_(&User::a, 0)), {0, 1}));",
-                              "auto rows = storage.select(between(cast<int64_t>(or_(&User::a, 0)), 0, 1));",
+                              "auto rows = storage.select(as_optional(not_in(cast<int64_t>(or_(&User::a, 0)), "
+                              "{0, 1})));",
+                              "auto rows = storage.select(as_optional(between(cast<int64_t>(or_(&User::a, 0)), "
+                              "0, 1)));",
                           });
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
+}
+
+// sqlite_orm types a BETWEEN, an IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for,
+// and a call of a built-in function the return type that function declares, so a NULL row reached
+// the caller as false / "" / 0 — silently, with the serialized SQL right. `as_optional` keeps the
+// SQL and widens the type. Both expected rows checked against sqlite3 3.51 over `users(a INTEGER)`
+// holding one row, NULL first and 7 second; on master the NULL row reads back as 0, 0, 0, 0, 0,
+// "", 0, "", 0. The `hex` column is the counter-check: SQLite answers `hex(NULL)` with the empty
+// text rather than NULL, so it is not widened and reads back empty either way.
+TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function call reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a BETWEEN 1 AND 9;"),
+        generate("SELECT a NOT BETWEEN 1 AND 9;"),
+        generate("SELECT a IN (1, 7);"),
+        generate("SELECT a NOT IN (1, 7);"),
+        generate("SELECT a LIKE 'x';"),
+        generate("SELECT CAST(a AS TEXT);"),
+        generate("SELECT length(a);"),
+        generate("SELECT upper(a);"),
+        generate("SELECT avg(a);"),
+        generate("SELECT hex(a);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(between(&User::a, 1, 9)));",
+                              "auto rows = storage.select(as_optional(!between(&User::a, 1, 9)));",
+                              "auto rows = storage.select(as_optional(in(&User::a, {1, 7})));",
+                              "auto rows = storage.select(as_optional(not_in(&User::a, {1, 7})));",
+                              "auto rows = storage.select(as_optional(like(&User::a, \"x\")));",
+                              "auto rows = storage.select(as_optional(cast<std::string>(&User::a)));",
+                              "auto rows = storage.select(as_optional(length(&User::a)));",
+                              "auto rows = storage.select(as_optional(upper(&User::a)));",
+                              "auto rows = storage.select(as_optional(avg(&User::a)));",
+                              "auto rows = storage.select(hex(&User::a));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", ""});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"1", "0", "1", "0", "0", "7", "1", "7", "7", "37"});
+}
+
+// Most built-ins answer NULL over arguments that hold none, and sqlite_orm types the call by the
+// return type the function declares, so the row reached the caller as 0 / "" — and an operator over
+// such a call is typed by the operator alone and lost the NULL the same way. Every value here is
+// what libsqlite3 3.45.1 answers, the version this project links; before the widening the NULL rows
+// read back as 0, "", 0, "", 0, 0. The last two columns are the counter-check: `upper` and `length`
+// answer NULL for no reason other than a NULL argument, so a spelled-out argument leaves them plain
+// and they read back as they always did.
+// A `||` over a call is left to the codegen cases: sqlite_orm hands a built-in call back as a
+// `builtin_function_t` rather than a `builtin_function_call` on a compiler its C++20 built-in path
+// is off for, and that type is not an operator argument, so `date("bogus") || "x"` does not compile
+// with Apple clang whether it is widened or not. That gap is master's and has its own card; the
+// widening it would exercise is the same one `nullif(1, 1) + 1` and `unicode('') + 1` exercise here.
+TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT nullif(1, 1) + 1;"),
+        generate("SELECT date('bogus');"),
+        generate("SELECT julianday('bogus');"),
+        generate("SELECT strftime('%Y', 'bogus');"),
+        generate("SELECT unicode('');"),
+        generate("SELECT unicode('') + 1;"),
+        generate("SELECT upper('a');"),
+        generate("SELECT length('x');"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(nullif(1, 1) + 1));",
+                              "auto rows = storage.select(as_optional(date(\"bogus\")));",
+                              "auto rows = storage.select(as_optional(julianday(\"bogus\")));",
+                              "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));",
+                              "auto rows = storage.select(as_optional(unicode(\"\")));",
+                              "auto rows = storage.select(as_optional(unicode(\"\") + 1));",
+                              "auto rows = storage.select(upper(\"a\"));",
+                              "auto rows = storage.select(length(\"x\"));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "A", "1"});
 }

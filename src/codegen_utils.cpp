@@ -2,11 +2,13 @@
 #include "codegen_context.h"
 
 #include <sqlite2orm/utils.h>
+#include <sqlite2orm/validator.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 
 namespace sqlite2orm {
@@ -1189,6 +1191,92 @@ namespace sqlite2orm {
         return "c(" + std::string(code) + ")";
     }
 
+    namespace {
+
+        /** Whether `functionLower` is one of `names`. */
+        bool isOneOfFunctions(std::string_view functionLower, std::initializer_list<std::string_view> names) {
+            return std::find(names.begin(), names.end(), functionLower) != names.end();
+        }
+
+        /**
+         *  Whether SQLite answers a call of this built-in function with a value even when an
+         *  argument is NULL. Checked against sqlite3 3.51 over a NULL argument: `hex(NULL)` is the
+         *  empty text, `quote(NULL)` the text 'NULL', `typeof(NULL)` 'null', `char(NULL)` the empty
+         *  text, `printf('%d', NULL)` '0', `json_object('k', NULL)` '{"k":null}', `count(NULL)` 0
+         *  and `total(NULL)` 0.0; the ones taking no argument have nothing to propagate.
+         */
+        bool sqliteFunctionNeverAnswersNull(std::string_view functionLower) {
+            return isOneOfFunctions(functionLower, {"changes", "char", "count", "hex", "json_group_array",
+                                                    "json_group_object", "json_object", "json_quote",
+                                                    "last_insert_rowid", "printf", "quote", "random",
+                                                    "randomblob", "total", "total_changes", "typeof",
+                                                    "zeroblob"});
+        }
+
+        /**
+         *  Whether SQLite answers this aggregate with NULL over an empty rowset, which it does
+         *  whatever its argument holds: `SELECT avg(a) FROM users` over no rows is NULL, and so is
+         *  `SELECT group_concat(a) FROM users`. (`count` and `total` answer 0 and 0.0 instead, and
+         *  sqlite_orm types `max`, `min` and `sum` nullably on its own.)
+         */
+        bool sqliteAggregateIsNullOverAnEmptyRowset(std::string_view functionLower) {
+            return isOneOfFunctions(functionLower, {"avg", "group_concat"});
+        }
+
+        /** Whether any of `nodes`, the absent ones skipped, may be NULL. */
+        bool anyOperandMayBeNull(std::initializer_list<const AstNode*> nodes) {
+            for(const AstNode* node: nodes) {
+                if(node && expressionMayBeNull(*node)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** Whether any argument of `functionCall` may be NULL. */
+        bool anyFunctionArgumentMayBeNull(const FunctionCallNode& functionCall) {
+            for(const AstNodePointer& argument: functionCall.arguments) {
+                if(argument && expressionMayBeNull(*argument)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         *  Whether SQLite can answer a call of `functionCall` with NULL. A built-in either never
+         *  does, answers NULL over an empty rowset, or propagates a NULL argument.
+         */
+        bool functionCallMayBeNull(const FunctionCallNode& functionCall) {
+            const std::string functionLower = toLowerAscii(functionCall.name);
+            if(!isKnownSqlFunction(functionLower)) {
+                // A user-defined function is called through the generated struct's `operator()`,
+                // and its declared return type is what the row carries back, never a NULL.
+                return false;
+            }
+            if(sqliteFunctionNeverAnswersNull(functionLower)) {
+                return false;
+            }
+            if(sqliteAggregateIsNullOverAnEmptyRowset(functionLower)) {
+                return true;
+            }
+            return anyFunctionArgumentMayBeNull(functionCall);
+        }
+
+        /**
+         *  Whether sqlite_orm already types a call of this built-in function nullably. `abs`, `max`,
+         *  `min` and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif`,
+         *  `likely`, `unlikely` and `likelihood` are declared as the result of an argument, which is
+         *  a `std::optional` as soon as that argument is a nullable column. Widening one of those
+         *  would nest a second nullable around the first.
+         */
+        bool generatedFunctionResultIsAlreadyNullable(std::string_view functionLower) {
+            return isOneOfFunctions(functionLower, {"abs", "coalesce", "ifnull", "iif", "likelihood",
+                                                    "likely", "max", "min", "nullif", "sum", "unlikely"});
+        }
+
+    }  // namespace
+
     bool expressionMayBeNull(const AstNode& astNode) {
         if(dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
            dynamic_cast<const RealLiteralNode*>(&astNode) ||
@@ -1224,6 +1312,46 @@ namespace sqlite2orm {
         }
         if(auto* collate = dynamic_cast<const CollateNode*>(&astNode)) {
             return expressionMayBeNull(*collate->operand);
+        }
+        if(auto* between = dynamic_cast<const BetweenNode*>(&astNode)) {
+            // `1 BETWEEN NULL AND 9` is NULL and `1 BETWEEN NULL AND 0` is 0, so an operand that
+            // can be NULL is what makes the whole test one. Negating it changes nothing.
+            return anyOperandMayBeNull({between->operand.get(), between->low.get(), between->high.get()});
+        }
+        if(auto* in = dynamic_cast<const InNode*>(&astNode)) {
+            if(!in->tableName.empty() || in->subquerySelect) {
+                // What the right-hand side holds is not spelled out here, and `1 IN (SELECT a)`
+                // over a NULL row is NULL.
+                return true;
+            }
+            if(in->values.empty()) {
+                // An empty list is the one form SQLite answers without looking at the operand:
+                // `NULL IN ()` is 0.
+                return false;
+            }
+            if(expressionMayBeNull(*in->operand)) {
+                return true;
+            }
+            for(const AstNodePointer& value: in->values) {
+                if(value && expressionMayBeNull(*value)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if(auto* like = dynamic_cast<const LikeNode*>(&astNode)) {
+            // The ESCAPE operand counts too: `'x' LIKE 'x' ESCAPE NULL` is NULL rather than an error.
+            return anyOperandMayBeNull({like->operand.get(), like->pattern.get(), like->escape.get()});
+        }
+        if(auto* glob = dynamic_cast<const GlobNode*>(&astNode)) {
+            return anyOperandMayBeNull({glob->operand.get(), glob->pattern.get()});
+        }
+        if(auto* cast = dynamic_cast<const CastNode*>(&astNode)) {
+            // A CAST changes the type of a value, never whether it is one: `CAST(NULL AS TEXT)` is NULL.
+            return expressionMayBeNull(*cast->operand);
+        }
+        if(auto* functionCall = dynamic_cast<const FunctionCallNode*>(&astNode)) {
+            return functionCallMayBeNull(*functionCall);
         }
         return true;
     }
@@ -1508,6 +1636,32 @@ namespace sqlite2orm {
                negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate) {
                 // The one form codegen already warns has no working sqlite_orm spelling: it does
                 // not compile at all, so there is no result type to widen.
+                return false;
+            }
+            return expressionMayBeNull(generatedNode);
+        }
+        if(dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
+           dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
+            // sqlite_orm types `between_t`, `in_t`, `like_t` and `glob_t` — and the
+            // `negated_condition_t` a NOT form comes out as — as `bool`, so a NULL row was read
+            // back as false. A MATCH is left out: SQLite refuses `a MATCH 'x'` as a result column
+            // outside an FTS table, and sqlite_orm has no result type for `match_t` either.
+            return expressionMayBeNull(generatedNode);
+        }
+        if(dynamic_cast<const CastNode*>(&generatedNode)) {
+            // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
+            // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
+            return expressionMayBeNull(generatedNode);
+        }
+        if(auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            if(functionCall->over) {
+                // A window function needs no widening: `row_number`, `rank`, `dense_rank`,
+                // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
+                // `first_value`, `last_value` and `nth_value` are typed as their argument, which
+                // already carries its nullability.
+                return false;
+            }
+            if(generatedFunctionResultIsAlreadyNullable(toLowerAscii(functionCall->name))) {
                 return false;
             }
             return expressionMayBeNull(generatedNode);

@@ -191,9 +191,57 @@ TEST_CASE("codegen: CREATE INDEX partial WHERE") {
             "make_index(\"p\", indexed_column(&Posts::user_id), where(1));");
 }
 
+// `make_index` deduces the table an index is made for from its first argument, and an expression
+// names no table, so an index that starts with one spells that table out. Without it the generated
+// code did not compile at all: `no matching function for call to make_index(const char[8],
+// indexed_column_t<...>)`. sqlite_orm serializes the expression itself — `CREATE INDEX "i_lower" ON
+// "users" (LOWER("name"))` — so nothing else about the index changes.
 TEST_CASE("codegen: CREATE INDEX expression column") {
     REQUIRE(generate("CREATE INDEX i_lower ON users (lower(name))") ==
-            "make_index(\"i_lower\", indexed_column(lower(&Users::name)));");
+            "make_index<Users>(\"i_lower\", indexed_column(lower(&Users::name)));");
+}
+
+TEST_CASE("codegen: CREATE INDEX over an arithmetic expression") {
+    REQUIRE(generate("CREATE INDEX i ON t ((a + 1))") ==
+            "make_index<T>(\"i\", indexed_column(c(&T::a) + 1));");
+}
+
+TEST_CASE("codegen: CREATE INDEX over an expression keeps its COLLATE and its order") {
+    REQUIRE(generate("CREATE INDEX i ON t ((a + 1) COLLATE NOCASE DESC)") ==
+            "make_index<T>(\"i\", indexed_column(c(&T::a) + 1).collate(\"nocase\").desc());");
+}
+
+TEST_CASE("codegen: CREATE INDEX over an expression keeps its partial WHERE") {
+    REQUIRE(generate("CREATE INDEX i ON t (a + 1) WHERE a > 0") ==
+            "make_index<T>(\"i\", indexed_column(c(&T::a) + 1), where(c(&T::a) > 0));");
+}
+
+// Only the first argument is deduced from, so an index that starts with a column keeps the short
+// form however the columns after it are written.
+TEST_CASE("codegen: CREATE INDEX starting with a column keeps the deduced form") {
+    REQUIRE(generate("CREATE INDEX i ON t (a, b + 1)") ==
+            "make_index(\"i\", indexed_column(&T::a), indexed_column(c(&T::b) + 1));");
+}
+
+TEST_CASE("codegen: CREATE UNIQUE INDEX starting with a column keeps the deduced form") {
+    REQUIRE(generate("CREATE UNIQUE INDEX u ON t (a, b + 1)") ==
+            "make_unique_index(\"u\", indexed_column(&T::a), indexed_column(c(&T::b) + 1));");
+}
+
+// `make_unique_index` takes the table as a template parameter defaulted behind its argument pack,
+// which no explicit template argument list can reach: `make_unique_index<T>("u", ...)` binds `T` to
+// the pack instead. A UNIQUE index that starts with an expression therefore has no form at all.
+TEST_CASE("codegen: CREATE UNIQUE INDEX over an expression is not generated") {
+    const CodeGenResult expected{
+        "",
+        expectedBinaryLeaf("&T::a", "1", " + ", "add").decisionPoints,
+        {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs from "
+         "serialized output",
+         "UNIQUE index u starts with an expression: sqlite_orm deduces the table an index is made for from its "
+         "first indexed column, and make_unique_index has no form that spells that table out, so the index is "
+         "not generated"}};
+    const CodeGenResult codeGenResult = generateFull("CREATE UNIQUE INDEX u ON t (a + 1)");
+    REQUIRE(codeGenResult == expected);
 }
 
 TEST_CASE("codegen: CREATE INDEX without IF NOT EXISTS warns") {

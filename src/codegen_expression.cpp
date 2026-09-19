@@ -158,6 +158,7 @@ namespace sqlite2orm {
             }
             std::string memberPointer = "&" + this->context.structName + "::" + cppName;
             std::string columnPointer = "column<" + this->context.structName + ">(" + memberPointer + ")";
+            this->context.emittedTableTypedColumnRef = true;
             if(this->context.columnRefUnderLogicalNot) {
                 // Only the column-pointer form survives under a NOT, so there is no style left to
                 // decide between and no decision point to offer.

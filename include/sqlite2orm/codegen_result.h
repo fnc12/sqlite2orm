@@ -69,7 +69,14 @@ namespace sqlite2orm {
         std::vector<DecisionPoint> decisionPoints;
         std::vector<CodegenWarning> warnings;
         std::vector<std::string> errors;
-        /** Optional hints for the generated snippet (deduplicated when merging fragments). */
+        /**
+         *  Optional hints explaining the forms the snippet was generated as, deduplicated by text.
+         *  Every entry point that generates from an AST node reports the ones recorded while it ran,
+         *  so a whole statement carries the comments of every clause of its body and a single node
+         *  carries its own. A hint explains generated code, so a fragment that is thrown away — a
+         *  subquery replaced by a placeholder, a statement that ends up with no `code` at all —
+         *  reports none of the ones its generation recorded.
+         */
         std::vector<std::string> comments;
 
         bool operator==(const CodeGenResult&) const = default;
@@ -78,7 +85,28 @@ namespace sqlite2orm {
     struct CreateTableParts {
         std::string structDeclaration;
         std::string makeTableExpression;
+        /**
+         *  The `table_mapping_style` decision point, offered only when the policy targets C++26:
+         *  `make_table` (the classical form) against `reflection` (an annotated struct mapped by
+         *  `make_table<T>()`). Each option's `code` is the pair these parts hold — the struct
+         *  declaration, a blank line and the make_table expression — so an option stands for the
+         *  whole mapping of the table, not for one of the two halves.
+         */
+        std::vector<DecisionPoint> decisionPoints;
         std::vector<CodegenWarning> warnings;
+        /**
+         *  Optional hints for the generated table, from its CHECK, DEFAULT and generated-column
+         *  expressions. Empty when `makeTableExpression` is: a table that is not merged into the
+         *  storage is code the consumer never gets, so nothing is left for a hint to explain.
+         */
+        std::vector<std::string> comments;
+        /**
+         *  Whether `structDeclaration` is the reflected form, i.e. whether it carries sqlite_orm
+         *  annotations. Whoever places the declaration has to know: the names inside an annotation
+         *  get unqualified lookup at the point of the struct, not inside whatever function uses the
+         *  mapping, so such a struct needs sqlite_orm's names visible where it is written.
+         */
+        bool structIsReflected = false;
     };
 
     struct CreateViewParts {
@@ -86,6 +114,11 @@ namespace sqlite2orm {
         std::string makeViewExpression;
         std::vector<DecisionPoint> decisionPoints;
         std::vector<CodegenWarning> warnings;
+        /**
+         *  Optional hints for the generated view, from the expressions of its body. Empty when
+         *  `makeViewExpression` is, for the same reason as the table's: a view that is not merged
+         *  into the storage leaves no generated form for a hint to be about.
+         */
         std::vector<std::string> comments;
     };
 

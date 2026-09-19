@@ -1,5 +1,7 @@
 #include "codegen_tests_common.hpp"
 
+#include <sqlite2orm/json_emit.h>
+
 TEST_CASE("codegen: CREATE TABLE - basic") {
     auto result = generate("CREATE TABLE users (id INTEGER, name TEXT)");
     REQUIRE(result == "struct Users {\n"
@@ -694,4 +696,358 @@ TEST_CASE("codegen: FK DEFERRABLE parsed") {
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{"DEFERRABLE INITIALLY DEFERRED on foreign key for column 'id' "
                                         "is not supported in sqlite_orm — ignored in codegen"});
+}
+
+// sqlite_orm maps a table by C++26 reflection when the target allows it (upstream #1492): the
+// columns and their constraints come off the struct's members and their annotations, so
+// `make_table<T>()` takes no column at all. The classical form stays the alternative of the
+// `table_mapping_style` decision point, and it is what a target below C++26 gets — the option is
+// not even offered there, so nothing about that output changes.
+namespace {
+    const std::string kTableReflectionComment =
+        "The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and "
+        "their constraints are read off the struct's members and `[[= …]]` annotations, and the "
+        "`[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler "
+        "with reflection (P2996/P3394); sqlite_orm detects support automatically "
+        "(SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` "
+        "decision point is the classical form and compiles from C++14 on.";
+
+    const std::string kClassicalOptionDescription =
+        "make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)";
+    const std::string kReflectionOptionDescription = "C++26 reflection: annotated struct + make_table<T>()";
+
+    /** The one option a table that has no reflected form is left with, carrying `reason`. */
+    Option classicalOnlyOption(std::string code, const std::string& reason) {
+        Option option{"make_table", std::move(code), kClassicalOptionDescription};
+        option.comments.push_back("the C++26 reflection alternative is not offered for this table: " + reason);
+        return option;
+    }
+
+    CodeGenResult generateTargetingCpp26(std::string_view sql) {
+        CodeGenPolicy policy;
+        policy.targetCppStandard = 26;
+        return generateWithPolicy(sql, policy);
+    }
+}  // namespace
+
+TEST_CASE("codegen: CREATE TABLE - targeting C++20 offers no table_mapping_style decision point") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 20;
+    const auto result = generateWithPolicy("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT "
+                                           "NULL, score INTEGER DEFAULT 0, handle TEXT COLLATE NOCASE);",
+                                           policy);
+    REQUIRE(result == CodeGenResult{"struct Users {\n"
+                                    "    int64_t id = 0;\n"
+                                    "    std::string name;\n"
+                                    "    std::optional<int64_t> score;\n"
+                                    "    std::optional<std::string> handle;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table(\"users\",\n"
+                                    "        make_column(\"id\", &Users::id, primary_key().autoincrement()),\n"
+                                    "        make_column(\"name\", &Users::name),\n"
+                                    "        make_column(\"score\", &Users::score, default_value(0)),\n"
+                                    "        make_column(\"handle\", &Users::handle, collate_nocase())));"});
+}
+
+TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping") {
+    const auto result = generateTargetingCpp26("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT "
+                                               "NOT NULL, score INTEGER DEFAULT 0, handle TEXT COLLATE NOCASE);");
+    const std::string classicalCode = "struct Users {\n"
+                                      "    int64_t id = 0;\n"
+                                      "    std::string name;\n"
+                                      "    std::optional<int64_t> score;\n"
+                                      "    std::optional<std::string> handle;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"users\",\n"
+                                      "        make_column(\"id\", &Users::id, primary_key().autoincrement()),\n"
+                                      "        make_column(\"name\", &Users::name),\n"
+                                      "        make_column(\"score\", &Users::score, default_value(0)),\n"
+                                      "        make_column(\"handle\", &Users::handle, collate_nocase()))";
+    const std::string reflectedCode = "struct [[= \"users\"_orm_name]] Users {\n"
+                                      "    [[= primary_key().autoincrement()]] int64_t id = 0;\n"
+                                      "    std::string name;\n"
+                                      "    [[= default_value(0)]] std::optional<int64_t> score;\n"
+                                      "    [[= collate_nocase()]] std::optional<std::string> handle;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table<Users>()";
+    Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
+    reflectedOption.comments.push_back(kTableReflectionComment);
+    reflectedOption.minCppStandard = 26;
+    REQUIRE(result == CodeGenResult{"struct [[= \"users\"_orm_name]] Users {\n"
+                                    "    [[= primary_key().autoincrement()]] int64_t id = 0;\n"
+                                    "    std::string name;\n"
+                                    "    [[= default_value(0)]] std::optional<int64_t> score;\n"
+                                    "    [[= collate_nocase()]] std::optional<std::string> handle;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table<Users>());",
+                                    {DecisionPoint{1,
+                                                   "table_mapping_style",
+                                                   "reflection",
+                                                   reflectedCode,
+                                                   {Option{"make_table", classicalCode, kClassicalOptionDescription},
+                                                    reflectedOption}}},
+                                    {},
+                                    {},
+                                    {kTableReflectionComment}});
+}
+
+// No released compiler implements P2996 yet, so a consumer targeting C++26 has to be able to ask
+// for the classical mapping back: the `table_mapping_style` category does exactly that, and both
+// variants stay on offer either way.
+TEST_CASE("codegen: CREATE TABLE - an explicit make_table policy keeps the classical mapping under C++26") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "make_table";
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER PRIMARY KEY);", policy);
+    const std::string classicalCode = "struct T {\n"
+                                      "    int64_t a = 0;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a, primary_key()))";
+    const std::string reflectedCode = "struct [[= \"t\"_orm_name]] T {\n"
+                                      "    [[= primary_key()]] int64_t a = 0;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table<T>()";
+    Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
+    reflectedOption.comments.push_back(kTableReflectionComment);
+    reflectedOption.minCppStandard = 26;
+    REQUIRE(result == CodeGenResult{"struct T {\n"
+                                    "    int64_t a = 0;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table(\"t\",\n"
+                                    "        make_column(\"a\", &T::a, primary_key())));",
+                                    {DecisionPoint{1,
+                                                   "table_mapping_style",
+                                                   "make_table",
+                                                   classicalCode,
+                                                   {Option{"make_table", classicalCode, kClassicalOptionDescription},
+                                                    reflectedOption}}}});
+}
+
+// The other way round the standard wins: below C++26 the reflected form does not compile, so
+// asking for it changes nothing — there is no decision point to answer in the first place.
+TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy is overridden by targetCppStandard 20") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 20;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "reflection";
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER PRIMARY KEY);", policy);
+    REQUIRE(result == CodeGenResult{"struct T {\n"
+                                    "    int64_t a = 0;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table(\"t\",\n"
+                                    "        make_column(\"a\", &T::a, primary_key())));"});
+}
+
+// A table that has no reflected form has nothing to switch to either: the policy is answered by
+// the one option there is.
+TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy cannot revive a blocked table") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "reflection";
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER CHECK(a > 0));", policy);
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a, check(c(&T::a) > 0)))";
+    REQUIRE(result.decisionPoints ==
+            std::vector<DecisionPoint>{
+                DecisionPoint{3,
+                              "table_mapping_style",
+                              "make_table",
+                              classicalCode,
+                              {classicalOnlyOption(classicalCode,
+                                                   "CHECK on column `a` names members of the struct being declared, "
+                                                   "which an annotation cannot")}}});
+}
+
+// A table-level constraint is no annotation: it stays a call argument, of `make_table<T>(…)` this
+// time, and `.without_rowid()` still follows the call.
+TEST_CASE("codegen: CREATE TABLE - table-level constraints stay arguments of the reflected make_table") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY(a, b)) WITHOUT "
+                                               "ROWID;");
+    REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<T>(\n"
+                           "        primary_key(&T::a, &T::b)).without_rowid());");
+    REQUIRE(result.decisionPoints.size() == 1);
+    REQUIRE(result.decisionPoints.at(0).chosenValue == "reflection");
+    REQUIRE(result.decisionPoints.at(0).options.at(0).code == "struct T {\n"
+                                                              "    std::optional<int64_t> a;\n"
+                                                              "    std::optional<int64_t> b;\n"
+                                                              "};\n"
+                                                              "\n"
+                                                              "make_table(\"t\",\n"
+                                                              "        make_column(\"a\", &T::a),\n"
+                                                              "        make_column(\"b\", &T::b),\n"
+                                                              "        primary_key(&T::a, &T::b)).without_rowid()");
+}
+
+TEST_CASE("codegen: CREATE TABLE - a foreign key stays an argument of the reflected make_table") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (id INT REFERENCES p(id) ON DELETE CASCADE, u TEXT);");
+    REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::string> u;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<T>(\n"
+                           "        foreign_key(&T::id).references(&P::id).on_delete.cascade()));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - a table CHECK stays an argument of the reflected make_table") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, CHECK(a > 0));");
+    REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<T>(\n"
+                           "        check(c(&T::a) > 0)));");
+}
+
+// A reflected column is named after the member it reflects — sqlite_orm reads
+// `std::meta::identifier_of`, and there is no renaming — so a column name C++ cannot spell leaves
+// the table on the classical mapping even under C++26, with the reason on the one option offered.
+TEST_CASE("codegen: CREATE TABLE - a column name that is no C++ identifier keeps the classical mapping") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (\"first name\" TEXT, id INTEGER PRIMARY KEY);");
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<std::string> first_name;\n"
+                                      "    int64_t id = 0;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"first name\", &T::first_name),\n"
+                                      "        make_column(\"id\", &T::id, primary_key()))";
+    REQUIRE(result == CodeGenResult{"struct T {\n"
+                                    "    std::optional<std::string> first_name;\n"
+                                    "    int64_t id = 0;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table(\"t\",\n"
+                                    "        make_column(\"first name\", &T::first_name),\n"
+                                    "        make_column(\"id\", &T::id, primary_key())));",
+                                    {DecisionPoint{1,
+                                                   "table_mapping_style",
+                                                   "make_table",
+                                                   classicalCode,
+                                                   {classicalOnlyOption(classicalCode,
+                                                                        "column `first name` is not a C++ identifier, "
+                                                                        "and a reflected column is named after the "
+                                                                        "member it reflects")}}}});
+}
+
+// An annotation is a constant expression, and a text DEFAULT is generated as a pointer to a string
+// literal, which is not one.
+TEST_CASE("codegen: CREATE TABLE - a text DEFAULT keeps the classical mapping under C++26") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, b TEXT DEFAULT 'x');");
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "    std::optional<std::string> b;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a),\n"
+                                      "        make_column(\"b\", &T::b, default_value(\"x\")))";
+    REQUIRE(result.decisionPoints ==
+            std::vector<DecisionPoint>{
+                DecisionPoint{1,
+                              "table_mapping_style",
+                              "make_table",
+                              classicalCode,
+                              {classicalOnlyOption(classicalCode,
+                                                   "the DEFAULT of column `b` is generated as `\"x\"`, which is not a "
+                                                   "constant expression an annotation can carry")}}});
+}
+
+// `unique_t` is one of sqlite_orm's column constraints (`is_column_constraint`), and a member
+// annotation is handed straight to `make_column()`, whose only gate is that very list — so a
+// column UNIQUE annotates the member like the primary key and the collation do.
+TEST_CASE("codegen: CREATE TABLE - a column UNIQUE annotates the member of the reflected struct") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER UNIQUE);");
+    REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
+                           "    [[= unique()]] std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<T>());");
+    REQUIRE(result.decisionPoints.size() == 1);
+    REQUIRE(result.decisionPoints.at(0).chosenValue == "reflection");
+    REQUIRE(result.decisionPoints.at(0).options.at(0).code == "struct T {\n"
+                                                              "    std::optional<int64_t> a;\n"
+                                                              "};\n"
+                                                              "\n"
+                                                              "make_table(\"t\",\n"
+                                                              "        make_column(\"a\", &T::a, unique()))");
+}
+
+// A column CHECK and a generated column both name the struct's own members, and a member annotation
+// is parsed inside the class, before the members it names are all declared — upstream sqlite_orm
+// states such annotations are not expressible in C++26.
+TEST_CASE("codegen: CREATE TABLE - a column CHECK keeps the classical mapping under C++26") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER CHECK(a > 0));");
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a, check(c(&T::a) > 0)))";
+    REQUIRE(result.decisionPoints ==
+            std::vector<DecisionPoint>{
+                DecisionPoint{3,
+                              "table_mapping_style",
+                              "make_table",
+                              classicalCode,
+                              {classicalOnlyOption(classicalCode,
+                                                   "CHECK on column `a` names members of the struct being declared, "
+                                                   "which an annotation cannot")}}});
+}
+
+TEST_CASE("codegen: CREATE TABLE - a generated column keeps the classical mapping under C++26") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, b INTEGER AS (a + 1));");
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "    std::optional<int64_t> b;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a),\n"
+                                      "        make_column(\"b\", &T::b, as(c(&T::a) + 1)))";
+    REQUIRE(result.decisionPoints ==
+            std::vector<DecisionPoint>{
+                DecisionPoint{3,
+                              "table_mapping_style",
+                              "make_table",
+                              classicalCode,
+                              {classicalOnlyOption(classicalCode,
+                                                   "generated column `b` names members of the struct being declared, "
+                                                   "which an annotation cannot")}}});
+}
+
+// What a consumer reading `--json` gets: the decision point carries both variants, each with the
+// C++ standard it needs, so a playground can offer the classical mapping to a user whose compiler
+// has no reflection.
+TEST_CASE("codegen: CREATE TABLE - the table_mapping_style decision point reaches --json") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER);");
+    REQUIRE(
+        decisionPointsToJson(result.decisionPoints) ==
+        R"JSON([{"category":"table_mapping_style","chosenCode":"struct [[= \"t\"_orm_name]] T {\n    std::optional<int64_t> a;\n};\n\nmake_table<T>()","chosenValue":"reflection","id":1,"options":[{"code":"struct T {\n    std::optional<int64_t> a;\n};\n\nmake_table(\"t\",\n        make_column(\"a\", &T::a))","comments":[],"description":"make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)","hidden":false,"minCppStandard":14,"value":"make_table"},{"code":"struct [[= \"t\"_orm_name]] T {\n    std::optional<int64_t> a;\n};\n\nmake_table<T>()","comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"description":"C++26 reflection: annotated struct + make_table<T>()","hidden":false,"minCppStandard":26,"value":"reflection"}]}])JSON");
 }

@@ -248,6 +248,36 @@ namespace sqlite2orm {
         this->formsWithoutDefaultConstructor.push_back(std::move(form));
     }
 
+    void CodeGeneratorContext::recordComment(std::string_view comment) {
+        this->comments.emplace_back(comment);
+    }
+
+    size_t CodeGeneratorContext::commentMark() const {
+        return this->comments.size();
+    }
+
+    std::vector<std::string> CodeGeneratorContext::commentsRecordedSince(size_t mark) const {
+        // A take in between leaves fewer than `mark` behind: the statement the comments belong to
+        // has carried them off already, so there is nothing left for this node to report.
+        std::vector<std::string> recorded;
+        for (size_t index = mark; index < this->comments.size(); ++index) {
+            appendUniqueString(recorded, this->comments[index]);
+        }
+        return recorded;
+    }
+
+    std::vector<std::string> CodeGeneratorContext::takeCommentsSince(size_t mark) {
+        std::vector<std::string> taken = this->commentsRecordedSince(mark);
+        this->discardCommentsSince(mark);
+        return taken;
+    }
+
+    void CodeGeneratorContext::discardCommentsSince(size_t mark) {
+        if (mark < this->comments.size()) {
+            this->comments.erase(this->comments.begin() + static_cast<std::ptrdiff_t>(mark), this->comments.end());
+        }
+    }
+
     void CodeGeneratorContext::markUngeneratableTable(std::string_view tableName) {
         this->ungeneratableTables.insert(normalizeSqlIdentifier(tableName));
     }
@@ -283,6 +313,7 @@ namespace sqlite2orm {
         this->storedHexLiteralsTooBig.clear();
         this->formsWithoutDefaultConstructor.clear();
         this->customFunctions.clear();
+        this->comments.clear();
     }
 
 }  // namespace sqlite2orm

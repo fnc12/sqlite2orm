@@ -10,15 +10,21 @@ namespace sqlite2orm {
         coordinator(coordinator), context(context) {}
 
     CodeGenResult DdlCodeGenerator::generateCreateTable(const CreateTableNode& createTable) {
-        const CreateTableParts parts = this->createTableParts(createTable);
+        CreateTableParts parts = this->createTableParts(createTable);
         if (parts.makeTableExpression.empty()) {
             return CodeGenResult{"/* CREATE TABLE " + createTable.tableName + " — not supported for sqlite_orm */",
+                                 std::move(parts.decisionPoints),
+                                 std::move(parts.warnings),
                                  {},
-                                 std::vector<CodegenWarning>(parts.warnings)};
+                                 std::move(parts.comments)};
         }
         std::string code =
             parts.structDeclaration + "\nauto storage = make_storage(\"\",\n    " + parts.makeTableExpression + ");";
-        return CodeGenResult{std::move(code), {}, std::vector<CodegenWarning>(parts.warnings)};
+        return CodeGenResult{std::move(code),
+                             std::move(parts.decisionPoints),
+                             std::move(parts.warnings),
+                             {},
+                             std::move(parts.comments)};
     }
 
     CodeGenResult DdlCodeGenerator::generateCreateTrigger(const CreateTriggerNode& createTrigger) {
@@ -824,13 +830,25 @@ namespace sqlite2orm {
     }  // namespace
 
     CreateViewParts DdlCodeGenerator::createViewParts(const CreateViewNode& node) {
+        // A CREATE VIEW is a whole statement, so this is where the comments its body recorded —
+        // every expression of the SELECT included — are taken out of the context. The mark is what
+        // keeps the take to this statement: the generator this one is reached through is public, so
+        // it may have been handed an unrelated node before, and that node's comment is not this
+        // view's.
+        const size_t commentMark = this->context.commentMark();
         CreateViewParts parts = this->viewParts(node);
         if (parts.makeViewExpression.empty()) {
+            // The body may well have generated and recorded before the view was given up on — a
+            // stored hex literal past int64 stops it after that — but the statement ends up as a
+            // placeholder, so the comment has no form left to explain and goes with the code.
+            this->context.discardCommentsSince(commentMark);
             // A view sqlite_orm has no make_view() for is a name it has no type for either, so
             // whatever rests on the view — a trigger INSTEAD OF it, a view selecting from it —
             // has to go with it, exactly as it does for a table left out of the storage.
             this->context.markUngeneratableView(node.viewName);
+            return parts;
         }
+        parts.comments = this->context.takeCommentsSince(commentMark);
         return parts;
     }
 
@@ -867,7 +885,6 @@ namespace sqlite2orm {
                                     std::make_move_iterator(selectExpression.decisionPoints.begin()),
                                     std::make_move_iterator(selectExpression.decisionPoints.end()));
         appendUniqueWarnings(parts.warnings, selectExpression.warnings);
-        appendUniqueStrings(parts.comments, selectExpression.comments);
         if (selectExpression.code.empty()) {
             parts.warnings.push_back("CREATE VIEW " + displayName +
                                      ": SELECT is not supported for sqlite_orm code generation");
@@ -1023,7 +1040,7 @@ namespace sqlite2orm {
 
         parts.structDeclaration = std::move(structDeclaration);
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
-        appendUniqueString(parts.comments, kCommentViewReflection);
+        this->context.recordComment(kCommentViewReflection);
         // sqlite_orm maps views to C++26 reflection (make_view + [[= "…"_orm_name]]); there is no
         // pre-C++26 form. Surface a visible warning (anchored at the statement's opening keywords,
         // as the source spells them) when the target is lower.
@@ -1061,6 +1078,10 @@ namespace sqlite2orm {
     }
 
     CreateTableParts DdlCodeGenerator::createTableParts(const CreateTableNode& createTable) {
+        // Where the comments of this statement start, for the take at the end of it: a public
+        // generator may have generated something else before this table, and that node's comment
+        // belongs to it, not here.
+        const size_t commentMark = this->context.commentMark();
         const auto structName = toStructName(createTable.tableName);
         this->context.structName = structName;
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
@@ -1085,22 +1106,51 @@ namespace sqlite2orm {
             return std::move(result.code);
         };
 
+        // The reflected form of the table (C++26 `make_table<T>()` over an annotated struct,
+        // sqlite_orm #1492) is built beside the classical one: the members are the same, a column
+        // constraint becomes a member annotation instead of a `make_column()` argument, and the
+        // table name comes from a class-scope `[[= "…"_orm_name]]` annotation. `reflectionBlocker`
+        // names the first construct of this table that has no annotation form; while it is empty
+        // the reflected form is offered, and targeting C++26 it is the one chosen.
+        std::string reflectionBlocker;
+        const auto blockReflection = [&reflectionBlocker](std::string reason) {
+            if (reflectionBlocker.empty()) {
+                reflectionBlocker = std::move(reason);
+            }
+        };
+        std::vector<std::string> memberDeclarations;
+        memberDeclarations.reserve(createTable.columns.size());
+
         std::string structDeclaration = "struct " + structName + " {\n";
         for (const auto& column: createTable.columns) {
             const auto cppName = toCppIdentifier(column.name);
             const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
             const bool nullable = !column.primaryKey && !column.notNull;
-            if (nullable) {
-                structDeclaration += "    std::optional<" + cppType + "> " + cppName + ";\n";
-            } else {
-                structDeclaration += "    " + cppType + " " + cppName + defaultInitializer(cppType) + ";\n";
+            std::string memberDeclaration = nullable ? "std::optional<" + cppType + "> " + cppName + ";\n"
+                                                     : cppType + " " + cppName + defaultInitializer(cppType) + ";\n";
+            structDeclaration += "    " + memberDeclaration;
+            memberDeclarations.push_back(std::move(memberDeclaration));
+            // A reflected column carries the member's identifier as its name — there is no
+            // renaming in sqlite_orm's reflected `make_table<T>()` — so a name C++ cannot spell,
+            // or one this generator had to rewrite, has no reflected form at all.
+            if (stripIdentifierQuotes(column.name) != cppName) {
+                blockReflection("column `" + stripIdentifierQuotes(column.name) +
+                                "` is not a C++ identifier, and a reflected column is named after the member it "
+                                "reflects");
             }
         }
         structDeclaration += "};\n";
         this->context.registerSourceTable(rawTableName, sourceTableColumnsFromCreateTable(createTable));
 
+        std::vector<std::string> memberAnnotations(createTable.columns.size());
+
         std::string makeExpression = "make_table(\"" + rawTableName + "\"";
-        for (const auto& column: createTable.columns) {
+        for (size_t columnIndex = 0; columnIndex < createTable.columns.size(); ++columnIndex) {
+            const auto& column = createTable.columns.at(columnIndex);
+            std::string& annotations = memberAnnotations.at(columnIndex);
+            const auto annotate = [&annotations](const std::string& constraintCode) {
+                annotations += "[[= " + constraintCode + "]] ";
+            };
             const auto cppName = toCppIdentifier(column.name);
             const auto rawColumnName = stripIdentifierQuotes(column.name);
             makeExpression += ",\n        make_column(\"" + rawColumnName + "\", &" + structName + "::" + cppName;
@@ -1129,11 +1179,23 @@ namespace sqlite2orm {
                     primaryKey += ".autoincrement()";
                 }
                 makeExpression += ", " + primaryKey;
+                annotate(primaryKey);
             }
             if (column.defaultValue) {
                 const auto defaultCode = clauseExpressionCode(*column.defaultValue, true);
                 if (this->context.storedHexLiteralsTooBig.empty()) {
                     makeExpression += ", default_value(" + defaultCode + ")";
+                    // An annotation is a constant expression, so only a default the compiler folds
+                    // can stand as one: a text default is a pointer to a string literal and an
+                    // expression default is no literal at all.
+                    if (isAnnotationConstantValueCode(defaultCode)) {
+                        annotate("default_value(" + defaultCode + ")");
+                    } else {
+                        blockReflection("the DEFAULT of column `" + rawColumnName + "` is generated as `" +
+                                        defaultCode +
+                                        "`, which is not a constant expression an annotation can "
+                                        "carry");
+                    }
                 } else {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("DEFAULT " + literal + " on column '" + rawColumnName +
@@ -1145,6 +1207,10 @@ namespace sqlite2orm {
             }
             if (column.unique) {
                 makeExpression += ", unique()";
+                // `unique_t` is one of sqlite_orm's column constraints, and a member annotation is
+                // handed straight to `make_column()`, whose only gate is that very list — so it
+                // travels the same path as the primary key and the collation above.
+                annotate("unique()");
                 if (column.uniqueConflict != ConflictClause::none) {
                     warnings.push_back("UNIQUE ON CONFLICT clause on column '" + rawColumnName +
                                        "' is not supported by sqlite_orm::unique()");
@@ -1154,6 +1220,11 @@ namespace sqlite2orm {
                 const auto checkCode = clauseExpressionCode(*column.checkExpression, true);
                 if (this->context.storedHexLiteralsTooBig.empty()) {
                     makeExpression += ", check(" + checkCode + ")";
+                    // A column CHECK names the table's own members, and a member annotation is
+                    // parsed inside the class, where the members it names are not all declared yet
+                    // — upstream sqlite_orm states such annotations are not expressible in C++26.
+                    blockReflection("CHECK on column `" + rawColumnName +
+                                    "` names members of the struct being declared, which an annotation cannot");
                 } else {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("CHECK on column '" + rawColumnName + "' uses " + literal +
@@ -1167,10 +1238,13 @@ namespace sqlite2orm {
                 const auto lower = toLowerAscii(column.collation);
                 if (lower == "nocase") {
                     makeExpression += ", collate_nocase()";
+                    annotate("collate_nocase()");
                 } else if (lower == "binary") {
                     makeExpression += ", collate_binary()";
+                    annotate("collate_binary()");
                 } else if (lower == "rtrim") {
                     makeExpression += ", collate_rtrim()";
+                    annotate("collate_rtrim()");
                 } else {
                     warnings.push_back("COLLATE " + column.collation + " on column '" + rawColumnName +
                                        "' is not a built-in collation in sqlite_orm");
@@ -1198,6 +1272,9 @@ namespace sqlite2orm {
                     } else {
                         makeExpression += ", as(" + expressionCode + ")";
                     }
+                    // Same as a column CHECK: the expression names the struct's own members.
+                    blockReflection("generated column `" + rawColumnName +
+                                    "` names members of the struct being declared, which an annotation cannot");
                     if (column.generatedStorage == ColumnDef::GeneratedStorage::stored) {
                         makeExpression += ".stored()";
                     } else if (column.generatedStorage == ColumnDef::GeneratedStorage::virtual_) {
@@ -1207,6 +1284,11 @@ namespace sqlite2orm {
             }
             makeExpression += ")";
         }
+        // Table-level constraints are collected rather than appended: the classical form spells
+        // them after the columns of `make_table("name", …)`, the reflected form passes the same
+        // text to `make_table<T>(…)`, whose columns come from the struct instead.
+        std::vector<std::string> tableConstraints;
+
         auto findPrimaryKeyColumnCpp = [&createTable](std::string_view refTable) -> std::string {
             if (toLowerAscii(std::string(refTable)) == toLowerAscii(createTable.tableName)) {
                 for (const auto& column: createTable.columns) {
@@ -1244,8 +1326,8 @@ namespace sqlite2orm {
                     referencedColumnName = cppName;
                 }
             }
-            makeExpression += ",\n        foreign_key(&" + structName + "::" + cppName + ").references(&" +
-                              referencedStructName + "::" + referencedColumnName + ")";
+            std::string constraint = "foreign_key(&" + structName + "::" + cppName + ").references(&" +
+                                     referencedStructName + "::" + referencedColumnName + ")";
             const auto actionString = [](ForeignKeyAction action) -> std::string {
                 switch (action) {
                     case ForeignKeyAction::cascade:
@@ -1264,11 +1346,12 @@ namespace sqlite2orm {
                 return "";
             };
             if (foreignKey.onDelete != ForeignKeyAction::none) {
-                makeExpression += ".on_delete" + actionString(foreignKey.onDelete);
+                constraint += ".on_delete" + actionString(foreignKey.onDelete);
             }
             if (foreignKey.onUpdate != ForeignKeyAction::none) {
-                makeExpression += ".on_update" + actionString(foreignKey.onUpdate);
+                constraint += ".on_update" + actionString(foreignKey.onUpdate);
             }
+            tableConstraints.push_back(std::move(constraint));
             if (foreignKey.deferrability != Deferrability::none) {
                 std::string description =
                     foreignKey.deferrability == Deferrability::deferrable ? "DEFERRABLE" : "NOT DEFERRABLE";
@@ -1299,8 +1382,8 @@ namespace sqlite2orm {
                     referencedColumnName = cppName;
                 }
             }
-            makeExpression += ",\n        foreign_key(&" + structName + "::" + cppName + ").references(&" +
-                              referencedStructName + "::" + referencedColumnName + ")";
+            std::string constraint = "foreign_key(&" + structName + "::" + cppName + ").references(&" +
+                                     referencedStructName + "::" + referencedColumnName + ")";
             const auto actionString = [](ForeignKeyAction action) -> std::string {
                 switch (action) {
                     case ForeignKeyAction::cascade:
@@ -1319,11 +1402,12 @@ namespace sqlite2orm {
                 return "";
             };
             if (tableForeignKey.references.onDelete != ForeignKeyAction::none) {
-                makeExpression += ".on_delete" + actionString(tableForeignKey.references.onDelete);
+                constraint += ".on_delete" + actionString(tableForeignKey.references.onDelete);
             }
             if (tableForeignKey.references.onUpdate != ForeignKeyAction::none) {
-                makeExpression += ".on_update" + actionString(tableForeignKey.references.onUpdate);
+                constraint += ".on_update" + actionString(tableForeignKey.references.onUpdate);
             }
+            tableConstraints.push_back(std::move(constraint));
             if (tableForeignKey.references.deferrability != Deferrability::none) {
                 std::string description = tableForeignKey.references.deferrability == Deferrability::deferrable
                                               ? "DEFERRABLE"
@@ -1337,24 +1421,26 @@ namespace sqlite2orm {
             }
         }
         for (const auto& tablePrimaryKey: createTable.primaryKeys) {
-            makeExpression += ",\n        primary_key(";
+            std::string constraint = "primary_key(";
             for (size_t columnIndex = 0; columnIndex < tablePrimaryKey.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
-                    makeExpression += ", ";
+                    constraint += ", ";
                 }
-                makeExpression += "&" + structName + "::" + toCppIdentifier(tablePrimaryKey.columns.at(columnIndex));
+                constraint += "&" + structName + "::" + toCppIdentifier(tablePrimaryKey.columns.at(columnIndex));
             }
-            makeExpression += ")";
+            constraint += ")";
+            tableConstraints.push_back(std::move(constraint));
         }
         for (const auto& tableUnique: createTable.uniques) {
-            makeExpression += ",\n        unique(";
+            std::string constraint = "unique(";
             for (size_t columnIndex = 0; columnIndex < tableUnique.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
-                    makeExpression += ", ";
+                    constraint += ", ";
                 }
-                makeExpression += "&" + structName + "::" + toCppIdentifier(tableUnique.columns.at(columnIndex));
+                constraint += "&" + structName + "::" + toCppIdentifier(tableUnique.columns.at(columnIndex));
             }
-            makeExpression += ")";
+            constraint += ")";
+            tableConstraints.push_back(std::move(constraint));
         }
         for (const auto& tableCheck: createTable.checks) {
             if (tableCheck.expression) {
@@ -1368,8 +1454,11 @@ namespace sqlite2orm {
                     }
                     continue;
                 }
-                makeExpression += ",\n        check(" + checkCode + ")";
+                tableConstraints.push_back("check(" + checkCode + ")");
             }
+        }
+        for (const std::string& constraint: tableConstraints) {
+            makeExpression += ",\n        " + constraint;
         }
         makeExpression += ")";
         if (createTable.withoutRowid) {
@@ -1381,12 +1470,87 @@ namespace sqlite2orm {
         }
 
         if (!tableIsGeneratable) {
+            // The clauses around the one that gave the table up generate and record as usual, and
+            // the statement still ends up a placeholder, so their comments go with the code that
+            // is not there: a CHECK explained next to a table the consumer never gets reads as a
+            // comment about the storage it does get.
+            this->context.discardCommentsSince(commentMark);
             // Nothing sqlite_orm can map this table to, so every statement naming it is left out
             // by whoever assembles the batch; the mark is what tells them which name that is.
             this->context.markUngeneratableTable(createTable.tableName);
-            return CreateTableParts{{}, {}, std::move(warnings)};
+            CreateTableParts parts;
+            parts.warnings = std::move(warnings);
+            return parts;
         }
-        return CreateTableParts{std::move(structDeclaration), std::move(makeExpression), std::move(warnings)};
+
+        CreateTableParts parts;
+        // A CREATE TABLE is a whole statement, so this is where the comments its clauses recorded —
+        // every CHECK, DEFAULT and generated-column expression included — are taken out of the context.
+        parts.comments = this->context.takeCommentsSince(commentMark);
+        // Below C++26 the reflected form does not compile, so it is neither offered nor chosen and
+        // the output is the classical one, unchanged.
+        if (policyTargetCppStandard(this->context.codeGenPolicy) >= 26) {
+            std::string reflectedStructDeclaration =
+                "struct [[= " + identifierToCppStringLiteral(rawTableName) + "_orm_name]] " + structName + " {\n";
+            for (size_t columnIndex = 0; columnIndex < memberDeclarations.size(); ++columnIndex) {
+                reflectedStructDeclaration +=
+                    "    " + memberAnnotations.at(columnIndex) + memberDeclarations.at(columnIndex);
+            }
+            reflectedStructDeclaration += "};\n";
+
+            std::string reflectedMakeExpression = "make_table<" + structName + ">(";
+            for (size_t constraintIndex = 0; constraintIndex < tableConstraints.size(); ++constraintIndex) {
+                reflectedMakeExpression +=
+                    (constraintIndex == 0 ? "\n        " : ",\n        ") + tableConstraints.at(constraintIndex);
+            }
+            reflectedMakeExpression += ")";
+            if (createTable.withoutRowid) {
+                reflectedMakeExpression += ".without_rowid()";
+            }
+
+            const std::string classicalCode = structDeclaration + "\n" + makeExpression;
+            const std::string reflectedCode = reflectedStructDeclaration + "\n" + reflectedMakeExpression;
+            // The reflected form is the default of the two once the target allows it, but a
+            // consumer targeting C++26 on a compiler that has no reflection yet has to be able to
+            // ask for the classical one back — no released compiler implements P2996 today.
+            const bool reflectionOffered = reflectionBlocker.empty();
+            const bool reflected =
+                reflectionOffered && !policyEquals(this->context.codeGenPolicy, "table_mapping_style", "make_table");
+
+            Option classicalOption{"make_table",
+                                   classicalCode,
+                                   "make_table(\"name\", make_column(…)) over a plain struct (wider compiler "
+                                   "support)"};
+            if (!reflectionOffered) {
+                classicalOption.comments.push_back("the C++26 reflection alternative is not offered for this table: " +
+                                                   reflectionBlocker);
+            }
+            std::vector<Option> options{std::move(classicalOption)};
+            if (reflectionOffered) {
+                Option reflectedOption{"reflection",
+                                       reflectedCode,
+                                       "C++26 reflection: annotated struct + make_table<T>()"};
+                reflectedOption.minCppStandard = 26;
+                reflectedOption.comments.push_back(kCommentTableReflection);
+                options.push_back(std::move(reflectedOption));
+            }
+            parts.decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
+                                                         "table_mapping_style",
+                                                         reflected ? "reflection" : "make_table",
+                                                         reflected ? reflectedCode : classicalCode,
+                                                         std::move(options)});
+            if (reflected) {
+                structDeclaration = std::move(reflectedStructDeclaration);
+                makeExpression = std::move(reflectedMakeExpression);
+                parts.comments.push_back(kCommentTableReflection);
+                parts.structIsReflected = true;
+            }
+        }
+
+        parts.structDeclaration = std::move(structDeclaration);
+        parts.makeTableExpression = std::move(makeExpression);
+        parts.warnings = std::move(warnings);
+        return parts;
     }
 
 }  // namespace sqlite2orm

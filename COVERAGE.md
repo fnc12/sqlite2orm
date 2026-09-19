@@ -53,7 +53,7 @@ Statuses:
 - [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works — the generated code does not compile: codegen warning)
 - [!] `+` (unary plus — not in sqlite_orm, validator error)
 - [x] `~` (bitwise NOT)
-- [~] `NOT` — `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walk that collects a statement's tables and binds its values stops at such a wrapper. A column under a NOT is therefore generated as `column<T>(&T::x)` — the same SQL, but a form the walk reads, where `not c(&T::x)` came out with no FROM clause and threw `SQL logic error`; a column that names a SELECT alias stays `c(get<Alias>())`, because the aliased result column names the table already — and a value as `(c(0) + value)`, because an unbound literal made `NOT 0` answer NULL and `0 + x` is the numeric coercion SQLite applies in a boolean context anyway. A NOT over a NOT (or over the `!predicate` spelling of a negated `BETWEEN` / `LIKE` / `GLOB` / `MATCH`) is generated as `not cast<int64_t>(…)`: sqlite_orm's `negated_condition_t` is neither negatable nor an operator argument, so a second NOT over it does not compile. Partial because a NOT over a concatenation (`NOT (a || 'x')`, and `NOT (a OR b)` while `OR` is generated as `||`) still has no sqlite_orm form: `conc_t` is not negatable either and that code does not compile. Prefix `NOT` is also weaker than every binary operator SQLite has bar `AND` and `OR`, so its operand runs down to the `=` level: `NOT a + 1` is `NOT (a + 1)` and `NOT a IN (1, 2)` is `NOT (a IN (1, 2))`
+- [~] `NOT` — `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walk that collects a statement's tables and binds its values stops at such a wrapper. A column under a NOT is therefore generated as `column<T>(&T::x)` — the same SQL, but a form the walk reads, where `not c(&T::x)` came out with no FROM clause and threw `SQL logic error`; a column that names a SELECT alias stays `c(get<Alias>())`, because the aliased result column names the table already — and a value as `(c(0) + value)`, because an unbound literal made `NOT 0` answer NULL and `0 + x` is the numeric coercion SQLite applies in a boolean context anyway. A NOT over a NOT (or over the `!predicate` spelling of a negated `BETWEEN` / `LIKE` / `GLOB` / `MATCH`) is generated as `not cast<int64_t>(…)`: sqlite_orm's `negated_condition_t` is neither negatable nor an operator argument, so a second NOT over it does not compile. Partial because a NOT over a concatenation (`NOT (a || 'x')`) still has no sqlite_orm form: `conc_t` is not negatable either and that code does not compile. A NOT over an OR does compile, because an OR is generated as the `or_condition_t` sqlite_orm negates. Prefix `NOT` is also weaker than every binary operator SQLite has bar `AND` and `OR`, so its operand runs down to the `=` level: `NOT a + 1` is `NOT (a + 1)` and `NOT a IN (1, 2)` is `NOT (a IN (1, 2))`
 
 ### Binary operators (arithmetic)
 - [x] `+` (add)
@@ -79,7 +79,7 @@ Statuses:
 - [x] `>=`
 
 ### Binary operators (string / pattern)
-- [x] `||` (concatenation)
+- [~] `||` (concatenation) — generated as `conc(left, right)` when an operand is a sqlite_orm condition, as `left || right` otherwise. C++ spells `or` and the concatenation with the same token, and sqlite_orm's two `operator||` overloads pick between `or_condition_t` and `conc_t` by the operands: `(a = 1) || 'x'` spelled `c(&T::a) == 1 || "x"` came out as `(a = 1) OR 'x'`. A predicate operand is delimited with a `cast<int64_t>(…)` already — the grouping the serialized SQL needs — and a `cast_t` is not a condition, so it keeps the operator spelling. Partial because a `conc_t` is `binary_operator<L, R, conc_string>` and nothing else — not negatable, not an `arithmetic_t`, not an operator argument at all — so a concatenation that really is one does not compile under anything: `NOT ((a = 1) || 'x')`, `((a = 1) || 'x') = 1`, `((a = 1) || 'x') AND 1` and `(EXISTS(SELECT 1) || 'x') = 1` all stop at the compiler where the accidental `or_condition_t` they used to build compiled and answered the wrong value
 - [x] `LIKE`
 - [x] `LIKE ... ESCAPE`
 - [x] `GLOB`
@@ -88,7 +88,7 @@ Statuses:
 
 ### Binary operators (logical)
 - [x] `AND`
-- [x] `OR`
+- [~] `OR` — generated as `or_(left, right)` when neither operand is a sqlite_orm condition, as `left or right` otherwise. `or` is the C++ token `||`, which sqlite_orm reads as its concatenation unless one of the operands is a condition: `SELECT 1 OR 0` spelled `c(1) or 0` ran as `SELECT 1 || 0` and answered '10'. An operand spelled as a call takes the rest of the chain with it, so one OR reads one way throughout. Partial because `MATCH` is not merely absent from the conditions: `match_t` derives from nothing at all, so it is not an operand `or_()` accepts either — `a MATCH 'x' OR b` is generated as the `or_(match(…), &T::b)` it stands for and does not compile (`or_() arguments must be bindable values or sqlite_orm-recognized operands`), where the operator spelling before it had no `operator||` to pick at all
 
 ### IS operators
 - [x] `IS NULL` — `IS` is a binary operator on the `=` level and `NULL` an ordinary right operand,
@@ -139,8 +139,17 @@ Statuses:
   condition of its own, so a predicate (`IN`, `BETWEEN`, `LIKE`, `GLOB`, `MATCH`, `IS [NOT] NULL`,
   `NOT`) under an operator SQLite binds tighter is generated as `cast<int64_t>(predicate)` — the CAST
   delimits it in the serialized SQL and keeps what it stands for, which is `0`, `1` or `NULL` either
-  way. Partial because a grouping that makes a comparison or a concatenation the operand of an
-  arithmetic or a bitwise operator has no sqlite_orm form: that code does not compile
+  way. The predicates take the same CAST the other way round: a predicate serializer parenthesizes
+  none of its arguments, and SQLite binds `AND` and `OR` looser than every predicate, so an `AND` or
+  an `OR` in the argument slot of `IN`, `BETWEEN`, `LIKE`, `GLOB`, `MATCH` or `IS [NOT] NULL` is
+  generated as `cast<int64_t>(…)` as well — `is_null(or_(1, 0))` would come out `1 OR 0 IS NULL`,
+  which SQLite reads as `1 OR (0 IS NULL)`, and `between(1, or_(1, 0), 3)` would come out
+  `1 BETWEEN 1 OR 0 AND 3`, which SQLite does not parse at all. The values of an `IN` list are
+  delimited by their commas and stay bare. Partial because a grouping that makes a comparison or a
+  concatenation the operand of an arithmetic or a bitwise operator has no sqlite_orm form: that code
+  does not compile; and because a predicate or a `NOT` standing in one of those same argument slots
+  still comes out bare, which is the other half of the rank order (`a LIKE (b IS NULL)`,
+  `(NOT a) IS NULL`) and is on master in the same shape
 
 ### Function call
 - [x] `function-name(args)`

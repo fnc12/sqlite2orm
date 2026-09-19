@@ -971,7 +971,7 @@ TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function c
 // return type the function declares, so the row reached the caller as 0 / "" — and an operator over
 // such a call is typed by the operator alone and lost the NULL the same way. Every value here is
 // what libsqlite3 3.45.1 answers, the version this project links; before the widening the NULL rows
-// read back as 0, 0, 0, "", 0, 0. The last two columns are the counter-check: `upper` and `length`
+// read back as 0, "", 0, "", 0, 0. The last two columns are the counter-check: `upper` and `length`
 // answer NULL for no reason other than a NULL argument, so a spelled-out argument leaves them plain
 // and they read back as they always did.
 // A `||` over a call is left to the codegen cases: sqlite_orm hands a built-in call back as a

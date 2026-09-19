@@ -248,6 +248,16 @@ namespace sqlite2orm {
         this->formsWithoutDefaultConstructor.push_back(std::move(form));
     }
 
+    void CodeGeneratorContext::recordComment(std::string comment) {
+        appendUniqueString(this->comments, comment);
+    }
+
+    std::vector<std::string> CodeGeneratorContext::takeComments() {
+        std::vector<std::string> taken = std::move(this->comments);
+        this->comments.clear();
+        return taken;
+    }
+
     void CodeGeneratorContext::markUngeneratableTable(std::string_view tableName) {
         this->ungeneratableTables.insert(normalizeSqlIdentifier(tableName));
     }
@@ -283,6 +293,7 @@ namespace sqlite2orm {
         this->storedHexLiteralsTooBig.clear();
         this->formsWithoutDefaultConstructor.clear();
         this->customFunctions.clear();
+        this->comments.clear();
     }
 
 }  // namespace sqlite2orm

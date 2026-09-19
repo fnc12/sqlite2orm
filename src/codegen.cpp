@@ -166,6 +166,10 @@ namespace sqlite2orm {
         if(!this->generatorContext->accumulatedErrors.empty()) {
             return CodeGenResult{{}, {}, {}, std::move(this->generatorContext->accumulatedErrors), {}};
         }
+        // A comment belongs to the statement whose body the expression was generated in, and this is
+        // that statement. `createTableParts` and `createViewParts` take theirs when they run, so for
+        // a CREATE TABLE and a CREATE VIEW the result already carries them and there is none left.
+        appendUniqueStrings(result.comments, this->generatorContext->takeComments());
         this->injectCustomFunctions(result);
         return result;
     }

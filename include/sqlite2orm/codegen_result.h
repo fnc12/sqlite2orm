@@ -79,6 +79,8 @@ namespace sqlite2orm {
         std::string structDeclaration;
         std::string makeTableExpression;
         std::vector<CodegenWarning> warnings;
+        /** Optional hints for the generated table, from its CHECK, DEFAULT and generated-column expressions. */
+        std::vector<std::string> comments;
     };
 
     struct CreateViewParts {

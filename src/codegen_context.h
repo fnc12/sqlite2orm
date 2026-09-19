@@ -74,6 +74,16 @@ namespace sqlite2orm {
          */
         std::vector<std::string> formsWithoutDefaultConstructor;
         /**
+         *  The comments explaining the generated forms met since the last reset, deduplicated by
+         *  text. A comment belongs to the statement whose body the expression was generated in, and
+         *  an expression is generated from every clause there is — a CHECK, a column DEFAULT, a
+         *  view body, a trigger WHEN, a subquery, a CTE — so the clause generators would each have
+         *  to carry the list up by hand to keep it. They do not have to: the generator records the
+         *  comment here, and the statement-level entry points (`CodeGenerator::generate`,
+         *  `createTableParts`, `createViewParts`) take what was recorded into their result.
+         */
+        std::vector<std::string> comments;
+        /**
          *  The tables of the current batch that cannot be mapped at all — a STORED generated
          *  column holding such a hex literal leaves the whole table out, because a column that
          *  lost its `as(...)` would be an ordinary column. sqlite_orm cannot reference a type it
@@ -162,6 +172,12 @@ namespace sqlite2orm {
 
         /** Records a form whose sqlite_orm type has no default constructor, once per spelling. */
         void recordFormWithoutDefaultConstructor(std::string form);
+
+        /** Records a comment explaining a generated form, once per text. */
+        void recordComment(std::string comment);
+
+        /** Moves out the comments recorded so far, leaving none behind. */
+        std::vector<std::string> takeComments();
 
         /**
          *  How many statements of the current batch already declared each result variable

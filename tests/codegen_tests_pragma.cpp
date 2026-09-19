@@ -2,6 +2,7 @@
 #include "temp_build_dir.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -443,6 +444,39 @@ TEST_CASE("codegen: PRAGMA locking_mode = EXCLUSIVE") {
 TEST_CASE("codegen: PRAGMA table_info of a table named after a keyword") {
     REQUIRE(generateFull("PRAGMA table_info(row);") ==
             CodeGenResult{R"(storage.pragma.table_info("row");)", {}, {}, {}});
+    // ON, TRUE, FALSE and CURRENT_DATE are names here too — SQLite's `nmnum` rule takes them for
+    // one, and `PRAGMA table_info(on)` describes a table called `on`, empty when there is none.
+    REQUIRE(generateFull("PRAGMA table_info(on);") ==
+            CodeGenResult{R"(storage.pragma.table_info("on");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA table_xinfo(TRUE);") ==
+            CodeGenResult{R"(storage.pragma.table_xinfo("TRUE");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA table_info(current_date);") ==
+            CodeGenResult{R"(storage.pragma.table_info("current_date");)", {}, {}, {}});
+}
+
+// `PRAGMA integrity_check` reads its argument with `sqlite3GetInt32()` and takes for a table name
+// whatever that refuses, and a keyword is a name to SQLite's `nmnum` rule like any other. Checked
+// against sqlite3 3.51.0 and 3.45.1: `PRAGMA integrity_check(on)` and its `true`/`false` siblings
+// all answer `no such table: <keyword>`, and `integrity_check(true)` turns into `ok` as soon as a
+// table named `"true"` exists. So the argument has to go out as the name it is — the boolean the
+// literal node stands for would pick sqlite_orm's `max_errors` overload and check the whole
+// database instead.
+TEST_CASE("codegen: PRAGMA integrity_check of a table named after a keyword") {
+    REQUIRE(generateFull("PRAGMA integrity_check(on);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("on");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check(OFF);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("OFF");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check(true);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("true");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check(False);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("False");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check = TRUE;") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("TRUE");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check(current_date);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("current_date");)", {}, {}, {}});
+    // A number still reads as the error count it did.
+    REQUIRE(generateFull("PRAGMA integrity_check(1);") ==
+            CodeGenResult{"storage.pragma.integrity_check(1);", {}, {}, {}});
 }
 
 // SQLite reads a PRAGMA value with `sqlite3GetInt32()`, which refuses every hexadecimal value with
@@ -770,48 +804,39 @@ TEST_CASE("codegen: a PRAGMA value warning is anchored at the value as written")
                           {}});
 }
 
-TEST_CASE("codegen: a PRAGMA value the message spells back longer is underlined as written") {
-    // `ON` is a bool literal to the parser, and the message spells it back as the `true` SQLite
-    // reads: the underline is two characters wide all the same, or it would cover `ON;` and run
-    // one character past the end of the line.
+TEST_CASE("codegen: a keyword PRAGMA value is spelled back and underlined as written") {
+    // `ON` is a bool literal to the parser, but a PRAGMA reads the keyword's own letters, so the
+    // message quotes `ON` rather than the `true` the node stands for, and the underline is two
+    // characters wide — one more would cover the `;` and run past the end of the line.
     REQUIRE(generateFull("PRAGMA user_version = ON;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
-                          {CodegenWarning{"PRAGMA user_version = true: SQLite reads a PRAGMA value as a 32-bit "
+                          {CodegenWarning{"PRAGMA user_version = ON: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
                                           SourceLocation{1, 23}, 2}},
                           {}});
-    // The case the keyword came in does not change what is underlined.
+    // The case the keyword came in is carried through untouched.
     REQUIRE(generateFull("PRAGMA busy_timeout = On;") ==
             CodeGenResult{"storage.pragma.busy_timeout(0);",
                           {},
-                          {CodegenWarning{"PRAGMA busy_timeout = true: SQLite reads a PRAGMA value as a 32-bit "
+                          {CodegenWarning{"PRAGMA busy_timeout = On: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
                                           SourceLocation{1, 23}, 2}},
                           {}});
-    // TRUE and FALSE are the same bool literal node, and they are as long as the text the message
-    // spells back.
+    // TRUE and FALSE are the same bool literal node, and neither is spelled back as the other.
     REQUIRE(generateFull("PRAGMA user_version = TRUE;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
-                          {CodegenWarning{"PRAGMA user_version = true: SQLite reads a PRAGMA value as a 32-bit "
+                          {CodegenWarning{"PRAGMA user_version = TRUE: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
                                           SourceLocation{1, 23}, 4}},
                           {}});
     REQUIRE(generateFull("PRAGMA user_version = FALSE;") ==
             CodeGenResult{"storage.pragma.user_version(0);",
                           {},
-                          {CodegenWarning{"PRAGMA user_version = false: SQLite reads a PRAGMA value as a 32-bit "
+                          {CodegenWarning{"PRAGMA user_version = FALSE: SQLite reads a PRAGMA value as a 32-bit "
                                           "integer and cannot read this one, so it sets 0",
                                           SourceLocation{1, 23}, 5}},
-                          {}});
-    // The argument of `PRAGMA integrity_check` takes its anchor from the same value.
-    REQUIRE(generateFull("PRAGMA integrity_check(on);") ==
-            CodeGenResult{"storage.pragma.integrity_check(true);",
-                          {},
-                          {CodegenWarning{"PRAGMA integrity_check argument is emitted via subexpression codegen; "
-                                          "ensure it matches sqlite_orm::pragma_t::integrity_check overloads",
-                                          SourceLocation{1, 24}, 2}},
                           {}});
 }
 
@@ -858,6 +883,87 @@ namespace {
         REQUIRE(exitCode == 0);
     }
 
+    /**
+     *  Builds a program around the generated PRAGMA calls over a database that holds `users` and,
+     *  when `extraTableName` is given, a table of that name as well; links it against sqlite_orm,
+     *  runs it and returns one line per call: the rows it answered, joined with `,`, or `error` for
+     *  the one SQLite raised. A generated call that compiles can still run another statement than
+     *  the SQL it came from — `integrity_check` picks one of two overloads by the type of its
+     *  argument, and only one of them names a table — so only running it, against a database where
+     *  that name is a table and one where it is not, says which statement a user gets.
+     */
+    std::vector<std::string> pragmaOutcomes(const std::vector<std::string>& statements,
+                                            std::string_view extraTableName = {}) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <iostream>\n"
+                   "#include <string>\n"
+                   "#include <system_error>\n"
+                   "\n"
+                   "struct User {\n"
+                   "    int id = 0;\n"
+                   "};\n"
+                   "\n"
+                   "struct Other {\n"
+                   "    int id = 0;\n"
+                   "};\n"
+                   "\n"
+                   "int main() {\n"
+                   "    auto storage = sqlite_orm::make_storage(\n"
+                   "        \"\", sqlite_orm::make_table(\"users\", sqlite_orm::make_column(\"id\", &User::id))";
+        if(!extraTableName.empty()) {
+            program << ",\n        sqlite_orm::make_table(\"" << extraTableName
+                    << "\", sqlite_orm::make_column(\"id\", &Other::id))";
+        }
+        program << ");\n"
+                   "    storage.sync_schema();\n";
+        for(const auto& statement: statements) {
+            // The generated call ends in its own semicolon, so binding its result needs no more
+            // than the assignment in front of it.
+            program << "    try {\n"
+                       "        const auto rows = "
+                    << statement
+                    << "\n"
+                       "        std::string joined;\n"
+                       "        for(const auto& row: rows) {\n"
+                       "            joined += joined.empty() ? row : \",\" + row;\n"
+                       "        }\n"
+                       "        std::cout << joined << '\\n';\n"
+                       "    } catch(const std::system_error&) {\n"
+                       "        std::cout << \"error\" << '\\n';\n"
+                       "    }\n";
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("check");
+        const std::filesystem::path outpath = dir.file("check.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> outcomes;
+        {
+            std::ifstream out(outpath);
+            for(std::string line; std::getline(out, line);) {
+                outcomes.push_back(line);
+            }
+        }
+        if(exitCode != 0) {
+            WARN("building the generated PRAGMA calls failed (exit "
+                 << exitCode << "); ensure c++, sqlite_orm headers and libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return outcomes;
+    }
+
 }  // namespace
 
 // Every journal mode a user can write, built the way a Windows user builds it. `DELETE` is the one
@@ -872,4 +978,20 @@ TEST_CASE("codegen: generated journal_mode calls compile with the Windows DELETE
         statements.push_back(generateFull("PRAGMA locking_mode = " + mode + ";").code);
     }
     requireCompilesWithWindowsDeleteMacro(statements);
+}
+
+// The two `integrity_check` overloads run different statements: one checks the whole database and
+// caps the errors it reports, the other checks the one table it is named. `PRAGMA
+// integrity_check(on)` is the second — sqlite3 3.51.0 and 3.45.1 both answer `no such table: on`
+// for it, and `ok` once a table called `on` exists — so the generated call has to fail on the
+// database where that name is free and pass on the one where it is taken. The `max_errors`
+// overload the bool literal used to pick reports `ok` on both.
+TEST_CASE("codegen: a generated integrity_check keyword argument names the table SQLite names") {
+    const std::vector<std::string> statements = {
+        generateFull("PRAGMA integrity_check(on);").code,
+        generateFull("PRAGMA integrity_check(users);").code,
+        generateFull("PRAGMA integrity_check(1);").code,
+    };
+    REQUIRE(pragmaOutcomes(statements) == std::vector<std::string>{"error", "ok", "ok"});
+    REQUIRE(pragmaOutcomes(statements, "on") == std::vector<std::string>{"ok", "ok", "ok"});
 }

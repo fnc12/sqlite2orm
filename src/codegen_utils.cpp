@@ -1670,6 +1670,15 @@ namespace sqlite2orm {
             std::size_t foldedSigns = 0;
             const AstNode& literal = *withoutFoldedSigns(astNode, foldedSigns);
             const double sign = foldedSigns % 2 == 0 ? 1.0 : -1.0;
+            if(auto* collate = dynamic_cast<const CollateNode*>(&literal)) {
+                // COLLATE decides how a value compares, not what the value is, which is what the
+                // two helpers next to this one look through it for as well. It binds tighter than
+                // a sign does, so `-1e300 COLLATE BINARY` is `-(1e300 COLLATE BINARY)`.
+                if(const std::optional<double> value = numericLiteralDoubleValue(*collate->operand)) {
+                    return sign * *value;
+                }
+                return std::nullopt;
+            }
             if(auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&literal)) {
                 // SQLite spells TRUE and FALSE as the integers 1 and 0.
                 return sign * (boolLiteral->value ? 1.0 : 0.0);

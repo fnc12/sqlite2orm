@@ -183,4 +183,34 @@ if(SQLITE2ORM_BUILD_TESTS)
             set_tests_properties(sqlite2orm_cli_stdin PROPERTIES PASS_REGULAR_EXPRESSION "select\\(7\\)")
         endif()
     endif()
+
+    # The formatting tests need clang-format 19 exactly: other versions format this tree
+    # differently, so an older one in PATH would only produce noise.
+    if(UNIX)
+        find_program(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE NAMES clang-format-19 clang-format)
+        if(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE)
+            execute_process(
+                COMMAND "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" --version
+                OUTPUT_VARIABLE sqlite2orm_clang_format_version
+                ERROR_QUIET)
+            if(NOT sqlite2orm_clang_format_version MATCHES "clang-format version 19\\.")
+                message(STATUS "[sqlite2orm] clang-format 19 not found, skipping the formatting tests.")
+                set(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE "")
+            endif()
+        endif()
+        if(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE)
+            add_test(
+                NAME sqlite2orm_clang_format
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/clang_format_check.sh"
+                        "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
+            add_test(
+                NAME sqlite2orm_clang_format_report
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/clang_format_report_test.sh"
+                        "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
+            add_test(
+                NAME sqlite2orm_git_hooks
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/git_hooks_test.sh"
+                        "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
+        endif()
+    endif()
 endif()

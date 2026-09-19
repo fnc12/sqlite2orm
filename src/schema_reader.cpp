@@ -19,10 +19,7 @@ namespace sqlite2orm {
 
     SqliteSchemaReader::SqliteSchemaReader(const std::string& databasePath) {
         sqlite3* raw = nullptr;
-        const int rc = sqlite3_open_v2(databasePath.c_str(),
-                                       &raw,
-                                       SQLITE_OPEN_READONLY,
-                                       nullptr);
+        const int rc = sqlite3_open_v2(databasePath.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr);
         if (rc != SQLITE_OK) {
             const char* err = raw ? sqlite3_errmsg(raw) : sqlite3_errstr(rc);
             if (raw) {
@@ -134,8 +131,7 @@ namespace sqlite2orm {
     }
 
     std::vector<ForeignKeyListRow> SqliteSchemaReader::foreignKeyList(std::string_view tableName) const {
-        const std::string sql =
-            std::string{"PRAGMA foreign_key_list("} + quoteSqlStringLiteral(tableName) + ");";
+        const std::string sql = std::string{"PRAGMA foreign_key_list("} + quoteSqlStringLiteral(tableName) + ");";
         sqlite3* rawDb = db.get();
         sqlite3_stmt* st = nullptr;
         int rc = sqlite3_prepare_v2(rawDb, sql.c_str(), static_cast<int>(sql.size()), &st, nullptr);

@@ -7,7 +7,7 @@
 namespace sqlite2orm {
 
     bool CodeGeneratorContext::useCpp20ColumnAliasStyle() const {
-        if(this->columnAliasStyleOverride) {
+        if (this->columnAliasStyleOverride) {
             // Internal override used to render the C++20 alternative for the options list; ungated.
             return *this->columnAliasStyleOverride == "cpp20_literal";
         }
@@ -16,11 +16,10 @@ namespace sqlite2orm {
     }
 
     bool CodeGeneratorContext::useCpp20TableAliasStyle() const {
-        if(this->withCteCpp20Monikers()) {
+        if (this->withCteCpp20Monikers()) {
             return true;
         }
-        return cpp20Allowed(this->codeGenPolicy) &&
-               policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
+        return cpp20Allowed(this->codeGenPolicy) && policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
     }
 
     bool CodeGeneratorContext::withCteLegacyColalias() const {
@@ -32,43 +31,40 @@ namespace sqlite2orm {
     }
 
     bool CodeGeneratorContext::columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const {
-        if(!this->useCpp20ColumnAliasStyle()) {
+        if (!this->useCpp20ColumnAliasStyle()) {
             return false;
         }
         std::string normalized = toLowerAscii(stripIdentifierQuotes(ref.columnName));
-        return this->activeSelectColumnAliasCpp20Vars.find(normalized) !=
-               this->activeSelectColumnAliasCpp20Vars.end();
+        return this->activeSelectColumnAliasCpp20Vars.find(normalized) != this->activeSelectColumnAliasCpp20Vars.end();
     }
 
     bool CodeGeneratorContext::isExplicitCteColumn(std::string_view cteKeyNorm, std::string_view columnName) const {
         auto it = this->cteColumnNamesByTableKey.find(std::string(cteKeyNorm));
-        if(it == this->cteColumnNamesByTableKey.end()) {
+        if (it == this->cteColumnNamesByTableKey.end()) {
             return false;
         }
         std::string normalizedCol = normalizeSqlIdentifier(columnName);
-        for(const auto& colName : it->second) {
-            if(normalizeSqlIdentifier(colName) == normalizedCol) {
+        for (const auto& colName: it->second) {
+            if (normalizeSqlIdentifier(colName) == normalizedCol) {
                 return true;
             }
         }
         return false;
     }
 
-    void CodeGeneratorContext::registerSourceTable(std::string_view tableName,
-                                                   std::vector<SourceTableColumn> columns) {
+    void CodeGeneratorContext::registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns) {
         this->sourceTableColumnsByNormalizedName[normalizeSqlIdentifier(tableName)] = std::move(columns);
     }
 
     const SourceTableColumn* CodeGeneratorContext::findSourceTableColumn(std::string_view tableName,
                                                                          std::string_view columnName) const {
-        const auto tableIterator =
-            this->sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(tableName));
-        if(tableIterator == this->sourceTableColumnsByNormalizedName.end()) {
+        const auto tableIterator = this->sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(tableName));
+        if (tableIterator == this->sourceTableColumnsByNormalizedName.end()) {
             return nullptr;
         }
         const std::string normalizedColumn = normalizeSqlIdentifier(columnName);
-        for(const SourceTableColumn& sourceTableColumn : tableIterator->second) {
-            if(normalizeSqlIdentifier(sourceTableColumn.sqlName) == normalizedColumn) {
+        for (const SourceTableColumn& sourceTableColumn: tableIterator->second) {
+            if (normalizeSqlIdentifier(sourceTableColumn.sqlName) == normalizedColumn) {
                 return &sourceTableColumn;
             }
         }
@@ -78,20 +74,20 @@ namespace sqlite2orm {
     std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {
         // The argument a COLLATE or a unary plus stands over is the one the call is handed.
         const AstNode& valueNode = generatedOperandNode(argument);
-        if(auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
+        if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             // Schema type wins when the column belongs to a known CREATE TABLE in the batch.
             const std::string normalizedColumn = normalizeSqlIdentifier(columnRef->columnName);
-            for(const auto& [tableKey, columns] : this->sourceTableColumnsByNormalizedName) {
+            for (const auto& [tableKey, columns]: this->sourceTableColumnsByNormalizedName) {
                 (void)tableKey;
-                for(const SourceTableColumn& column : columns) {
-                    if(normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
+                for (const SourceTableColumn& column: columns) {
+                    if (normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
                         return column.cppType;
                     }
                 }
             }
             const std::string cppName = toCppIdentifier(columnRef->columnName);
             const auto known = this->columnTypes.find(cppName);
-            if(known != this->columnTypes.end()) {
+            if (known != this->columnTypes.end()) {
                 return known->second;
             }
             return this->syntheticColumnCppType(cppName);  // name heuristic (name → std::string, else int)
@@ -101,13 +97,13 @@ namespace sqlite2orm {
 
     void CodeGeneratorContext::registerColumn(const std::string& cppName, const std::string& cppType) {
         auto [it, inserted] = this->columnTypes.try_emplace(cppName, cppType);
-        if(!inserted && it->second == "int" && cppType != "int") {
+        if (!inserted && it->second == "int" && cppType != "int") {
             it->second = cppType;
         }
     }
 
     void CodeGeneratorContext::registerPrefixColumn(const std::string& cppName, const std::string& cppType) {
-        if(this->implicitSingleSourceCteTypedef) {
+        if (this->implicitSingleSourceCteTypedef) {
             return;
         }
         this->registerColumn(cppName, cppType);
@@ -121,28 +117,31 @@ namespace sqlite2orm {
         // A COLLATE picks a collating sequence for a comparison and leaves the value it is written
         // over alone, so the value — and the field that holds it — is the one under it.
         const AstNode& valueNode = generatedOperandNode(node);
-        if(dynamic_cast<const StringLiteralNode*>(&valueNode)) return "std::string";
-        if(auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
+        if (dynamic_cast<const StringLiteralNode*>(&valueNode))
+            return "std::string";
+        if (auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
             // An integer literal an int64 cannot hold is a REAL for SQLite, so is the column.
-            if(integerLiteralExceedsInt64(integerLiteral->value)) {
+            if (integerLiteralExceedsInt64(integerLiteral->value)) {
                 return "double";
             }
             // `int` stays the field for the small literal the comparison usually carries, but one
             // that only an int64 holds would be truncated by it, so it widens the field instead.
             return integerLiteralExceedsInt32(integerLiteral->value) ? "int64_t" : "int";
         }
-        if(dynamic_cast<const RealLiteralNode*>(&valueNode)) return "double";
-        if(dynamic_cast<const BoolLiteralNode*>(&valueNode)) return "bool";
-        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
-            if(unaryOperator->unaryOperator == UnaryOperator::bitwiseNot) {
+        if (dynamic_cast<const RealLiteralNode*>(&valueNode))
+            return "double";
+        if (dynamic_cast<const BoolLiteralNode*>(&valueNode))
+            return "bool";
+        if (auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
+            if (unaryOperator->unaryOperator == UnaryOperator::bitwiseNot) {
                 // `~` is a 64-bit complement in SQLite, and it takes a value out of the int32
                 // range as readily as it brings one back in: `~2147483648` is -2147483649. The
                 // field follows the operation rather than the operand, the way it already does
                 // for a view column in `ViewFieldTypeInferrer`.
                 return "int64_t";
             }
-            if(unaryOperator->operand && (unaryOperator->unaryOperator == UnaryOperator::minus ||
-                                          unaryOperator->unaryOperator == UnaryOperator::plus)) {
+            if (unaryOperator->operand && (unaryOperator->unaryOperator == UnaryOperator::minus ||
+                                           unaryOperator->unaryOperator == UnaryOperator::plus)) {
                 // The signs standing in front of a literal belong to the value they spell with
                 // it, so the width follows all of them together rather than the magnitude alone:
                 // `0xFFFFFFFF80000000` is the -2147483648 an `int` holds, `-0xFFFFFFFF80000000`
@@ -150,14 +149,13 @@ namespace sqlite2orm {
                 std::size_t foldedSigns = 0;
                 auto* signedLiteral =
                     dynamic_cast<const IntegerLiteralNode*>(withoutFoldedSigns(valueNode, foldedSigns));
-                if(signedLiteral) {
+                if (signedLiteral) {
                     // A value past the int64 range is a REAL for SQLite, whichever side of the
                     // range the signs leave it on.
-                    if(isIntegerLiteralPastIntegerFieldRange(valueNode)) {
+                    if (isIntegerLiteralPastIntegerFieldRange(valueNode)) {
                         return "double";
                     }
-                    return integerLiteralExceedsInt32(signedLiteral->value, foldedSigns % 2 != 0) ? "int64_t"
-                                                                                                 : "int";
+                    return integerLiteralExceedsInt32(signedLiteral->value, foldedSigns % 2 != 0) ? "int64_t" : "int";
                 }
                 // A minus SQLite cannot fold into a literal — a COLLATE between the two stops
                 // the folding — is a negation it computes over 64 bits while it runs the
@@ -167,51 +165,53 @@ namespace sqlite2orm {
                 // the way the sign standing over a folded one already does. A plus SQLite's
                 // parser drops, so it leaves the width of what stands under it alone.
                 const std::string operandType = this->inferTypeFromNode(*unaryOperator->operand);
-                if(unaryOperator->unaryOperator != UnaryOperator::minus) {
+                if (unaryOperator->unaryOperator != UnaryOperator::minus) {
                     return operandType;
                 }
                 std::size_t negatedSigns = 0;
                 auto* negatedLiteral = dynamic_cast<const IntegerLiteralNode*>(
                     withoutFoldedSigns(generatedOperandNode(*unaryOperator->operand), negatedSigns));
-                if(negatedLiteral != nullptr && negatedSigns % 2 != 0 &&
-                   integerLiteralExceedsInt64(negatedLiteral->value)) {
+                if (negatedLiteral != nullptr && negatedSigns % 2 != 0 &&
+                    integerLiteralExceedsInt64(negatedLiteral->value)) {
                     return "double";
                 }
                 return operandType == "int" ? "int64_t" : operandType;
             }
         }
-        if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&valueNode)) {
+        if (auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&valueNode)) {
             // SQLite computes arithmetic and bit operations over 64-bit integers, so the result
             // leaves the int32 range even where both operands sit inside it: `2147483647 + 1` is
             // 2147483648. The same widening `ViewFieldTypeInferrer` applies to a view column.
-            switch(binaryOperator->binaryOperator) {
-            case BinaryOperator::add:
-            case BinaryOperator::subtract:
-            case BinaryOperator::multiply:
-            case BinaryOperator::divide:
-            case BinaryOperator::modulo: {
-                const std::string lhsType =
-                    binaryOperator->lhs ? this->inferTypeFromNode(*binaryOperator->lhs) : std::string();
-                const std::string rhsType =
-                    binaryOperator->rhs ? this->inferTypeFromNode(*binaryOperator->rhs) : std::string();
-                return lhsType == "double" || rhsType == "double" ? "double" : "int64_t";
-            }
-            case BinaryOperator::bitwiseAnd:
-            case BinaryOperator::bitwiseOr:
-            case BinaryOperator::shiftLeft:
-            case BinaryOperator::shiftRight: return "int64_t";
-            default: break;
+            switch (binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                case BinaryOperator::subtract:
+                case BinaryOperator::multiply:
+                case BinaryOperator::divide:
+                case BinaryOperator::modulo: {
+                    const std::string lhsType =
+                        binaryOperator->lhs ? this->inferTypeFromNode(*binaryOperator->lhs) : std::string();
+                    const std::string rhsType =
+                        binaryOperator->rhs ? this->inferTypeFromNode(*binaryOperator->rhs) : std::string();
+                    return lhsType == "double" || rhsType == "double" ? "double" : "int64_t";
+                }
+                case BinaryOperator::bitwiseAnd:
+                case BinaryOperator::bitwiseOr:
+                case BinaryOperator::shiftLeft:
+                case BinaryOperator::shiftRight:
+                    return "int64_t";
+                default:
+                    break;
             }
         }
         return "int";
     }
 
     std::string CodeGeneratorContext::generatePrefix() const {
-        if(this->columnTypes.empty()) {
+        if (this->columnTypes.empty()) {
             return "";
         }
         std::string result = "struct " + this->structName + " {\n";
-        for(const auto& [name, type] : this->columnTypes) {
+        for (const auto& [name, type]: this->columnTypes) {
             result += "    " + type + " " + name + defaultInitializer(type) + ";\n";
         }
         result += "};";
@@ -221,7 +221,7 @@ namespace sqlite2orm {
     std::string CodeGeneratorContext::statementVariableName(std::string_view baseName) {
         const std::string base(baseName);
         auto resolved = this->statementVariableNames.find(base);
-        if(resolved != this->statementVariableNames.end()) {
+        if (resolved != this->statementVariableNames.end()) {
             return resolved->second;
         }
         const int use = ++this->batchVariableUses[base];
@@ -231,8 +231,8 @@ namespace sqlite2orm {
     }
 
     void CodeGeneratorContext::registerCustomFunction(CustomFunctionUse use) {
-        for(const auto& existing : this->customFunctions) {
-            if(existing.structName == use.structName) {
+        for (const auto& existing: this->customFunctions) {
+            if (existing.structName == use.structName) {
                 return;
             }
         }
@@ -240,8 +240,8 @@ namespace sqlite2orm {
     }
 
     void CodeGeneratorContext::recordFormWithoutDefaultConstructor(std::string form) {
-        for(const auto& existing : this->formsWithoutDefaultConstructor) {
-            if(existing == form) {
+        for (const auto& existing: this->formsWithoutDefaultConstructor) {
+            if (existing == form) {
                 return;
             }
         }
@@ -258,8 +258,8 @@ namespace sqlite2orm {
     }
 
     std::string_view CodeGeneratorContext::referencedUngeneratableKind() const {
-        for(const std::string& referencedName : this->referencedUngeneratableTables) {
-            if(this->ungeneratableViews.find(referencedName) == this->ungeneratableViews.end()) {
+        for (const std::string& referencedName: this->referencedUngeneratableTables) {
+            if (this->ungeneratableViews.find(referencedName) == this->ungeneratableViews.end()) {
                 return "table";
             }
         }
@@ -271,7 +271,7 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::structNameForTable(std::string_view tableName) {
-        if(this->isUngeneratableTable(tableName)) {
+        if (this->isUngeneratableTable(tableName)) {
             this->referencedUngeneratableTables.insert(normalizeSqlIdentifier(tableName));
         }
         return toStructName(tableName);

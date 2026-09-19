@@ -24,8 +24,7 @@ namespace {
     [[nodiscard]] std::filesystem::path makeTempDbPath() {
         static thread_local std::mt19937 gen{std::random_device{}()};
         std::uniform_int_distribution<std::uint64_t> dist{};
-        return std::filesystem::temp_directory_path() /
-               ("sqlite2orm_pipe_" + std::to_string(dist(gen)) + ".db");
+        return std::filesystem::temp_directory_path() / ("sqlite2orm_pipe_" + std::to_string(dist(gen)) + ".db");
     }
 
     struct TempDbFile {
@@ -56,7 +55,7 @@ namespace {
         cmd << " 2>&1";
 
         const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
-        if(exitCode != 0) {
+        if (exitCode != 0) {
             WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
         }
         REQUIRE(exitCode == 0);
@@ -119,32 +118,31 @@ TEST_CASE("generateSqliteSchemaHeader: merged storage") {
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    const CodeGenResult expected{
-        std::string("#pragma once\n\n"
-                    "#include <sqlite_orm/sqlite_orm.h>\n"
-                    "#include <cstdint>\n"
-                    "#include <optional>\n"
-                    "#include <string>\n"
-                    "#include <vector>\n\n"
-                    "struct A {\n"
-                    "    int64_t id = 0;\n"
-                    "};\n\n"
-                    "struct B {\n"
-                    "    int64_t id = 0;\n"
-                    "    std::optional<int64_t> aid;\n"
-                    "};\n\n\n"
-                    "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-                    "    using namespace sqlite_orm;\n"
-                    "    return make_storage(db_path,\n"
-                    "        make_table(\"a\",\n"
-                    "        make_column(\"id\", &A::id, primary_key())),\n"
-                    "        make_table(\"b\",\n"
-                    "        make_column(\"id\", &B::id, primary_key()),\n"
-                    "        make_column(\"aid\", &B::aid),\n"
-                    "        foreign_key(&B::aid).references(&A::id)));\n"
-                    "}\n"),
-        {},
-        {}};
+    const CodeGenResult expected{std::string("#pragma once\n\n"
+                                             "#include <sqlite_orm/sqlite_orm.h>\n"
+                                             "#include <cstdint>\n"
+                                             "#include <optional>\n"
+                                             "#include <string>\n"
+                                             "#include <vector>\n\n"
+                                             "struct A {\n"
+                                             "    int64_t id = 0;\n"
+                                             "};\n\n"
+                                             "struct B {\n"
+                                             "    int64_t id = 0;\n"
+                                             "    std::optional<int64_t> aid;\n"
+                                             "};\n\n\n"
+                                             "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                                             "    using namespace sqlite_orm;\n"
+                                             "    return make_storage(db_path,\n"
+                                             "        make_table(\"a\",\n"
+                                             "        make_column(\"id\", &A::id, primary_key())),\n"
+                                             "        make_table(\"b\",\n"
+                                             "        make_column(\"id\", &B::id, primary_key()),\n"
+                                             "        make_column(\"aid\", &B::aid),\n"
+                                             "        foreign_key(&B::aid).references(&A::id)));\n"
+                                             "}\n"),
+                                 {},
+                                 {}};
 
     REQUIRE(header == expected);
 }
@@ -215,22 +213,21 @@ TEST_CASE("generateSqliteSchemaHeader: a view and a trigger SQLite stores but ca
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Ok1 {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"ok1\",\n"
-            "        make_column(\"a\", &Ok1::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Ok1 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"ok1\",\n"
+                           "        make_column(\"a\", &Ok1::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"CREATE VIEW vw uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the "
@@ -261,27 +258,26 @@ TEST_CASE("generateSqliteSchemaHeader: a STORED generated column SQLite stores b
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Ok1 {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n"
-            "struct Ok2 {\n"
-            "    std::optional<std::string> b;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"ok1\",\n"
-            "        make_column(\"a\", &Ok1::a)),\n"
-            "        make_table(\"ok2\",\n"
-            "        make_column(\"b\", &Ok2::b)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Ok1 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n"
+                           "struct Ok2 {\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"ok1\",\n"
+                           "        make_column(\"a\", &Ok1::a)),\n"
+                           "        make_table(\"ok2\",\n"
+                           "        make_column(\"b\", &Ok2::b)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -309,24 +305,23 @@ TEST_CASE("generateSqliteSchemaHeader: what rests on an ungenerated table is lef
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Child {\n"
-            "    int64_t id = 0;\n"
-            "    std::optional<int64_t> gid;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"child\",\n"
-            "        make_column(\"id\", &Child::id, primary_key()),\n"
-            "        make_column(\"gid\", &Child::gid)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Child {\n"
+                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> gid;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"child\",\n"
+                           "        make_column(\"id\", &Child::id, primary_key()),\n"
+                           "        make_column(\"gid\", &Child::gid)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -352,24 +347,23 @@ TEST_CASE("generateSqliteSchemaHeader: a table-level foreign key into an ungener
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Child {\n"
-            "    int64_t id = 0;\n"
-            "    std::optional<int64_t> gid;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"child\",\n"
-            "        make_column(\"id\", &Child::id, primary_key()),\n"
-            "        make_column(\"gid\", &Child::gid)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Child {\n"
+                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> gid;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"child\",\n"
+                           "        make_column(\"id\", &Child::id, primary_key()),\n"
+                           "        make_column(\"gid\", &Child::gid)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -394,22 +388,21 @@ TEST_CASE("generateSqliteSchemaHeader: a view over an ungenerated table is left 
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Ok1 {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"ok1\",\n"
-            "        make_column(\"a\", &Ok1::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Ok1 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"ok1\",\n"
+                           "        make_column(\"a\", &Ok1::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -436,23 +429,22 @@ TEST_CASE("generateSqliteSchemaHeader: a trigger naming an ungenerated table in 
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Good {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"good\",\n"
-            "        make_column(\"a\", &Good::a)),\n"
-            "        make_index(\"i_ok\", indexed_column(&Good::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Good {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"good\",\n"
+                           "        make_column(\"a\", &Good::a)),\n"
+                           "        make_index(\"i_ok\", indexed_column(&Good::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -479,22 +471,21 @@ TEST_CASE("generateSqliteSchemaHeader: a trigger WHEN clause naming an ungenerat
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Good {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"good\",\n"
-            "        make_column(\"a\", &Good::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Good {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"good\",\n"
+                           "        make_column(\"a\", &Good::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -518,22 +509,21 @@ TEST_CASE("generateSqliteSchemaHeader: a view naming an ungenerated table in a s
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Good {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"good\",\n"
-            "        make_column(\"a\", &Good::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Good {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"good\",\n"
+                           "        make_column(\"a\", &Good::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -561,22 +551,21 @@ TEST_CASE("generateSqliteSchemaHeader: what rests on a view dropped for a hex li
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Ok1 {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"ok1\",\n"
-            "        make_column(\"a\", &Ok1::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Ok1 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"ok1\",\n"
+                           "        make_column(\"a\", &Ok1::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"CREATE VIEW v1 uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "
@@ -603,22 +592,21 @@ TEST_CASE("generateSqliteSchemaHeader: what rests on a view over an ungenerated 
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Ok1 {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"ok1\",\n"
-            "        make_column(\"a\", &Ok1::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Ok1 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"ok1\",\n"
+                           "        make_column(\"a\", &Ok1::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
@@ -644,22 +632,21 @@ TEST_CASE("generateSqliteSchemaHeader: what rests on a view with an unsupported 
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Ok1 {\n"
-            "    std::optional<int64_t> a;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"ok1\",\n"
-            "        make_column(\"a\", &Ok1::a)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Ok1 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"ok1\",\n"
+                           "        make_column(\"a\", &Ok1::a)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"},
@@ -670,15 +657,14 @@ TEST_CASE("generateSqliteSchemaHeader: what rests on a view with an unsupported 
 }
 
 TEST_CASE("generateSqliteSchemaHeader: DML after DDL emits seed_data()") {
-    auto pipelines = processMultiSql(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"
-        "INSERT INTO t (id, name) VALUES (1, 'Alice');");
+    auto pipelines = processMultiSql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"
+                                     "INSERT INTO t (id, name) VALUES (1, 'Alice');");
     REQUIRE(pipelines.size() == 2);
     REQUIRE(pipelines[0].ok());
     REQUIRE(pipelines[1].ok());
 
     ProcessSqliteSchemaResult schema;
-    for(auto& p : pipelines) {
+    for (auto& p: pipelines) {
         SchemaStatementResult s;
         s.meta.type = "table";
         s.pipeline = std::move(p);
@@ -720,8 +706,9 @@ TEST_CASE("sqliteSchemaResultToJson: shape") {
     execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");
     SqliteSchemaReader reader(file.path.string());
     const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
-    REQUIRE(sqliteSchemaResultToJson(schema) ==
-            R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})");
+    REQUIRE(
+        sqliteSchemaResultToJson(schema) ==
+        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})");
 }
 
 // A DEFAULT or a STORED generated-column expression is stored by SQLite without being compiled, so
@@ -735,8 +722,9 @@ TEST_CASE("sqliteSchemaResultToJson: shape") {
 // the expression itself.
 TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C++ constant") {
     TempDbFile file{makeTempDbPath()};
-    execSql(file.path, "CREATE TABLE neg_t (a INT, b INT DEFAULT (-0x8000000000000000), "
-                       "g AS (-0x8000000000000000) STORED);");
+    execSql(file.path,
+            "CREATE TABLE neg_t (a INT, b INT DEFAULT (-0x8000000000000000), "
+            "g AS (-0x8000000000000000) STORED);");
 
     SqliteSchemaReader reader(file.path.string());
     const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
@@ -746,30 +734,29 @@ TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C+
     const std::string tooBig =
         "hex literal too big: -0x8000000000000000; SQLite refuses this expression wherever it is "
         "used, so the generated subtraction from zero does not reproduce it";
-    const CodeGenResult expected{
-        std::string("#pragma once\n\n"
-                    "#include <sqlite_orm/sqlite_orm.h>\n"
-                    "#include <cstdint>\n"
-                    "#include <optional>\n"
-                    "#include <string>\n"
-                    "#include <vector>\n\n"
-                    "struct NegT {\n"
-                    "    std::optional<int64_t> a;\n"
-                    "    std::optional<int64_t> b;\n"
-                    "    std::optional<std::vector<char>> g;\n"
-                    "};\n\n\n"
-                    "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-                    "    using namespace sqlite_orm;\n"
-                    "    return make_storage(db_path,\n"
-                    "        make_table(\"neg_t\",\n"
-                    "        make_column(\"a\", &NegT::a),\n"
-                    "        make_column(\"b\", &NegT::b, "
-                    "default_value((c(0) - c(static_cast<int64_t>(0x8000000000000000))))),\n"
-                    "        make_column(\"g\", &NegT::g, "
-                    "as((c(0) - c(static_cast<int64_t>(0x8000000000000000)))).stored())));\n"
-                    "}\n"),
-        {},
-        {{tooBig, SourceLocation{1, 43}, 1}, {tooBig, SourceLocation{1, 71}, 1}}};
+    const CodeGenResult expected{std::string("#pragma once\n\n"
+                                             "#include <sqlite_orm/sqlite_orm.h>\n"
+                                             "#include <cstdint>\n"
+                                             "#include <optional>\n"
+                                             "#include <string>\n"
+                                             "#include <vector>\n\n"
+                                             "struct NegT {\n"
+                                             "    std::optional<int64_t> a;\n"
+                                             "    std::optional<int64_t> b;\n"
+                                             "    std::optional<std::vector<char>> g;\n"
+                                             "};\n\n\n"
+                                             "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                                             "    using namespace sqlite_orm;\n"
+                                             "    return make_storage(db_path,\n"
+                                             "        make_table(\"neg_t\",\n"
+                                             "        make_column(\"a\", &NegT::a),\n"
+                                             "        make_column(\"b\", &NegT::b, "
+                                             "default_value((c(0) - c(static_cast<int64_t>(0x8000000000000000))))),\n"
+                                             "        make_column(\"g\", &NegT::g, "
+                                             "as((c(0) - c(static_cast<int64_t>(0x8000000000000000)))).stored())));\n"
+                                             "}\n"),
+                                 {},
+                                 {{tooBig, SourceLocation{1, 43}, 1}, {tooBig, SourceLocation{1, 71}, 1}}};
 
     REQUIRE(header == expected);
 
@@ -786,7 +773,7 @@ TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C+
     cmd << " 2>&1";
 
     const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
-    if(exitCode != 0) {
+    if (exitCode != 0) {
         WARN("compiling the generated header failed (exit " << exitCode
                                                             << "); ensure c++ and sqlite_orm headers are usable");
     }
@@ -810,12 +797,12 @@ TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
 // snippet still said `&Gen::x` and `make_view<Vg>` with no struct behind them, at exit 0, and only
 // a compiler saw it. Checked against sqlite3 3.51.0.
 TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table compiles") {
-    const auto results = processMultiSql(
-        "CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);\n"
-        "CREATE TABLE child(id INTEGER PRIMARY KEY, gid INTEGER REFERENCES gen(x));\n"
-        "CREATE INDEX i ON gen(x);\n"
-        "CREATE VIEW vg AS SELECT x FROM gen;\n"
-        "DELETE FROM gen;");
+    const auto results =
+        processMultiSql("CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);\n"
+                        "CREATE TABLE child(id INTEGER PRIMARY KEY, gid INTEGER REFERENCES gen(x));\n"
+                        "CREATE INDEX i ON gen(x);\n"
+                        "CREATE VIEW vg AS SELECT x FROM gen;\n"
+                        "DELETE FROM gen;");
 
     requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
                     "#include <cstdint>\n"
@@ -858,7 +845,7 @@ TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile
         "BEGIN DELETE FROM t; END;\n"
         "CREATE TRIGGER tr_match AFTER INSERT ON t WHEN match(NEW.b, 'x') BEGIN DELETE FROM t; END;");
 
-    for(const auto& result : results) {
+    for (const auto& result: results) {
         REQUIRE(result.codegen.warnings.empty());
     }
 
@@ -929,20 +916,20 @@ TEST_CASE("generateSqliteSchemaHeader: an index over an expression compiles") {
 // of it whatever form the generator picked for it, so what tells the two apart is the statement and
 // not the text of its code.
 TEST_CASE("processMultiSql: the snippet of a batch with an index over an expression compiles") {
-    const auto results = processMultiSql(
-        "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
-        "CREATE INDEX i_expr ON t(a + 1);\n"
-        "CREATE UNIQUE INDEX u_expr ON t(b || 'x');");
+    const auto results = processMultiSql("CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
+                                         "CREATE INDEX i_expr ON t(a + 1);\n"
+                                         "CREATE UNIQUE INDEX u_expr ON t(b || 'x');");
 
-    REQUIRE(joinGeneratedCode(results) == std::string("struct T {\n"
-                                                      "    int64_t a = 0;\n"
-                                                      "    std::optional<std::string> b;\n"
-                                                      "};\n\n"
-                                                      "auto storage = make_storage(\"\",\n"
-                                                      "    make_table(\"t\",\n"
-                                                      "        make_column(\"a\", &T::a, primary_key()),\n"
-                                                      "        make_column(\"b\", &T::b)),\n"
-                                                      "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"));
+    REQUIRE(joinGeneratedCode(results) ==
+            std::string("struct T {\n"
+                        "    int64_t a = 0;\n"
+                        "    std::optional<std::string> b;\n"
+                        "};\n\n"
+                        "auto storage = make_storage(\"\",\n"
+                        "    make_table(\"t\",\n"
+                        "        make_column(\"a\", &T::a, primary_key()),\n"
+                        "        make_column(\"b\", &T::b)),\n"
+                        "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"));
 
     requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
                     "#include <cstdint>\n"
@@ -954,11 +941,10 @@ TEST_CASE("processMultiSql: the snippet of a batch with an index over an express
 }
 
 TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view compiles") {
-    const auto results = processMultiSql(
-        "CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"
-        "CREATE VIEW v1 AS SELECT a + 0x10000000000000000 AS b FROM ok1;\n"
-        "CREATE VIEW v2 AS SELECT b FROM v1;\n"
-        "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN DELETE FROM ok1; END;");
+    const auto results = processMultiSql("CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"
+                                         "CREATE VIEW v1 AS SELECT a + 0x10000000000000000 AS b FROM ok1;\n"
+                                         "CREATE VIEW v2 AS SELECT b FROM v1;\n"
+                                         "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN DELETE FROM ok1; END;");
 
     requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
                     "#include <cstdint>\n"
@@ -1008,36 +994,34 @@ TEST_CASE("generateSqliteSchemaHeader: a foreign key into a view that is left ou
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Ok1 {\n"
-            "    int64_t a = 0;\n"
-            "};\n\n"
-            "struct T {\n"
-            "    int64_t id = 0;\n"
-            "    std::optional<int64_t> r;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"ok1\",\n"
-            "        make_column(\"a\", &Ok1::a, primary_key())),\n"
-            "        make_table(\"t\",\n"
-            "        make_column(\"id\", &T::id, primary_key()),\n"
-            "        make_column(\"r\", &T::r)));\n"
-            "}\n");
-    REQUIRE(header.warnings ==
-            std::vector<CodegenWarning>{
-                {"foreign key on column 'r' references v1, which is not generated, so the generated "
-                 "table has no foreign_key()"},
-                {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"},
-                {"CREATE VIEW v1: SELECT is not supported for sqlite_orm code generation"},
-                {"CREATE VIEW `v1` is not merged into make_storage()"}});
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Ok1 {\n"
+                           "    int64_t a = 0;\n"
+                           "};\n\n"
+                           "struct T {\n"
+                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> r;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"ok1\",\n"
+                           "        make_column(\"a\", &Ok1::a, primary_key())),\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"id\", &T::id, primary_key()),\n"
+                           "        make_column(\"r\", &T::r)));\n"
+                           "}\n");
+    REQUIRE(header.warnings == std::vector<CodegenWarning>{
+                                   {"foreign key on column 'r' references v1, which is not generated, so the generated "
+                                    "table has no foreign_key()"},
+                                   {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"},
+                                   {"CREATE VIEW v1: SELECT is not supported for sqlite_orm code generation"},
+                                   {"CREATE VIEW `v1` is not merged into make_storage()"}});
     REQUIRE(header.errors.empty());
     requireCompiles(header.code);
 }
@@ -1055,24 +1039,23 @@ TEST_CASE("generateSqliteSchemaHeader: nothing that names a virtual table is mer
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct Tv {\n"
-            "    int64_t id = 0;\n"
-            "    std::optional<int64_t> r;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"tv\",\n"
-            "        make_column(\"id\", &Tv::id, primary_key()),\n"
-            "        make_column(\"r\", &Tv::r)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Tv {\n"
+                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> r;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"tv\",\n"
+                           "        make_column(\"id\", &Tv::id, primary_key()),\n"
+                           "        make_column(\"r\", &Tv::r)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"foreign key on column 'r' references ft, which is not generated, so the generated "
@@ -1100,30 +1083,30 @@ TEST_CASE("generateSqliteSchemaHeader: a trigger step with no sqlite_orm form is
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    REQUIRE(header.code ==
-            "#pragma once\n\n"
-            "#include <sqlite_orm/sqlite_orm.h>\n"
-            "#include <cstdint>\n"
-            "#include <optional>\n"
-            "#include <string>\n"
-            "#include <vector>\n\n"
-            "struct T {\n"
-            "    std::optional<int64_t> a;\n"
-            "    std::optional<std::string> b;\n"
-            "};\n\n\n"
-            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-            "    using namespace sqlite_orm;\n"
-            "    return make_storage(db_path,\n"
-            "        make_table(\"t\",\n"
-            "        make_column(\"a\", &T::a),\n"
-            "        make_column(\"b\", &T::b)),\n"
-            "        make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
-            "/* trigger step not mapped to sqlite_orm */)));\n"
-            "}\n");
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b)),\n"
+                           "        make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
+                           "/* trigger step not mapped to sqlite_orm */)));\n"
+                           "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"a `*` result column next to other result columns is not mapped to sqlite_orm select(...)",
-                 SourceLocation{1, 60}, 18},
+                 SourceLocation{1, 60},
+                 18},
                 {"a statement in the trigger body is not mapped to sqlite_orm codegen", SourceLocation{1, 60}, 18}});
     REQUIRE(header.errors.empty());
 }

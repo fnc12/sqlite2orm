@@ -173,8 +173,7 @@ namespace sqlite2orm {
 
     bool endsWith(std::string_view text, std::string_view suffix);
     /** The `...` of `auto <variableName> = storage.select(...);`, if `generated` has exactly that form. */
-    std::optional<std::string> extractStorageSelectArgument(std::string_view generated,
-                                                            std::string_view variableName);
+    std::optional<std::string> extractStorageSelectArgument(std::string_view generated, std::string_view variableName);
     std::string stripStoragePrefixAndTrailingSemicolon(std::string code);
 
     std::string blobToCpp(std::string_view blobLiteral);
@@ -268,7 +267,9 @@ namespace sqlite2orm {
      *  each leaves the generated code compiling and already carries the warning saying why the
      *  statement generated nothing.
      */
-    CodeGenResult unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode,
+    CodeGenResult unsupportedPlaceholder(std::string_view label,
+                                         std::string message,
+                                         const AstNode& astNode,
                                          CodeGenResult carried = {});
     /** A placeholder's message built from the placeholder text itself. */
     using PlaceholderMessage = std::function<std::string(const std::string& placeholder)>;
@@ -277,8 +278,10 @@ namespace sqlite2orm {
      *  `/*` … `*\/` the placeholder generates, so that the shape of a placeholder stays known to
      *  this one function and a caller cannot spell a second one of its own.
      */
-    CodeGenResult unsupportedPlaceholder(std::string_view label, const PlaceholderMessage& message,
-                                         const AstNode& astNode, CodeGenResult carried = {});
+    CodeGenResult unsupportedPlaceholder(std::string_view label,
+                                         const PlaceholderMessage& message,
+                                         const AstNode& astNode,
+                                         CodeGenResult carried = {});
     /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.

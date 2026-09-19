@@ -192,6 +192,19 @@ namespace sqlite2orm {
             columnParts += part;
         }
 
+        // The WHERE of a partial index is generated before it is decided whether the index has a form
+        // at all, so an index that is left out still reports what its clause decides and warns about,
+        // the way an indexed column of the same index does.
+        std::string whereArgument;
+        if(createIndex.whereClause) {
+            auto whereResult = this->coordinator.generateNode(*createIndex.whereClause);
+            decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(whereResult.decisionPoints.begin()),
+                       std::make_move_iterator(whereResult.decisionPoints.end()));
+            warnings.insert(warnings.end(), std::make_move_iterator(whereResult.warnings.begin()),
+                           std::make_move_iterator(whereResult.warnings.end()));
+            whereArgument = ", where(" + whereResult.code + ")";
+        }
+
         if(!firstColumnNamesTable && createIndex.unique) {
             // `make_unique_index` takes the table as a defaulted template parameter behind its
             // argument pack, which leaves no way to spell it out, so there is no form of this index.
@@ -205,16 +218,8 @@ namespace sqlite2orm {
 
         // An index that does not start with a column names the table it indexes itself.
         std::string tableTypeArgument = firstColumnNamesTable ? "" : "<" + tableStruct + ">";
-        std::string code = functionName + tableTypeArgument + "(" + indexLiteral + ", " + columnParts;
-        if(createIndex.whereClause) {
-            auto whereResult = this->coordinator.generateNode(*createIndex.whereClause);
-            decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(whereResult.decisionPoints.begin()),
-                       std::make_move_iterator(whereResult.decisionPoints.end()));
-            warnings.insert(warnings.end(), std::make_move_iterator(whereResult.warnings.begin()),
-                           std::make_move_iterator(whereResult.warnings.end()));
-            code += ", where(" + whereResult.code + ")";
-        }
-        code += ");";
+        std::string code =
+            functionName + tableTypeArgument + "(" + indexLiteral + ", " + columnParts + whereArgument + ");";
 
         this->context.structName = savedStruct;
         return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};

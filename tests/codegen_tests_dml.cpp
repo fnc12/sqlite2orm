@@ -244,6 +244,27 @@ TEST_CASE("codegen: CREATE UNIQUE INDEX over an expression is not generated") {
     REQUIRE(codeGenResult == expected);
 }
 
+// A UNIQUE index that is left out still reports what every slot of it decides and warns about: the
+// clause of a partial index is generated before it is decided whether the index has a form at all.
+// Reporting only the slots ahead of the bail-out made the same COLLATE silent in the WHERE while it
+// was reported from an indexed column. SQLite takes this index (`PRAGMA index_info` answers -2 for
+// its only column, an expression), checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE UNIQUE INDEX over an expression still reports its partial WHERE") {
+    std::vector<DecisionPoint> decisionPoints = expectedBinaryLeaf("&T::a", "1", " + ", "add").decisionPoints;
+    decisionPoints.push_back(columnRefStyleDp(3, "&T::a"));
+    const CodeGenResult expected{
+        "",
+        std::move(decisionPoints),
+        {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs from "
+         "serialized output",
+         "COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen",
+         "UNIQUE index u starts with an expression: sqlite_orm deduces the table an index is made for from its "
+         "first indexed column, and make_unique_index has no form that spells that table out, so the index is "
+         "not generated"}};
+    const CodeGenResult codeGenResult = generateFull("CREATE UNIQUE INDEX u ON t (a + 1) WHERE a COLLATE NOCASE");
+    REQUIRE(codeGenResult == expected);
+}
+
 TEST_CASE("codegen: CREATE INDEX without IF NOT EXISTS warns") {
     const CodeGenResult expected{
         "make_index(\"j\", indexed_column(&Users::name));",

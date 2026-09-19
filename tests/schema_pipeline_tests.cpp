@@ -919,6 +919,21 @@ TEST_CASE("sqliteSchemaResultToJson: a table that generates nothing reports no c
     REQUIRE(generateSqliteSchemaHeader(schema).comments == std::vector<std::string>{});
 }
 
+// The header assembles a table from its `CreateTableParts`, a channel of its own next to the
+// per-statement one, so the comments a table's clauses record have to be taken there too: the
+// `table_mapping_style` decision point the parts also carry is not the only thing on them.
+TEST_CASE("generateSqliteSchemaHeader: a comment from a table clause reaches the header") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (a INTEGER CHECK(-a > 0));");
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(generateSqliteSchemaHeader(schema).comments ==
+            std::vector<std::string>{
+                "Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong result "
+                "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
+                "computes for `-expr` — same value and same typeof for every operand kind."});
+}
+
 // The view path of the same rule: SQLite stores a body holding that literal and refuses every query
 // against it, so the view is not generated although its SELECT list generated the negation.
 TEST_CASE("sqliteSchemaResultToJson: a view that generates nothing reports no comment") {

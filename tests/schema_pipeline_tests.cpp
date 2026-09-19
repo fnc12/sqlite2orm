@@ -813,6 +813,88 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
                     joinGeneratedCode(results));
 }
 
+// `make_index` deduces the table an index is made for from its first argument, and an expression
+// names none, so an index over one spells the table out. Before it did, every header of a database
+// holding an index over an expression — `CREATE INDEX i_expr ON t(a + 1)`, which SQLite takes and
+// stores — failed to compile as a whole: `no matching function for call to make_index(const
+// char[7], indexed_column_t<...>)`. `make_unique_index` has no parameter to spell it out with, so a
+// UNIQUE index over an expression is left out of the storage instead. Checked against sqlite3 3.51.0.
+TEST_CASE("generateSqliteSchemaHeader: an index over an expression compiles") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT);"
+            "CREATE INDEX i_expr ON t (a + 1);"
+            "CREATE UNIQUE INDEX u_expr ON t (b || 'x');"
+            "CREATE INDEX i_col ON t (b);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == std::string("#pragma once\n\n"
+                                       "#include <sqlite_orm/sqlite_orm.h>\n"
+                                       "#include <cstdint>\n"
+                                       "#include <optional>\n"
+                                       "#include <string>\n"
+                                       "#include <vector>\n\n"
+                                       "struct T {\n"
+                                       "    int64_t a = 0;\n"
+                                       "    std::optional<std::string> b;\n"
+                                       "};\n\n\n"
+                                       "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                                       "    using namespace sqlite_orm;\n"
+                                       "    return make_storage(db_path,\n"
+                                       "        make_table(\"t\",\n"
+                                       "        make_column(\"a\", &T::a, primary_key()),\n"
+                                       "        make_column(\"b\", &T::b)),\n"
+                                       "        make_index(\"i_col\", indexed_column(&T::b)),\n"
+                                       "        make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"
+                                       "}\n"));
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                "sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                "from serialized output",
+                "sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                "from serialized output",
+                "sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                "from serialized output",
+                "UNIQUE index u_expr starts with an expression: sqlite_orm deduces the table an index is made for "
+                "from its first indexed column, and make_unique_index has no form that spells that table out, so "
+                "the index is not generated",
+                "CREATE INDEX `u_expr` is not merged into make_storage()"});
+
+    requireCompiles(header.code);
+}
+
+// The snippet path joins what it generated into one make_storage(), and an index is a bare argument
+// of it whatever form the generator picked for it, so what tells the two apart is the statement and
+// not the text of its code.
+TEST_CASE("processMultiSql: the snippet of a batch with an index over an expression compiles") {
+    const auto results = processMultiSql(
+        "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
+        "CREATE INDEX i_expr ON t(a + 1);\n"
+        "CREATE UNIQUE INDEX u_expr ON t(b || 'x');");
+
+    REQUIRE(joinGeneratedCode(results) == std::string("struct T {\n"
+                                                      "    int64_t a = 0;\n"
+                                                      "    std::optional<std::string> b;\n"
+                                                      "};\n\n"
+                                                      "auto storage = make_storage(\"\",\n"
+                                                      "    make_table(\"t\",\n"
+                                                      "        make_column(\"a\", &T::a, primary_key()),\n"
+                                                      "        make_column(\"b\", &T::b)),\n"
+                                                      "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"));
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view compiles") {
     const auto results = processMultiSql(
         "CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"

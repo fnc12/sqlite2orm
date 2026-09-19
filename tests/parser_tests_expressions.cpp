@@ -430,6 +430,40 @@ TEST_CASE("parser: NOT binds tighter than AND") {
         {}));
 }
 
+// Prefix NOT is weaker than every binary operator in SQLite, AND and OR aside. Checked against
+// sqlite3 3.51: `SELECT NOT (7 IS NULL) + 1` answers 0 — NOT ((7 IS NULL) + 1) — and
+// `SELECT NOT 1 IN (0, 1)` answers 0 — NOT (1 IN (0, 1)).
+TEST_CASE("parser: NOT is weaker than arithmetic") {
+    auto parseResult = parse("NOT a + 1");
+    REQUIRE(requireNode<UnaryOperatorNode>(parseResult) == UnaryOperatorNode(
+        UnaryOperator::logicalNot,
+        std::make_unique<BinaryOperatorNode>(BinaryOperator::add,
+            makeNode<ColumnRefNode>("a"), makeNode<IntegerLiteralNode>("1"), SourceLocation{}),
+        {}));
+}
+
+TEST_CASE("parser: NOT is weaker than the '=' level") {
+    auto parseResult = parse("NOT (a IS NULL) + 1");
+    REQUIRE(requireNode<UnaryOperatorNode>(parseResult) == UnaryOperatorNode(
+        UnaryOperator::logicalNot,
+        std::make_unique<BinaryOperatorNode>(BinaryOperator::add,
+            std::make_unique<IsNullNode>(makeNode<ColumnRefNode>("a"), SourceLocation{}),
+            makeNode<IntegerLiteralNode>("1"), SourceLocation{}),
+        {}));
+}
+
+TEST_CASE("parser: NOT is weaker than IN") {
+    auto parseResult = parse("NOT a IN (1, 2)");
+    std::vector<AstNodePointer> values;
+    values.push_back(makeNode<IntegerLiteralNode>("1"));
+    values.push_back(makeNode<IntegerLiteralNode>("2"));
+    REQUIRE(requireNode<UnaryOperatorNode>(parseResult) == UnaryOperatorNode(
+        UnaryOperator::logicalNot,
+        std::make_unique<InNode>(makeNode<ColumnRefNode>("a"), std::move(values), nullptr, false,
+                                 SourceLocation{}),
+        {}));
+}
+
 TEST_CASE("parser: IS NULL") {
     auto parseResult = parse("a IS NULL");
     REQUIRE(requireNode<IsNullNode>(parseResult) == IsNullNode(
@@ -807,6 +841,44 @@ TEST_CASE("parser: IS NOT DISTINCT FROM") {
         makeNode<ColumnRefNode>("b"), SourceLocation{}), ""}};
     expected.fromClause = fromOne("t");
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+// SQLite parses IS / IS NOT on the '=' level with NULL as an ordinary right operand, so the
+// operand keeps parsing every tighter operator. Checked against sqlite3 3.51:
+// `SELECT 7 IS NULL - 1` answers 0 (7 IS (NULL - 1)), `SELECT 7 IS NOT NULL - 1` answers 1.
+TEST_CASE("parser: IS NULL is not an atomic postfix") {
+    auto parseResult = parse("a IS NULL - 1");
+    REQUIRE(requireNode<BinaryOperatorNode>(parseResult) == BinaryOperatorNode(
+        BinaryOperator::isOp,
+        makeNode<ColumnRefNode>("a"),
+        std::make_unique<BinaryOperatorNode>(BinaryOperator::subtract,
+            makeNode<NullLiteralNode>(), makeNode<IntegerLiteralNode>("1"), SourceLocation{}),
+        {}));
+}
+
+TEST_CASE("parser: IS NOT NULL is not an atomic postfix") {
+    auto parseResult = parse("a IS NOT NULL - 1");
+    REQUIRE(requireNode<BinaryOperatorNode>(parseResult) == BinaryOperatorNode(
+        BinaryOperator::isNot,
+        makeNode<ColumnRefNode>("a"),
+        std::make_unique<BinaryOperatorNode>(BinaryOperator::subtract,
+            makeNode<NullLiteralNode>(), makeNode<IntegerLiteralNode>("1"), SourceLocation{}),
+        {}));
+}
+
+TEST_CASE("parser: IS NULL keeps the '=' level to its left") {
+    auto parseResult = parse("a + 1 IS NULL");
+    REQUIRE(requireNode<IsNullNode>(parseResult) == IsNullNode(
+        std::make_unique<BinaryOperatorNode>(BinaryOperator::add,
+            makeNode<ColumnRefNode>("a"), makeNode<IntegerLiteralNode>("1"), SourceLocation{}),
+        {}));
+}
+
+TEST_CASE("parser: IS NULL is left-associative with itself") {
+    auto parseResult = parse("a IS NULL IS NULL");
+    REQUIRE(requireNode<IsNullNode>(parseResult) == IsNullNode(
+        std::make_unique<IsNullNode>(makeNode<ColumnRefNode>("a"), SourceLocation{}),
+        {}));
 }
 
 // --- COLLATE ---

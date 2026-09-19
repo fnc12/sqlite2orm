@@ -119,10 +119,6 @@ namespace sqlite2orm {
             advanceToken();
             if(check(TokenType::kwNot)) {
                 advanceToken();
-                if(check(TokenType::kwNull)) {
-                    advanceToken();
-                    return std::make_unique<IsNotNullNode>(std::move(left), location);
-                }
                 if(check(TokenType::kwDistinct) && peekToken(1).type == TokenType::kwFrom) {
                     advanceToken();
                     advanceToken();
@@ -131,14 +127,15 @@ namespace sqlite2orm {
                     return std::make_unique<BinaryOperatorNode>(
                         BinaryOperator::isNotDistinctFrom, std::move(left), std::move(right), location);
                 }
+                // SQLite parses IS NOT as a binary operator on the '=' level: NULL is an ordinary
+                // right operand, so `x IS NOT NULL - 1` groups as `x IS NOT (NULL - 1)`.
                 auto right = parseBinaryExpression(3);
                 if(!right) return nullptr;
+                if(dynamic_cast<const NullLiteralNode*>(right.get())) {
+                    return std::make_unique<IsNotNullNode>(std::move(left), location);
+                }
                 return std::make_unique<BinaryOperatorNode>(
                     BinaryOperator::isNot, std::move(left), std::move(right), location);
-            }
-            if(check(TokenType::kwNull)) {
-                advanceToken();
-                return std::make_unique<IsNullNode>(std::move(left), location);
             }
             if(check(TokenType::kwDistinct) && peekToken(1).type == TokenType::kwFrom) {
                 advanceToken();
@@ -150,6 +147,9 @@ namespace sqlite2orm {
             }
             auto right = parseBinaryExpression(3);
             if(!right) return nullptr;
+            if(dynamic_cast<const NullLiteralNode*>(right.get())) {
+                return std::make_unique<IsNullNode>(std::move(left), location);
+            }
             return std::make_unique<BinaryOperatorNode>(
                 BinaryOperator::isOp, std::move(left), std::move(right), location);
         }
@@ -252,7 +252,9 @@ namespace sqlite2orm {
         if(current().type == TokenType::kwNot) {
             auto location = current().location;
             advanceToken();
-            auto operand = parsePrimary();
+            // Prefix NOT is weaker than every binary operator in SQLite (only AND and OR are
+            // weaker still), so its operand swallows everything down to the '=' level.
+            auto operand = parseBinaryExpression(2);
             if(!operand) return nullptr;
             return std::make_unique<UnaryOperatorNode>(UnaryOperator::logicalNot, std::move(operand), location);
         }

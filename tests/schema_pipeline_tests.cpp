@@ -728,6 +728,8 @@ TEST_CASE("generateSqliteSchemaHeader: targeting C++26 merges reflected tables")
 #include <string>
 #include <vector>
 
+using namespace sqlite_orm;
+
 struct [[= "t"_orm_name]] T {
     [[= primary_key()]] int64_t id = 0;
     std::optional<std::string> name;
@@ -744,6 +746,102 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
     REQUIRE(header.decisionPoints.at(0).category == "table_mapping_style");
     REQUIRE(header.decisionPoints.at(0).chosenValue == "reflection");
     REQUIRE(header.warnings.empty());
+    REQUIRE(header.errors.empty());
+}
+
+// The names inside an annotation get unqualified lookup where the struct is written, and the
+// literal operator of `[[= "t"_orm_name]]` gets nothing else at all — not even ADL — so a header
+// whose structs are annotated declares sqlite_orm's names in front of them, as upstream's own
+// reflection tests do. Answering the decision point with the classical mapping takes the
+// annotations away, and the directive goes with them: a header of plain structs is left as it was.
+TEST_CASE("generateSqliteSchemaHeader: an explicit make_table policy leaves the header unannotated") {
+    auto pipelines = processMultiSql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);");
+    REQUIRE(pipelines.size() == 1);
+    REQUIRE(pipelines[0].ok());
+
+    ProcessSqliteSchemaResult schema;
+    for (auto& p: pipelines) {
+        SchemaStatementResult s;
+        s.meta.type = "table";
+        s.pipeline = std::move(p);
+        schema.statements.push_back(std::move(s));
+    }
+
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "make_table";
+    const CodeGenResult header = generateSqliteSchemaHeader(schema, &policy);
+    REQUIRE(header.code == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct T {
+    int64_t id = 0;
+    std::optional<std::string> name;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("t",
+        make_column("id", &T::id, primary_key()),
+        make_column("name", &T::name)));
+}
+)");
+    REQUIRE(header.decisionPoints.size() == 1);
+    REQUIRE(header.decisionPoints.at(0).chosenValue == "make_table");
+    REQUIRE(header.warnings.empty());
+    REQUIRE(header.errors.empty());
+}
+
+// A view has no classical form at all — sqlite_orm maps every one of them by reflection — so its
+// struct carries an annotation whatever standard the header targets, and the directive comes with
+// it even when the tables around it are mapped classically.
+TEST_CASE("generateSqliteSchemaHeader: a view makes the header declare sqlite_orm's names") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, age INTEGER);"
+            "CREATE VIEW adults AS SELECT id FROM users WHERE age >= 18;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace sqlite_orm;
+
+struct Users {
+    int64_t id = 0;
+    std::optional<int64_t> age;
+};
+
+struct [[= "adults"_orm_name]] Adults {
+    int64_t id = 0;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("users",
+        make_column("id", &Users::id, primary_key()),
+        make_column("age", &Users::age)),
+        make_view<Adults>(select(&Users::id, where(c(&Users::age) >= 18))));
+}
+)");
     REQUIRE(header.errors.empty());
 }
 

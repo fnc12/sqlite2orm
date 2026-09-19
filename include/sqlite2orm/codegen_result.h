@@ -89,6 +89,13 @@ namespace sqlite2orm {
         std::vector<CodegenWarning> warnings;
         /** Optional hints for the generated table (deduplicated when merging a whole schema). */
         std::vector<std::string> comments;
+        /**
+         *  Whether `structDeclaration` is the reflected form, i.e. whether it carries sqlite_orm
+         *  annotations. Whoever places the declaration has to know: the names inside an annotation
+         *  get unqualified lookup at the point of the struct, not inside whatever function uses the
+         *  mapping, so such a struct needs sqlite_orm's names visible where it is written.
+         */
+        bool structIsReflected = false;
     };
 
     struct CreateViewParts {

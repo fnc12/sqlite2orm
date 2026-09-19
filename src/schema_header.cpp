@@ -184,6 +184,14 @@ namespace sqlite2orm {
                    "#include <string>\n"
                    "#include <vector>\n\n";
 
+            // The struct declarations are collected apart from the rest of the header because what
+            // has to stand in front of them is only known once they are all generated: a reflected
+            // struct carries sqlite_orm annotations, and the names inside an annotation are looked
+            // up where the struct is written — at namespace scope, which the using-directive inside
+            // make_sqlite_schema_storage() below does not reach.
+            std::ostringstream declarations;
+            bool declarationsCarryAnnotations = false;
+
             std::vector<std::string> storageArgs;
             std::vector<DecisionPoint> allDecisionPoints;
             std::vector<CodegenWarning> allWarnings;
@@ -238,7 +246,8 @@ namespace sqlite2orm {
                                           "` is not merged into make_storage()");
                     continue;
                 }
-                oss << parts.structDeclaration << "\n";
+                declarations << parts.structDeclaration << "\n";
+                declarationsCarryAnnotations = declarationsCarryAnnotations || parts.structIsReflected;
                 storageArgs.push_back(parts.makeTableExpression);
             }
 
@@ -305,7 +314,10 @@ namespace sqlite2orm {
                                               "` is not merged into make_storage()");
                         continue;
                     }
-                    oss << viewParts.structDeclaration << "\n";
+                    // A view has no classical form at all: sqlite_orm maps every one of them by
+                    // reflection, so its struct always carries the `[[= "…"_orm_name]]` annotation.
+                    declarations << viewParts.structDeclaration << "\n";
+                    declarationsCarryAnnotations = true;
                     storageArgs.push_back(viewParts.makeViewExpression);
                     continue;
                 }
@@ -332,6 +344,15 @@ namespace sqlite2orm {
                     storageArgs.push_back(storageArgLine);
                 }
             }
+
+            if (declarationsCarryAnnotations) {
+                // Unqualified lookup is all an annotation gets, and a literal operator
+                // (`"users"_orm_name`) gets nothing else at all — not even ADL. This is how
+                // sqlite_orm's own reflection tests spell it, above the annotated struct. A header
+                // holding no annotated struct is left byte for byte as it was.
+                oss << "using namespace sqlite_orm;\n\n";
+            }
+            oss << declarations.str();
 
             oss << "\ninline auto make_sqlite_schema_storage(const std::string& db_path) {\n";
             oss << "    using namespace sqlite_orm;\n";

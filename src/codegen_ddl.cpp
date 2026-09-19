@@ -1520,6 +1520,7 @@ namespace sqlite2orm {
                 structDeclaration = std::move(reflectedStructDeclaration);
                 makeExpression = std::move(reflectedMakeExpression);
                 parts.comments.push_back(kCommentTableReflection);
+                parts.structIsReflected = true;
             }
         }
 

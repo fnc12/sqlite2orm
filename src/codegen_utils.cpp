@@ -116,9 +116,11 @@ namespace sqlite2orm {
             return false;
         }
         // Everything a numeric literal is spelled with: the digits and hex letters, the radix and
-        // exponent markers, an exponent's sign, the digit separator and the integer/floating-point
-        // suffixes. A call, a string or an operator brings a character that is none of them.
-        static constexpr std::string_view kNumericLiteralCharacters = "0123456789abcdefABCDEF.xXpP+-'_LlUuFf";
+        // exponent markers, an exponent's sign, the digit separator `'` and the integer/floating-point
+        // suffixes. A call, a string or an operator brings a character that is none of them — and so
+        // does `_`, which outside a user-defined-literal suffix is no part of a numeric literal at
+        // all (SQLite's own separator is rewritten to `'` long before a default gets here).
+        static constexpr std::string_view kNumericLiteralCharacters = "0123456789abcdefABCDEF.xXpP+-'LlUuFf";
         return body.find_first_not_of(kNumericLiteralCharacters) == std::string_view::npos;
     }
 

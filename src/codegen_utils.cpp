@@ -346,6 +346,15 @@ namespace sqlite2orm {
         "is neither negatable nor an operator argument, so a second NOT over it does not compile. The "
         "CAST leaves what the inner NOT stands for alone: it is 0, 1 or NULL, and a CAST to INTEGER "
         "keeps all three.";
+
+    const std::string kCommentConcatenationCast =
+        "A NOT over a concatenation is generated as `not cast<double>(…)`: sqlite_orm's `conc_t` is "
+        "`binary_operator<L, R, conc_string>` and nothing else — neither negatable nor an operator "
+        "argument — so `not (c(&T::a) || \"x\")` does not compile. A concatenation answers TEXT or "
+        "NULL, and SQLite reads the truth of a text value through its real value: `NOT ('0' || '.5')` "
+        "is 0, where `NOT CAST('0' || '.5' AS INTEGER)` is 1. A CAST to REAL parses the text exactly "
+        "as that truth test does, so `NOT x` and `NOT CAST(x AS REAL)` answer alike.";
+
     const std::string kCommentBitwiseResultCast =
         "A bitwise result column is generated as `cast<int64_t>(expr)`: sqlite_orm types `&`, `|`, "
         "`<<`, `>>` and `~` as `int`, so a result outside the int32 range comes back truncated "
@@ -940,6 +949,40 @@ namespace sqlite2orm {
         return lineBreak == std::string_view::npos ? sourceText.size() : lineBreak;
     }
 
+    CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
+        if (astNode.sourceSpan.text.empty()) {
+            return CodegenWarning{std::move(message)};
+        }
+        return CodegenWarning{std::move(message),
+                              astNode.sourceSpan.location,
+                              underlineLengthOf(astNode.sourceSpan.text)};
+    }
+
+    namespace {
+
+        /** The `/*` … `*\/` placeholder text a funnelled placeholder generates for `label`. */
+        std::string placeholderCode(std::string_view label) {
+            return "/* " + std::string(label) + " */";
+        }
+
+    }  // namespace
+
+    CodeGenResult
+    unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode, CodeGenResult carried) {
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
+        return carried;
+    }
+
+    CodeGenResult unsupportedPlaceholder(std::string_view label,
+                                         const PlaceholderMessage& message,
+                                         const AstNode& astNode,
+                                         CodeGenResult carried) {
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(message(carried.code), astNode));
+        return carried;
+    }
+
     std::string numericLiteralSqlText(const AstNode& value) {
         std::size_t foldedSigns = 0;
         const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, foldedSigns));
@@ -1331,6 +1374,11 @@ namespace sqlite2orm {
             return match->negated;
         }
         return false;
+    }
+
+    bool generatesConcatenation(const AstNode& astNode) {
+        auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(astNode));
+        return binaryOperator != nullptr && binaryOperator->binaryOperator == BinaryOperator::concatenate;
     }
 
     bool isLeafNode(const AstNode& astNode) {

@@ -387,6 +387,50 @@ TEST_CASE("parser: error on OFFSET without a value") {
     REQUIRE(parseResult.errors.size() == 1);
 }
 
+// A result column with no expression is the bare `*`, which SQLite also allows next to other
+// columns (`SELECT *, a FROM t` answers with every column of `t` and then `a` again).
+TEST_CASE("parser: SELECT with a star next to another result column") {
+    auto parseResult = parse("SELECT *, name FROM users");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{nullptr, ""}, SelectColumn{makeSharedNode<ColumnRefNode>("name"), ""}};
+    expected.fromClause = fromOne("users");
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+// sqlite3 refuses a result list that ends on a comma (`near ";": syntax error`), and letting it
+// through would leave a result column standing for nothing — which is how the bare `*` is spelled.
+TEST_CASE("parser: error on a result list ending on a comma") {
+    auto parseResult = parse("SELECT 1,");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+// The clauses that take an expression all refuse a missing one, the way sqlite3 does.
+TEST_CASE("parser: error on WHERE without an expression") {
+    auto parseResult = parse("SELECT a FROM users WHERE");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on GROUP BY without a term") {
+    auto parseResult = parse("SELECT a FROM users GROUP BY");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on GROUP BY ending on a comma") {
+    auto parseResult = parse("SELECT a FROM users GROUP BY a,");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on HAVING without an expression") {
+    auto parseResult = parse("SELECT a FROM users GROUP BY a HAVING");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
 // --- GROUP BY ---
 
 TEST_CASE("parser: SELECT with GROUP BY") {

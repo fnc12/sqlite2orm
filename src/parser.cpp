@@ -67,6 +67,9 @@ namespace sqlite2orm {
     ParseResult Parser::parse(std::vector<Token> tokens) {
         this->tokenStream.reset(std::move(tokens));
 
+        // The statement's own span, recorded here because only this function sees where it began;
+        // the terminating semicolon is left to the caller, so it stays out of the span.
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
         AstNodePointer astNodePointer;
         if (this->tokenStream.check(TokenType::kwCreate)) {
             astNodePointer = this->ddlParser->parseCreate();
@@ -119,6 +122,8 @@ namespace sqlite2orm {
                                            token.location,
                                            keywordTypoSuggestion(token.value)}}};
         }
+
+        astNodePointer->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
 
         if (!this->tokenStream.atEnd()) {
             const Token& token = this->tokenStream.current();

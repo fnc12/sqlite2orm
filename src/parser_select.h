@@ -19,7 +19,12 @@ namespace sqlite2orm {
         AstNodePointer parseSelectCompoundBody();
         AstNodePointer parseCompoundSelectCore();
         AstNodePointer parseSelectCore();
-        SelectColumn parseSelectResultColumn();
+        /**
+         *  One result column, or nothing when no expression stands where one is required — a
+         *  trailing comma in the result list, which SQLite refuses as a syntax error. A parsed
+         *  column with no expression is the bare `*`.
+         */
+        std::optional<SelectColumn> parseSelectResultColumn();
         std::vector<FromClauseItem> parseFromClause();
         FromTableClause parseFromTableItem();
         bool consumeJoinOperator(JoinKind& out);

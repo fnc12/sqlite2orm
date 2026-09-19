@@ -956,6 +956,69 @@ TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQ
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
 }
 
+// sqlite_orm spells `or` and the concatenation with the same `operator||`, and picks between them
+// by the operands, so an OR over operands that are no conditions is generated as the `or_(…)` call
+// — an `or_condition_t` either way, which sqlite_orm negates. The `conc_t` the operator spelling
+// used to build is not negatable, so a NOT over an OR did not compile at all. A NOT over one still
+// carries the CAST every `negated_condition_t` needs under a second NOT. Expected values checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7.
+TEST_CASE("runtime: a NOT over an OR returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a OR 0);"),
+        generate("SELECT NOT (0 OR 0);"),
+        generate("SELECT NOT (NULL OR 0);"),
+        generate("SELECT NOT (NULL OR 1);"),
+        generate("SELECT NOT ('a' OR 0);"),
+        generate("SELECT NOT (a = 7 OR 0);"),
+        generate("SELECT NOT NOT (a OR 0);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(not (or_(&User::a, 0))));",
+                              "auto rows = storage.select(not (or_(0, 0)));",
+                              "auto rows = storage.select(as_optional(not (or_(nullptr, 0))));",
+                              "auto rows = storage.select(as_optional(not (or_(nullptr, 1))));",
+                              "auto rows = storage.select(not (or_(\"a\", 0)));",
+                              "auto rows = storage.select(as_optional(not (c(&User::a) == 7 or 0)));",
+                              "auto rows = storage.select(as_optional(not cast<int64_t>(not (or_(&User::a, 0)))));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "1", "NULL", "0", "1", "0", "1"});
+}
+
+// A concatenation under a NOT is delimited with a CAST to REAL, and REAL is the only type that
+// reproduces what SQLite answers: a concatenation gives TEXT (or NULL), and SQLite reads the truth
+// of a text value through its real value, so `NOT ('0' || '.5')` is 0 where
+// `NOT CAST('0' || '.5' AS INTEGER)` is 1. Expected values checked against sqlite3 3.51 and the
+// linked libsqlite3 3.45.1 over `users(a TEXT)` holding one row with a = '0'; the two agree on
+// every one of 2032 text values for `NOT x` against `NOT CAST(x AS REAL)`.
+TEST_CASE("runtime: a NOT over a concatenation returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a || '.5');"),
+        generate("SELECT NOT (a || '');"),
+        generate("SELECT NOT (a || '1');"),
+        generate("SELECT NOT ('abc' || 'd');"),
+        generate("SELECT NOT ('1' || '2');"),
+        generate("SELECT NOT (NULL || 'x');"),
+        generate("SELECT NOT (a || 'e-400');"),
+        generate("SELECT NOT ((a IS NULL) || '5');"),
+        generate("SELECT NOT NOT (a || '.5');"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \".5\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"1\")));",
+                "auto rows = storage.select(not cast<double>(c(\"abc\") || \"d\"));",
+                "auto rows = storage.select(not cast<double>(c(\"1\") || \"2\"));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(nullptr) || \"x\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"e-400\")));",
+                "auto rows = storage.select(not cast<double>(cast<int64_t>(is_null(&User::a)) || \"5\"));",
+                "auto rows = storage.select(as_optional(not cast<int64_t>(not cast<double>(c(&User::a) || "
+                "\".5\"))));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", "\"0\"") ==
+            std::vector<std::string>{"0", "1", "0", "1", "0", "NULL", "1", "0", "1"});
+}
+
 // sqlite_orm types a BETWEEN, an IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for,
 // and a call of a built-in function the return type that function declares, so a NULL row reached
 // the caller as false / "" / 0 — silently, with the serialized SQL right. `as_optional` keeps the

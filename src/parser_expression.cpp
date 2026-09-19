@@ -84,6 +84,10 @@ namespace sqlite2orm {
     }
 
     AstNodePointer ExpressionParser::parseBinaryExpression(int minPrecedence) {
+        // Every node this loop builds stands for the operand it started on together with what has
+        // been read since, so each one takes its span from here rather than from the operator token
+        // it is located at.
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
         auto left = parsePrimary();
         if (!left)
             return nullptr;
@@ -102,6 +106,7 @@ namespace sqlite2orm {
                                                             std::move(left),
                                                             std::move(right),
                                                             location);
+                left->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
                 continue;
             }
 
@@ -113,6 +118,7 @@ namespace sqlite2orm {
                 std::string collation(current().value);
                 advanceToken();
                 left = std::make_unique<CollateNode>(std::move(left), std::move(collation), collateLoc);
+                left->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
                 continue;
             }
 
@@ -120,6 +126,7 @@ namespace sqlite2orm {
                 auto special = tryParseSpecialPostfix(left);
                 if (special) {
                     left = std::move(special);
+                    left->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
                     continue;
                 }
             }
@@ -302,6 +309,15 @@ namespace sqlite2orm {
     }
 
     AstNodePointer ExpressionParser::parsePrimary() {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
+        auto node = parsePrimaryCore();
+        if (node) {
+            node->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        }
+        return node;
+    }
+
+    AstNodePointer ExpressionParser::parsePrimaryCore() {
         if (current().type == TokenType::kwNot) {
             auto location = current().location;
             advanceToken();

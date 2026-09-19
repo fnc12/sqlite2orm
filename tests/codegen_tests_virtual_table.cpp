@@ -64,13 +64,19 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 non-column args stub") {
     const CodeGenResult expected{
         "/* CREATE VIRTUAL TABLE: fts5 (unmapped arguments) */",
         {},
-        {"FTS5 module arguments that are not plain column names cannot be mapped to sqlite_orm::using_fts5()"}};
+        {CodegenWarning{
+            "FTS5 module arguments that are not plain column names cannot be mapped to sqlite_orm::using_fts5()",
+            SourceLocation{1, 49},
+            12}}};
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS f USING fts5(lower(title))") == expected);
 }
 
 TEST_CASE("codegen: unknown virtual table module") {
-    const CodeGenResult expected{"/* CREATE VIRTUAL TABLE: unknown module */",
-                                 {},
-                                 {"virtual table module \"noop\" has no sqlite_orm mapping in sqlite2orm codegen"}};
+    const CodeGenResult expected{
+        "/* CREATE VIRTUAL TABLE: unknown module */",
+        {},
+        {CodegenWarning{"virtual table module \"noop\" has no sqlite_orm mapping in sqlite2orm codegen",
+                        SourceLocation{1, 1},
+                        47}}};
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS z USING noop") == expected);
 }

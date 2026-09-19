@@ -1,5 +1,7 @@
 #include <sqlite2orm/token_stream.h>
 
+#include <algorithm>
+
 namespace sqlite2orm {
 
     void TokenStream::reset(std::vector<Token> newTokens) {
@@ -25,6 +27,23 @@ namespace sqlite2orm {
             ++this->position;
         }
         return token;
+    }
+
+    SourceSpan TokenStream::consumedSpanFrom(size_t firstTokenIndex) const {
+        size_t lastTokenIndex = std::min(this->position, this->tokens.size());
+        while (lastTokenIndex > firstTokenIndex && this->tokens.at(lastTokenIndex - 1).value.empty()) {
+            --lastTokenIndex;
+        }
+        if (lastTokenIndex <= firstTokenIndex || firstTokenIndex >= this->tokens.size()) {
+            return SourceSpan{};
+        }
+        const Token& first = this->tokens.at(firstTokenIndex);
+        const Token& last = this->tokens.at(lastTokenIndex - 1);
+        if (first.value.empty()) {
+            return SourceSpan{};
+        }
+        const size_t length = static_cast<size_t>(last.value.data() + last.value.size() - first.value.data());
+        return SourceSpan{first.location, std::string_view(first.value.data(), length)};
     }
 
     bool TokenStream::atEnd() const {

@@ -215,6 +215,19 @@ namespace sqlite2orm {
         bool operator==(const SourceLocation&) const = default;
     };
 
+    /**
+     *  A stretch of the SQL something was parsed from: where it starts and the text it covers. The
+     *  text points into the very SQL the tokens were made from, so it names the characters a
+     *  diagnostic about that something underlines rather than a spelling built for the message.
+     *  Empty for anything no parse recorded a span for, a node a test builds by hand among them.
+     */
+    struct SourceSpan {
+        SourceLocation location;
+        std::string_view text;
+
+        bool operator==(const SourceSpan&) const = default;
+    };
+
     struct Token {
         TokenType type = TokenType::eof;
         std::string_view value;

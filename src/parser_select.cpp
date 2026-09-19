@@ -32,9 +32,21 @@ namespace sqlite2orm {
             node->selectAll = true;
         }
 
-        node->columns.push_back(parseSelectResultColumn());
+        // An expression missing where a clause requires one is a syntax error, the way SQLite
+        // reads it too (`SELECT 1,`, `SELECT a FROM t GROUP BY` and `… WHERE` / `… HAVING` with
+        // nothing behind the keyword are all `near ";": syntax error` on 3.51.0). Saying so here
+        // is also what keeps the null out of the AST: a result column with no expression means the
+        // bare `*` to everything downstream, and a null anywhere else is a node codegen would have
+        // to dereference.
+        auto firstColumn = parseSelectResultColumn();
+        if (!firstColumn)
+            return nullptr;
+        node->columns.push_back(std::move(*firstColumn));
         while (match(TokenType::comma)) {
-            node->columns.push_back(parseSelectResultColumn());
+            auto nextColumn = parseSelectResultColumn();
+            if (!nextColumn)
+                return nullptr;
+            node->columns.push_back(std::move(*nextColumn));
         }
 
         if (match(TokenType::kwFrom)) {
@@ -43,18 +55,28 @@ namespace sqlite2orm {
 
         if (match(TokenType::kwWhere)) {
             node->whereClause = this->parser.parseExpression();
+            if (!node->whereClause)
+                return nullptr;
         }
 
         if (check(TokenType::kwGroup)) {
             advanceToken();
             match(TokenType::kwBy);
             GroupByClause groupByClause;
-            groupByClause.expressions.push_back(this->parser.parseExpression());
+            auto firstGroupByTerm = this->parser.parseExpression();
+            if (!firstGroupByTerm)
+                return nullptr;
+            groupByClause.expressions.push_back(std::move(firstGroupByTerm));
             while (match(TokenType::comma)) {
-                groupByClause.expressions.push_back(this->parser.parseExpression());
+                auto nextGroupByTerm = this->parser.parseExpression();
+                if (!nextGroupByTerm)
+                    return nullptr;
+                groupByClause.expressions.push_back(std::move(nextGroupByTerm));
             }
             if (match(TokenType::kwHaving)) {
                 groupByClause.having = this->parser.parseExpression();
+                if (!groupByClause.having)
+                    return nullptr;
             }
             node->groupBy = std::move(groupByClause);
         }
@@ -137,16 +159,21 @@ namespace sqlite2orm {
     }
 
     AstNodePointer SelectParser::parseCompoundSelectCore() {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
+        AstNodePointer core;
         if (check(TokenType::kwSelect)) {
-            return parseSelectCore();
+            core = parseSelectCore();
+        } else if (check(TokenType::kwValues)) {
+            core = this->parser.parseValuesStatement();
         }
-        if (check(TokenType::kwValues)) {
-            return this->parser.parseValuesStatement();
+        if (core) {
+            core->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
         }
-        return nullptr;
+        return core;
     }
 
     AstNodePointer SelectParser::parseSelectCompoundBody() {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
         AstNodePointer firstCore = parseCompoundSelectCore();
         if (!firstCore) {
             return nullptr;
@@ -183,12 +210,15 @@ namespace sqlite2orm {
         if (compoundOperators.empty()) {
             return std::move(selectCores.at(0));
         }
-        return std::make_unique<CompoundSelectNode>(std::move(selectCores),
-                                                    std::move(compoundOperators),
-                                                    compoundLocation);
+        auto compoundSelect = std::make_unique<CompoundSelectNode>(std::move(selectCores),
+                                                                   std::move(compoundOperators),
+                                                                   compoundLocation);
+        compoundSelect->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        return compoundSelect;
     }
 
     AstNodePointer SelectParser::parseSelect() {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
         SourceLocation withLocation = current().location;
         std::optional<WithClause> withClause;
         if (check(TokenType::kwWith)) {
@@ -270,10 +300,12 @@ namespace sqlite2orm {
         if (!withClause) {
             return body;
         }
-        return std::make_unique<WithQueryNode>(std::move(*withClause), std::move(body), withLocation);
+        auto withQuery = std::make_unique<WithQueryNode>(std::move(*withClause), std::move(body), withLocation);
+        withQuery->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        return withQuery;
     }
 
-    SelectColumn SelectParser::parseSelectResultColumn() {
+    std::optional<SelectColumn> SelectParser::parseSelectResultColumn() {
         if (check(TokenType::star)) {
             advanceToken();
             return SelectColumn{nullptr, ""};
@@ -302,6 +334,8 @@ namespace sqlite2orm {
             return SelectColumn{std::make_shared<QualifiedAsteriskNode>(std::move(tableName), location), ""};
         }
         auto expr = this->parser.parseExpression();
+        if (!expr)
+            return std::nullopt;
         std::string alias;
         if (match(TokenType::kwAs)) {
             if (!atEnd()) {

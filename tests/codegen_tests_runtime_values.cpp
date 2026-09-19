@@ -888,3 +888,41 @@ TEST_CASE("runtime: an OR and a concatenation return the values SQLite computes"
     REQUIRE(selectedValues(statements, "int", "7") ==
             std::vector<std::string>{"1", "0", "1", "NULL", "1", "0", "1", "-1", "1", "1x", "1x", "0x"});
 }
+
+// A predicate serializer parenthesizes none of its arguments, and SQLite binds AND and OR looser
+// than every predicate, so an AND or an OR standing there bare escapes into the predicate:
+// `is_null(or_(1, 0))` runs as `SELECT 1 OR 0 IS NULL`, which is `1 OR (0 IS NULL)` and answers 1
+// where `(1 OR 0) IS NULL` answers 0, and `between(1, or_(1, 0), 3)` runs as
+// `SELECT 1 BETWEEN 1 OR 0 AND 3`, which SQLite refuses as a syntax error. The `cast<int64_t>`
+// wrapper delimits the argument. A bound of a BETWEEN is not run here: `between(A, T, T)` deduces
+// one type for both bounds, so an AND or an OR in one of them does not compile whatever it is
+// wrapped in — it did not on master either, where the bound was a `conc_t`. Expected values
+// checked against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7.
+TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT (1 OR 0) IS NULL;"),
+        generate("SELECT (NULL OR 0) IS NULL;"),
+        generate("SELECT (a OR 0) IS NOT NULL;"),
+        generate("SELECT (1 OR 0) LIKE 'x';"),
+        generate("SELECT (a OR 0) NOT LIKE 'x';"),
+        generate("SELECT (1 OR 0) GLOB 'x';"),
+        generate("SELECT (1 OR 0) IN (0, 1);"),
+        generate("SELECT (1 AND 0) IN (0, 1);"),
+        generate("SELECT (a OR 0) NOT IN (0, 1);"),
+        generate("SELECT (a OR 0) BETWEEN 0 AND 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(is_null(cast<int64_t>(or_(1, 0))));",
+                              "auto rows = storage.select(is_null(cast<int64_t>(or_(nullptr, 0))));",
+                              "auto rows = storage.select(is_not_null(cast<int64_t>(or_(&User::a, 0))));",
+                              "auto rows = storage.select(like(cast<int64_t>(or_(1, 0)), \"x\"));",
+                              "auto rows = storage.select(!like(cast<int64_t>(or_(&User::a, 0)), \"x\"));",
+                              "auto rows = storage.select(glob(cast<int64_t>(or_(1, 0)), \"x\"));",
+                              "auto rows = storage.select(in(cast<int64_t>(or_(1, 0)), {0, 1}));",
+                              "auto rows = storage.select(in(cast<int64_t>(c(1) and 0), {0, 1}));",
+                              "auto rows = storage.select(not_in(cast<int64_t>(or_(&User::a, 0)), {0, 1}));",
+                              "auto rows = storage.select(between(cast<int64_t>(or_(&User::a, 0)), 0, 1));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
+}

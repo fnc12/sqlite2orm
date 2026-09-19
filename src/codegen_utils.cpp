@@ -339,6 +339,15 @@ namespace sqlite2orm {
         "INTEGER or a NULL whatever its operands hold, and a CAST to INTEGER keeps both, typeof "
         "included, so the CAST widens the C++ type and leaves the value alone.";
 
+    const std::string kCommentAndOrPredicateArgumentCast =
+        "An AND or an OR in the argument of a predicate is generated as `cast<int64_t>(…)`: "
+        "sqlite_orm serializes IN, BETWEEN, LIKE, GLOB, MATCH and IS [NOT] NULL with no "
+        "parentheses around their arguments, and SQLite binds AND and OR looser than every "
+        "predicate, so `is_null(or_(1, 0))` would be read back as `1 OR (0 IS NULL)` and "
+        "`between(1, or_(1, 0), 3)` would not even parse. The CAST delimits the argument and "
+        "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
+        "INTEGER keeps all three, typeof included.";
+
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
         "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
@@ -526,8 +535,8 @@ namespace sqlite2orm {
             case BinaryOperator::isNot:
             case BinaryOperator::isDistinctFrom:
             case BinaryOperator::isNotDistinctFrom:  return kSqlPrecedencePredicate;
-            case BinaryOperator::logicalAnd:         return 8;
-            case BinaryOperator::logicalOr:          return 9;
+            case BinaryOperator::logicalAnd:         return kSqlPrecedenceAnd;
+            case BinaryOperator::logicalOr:          return kSqlPrecedenceOr;
         }
         return kSqlPrecedencePredicate;
     }
@@ -550,10 +559,34 @@ namespace sqlite2orm {
             }
             return kSqlPrecedenceTerm;
         }
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            // The JSON arrows are the one binary operator serialized as a call, `json_extract(…)`,
+            // which reads as one term; every other one is serialized as the SQL operator it was
+            // parsed as, and binds the way SQLite binds that operator.
+            if(binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
+               binaryOp->binaryOperator == BinaryOperator::jsonArrow2) {
+                return kSqlPrecedenceTerm;
+            }
+            return sqlOperatorPrecedence(binaryOp->binaryOperator);
+        }
         // Everything else is a term of its own in the serialized SQL: a literal, a column, a call,
-        // CAST, CASE, a parenthesized subquery, or a binary operator sqlite_orm parenthesizes.
+        // CAST, CASE, a parenthesized subquery.
         return sqlPredicateLooserThanMinus(generatedNode).empty() ? kSqlPrecedenceTerm
                                                                   : kSqlPrecedencePredicate;
+    }
+
+    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode) {
+        // sqlite_orm's binary operator and binary condition serializer parenthesizes an operand
+        // that is itself a binary operator or condition — everything a `BinaryOperatorNode`
+        // generates — so however loosely SQLite binds it, it comes back as one term there.
+        if(dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(astNode))) {
+            return kSqlPrecedenceTerm;
+        }
+        return serializedSqlPrecedence(astNode);
+    }
+
+    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode) {
+        return serializedSqlPrecedence(astNode) >= kSqlPrecedenceAnd;
     }
 
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
@@ -1042,7 +1075,7 @@ namespace sqlite2orm {
             // comparisons, AND, OR and EXISTS.
             auto operandStaysCondition = [](const AstNode& operand) {
                 return generatesSqliteOrmCondition(operand) &&
-                       serializedSqlPrecedence(operand) == kSqlPrecedenceTerm;
+                       serializedSqlPrecedenceAsBinaryOperand(operand) == kSqlPrecedenceTerm;
             };
             if(operandStaysCondition(*binaryOperatorNode.lhs) || operandStaysCondition(*binaryOperatorNode.rhs)) {
                 return true;

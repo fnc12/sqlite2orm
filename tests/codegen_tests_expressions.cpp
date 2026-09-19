@@ -57,6 +57,18 @@ namespace {
         "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
         "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
 
+    // The hint attached to every AND and OR the generator delimits in a predicate's argument slot;
+    // asserted on its own in "codegen: an AND or an OR cast in a predicate argument carries its
+    // comment".
+    const std::string kAndOrPredicateArgumentCastComment =
+        "An AND or an OR in the argument of a predicate is generated as `cast<int64_t>(…)`: "
+        "sqlite_orm serializes IN, BETWEEN, LIKE, GLOB, MATCH and IS [NOT] NULL with no "
+        "parentheses around their arguments, and SQLite binds AND and OR looser than every "
+        "predicate, so `is_null(or_(1, 0))` would be read back as `1 OR (0 IS NULL)` and "
+        "`between(1, or_(1, 0), 3)` would not even parse. The CAST delimits the argument and "
+        "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
+        "INTEGER keeps all three, typeof included.";
+
 }  // namespace
 
 TEST_CASE("codegen: integer literal") {
@@ -458,7 +470,13 @@ TEST_CASE("codegen: an operator the C++ `||` token misreads is spelled as a call
         REQUIRE(generate("a OR 0") == "or_(&User::a, 0)");
         REQUIRE(generate("a OR b") == "or_(&User::a, &User::b)");
         REQUIRE(generate("-(1 OR 0)") == "(c(0) - (or_(1, 0)))");
-        // `match_t` is the one predicate sqlite_orm does not class as a condition.
+        // `match_t` is the one predicate sqlite_orm does not class as a condition. The call names
+        // the OR that was written, but it does not compile either: `match_t` derives from nothing
+        // at all, so `or_()` does not accept it as an operand either: the call is the OR that was
+        // written, but it does not compile — `or_() arguments must be bindable values or
+        // sqlite_orm-recognized operands`. Neither did the operator spelling it replaces, which
+        // had no `operator||` to pick at all, so this is what the form looks like and not a form
+        // that works yet.
         REQUIRE(generate("a MATCH 'x' OR b") == R"(or_(match(&User::a, "x"), &User::b))");
     }
     SECTION("an OR with a condition among its operands") {
@@ -818,6 +836,63 @@ TEST_CASE("codegen: a predicate cast under an operator carries its comment") {
     REQUIRE(generateFull("SELECT 1 - (a IS NULL);").comments ==
             std::vector<std::string>{kPredicateCastComment});
     REQUIRE(generateFull("SELECT (a IS NULL) AND 1;").comments.empty());
+}
+
+// A predicate serializer parenthesizes none of its arguments, and SQLite binds AND and OR looser
+// than every predicate, so an AND or an OR standing there bare takes the predicate into itself:
+// `1 OR 0 IS NULL` is `1 OR (0 IS NULL)` and answers 1 where `(1 OR 0) IS NULL` answers 0, and
+// `1 BETWEEN 1 OR 0 AND 3` is not a statement SQLite parses at all. The same CAST that delimits a
+// predicate under an operator delimits them. Checked against sqlite3 3.51.
+TEST_CASE("codegen: an AND or an OR in a predicate argument is cast to stay one SQL term") {
+    SECTION("every argument slot of every predicate") {
+        REQUIRE(generate("(1 OR 0) IS NULL") == "is_null(cast<int64_t>(or_(1, 0)))");
+        REQUIRE(generate("(1 OR 0) NOT NULL") == "is_not_null(cast<int64_t>(or_(1, 0)))");
+        REQUIRE(generate("(a OR b) IN (0, 1)") ==
+                "in(cast<int64_t>(or_(&User::a, &User::b)), {0, 1})");
+        REQUIRE(generate("(a OR b) NOT IN (0, 1)") ==
+                "not_in(cast<int64_t>(or_(&User::a, &User::b)), {0, 1})");
+        REQUIRE(generate("(a OR b) BETWEEN 0 AND 1") ==
+                "between(cast<int64_t>(or_(&User::a, &User::b)), 0, 1)");
+        // `between(A, T, T)` deduces one type for both bounds, so these two do not compile — nor
+        // did they on master, where the bound was a `conc_t` — but the SQL a bound serializes into
+        // runs into the `AND` of the BETWEEN itself, so the CAST belongs there all the same.
+        REQUIRE(generate("1 BETWEEN (1 OR 0) AND 3") == "between(1, cast<int64_t>(or_(1, 0)), 3)");
+        REQUIRE(generate("1 BETWEEN 0 AND (1 OR 0)") == "between(1, 0, cast<int64_t>(or_(1, 0)))");
+        REQUIRE(generate("(a OR b) LIKE 'x'") ==
+                R"(like(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
+        REQUIRE(generate("'x' LIKE (a OR b)") ==
+                R"(like("x", cast<int64_t>(or_(&User::a, &User::b))))");
+        REQUIRE(generate("(a OR b) NOT LIKE 'x'") ==
+                R"(!like(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
+        REQUIRE(generate("(a OR b) GLOB 'x'") ==
+                R"(glob(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
+        REQUIRE(generate("a MATCH (b OR c)") ==
+                "match(&User::a, cast<int64_t>(or_(&User::b, &User::c)))");
+    }
+    SECTION("an AND is bound the same way") {
+        REQUIRE(generate("(1 AND 0) IS NULL") == "is_null(cast<int64_t>(c(1) and 0))");
+        REQUIRE(generate("((a OR b) AND c) IN (0, 1)") ==
+                "in(cast<int64_t>(or_(&User::a, &User::b) and &User::c), {0, 1})");
+    }
+    SECTION("an argument SQLite reads as one term is left bare") {
+        // A comparison shares the rank of the predicates and SQLite reads them left-associatively,
+        // so the argument slot is where it already groups: `"a" = 1 IS NULL` is `(a = 1) IS NULL`.
+        REQUIRE(generate("(a = 1) IS NULL") == "is_null(c(&User::a) == 1)");
+        REQUIRE(generate("(a + 1) IS NULL") == "is_null(c(&User::a) + 1)");
+        REQUIRE(generate("(a IS NULL) IS NULL") == "is_null(is_null(&User::a))");
+        // The values of an IN list are delimited by the commas around them. Such a list does not
+        // compile, here or on master — its values have to share one C++ type and an `or_(…)` does
+        // not have the type of a number — but the SQL it stands for needs no CAST.
+        REQUIRE(generate("a IN (1 OR 0, 2)") == "in(&User::a, {or_(1, 0), 2})");
+    }
+}
+
+TEST_CASE("codegen: an AND or an OR cast in a predicate argument carries its comment") {
+    REQUIRE(generateFull("SELECT (1 OR 0) IS NULL;").comments ==
+            std::vector<std::string>{kOrTokenCallSpellingComment, kAndOrPredicateArgumentCastComment});
+    REQUIRE(generateFull("SELECT (1 AND 0) IS NULL;").comments ==
+            std::vector<std::string>{kAndOrPredicateArgumentCastComment});
+    REQUIRE(generateFull("SELECT (a = 1) IS NULL;").comments.empty());
 }
 
 TEST_CASE("codegen: IS NULL") {
@@ -1319,14 +1394,8 @@ TEST_CASE("codegen: JSON -> operator") {
                       {columnRefStyleDp(1, "&Users::data"),
                        DecisionPoint{2, "expr_style", "functional",
                           "json_extract(&Users::data, \"$.name\")",
-                          {Option{"operator_wrap_left",
-                              "c(&Users::data) -> \"$.name\"", "wrap left operand"},
-                           Option{"operator_wrap_right",
-                              "&Users::data -> c(\"$.name\")", "wrap right operand"},
-                           Option{"functional",
-                              "json_extract(&Users::data, \"$.name\")", "functional style"},
-                           Option{"operator_wrap_both",
-                              "c(&Users::data) -> c(\"$.name\")", "wrap both operands", true}}}},
+                          {Option{"functional",
+                              "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
                       {"JSON -> / ->> operator is mapped to json_extract() "
                        "— return type may differ from sqlite"}});
 }
@@ -1363,14 +1432,8 @@ TEST_CASE("codegen: JSON ->> operator") {
                       {columnRefStyleDp(1, "&Users::data"),
                        DecisionPoint{2, "expr_style", "functional",
                           "json_extract(&Users::data, \"$.name\")",
-                          {Option{"operator_wrap_left",
-                              "c(&Users::data) ->> \"$.name\"", "wrap left operand"},
-                           Option{"operator_wrap_right",
-                              "&Users::data ->> c(\"$.name\")", "wrap right operand"},
-                           Option{"functional",
-                              "json_extract(&Users::data, \"$.name\")", "functional style"},
-                           Option{"operator_wrap_both",
-                              "c(&Users::data) ->> c(\"$.name\")", "wrap both operands", true}}}},
+                          {Option{"functional",
+                              "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
                       {"JSON -> / ->> operator is mapped to json_extract() "
                        "— return type may differ from sqlite"}});
 }

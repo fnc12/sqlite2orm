@@ -158,7 +158,8 @@ if(SQLITE2ORM_BUILD_TESTS)
             add_test(
                 NAME sqlite2orm_tests_worktree_guard
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/git_worktree_guard.sh"
-                        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/git-worktree-guard.sh")
+                        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/git-worktree-guard.sh"
+                        "${SQLITE2ORM_GIT_EXECUTABLE}")
         endif()
     endif()
 

@@ -704,6 +704,83 @@ TEST_CASE("runtime: a result column under a dropped COLLATE reads the NULL back"
             std::vector<std::string>{"8", "7x", "-7"});
 }
 
+// `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of
+// unwrapping it, and the walker that collects the tables a statement reads stops at such a wrapper.
+// A column a NOT is the only mention of was invisible to it: `select(not c(&User::a))` serialized to
+// `SELECT NOT "users"."a"` with no FROM clause at all and threw `SQL logic error` before any value
+// reached the caller. The column-pointer form names the same column and the walker reads it. A
+// second NOT did not even compile — `negated_condition_t` is neither negatable nor an operator
+// argument — which the CAST that delimits it fixes. The same wrapper hides a value from the walk
+// that binds one, so `select(not c(0))` ran with an empty parameter and answered NULL where SQLite
+// answers 1; `0 + x` is the numeric coercion SQLite applies in a boolean context anyway. Values
+// checked against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a NOT returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT a;"),
+        generate("SELECT NOT NOT a;"),
+        generate("SELECT NOT (a NOT BETWEEN 1 AND 9);"),
+        generate("SELECT NOT 0;"),
+        generate("SELECT NOT 0.5;"),
+        generate("SELECT NOT 'abc';"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(not column<User>(&User::a)));",
+                "auto rows = storage.select(as_optional(not cast<int64_t>(not column<User>(&User::a))));",
+                "auto rows = storage.select(as_optional(not cast<int64_t>(!between(&User::a, 1, 9))));",
+                "auto rows = storage.select(not (c(0) + 0));",
+                "auto rows = storage.select(not (c(0) + 0.5));",
+                "auto rows = storage.select(not (c(0) + \"abc\"));",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "1", "0", "1"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"0", "1", "1", "1", "0", "1"});
+}
+
+// The same column-pointer form has to reach a NOT wherever it stands, and a CHECK constraint is
+// where the serialized SQL is the whole product: it goes into the schema and SQLite enforces it
+// from then on. What the clause has to read is `CHECK (NOT "a")` — checked against sqlite3 3.51,
+// which accepts 0 and NULL for it and rejects 7.
+TEST_CASE("runtime: a NOT over a column in a CHECK constraint is enforced the way the source reads") {
+    const std::string generatedCode = generate("CREATE TABLE t(a INTEGER CHECK(NOT a));");
+    REQUIRE(generatedCode ==
+            "struct T {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a, check(not column<T>(&T::a)))));");
+    REQUIRE(checkConstraintBehaviour(generatedCode, {"0", "7", "std::nullopt"}) ==
+            std::vector<std::string>{
+                "0 accepted",
+                "7 rejected",
+                "std::nullopt accepted",
+                "CREATE TABLE \"t\" (\"a\" INTEGER CHECK (NOT \"a\") NULL)",
+            });
+}
+
+// A column that names a SELECT alias is generated as `get<Alias>()`, not as a column pointer, and
+// the statement it stands in already names the table through the aliased result column — so it
+// keeps the `c(...)` wrapper it always had and still runs. Checked against sqlite3 3.51: the row
+// holding a = 0 is the one `WHERE NOT al` returns.
+TEST_CASE("runtime: a SELECT alias under a NOT returns the row SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT a AS al FROM user WHERE NOT al;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "struct AlAlias : sqlite_orm::alias_tag {\n"
+                              "    static const std::string& get() {\n"
+                              "        static const std::string res = \"al\";\n"
+                              "        return res;\n"
+                              "    }\n"
+                              "};\n"
+                              "auto rows = storage.select(as<AlAlias>(&User::a), where(not c(get<AlAlias>())));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "0") == std::vector<std::string>{"0"});
+}
+
 // sqlite_orm types `&`, `|`, `<<`, `>>` and `~` as `int`, so the int64 SQLite computes reached the
 // caller through a 32-bit truncation: `9223372036854775807 & -1` printed -1. The CAST widens the
 // C++ type without moving the value — a bitwise result is an INTEGER or a NULL, and a CAST to

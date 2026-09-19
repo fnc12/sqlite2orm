@@ -433,15 +433,15 @@ namespace sqlite2orm {
             }
             case TokenType::kwTrue: {
                 advanceToken();
-                return std::make_unique<BoolLiteralNode>(true, token.location);
+                return std::make_unique<BoolLiteralNode>(true, token.value, token.location);
             }
             case TokenType::kwFalse: {
                 advanceToken();
-                return std::make_unique<BoolLiteralNode>(false, token.location);
+                return std::make_unique<BoolLiteralNode>(false, token.value, token.location);
             }
             case TokenType::kwOn: {
                 advanceToken();
-                return std::make_unique<BoolLiteralNode>(true, token.location);
+                return std::make_unique<BoolLiteralNode>(true, token.value, token.location);
             }
             case TokenType::kwCurrentTime: {
                 advanceToken();

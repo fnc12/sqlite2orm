@@ -158,6 +158,12 @@ namespace sqlite2orm {
             }
             std::string memberPointer = "&" + this->context.structName + "::" + cppName;
             std::string columnPointer = "column<" + this->context.structName + ">(" + memberPointer + ")";
+            if(this->context.columnRefUnderLogicalNot) {
+                // Only the column-pointer form survives under a NOT, so there is no style left to
+                // decide between and no decision point to offer.
+                this->context.emittedColumnPointerUnderLogicalNot = true;
+                return CodeGenResult{std::move(columnPointer), {}, {}, {}, {}};
+            }
             const bool useColumnPtr =
                 policyEquals(this->context.codeGenPolicy, "column_ref_style", "column_pointer");
             const std::string& emittedCol = useColumnPtr ? columnPointer : memberPointer;
@@ -260,6 +266,12 @@ namespace sqlite2orm {
             this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
             std::string memberPointer = "&" + structForColumn + "::" + toCppIdentifier(qualifiedRef->columnName);
             std::string columnPointer = "column<" + structForColumn + ">(" + memberPointer + ")";
+            if(this->context.columnRefUnderLogicalNot) {
+                // Only the column-pointer form survives under a NOT, so there is no style left to
+                // decide between and no decision point to offer.
+                this->context.emittedColumnPointerUnderLogicalNot = true;
+                return CodeGenResult{std::move(columnPointer), {}, std::move(qualWarnings), {}, {}};
+            }
             const bool useQColPtr =
                 policyEquals(this->context.codeGenPolicy, "column_ref_style", "column_pointer");
             const std::string& emittedQ = useQColPtr ? columnPointer : memberPointer;
@@ -507,7 +519,34 @@ namespace sqlite2orm {
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings), {},
                                  std::move(binComments)};
         } else if(auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+            // A COLLATE generates its operand and nothing else, so the operand standing under one
+            // is the operand this unary operator really applies to in the generated code. The sign
+            // a minus folds into a literal is the exception — SQLite's parser does not read one
+            // through a COLLATE either, which is why `negationFormFor` is asked about the operand
+            // as written.
+            const AstNode& operandNode = generatedOperandNode(*unaryOp->operand);
+            const bool operandLeaf = isLeafNode(operandNode);
+
+            // Every other sqlite_orm operator unwraps the `c(...)` its operand carries; `operator!`
+            // keeps it, and the walker that collects the tables a statement reads stops at such a
+            // wrapper. A column a NOT is the only mention of is then invisible to it, and
+            // `storage.select(not c(&User::a))` runs as `SELECT NOT "users"."a"` with no FROM clause
+            // at all — SQLite answers that with `no such column`, which sqlite_orm reports as
+            // `SQL logic error`. A column reference generated here takes the column-pointer form
+            // instead, which names the same column and which the walker does read.
+            const bool notKeepsOperandQuoted =
+                unaryOp->unaryOperator == UnaryOperator::logicalNot && operandLeaf;
+            const bool outerColumnRefUnderLogicalNot = this->context.columnRefUnderLogicalNot;
+            const bool outerEmittedColumnPointer = this->context.emittedColumnPointerUnderLogicalNot;
+            this->context.columnRefUnderLogicalNot = notKeepsOperandQuoted;
+            this->context.emittedColumnPointerUnderLogicalNot = false;
             auto operandResult = this->coordinator.generateNode(*unaryOp->operand);
+            // What the operand was generated as is the emitter's own answer, not the node's kind: a
+            // column that names a SELECT alias is generated as `get<Alias>()` whatever this asks for.
+            const bool operandGeneratedColumnPointerUnderNot =
+                this->context.emittedColumnPointerUnderLogicalNot;
+            this->context.columnRefUnderLogicalNot = outerColumnRefUnderLogicalNot;
+            this->context.emittedColumnPointerUnderLogicalNot = outerEmittedColumnPointer;
             auto decisionPoints = std::move(operandResult.decisionPoints);
 
             if(unaryOp->unaryOperator == UnaryOperator::plus) {
@@ -515,13 +554,6 @@ namespace sqlite2orm {
                                      std::move(operandResult.warnings), std::move(operandResult.errors),
                                      std::move(operandResult.comments)};
             }
-
-            // A COLLATE generates its operand and nothing else, so the operand standing under one
-            // is the operand this unary operator really applies to in the generated code. The sign
-            // a minus folds into a literal is the exception — SQLite's parser does not read one
-            // through a COLLATE either, which is why `negationFormFor` is asked about the operand
-            // as written.
-            const AstNode& operandNode = generatedOperandNode(*unaryOp->operand);
 
             // sqlite_orm's unary_minus_t reports a wrong result type, so `-c(2)` serializes to the
             // right SQL and still reads the row back as 0. A minus over a numeric constant is folded
@@ -541,7 +573,6 @@ namespace sqlite2orm {
                                      std::move(operandResult.comments)};
             }
 
-            bool operandLeaf = isLeafNode(operandNode);
             bool operandNoWrap = false;
             if(auto* opCol = dynamic_cast<const ColumnRefNode*>(&operandNode)) {
                 operandNoWrap = this->context.columnRefIsSelectAliasNoWrap(*opCol);
@@ -562,8 +593,49 @@ namespace sqlite2orm {
                     }
                 }
             }
+            // sqlite_orm classifies `negated_condition_t` — what a NOT and the `!predicate` spelling
+            // of a negated BETWEEN, LIKE, GLOB and MATCH generate — as neither negatable nor an
+            // operator argument, so a second NOT over one does not compile at all. A CAST to INTEGER
+            // makes it an operand again and leaves what it stands for alone: the inner NOT is 0, 1 or
+            // NULL, and a CAST to INTEGER keeps all three, so `NOT NOT a` and
+            // `NOT CAST(NOT a AS INTEGER)` answer alike (checked against sqlite3 3.51 over integers,
+            // reals, text, a blob and NULL).
+            const bool castsNegatedOperand = unaryOp->unaryOperator == UnaryOperator::logicalNot &&
+                                             generatesNegatedCondition(*unaryOp->operand);
+            if(castsNegatedOperand) {
+                operandResult.code = "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + operandResult.code + ")";
+                appendUniqueString(operandResult.comments, kCommentNegatedConditionCast);
+            }
+
+            // A column reference under a NOT is generated as a column pointer rather than wrapped in
+            // `c(...)`; the two forms stand in the same place, so the wrapper is skipped for it.
+            const bool wrapsOperandInC =
+                operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(&operandNode);
+            const bool operandIsColumnPointerUnderNot =
+                wrapsOperandInC && operandGeneratedColumnPointerUnderNot;
+            if(operandIsColumnPointerUnderNot) {
+                appendUniqueString(operandResult.comments, kCommentNotColumnPointer);
+            }
+
+            // The same wrapper hides a value from the walk that binds one: the literal of
+            // `select(not c(0))` was never bound, so the statement ran with an empty parameter and
+            // answered NULL where SQLite answers 1. A binary operator unwraps what it is given, and
+            // `0 + x` is the numeric coercion SQLite applies to `x` in a boolean context anyway —
+            // `NOT x` and `NOT (0 + x)` answer alike for every value (checked against sqlite3 3.51
+            // over 33 literals: integers, reals, text that does and does not convert, blobs, NULL).
+            const bool operandIsAddedToZeroUnderNot =
+                notKeepsOperandQuoted && wrapsOperandInC && generatesBoundValue(operandNode);
+            if(operandIsAddedToZeroUnderNot) {
+                appendUniqueString(operandResult.comments, kCommentNotValueAddedToZero);
+            }
+
             std::string operandStr;
-            if(operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(&operandNode)) {
+            if(castsNegatedOperand) {
+                // A CAST delimits itself, both in C++ and in the SQL sqlite_orm serializes.
+                operandStr = operandResult.code;
+            } else if(operandIsAddedToZeroUnderNot) {
+                operandStr = "(c(0) + " + operandResult.code + ")";
+            } else if(wrapsOperandInC && !operandIsColumnPointerUnderNot) {
                 operandStr = wrap(operandResult.code);
             } else if(!operandLeaf && !generatesZeroMinusSubtraction(operandNode)) {
                 operandStr = "(" + operandResult.code + ")";

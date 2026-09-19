@@ -413,6 +413,36 @@ namespace sqlite2orm {
         return {};
     }
 
+    std::string_view binaryOperatorWithoutDefaultConstructor(BinaryOperator binaryOperator) {
+        switch(binaryOperator) {
+            case BinaryOperator::logicalOr:
+            case BinaryOperator::logicalAnd:
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:  return {};
+            case BinaryOperator::add:                return "+";
+            case BinaryOperator::subtract:           return "-";
+            case BinaryOperator::multiply:           return "*";
+            case BinaryOperator::divide:             return "/";
+            case BinaryOperator::modulo:             return "%";
+            case BinaryOperator::concatenate:        return "||";
+            case BinaryOperator::bitwiseAnd:         return "&";
+            case BinaryOperator::bitwiseOr:          return "|";
+            case BinaryOperator::shiftLeft:          return "<<";
+            case BinaryOperator::shiftRight:         return ">>";
+            case BinaryOperator::jsonArrow:          return "->";
+            case BinaryOperator::jsonArrow2:         return "->>";
+        }
+        return {};
+    }
+
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {
         switch(binaryOperator) {
             case BinaryOperator::logicalOr:          return "or_";

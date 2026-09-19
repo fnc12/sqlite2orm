@@ -62,6 +62,13 @@ namespace sqlite2orm {
 
     std::string_view binaryOperatorString(BinaryOperator binaryOperator);
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator);
+    /**
+     *  SQLite's spelling of `binaryOperator` when the sqlite_orm type it is generated as has no
+     *  default constructor, and an empty view otherwise. The comparisons, AND and OR all produce a
+     *  `binary_condition`, which declares one; every arithmetic, bit and concatenation operator
+     *  produces a `binary_operator` and the JSON arrows a `builtin_function_t`, which do not.
+     */
+    std::string_view binaryOperatorWithoutDefaultConstructor(BinaryOperator binaryOperator);
 
     /** Precedence of code that is one C++ term already, so no operator around it can regroup it. */
     inline constexpr int kCppPrecedencePrimary = 0;

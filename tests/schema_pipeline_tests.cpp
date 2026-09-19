@@ -813,6 +813,36 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
                     joinGeneratedCode(results));
 }
 
+// A trigger's WHEN expression lives in an `optional_container`, which default-constructs it, so
+// only a WHEN clause whose every sqlite_orm type has a default constructor compiles. These are the
+// forms codegen claims are safe, and the claim is worth nothing unless a compiler agrees: before
+// the check existed, `WHEN NEW.a IS NULL` and `WHEN NOT NEW.a` generated silently and failed here
+// with `use of deleted function optional_container<...>::optional_container()`. SQLite stores all
+// four triggers below and fires them (checked against sqlite3 3.51.0).
+TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile") {
+    const auto results = processMultiSql(
+        "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
+        "CREATE TRIGGER tr_cmp AFTER INSERT ON t WHEN NEW.a = 0 BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_and AFTER INSERT ON t WHEN NEW.a > 0 AND NEW.b = 'x' BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_cast AFTER INSERT ON t WHEN CAST(NEW.a AS INTEGER) > 0 BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_sub AFTER INSERT ON t WHEN NEW.a = (SELECT a FROM t) BEGIN DELETE FROM t; END;");
+
+    for(const auto& result : results) {
+        for(const auto& warning : result.codegen.warnings) {
+            INFO(warning.message);
+            REQUIRE(warning.message.find("in its WHEN clause") == std::string::npos);
+        }
+    }
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 // `make_index` deduces the table an index is made for from its first argument, and an expression
 // names none, so an index over one spells the table out. Before it did, every header of a database
 // holding an index over an expression — `CREATE INDEX i_expr ON t(a + 1)`, which SQLite takes and

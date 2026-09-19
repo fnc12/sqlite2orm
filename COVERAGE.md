@@ -424,7 +424,7 @@ share one result type — so it needs a decision taken across the branches at on
 - [x] UPDATE OF column-list
 - [x] ON table-name
 - [x] FOR EACH ROW
-- [x] WHEN expr
+- [~] WHEN expr — `trigger_base_t::when()` keeps the expression in an `optional_container`, whose field is default-constructed before the expression is assigned to it, so only a WHEN clause whose every sqlite_orm type has a default constructor compiles. The comparisons, `AND` and `OR` produce a `binary_condition`, which declares one, and a `CAST`, a `CASE`, a `COLLATE`, `MATCH`, `CURRENT_*`, `RAISE()`, `count(*)` and a subquery over a bare `FROM` (with `LIMIT`) hold only what they are given — those generate as before. The predicates (`NOT`, `IS [NOT] NULL`, `IN`, `BETWEEN`, `LIKE`, `GLOB`, `EXISTS` — but not `MATCH`, whose `match_t` is an aggregate), every arithmetic, bit and concatenation operator, the JSON arrows, every function call other than `count(*)`, and a subquery carrying a `WHERE`, an `ORDER BY`, a `DISTINCT`, a join constraint or a compound arm do not: SQLite stores such a trigger and the generated code does not compile (`use of deleted function optional_container<…>::optional_container()`), so it is generated with a codegen warning naming each form
 - [x] BEGIN ... END
 - [x] trigger-body: UPDATE statement
 - [x] trigger-body: INSERT statement
@@ -641,6 +641,7 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] RETURNING clause
 - [!] Unary plus (`+expr`)
 - [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-`; the generated negation does not compile (codegen warning)
+- [!] A trigger `WHEN` clause over anything but a comparison, an `AND`/`OR`, a `CAST`, a `CASE`, a `COLLATE`, `MATCH`, `CURRENT_*`, `RAISE()`, `count(*)` or a subquery over a bare `FROM` — sqlite_orm holds the WHEN expression in an `optional_container`, which default-constructs it, and none of the predicate, operator or function types it would hold has a default constructor; the generated trigger does not compile (codegen warning naming each form, see create-trigger-stmt)
 - [x] DROP TABLE — `storage.drop_table("name")` / `storage.drop_table_if_exists("name")`
 - [x] DROP INDEX — `storage.drop_index("name")` / `storage.drop_index_if_exists("name")`
 - [x] DROP TRIGGER — `storage.drop_trigger("name")` / `storage.drop_trigger_if_exists("name")`

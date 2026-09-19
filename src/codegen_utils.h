@@ -51,6 +51,7 @@ namespace sqlite2orm {
     extern const std::string kCommentNotColumnPointer;
     extern const std::string kCommentNotValueAddedToZero;
     extern const std::string kCommentNegatedConditionCast;
+    extern const std::string kCommentConcatenationCast;
     extern const std::string kCommentBitwiseResultCast;
     extern const std::string kCommentOrTokenCallSpelling;
     extern const std::string kCommentAndOrPredicateArgumentCast;
@@ -335,7 +336,8 @@ namespace sqlite2orm {
      *  True for a node generated as sqlite_orm's `conc_t`, which every SQL `||` that really is a
      *  concatenation comes out as — the `left || right` spelling and the `conc(left, right)` one
      *  alike. `conc_t` is `binary_operator<L, R, conc_string>` and nothing else: not negatable, not
-     *  an arithmetic operand, not an operator argument, so nothing can be built on top of one.
+     *  an arithmetic operand, not an operator argument, so nothing can be built on top of one
+     *  without delimiting it first.
      */
     bool generatesConcatenation(const AstNode& astNode);
     /** True for a node that generates a bare C++ value, which `wrap` turns into a sqlite_orm expression. */

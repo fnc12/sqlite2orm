@@ -997,3 +997,38 @@ TEST_CASE("runtime: a NOT over an OR returns the value SQLite computes") {
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"0", "1", "NULL", "0", "1", "0", "1"});
 }
+
+// A concatenation under a NOT is delimited with a CAST to REAL, and REAL is the only type that
+// reproduces what SQLite answers: a concatenation gives TEXT (or NULL), and SQLite reads the truth
+// of a text value through its real value, so `NOT ('0' || '.5')` is 0 where
+// `NOT CAST('0' || '.5' AS INTEGER)` is 1. Expected values checked against sqlite3 3.51 and the
+// linked libsqlite3 3.45.1 over `users(a TEXT)` holding one row with a = '0'; the two agree on
+// every one of 2032 text values for `NOT x` against `NOT CAST(x AS REAL)`.
+TEST_CASE("runtime: a NOT over a concatenation returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a || '.5');"),
+        generate("SELECT NOT (a || '');"),
+        generate("SELECT NOT (a || '1');"),
+        generate("SELECT NOT ('abc' || 'd');"),
+        generate("SELECT NOT ('1' || '2');"),
+        generate("SELECT NOT (NULL || 'x');"),
+        generate("SELECT NOT (a || 'e-400');"),
+        generate("SELECT NOT ((a IS NULL) || '5');"),
+        generate("SELECT NOT NOT (a || '.5');"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \".5\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"1\")));",
+                "auto rows = storage.select(not cast<double>(c(\"abc\") || \"d\"));",
+                "auto rows = storage.select(not cast<double>(c(\"1\") || \"2\"));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(nullptr) || \"x\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"e-400\")));",
+                "auto rows = storage.select(not cast<double>(cast<int64_t>(is_null(&User::a)) || \"5\"));",
+                "auto rows = storage.select(as_optional(not cast<int64_t>(not cast<double>(c(&User::a) || "
+                "\".5\"))));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", "\"0\"") ==
+            std::vector<std::string>{"0", "1", "0", "1", "0", "NULL", "1", "0", "1"});
+}

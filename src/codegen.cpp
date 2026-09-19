@@ -165,6 +165,11 @@ namespace sqlite2orm {
     }
 
     CodeGenResult CodeGenerator::generate(const AstNode& astNode) {
+        // Marked before anything runs, so the take at the end of the statement erases this
+        // generation and nothing below it. `resetForGeneration` empties the log, which makes the
+        // mark zero today; taking since it rather than from zero is what keeps that an
+        // implementation detail if a generation is ever nested inside another one's mark.
+        const size_t commentMark = this->generatorContext->commentMark();
         this->syncToContext();
         this->generatorContext->resetForGeneration();
         auto result = this->generateNode(astNode);
@@ -172,11 +177,12 @@ namespace sqlite2orm {
             return CodeGenResult{{}, {}, {}, std::move(this->generatorContext->accumulatedErrors), {}};
         }
         // A comment belongs to the statement whose body the expression was generated in, and this is
-        // that statement: `generateNode` has reported what it recorded already, so what the take
-        // does here is leave the context clean for the next statement of the batch.
-        // `createTableParts` and `createViewParts` take theirs when they run, so a CREATE TABLE and
-        // a CREATE VIEW carry them in the result and leave none here either.
-        appendUniqueStrings(result.comments, this->generatorContext->takeComments());
+        // that statement. `generateNode` has already reported everything recorded since the mark, so
+        // the append here adds nothing: the take is here for the erase, which leaves the context
+        // clean for the next statement of the batch. `createTableParts` and `createViewParts` take
+        // theirs when they run, so a CREATE TABLE and a CREATE VIEW carry them in the result and
+        // leave none here either.
+        appendUniqueStrings(result.comments, this->generatorContext->takeCommentsSince(commentMark));
         this->injectCustomFunctions(result);
         return result;
     }
@@ -319,7 +325,7 @@ namespace sqlite2orm {
                                           mark);
     }
 
-    CodeGenResult CodeGenerator::withRecordedComments(CodeGenResult result, size_t mark) const {
+    CodeGenResult CodeGenerator::withRecordedComments(CodeGenResult result, size_t mark) {
         if (result.code.empty()) {
             // Nothing was generated, so there is no form left for a comment recorded here to
             // explain: a node that answers with no code has its comments dropped along with the

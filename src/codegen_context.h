@@ -75,9 +75,9 @@ namespace sqlite2orm {
         std::vector<std::string> formsWithoutDefaultConstructor;
         /**
          *  The comments explaining the generated forms met since the last reset, in the order they
-         *  were recorded and a form met twice recorded twice — the readers (`takeComments`,
-         *  `takeCommentsSince` and `commentsRecordedSince`) are what deduplicate, so that each of
-         *  them answers with the distinct comments of its own stretch of the generation.
+         *  were recorded and a form met twice recorded twice — the readers (`takeCommentsSince`
+         *  and `commentsRecordedSince`) are what deduplicate, so that each of them answers with
+         *  the distinct comments of its own stretch of the generation.
          *  A comment belongs to the statement whose body the expression was generated in, and
          *  an expression is generated from every clause there is — a CHECK, a column DEFAULT, a
          *  view body, a trigger WHEN, a subquery, a CTE — so the clause generators would each have
@@ -179,9 +179,6 @@ namespace sqlite2orm {
 
         /** Records a comment explaining a generated form. */
         void recordComment(std::string_view comment);
-
-        /** Moves out the distinct comments recorded so far, leaving none behind. */
-        std::vector<std::string> takeComments();
 
         /** The count `commentsRecordedSince` measures from: how many comments stand recorded now. */
         size_t commentMark() const;

@@ -84,7 +84,7 @@ namespace sqlite2orm {
          *  A `result` with no code generated nothing for a comment to explain, so the ones recorded
          *  past `mark` are dropped instead — they belong to the fragment that was thrown away.
          */
-        CodeGenResult withRecordedComments(CodeGenResult result, size_t mark) const;
+        CodeGenResult withRecordedComments(CodeGenResult result, size_t mark);
 
         /** Prepend user-defined/extension function structs (+ registration) and add their decision points. */
         void injectCustomFunctions(CodeGenResult& result);

@@ -252,10 +252,6 @@ namespace sqlite2orm {
         this->comments.emplace_back(comment);
     }
 
-    std::vector<std::string> CodeGeneratorContext::takeComments() {
-        return this->takeCommentsSince(0);
-    }
-
     size_t CodeGeneratorContext::commentMark() const {
         return this->comments.size();
     }

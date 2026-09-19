@@ -1487,18 +1487,23 @@ namespace sqlite2orm {
 
             const std::string classicalCode = structDeclaration + "\n" + makeExpression;
             const std::string reflectedCode = reflectedStructDeclaration + "\n" + reflectedMakeExpression;
-            const bool reflected = reflectionBlocker.empty();
+            // The reflected form is the default of the two once the target allows it, but a
+            // consumer targeting C++26 on a compiler that has no reflection yet has to be able to
+            // ask for the classical one back — no released compiler implements P2996 today.
+            const bool reflectionOffered = reflectionBlocker.empty();
+            const bool reflected =
+                reflectionOffered && !policyEquals(this->context.codeGenPolicy, "table_mapping_style", "make_table");
 
             Option classicalOption{"make_table",
                                    classicalCode,
                                    "make_table(\"name\", make_column(…)) over a plain struct (wider compiler "
                                    "support)"};
-            if (!reflected) {
+            if (!reflectionOffered) {
                 classicalOption.comments.push_back("the C++26 reflection alternative is not offered for this table: " +
                                                    reflectionBlocker);
             }
             std::vector<Option> options{std::move(classicalOption)};
-            if (reflected) {
+            if (reflectionOffered) {
                 Option reflectedOption{"reflection",
                                        reflectedCode,
                                        "C++26 reflection: annotated struct + make_table<T>()"};

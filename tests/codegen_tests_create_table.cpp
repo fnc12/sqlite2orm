@@ -797,6 +797,83 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
                                     {kTableReflectionComment}});
 }
 
+// No released compiler implements P2996 yet, so a consumer targeting C++26 has to be able to ask
+// for the classical mapping back: the `table_mapping_style` category does exactly that, and both
+// variants stay on offer either way.
+TEST_CASE("codegen: CREATE TABLE - an explicit make_table policy keeps the classical mapping under C++26") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "make_table";
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER PRIMARY KEY);", policy);
+    const std::string classicalCode = "struct T {\n"
+                                      "    int64_t a = 0;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a, primary_key()))";
+    const std::string reflectedCode = "struct [[= \"t\"_orm_name]] T {\n"
+                                      "    [[= primary_key()]] int64_t a = 0;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table<T>()";
+    Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
+    reflectedOption.comments.push_back(kTableReflectionComment);
+    reflectedOption.minCppStandard = 26;
+    REQUIRE(result == CodeGenResult{"struct T {\n"
+                                    "    int64_t a = 0;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table(\"t\",\n"
+                                    "        make_column(\"a\", &T::a, primary_key())));",
+                                    {DecisionPoint{1,
+                                                   "table_mapping_style",
+                                                   "make_table",
+                                                   classicalCode,
+                                                   {Option{"make_table", classicalCode, kClassicalOptionDescription},
+                                                    reflectedOption}}}});
+}
+
+// The other way round the standard wins: below C++26 the reflected form does not compile, so
+// asking for it changes nothing — there is no decision point to answer in the first place.
+TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy is overridden by targetCppStandard 20") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 20;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "reflection";
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER PRIMARY KEY);", policy);
+    REQUIRE(result == CodeGenResult{"struct T {\n"
+                                    "    int64_t a = 0;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table(\"t\",\n"
+                                    "        make_column(\"a\", &T::a, primary_key())));"});
+}
+
+// A table that has no reflected form has nothing to switch to either: the policy is answered by
+// the one option there is.
+TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy cannot revive a blocked table") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "reflection";
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER CHECK(a > 0));", policy);
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a, check(c(&T::a) > 0)))";
+    REQUIRE(result.decisionPoints ==
+            std::vector<DecisionPoint>{
+                DecisionPoint{3,
+                              "table_mapping_style",
+                              "make_table",
+                              classicalCode,
+                              {classicalOnlyOption(classicalCode,
+                                                   "CHECK on column `a` names members of the struct being declared, "
+                                                   "which an annotation cannot")}}});
+}
+
 // A table-level constraint is no annotation: it stays a call argument, of `make_table<T>(…)` this
 // time, and `.without_rowid()` still follows the call.
 TEST_CASE("codegen: CREATE TABLE - table-level constraints stay arguments of the reflected make_table") {

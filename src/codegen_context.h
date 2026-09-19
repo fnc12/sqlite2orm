@@ -35,11 +35,11 @@ namespace sqlite2orm {
 
     /** A user-defined / extension function referenced in a statement, turned into a func<>() call. */
     struct CustomFunctionUse {
-        std::string sqlName;                 // original SQL name, e.g. "morton_encode"
-        std::string structName;              // C++ struct name, e.g. "MortonEncode"
-        std::vector<std::string> argTypes;   // best-effort C++ type per argument
-        std::vector<std::string> argNames;   // parameter names (column name when known, else argN)
-        std::string returnType = "int";      // best-effort result type
+        std::string sqlName;  // original SQL name, e.g. "morton_encode"
+        std::string structName;  // C++ struct name, e.g. "MortonEncode"
+        std::vector<std::string> argTypes;  // best-effort C++ type per argument
+        std::vector<std::string> argNames;  // parameter names (column name when known, else argN)
+        std::string returnType = "int";  // best-effort result type
 
         bool operator==(const CustomFunctionUse&) const = default;
     };
@@ -202,8 +202,7 @@ namespace sqlite2orm {
         /** Struct name of a referenced table, recording the reference when the table is not generated. */
         std::string structNameForTable(std::string_view tableName);
 
-        const SourceTableColumn* findSourceTableColumn(std::string_view tableName,
-                                                       std::string_view columnName) const;
+        const SourceTableColumn* findSourceTableColumn(std::string_view tableName, std::string_view columnName) const;
 
         /** Best-effort C++ type for a custom-function argument: schema type when known, else the name heuristic. */
         std::string customFunctionArgType(const AstNode& argument) const;

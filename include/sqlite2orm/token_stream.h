@@ -22,8 +22,12 @@ namespace sqlite2orm {
         bool isColumnNameToken() const;
         bool isColumnNameTokenAt(size_t offsetFromCurrent) const;
 
-        const std::vector<Token>& allTokens() const { return this->tokens; }
-        size_t currentPosition() const { return this->position; }
+        const std::vector<Token>& allTokens() const {
+            return this->tokens;
+        }
+        size_t currentPosition() const {
+            return this->position;
+        }
         /**
          *  The source text consumed since the position `firstTokenIndex` names: from the first
          *  character of that token through the last one of the token before the current position,
@@ -33,7 +37,9 @@ namespace sqlite2orm {
          *  tokens yields an empty span.
          */
         SourceSpan consumedSpanFrom(size_t firstTokenIndex) const;
-        void setPosition(size_t newPosition) { this->position = newPosition; }
+        void setPosition(size_t newPosition) {
+            this->position = newPosition;
+        }
 
       private:
         std::vector<Token> tokens;

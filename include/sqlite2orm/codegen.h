@@ -62,7 +62,8 @@ namespace sqlite2orm {
 
         CodeGenResult generateTriggerStep(const AstNode& statement, const std::string& subjectTableStruct);
 
-        std::string codegenOverClause(const OverClause& overClause, std::vector<DecisionPoint>& decisionPoints,
+        std::string codegenOverClause(const OverClause& overClause,
+                                      std::vector<DecisionPoint>& decisionPoints,
                                       std::vector<CodegenWarning>& warnings);
 
         CodeGeneratorContext& context();

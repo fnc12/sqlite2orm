@@ -41,80 +41,81 @@ namespace {
 }  // namespace
 
 TEST_CASE("codegen: a statement with no sqlite_orm form at all is placeheld and underlined") {
-    REQUIRE(generateFull("ANALYZE") ==
-            CodeGenResult{"/* unsupported node */",
-                          {},
-                          {CodegenWarning{"this statement is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 7}}});
-    REQUIRE(generateFull("REINDEX") ==
-            CodeGenResult{"/* unsupported node */",
-                          {},
-                          {CodegenWarning{"this statement is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 7}}});
+    REQUIRE(
+        generateFull("ANALYZE") ==
+        CodeGenResult{"/* unsupported node */",
+                      {},
+                      {CodegenWarning{"this statement is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 7}}});
+    REQUIRE(
+        generateFull("REINDEX") ==
+        CodeGenResult{"/* unsupported node */",
+                      {},
+                      {CodegenWarning{"this statement is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 7}}});
     REQUIRE(generateFull("ALTER TABLE users RENAME TO people") ==
-            CodeGenResult{"/* unsupported node */",
-                          {},
-                          {CodegenWarning{"this statement is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 34}}});
+            CodeGenResult{
+                "/* unsupported node */",
+                {},
+                {CodegenWarning{"this statement is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 34}}});
     REQUIRE(generateFull("ATTACH DATABASE 'x' AS y") ==
-            CodeGenResult{"/* unsupported node */",
-                          {},
-                          {CodegenWarning{"this statement is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 24}}});
-    REQUIRE(generateFull("DETACH y") ==
-            CodeGenResult{"/* unsupported node */",
-                          {},
-                          {CodegenWarning{"this statement is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 8}}});
+            CodeGenResult{
+                "/* unsupported node */",
+                {},
+                {CodegenWarning{"this statement is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 24}}});
+    REQUIRE(
+        generateFull("DETACH y") ==
+        CodeGenResult{"/* unsupported node */",
+                      {},
+                      {CodegenWarning{"this statement is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 8}}});
     REQUIRE(generateFull("EXPLAIN SELECT 1") ==
-            CodeGenResult{"/* unsupported node */",
-                          {},
-                          {CodegenWarning{"this statement is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 16}}});
+            CodeGenResult{
+                "/* unsupported node */",
+                {},
+                {CodegenWarning{"this statement is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 16}}});
 }
 
 // The IS branch raises a codegen error as well, and an error makes `generate` answer with the
 // errors alone — so this is the one placeholder a consumer never sees. It goes through the funnel
 // all the same: what the generators hand each other says where it came from.
 TEST_CASE("codegen: the IS placeholder is underlined on the operator's own expression") {
-    REQUIRE(generateNodeOnly("1 IS 2") ==
-            CodeGenResult{"/* unsupported IS expression */",
-                          {},
-                          {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                                          "is not supported in sqlite_orm",
-                                          SourceLocation{1, 1}, 6}}});
+    REQUIRE(generateNodeOnly("1 IS 2") == CodeGenResult{"/* unsupported IS expression */",
+                                                        {},
+                                                        {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                                                                        "is not supported in sqlite_orm",
+                                                                        SourceLocation{1, 1},
+                                                                        6}}});
     REQUIRE(generateNodeOnly("SELECT a IS NOT DISTINCT FROM b FROM t") ==
             CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */);",
                           {},
                           {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
                                           "is not supported in sqlite_orm",
-                                          SourceLocation{1, 8}, 24}}});
+                                          SourceLocation{1, 8},
+                                          24}}});
 }
 
 TEST_CASE("codegen: an unmapped EXISTS subquery is underlined together with its keyword") {
     REQUIRE(generateFull("EXISTS (SELECT a FROM users GROUP BY a)") ==
-            CodeGenResult{"/* EXISTS (SELECT ...) */",
-                          {},
-                          {CodegenWarning{"EXISTS (SELECT ...) is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 39},
-                           "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
+            CodeGenResult{
+                "/* EXISTS (SELECT ...) */",
+                {},
+                {CodegenWarning{"EXISTS (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 39},
+                 "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
 }
 
 TEST_CASE("codegen: an IN over a table name is underlined") {
     REQUIRE(generateFull("id IN t") ==
-            CodeGenResult{"/* &User::id IN t */",
-                          {columnRefStyleDp(1, "&User::id")},
-                          {CodegenWarning{"IN table-name is not supported in sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 7}}});
+            CodeGenResult{
+                "/* &User::id IN t */",
+                {columnRefStyleDp(1, "&User::id")},
+                {CodegenWarning{"IN table-name is not supported in sqlite_orm codegen", SourceLocation{1, 1}, 7}}});
 }
 
 TEST_CASE("codegen: an IN over an unmapped subquery is underlined") {
     REQUIRE(generateFull("id IN (SELECT a FROM users GROUP BY a)") ==
-            CodeGenResult{"/* IN (SELECT ...) */",
-                          {columnRefStyleDp(1, "&User::id")},
-                          {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
-                           CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 38}}});
+            CodeGenResult{
+                "/* IN (SELECT ...) */",
+                {columnRefStyleDp(1, "&User::id")},
+                {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
+                 CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 38}}});
 }
 
 // SQLite refuses a bind marker with no name behind it ("unrecognized token: \":\"" on 3.51.0), so
@@ -125,7 +126,8 @@ TEST_CASE("codegen: a bind parameter with no name behind it is underlined") {
                           {},
                           {CodegenWarning{"bind parameter : -> C++ variable '/* : */'; for prepared statements "
                                           "use storage.prepare() + get<N>(stmt)",
-                                          SourceLocation{1, 1}, 1}}});
+                                          SourceLocation{1, 1},
+                                          1}}});
 }
 
 TEST_CASE("codegen: the SELECT an INSERT reads from is underlined when it is unmapped") {
@@ -134,7 +136,8 @@ TEST_CASE("codegen: the SELECT an INSERT reads from is underlined when it is unm
                           {},
                           {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
                            CodegenWarning{"the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 19}, 30}}});
+                                          SourceLocation{1, 19},
+                                          30}}});
 }
 
 TEST_CASE("codegen: an unmapped compound SELECT is underlined whole") {
@@ -143,7 +146,8 @@ TEST_CASE("codegen: an unmapped compound SELECT is underlined whole") {
                           {},
                           {CodegenWarning{"compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to "
                                           "sqlite_orm codegen",
-                                          SourceLocation{1, 1}, 45},
+                                          SourceLocation{1, 1},
+                                          45},
                            "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
 }
 
@@ -153,7 +157,8 @@ TEST_CASE("codegen: DROP VIEW is underlined whole") {
                           {},
                           {CodegenWarning{"DROP VIEW is not supported as a sqlite_orm storage method; sqlite_orm "
                                           "sync_schema() applies to mapped tables/indexes/triggers, not views",
-                                          SourceLocation{1, 1}, 11}}});
+                                          SourceLocation{1, 1},
+                                          11}}});
 }
 
 // A virtual table whose whole shape is unmappable is underlined as a whole statement; where one
@@ -164,19 +169,22 @@ TEST_CASE("codegen: an unmappable CREATE VIRTUAL TABLE is underlined") {
                           {},
                           {CodegenWarning{"FTS5 requires at least one column argument for "
                                           "sqlite_orm::using_fts5()",
-                                          SourceLocation{1, 1}, 47}}});
+                                          SourceLocation{1, 1},
+                                          47}}});
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS r USING rtree(id, minX)") ==
             CodeGenResult{"/* CREATE VIRTUAL TABLE: rtree (invalid column count) */",
                           {},
                           {CodegenWarning{"RTREE virtual table for sqlite_orm needs 3, 5, 7, 9, or 11 simple "
                                           "column identifiers (id + min/max pairs)",
-                                          SourceLocation{1, 1}, 58}}});
+                                          SourceLocation{1, 1},
+                                          58}}});
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS r USING rtree(id, lower(a), maxX)") ==
             CodeGenResult{"/* CREATE VIRTUAL TABLE: rtree (unmapped arguments) */",
                           {},
                           {CodegenWarning{"RTREE module arguments that are not plain column names cannot be "
                                           "mapped to sqlite_orm using_rtree() / using_rtree_i32()",
-                                          SourceLocation{1, 54}, 8}}});
+                                          SourceLocation{1, 54},
+                                          8}}});
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS g USING generate_series(1)") ==
             CodeGenResult{"/* CREATE VIRTUAL TABLE: generate_series (unmapped arguments) */",
                           {},
@@ -184,19 +192,22 @@ TEST_CASE("codegen: an unmappable CREATE VIRTUAL TABLE is underlined") {
                                           "expected empty argument list for "
                                           "make_virtual_table<generate_series>(..., "
                                           "internal::using_generate_series())",
-                                          SourceLocation{1, 60}, 1}}});
+                                          SourceLocation{1, 60},
+                                          1}}});
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS d USING dbstat('main', 'x')") ==
             CodeGenResult{"/* CREATE VIRTUAL TABLE: dbstat (too many arguments) */",
                           {},
                           {CodegenWarning{"dbstat accepts at most one optional schema string argument for "
                                           "sqlite_orm::using_dbstat()",
-                                          SourceLocation{1, 59}, 3}}});
+                                          SourceLocation{1, 59},
+                                          3}}});
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS d USING dbstat(1)") ==
             CodeGenResult{"/* CREATE VIRTUAL TABLE: dbstat (unmapped argument) */",
                           {},
                           {CodegenWarning{"dbstat optional argument should be a SQL string literal for "
                                           "sqlite_orm::using_dbstat(\"...\")",
-                                          SourceLocation{1, 51}, 1}}});
+                                          SourceLocation{1, 51},
+                                          1}}});
 }
 
 // A consumer draws the underline along one line, so a span written across lines is cut at the end
@@ -206,7 +217,8 @@ TEST_CASE("codegen: a placeholder's underline stops at the end of the line it st
             CodeGenResult{"auto rows = storage.select(&Users::name, limit(/* (SELECT ...) */));",
                           {columnRefStyleDp(1, "&Users::name")},
                           {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 30}, 9},
+                                          SourceLocation{1, 30},
+                                          9},
                            "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
 }
 
@@ -219,24 +231,26 @@ namespace {
      */
     std::vector<std::string> placeholderLiteralsIn(const std::string& source) {
         std::vector<std::string> literals;
-        for(size_t index = 0; index < source.size();) {
-            if(source.compare(index, 2, "//") == 0) {
+        for (size_t index = 0; index < source.size();) {
+            if (source.compare(index, 2, "//") == 0) {
                 const size_t lineEnd = source.find('\n', index);
-                if(lineEnd == std::string::npos) break;
+                if (lineEnd == std::string::npos)
+                    break;
                 index = lineEnd;
-            } else if(source.compare(index, 2, "/*") == 0) {
+            } else if (source.compare(index, 2, "/*") == 0) {
                 const size_t commentEnd = source.find("*/", index + 2);
-                if(commentEnd == std::string::npos) break;
+                if (commentEnd == std::string::npos)
+                    break;
                 index = commentEnd + 2;
-            } else if(source[index] == '\'' || source[index] == '"') {
+            } else if (source[index] == '\'' || source[index] == '"') {
                 const char quote = source[index];
                 const size_t start = index++;
-                while(index < source.size() && source[index] != quote) {
+                while (index < source.size() && source[index] != quote) {
                     index += source[index] == '\\' ? 2 : 1;
                 }
                 ++index;
                 std::string literal = source.substr(start, std::min(index, source.size()) - start);
-                if(quote == '"' && literal.find("/*") != std::string::npos) {
+                if (quote == '"' && literal.find("/*") != std::string::npos) {
                     literals.push_back(std::move(literal));
                 }
             } else {
@@ -272,9 +286,9 @@ TEST_CASE("codegen: every generated placeholder is funnelled through unsupported
 
     std::vector<std::filesystem::path> sources;
     const std::filesystem::path sourceDirectory = std::filesystem::path{SQLITE2ORM_TEST_SOURCE_DIR} / "src";
-    for(const auto& entry : std::filesystem::directory_iterator{sourceDirectory}) {
+    for (const auto& entry: std::filesystem::directory_iterator{sourceDirectory}) {
         const std::string fileName = entry.path().filename().string();
-        if(fileName.rfind("codegen", 0) == 0 && entry.path().extension() == ".cpp") {
+        if (fileName.rfind("codegen", 0) == 0 && entry.path().extension() == ".cpp") {
             sources.push_back(entry.path());
         }
     }
@@ -282,14 +296,14 @@ TEST_CASE("codegen: every generated placeholder is funnelled through unsupported
     std::sort(sources.begin(), sources.end());
 
     std::vector<std::string> found;
-    for(const std::filesystem::path& source : sources) {
+    for (const std::filesystem::path& source: sources) {
         std::ifstream stream{source};
         REQUIRE(stream);
         std::stringstream buffer;
         buffer << stream.rdbuf();
-        for(const std::string& literal : placeholderLiteralsIn(buffer.str())) {
+        for (const std::string& literal: placeholderLiteralsIn(buffer.str())) {
             std::string entry = source.filename().string() + ": " + literal;
-            if(std::find(found.begin(), found.end(), entry) == found.end()) {
+            if (std::find(found.begin(), found.end(), entry) == found.end()) {
                 found.push_back(std::move(entry));
             }
         }
@@ -315,20 +329,17 @@ TEST_CASE("codegen: a `*` next to other result columns is placeheld and the SELE
                           {columnRefStyleDp(1, "&T::a")},
                           {CodegenWarning{message, SourceLocation{1, 1}, 18}}});
     REQUIRE(generateFull("SELECT count(*), * FROM t") ==
-            CodeGenResult{
-                "auto rows = storage.select(columns(count<T>(), /* * among other result columns */));",
-                {},
-                {CodegenWarning{message, SourceLocation{1, 1}, 25}}});
+            CodeGenResult{"auto rows = storage.select(columns(count<T>(), /* * among other result columns */));",
+                          {},
+                          {CodegenWarning{message, SourceLocation{1, 1}, 25}}});
     REQUIRE(generateFull("SELECT t.*, * FROM t") ==
-            CodeGenResult{
-                "auto rows = storage.select(columns(asterisk<T>(), /* * among other result columns */));",
-                {},
-                {CodegenWarning{message, SourceLocation{1, 1}, 20}}});
+            CodeGenResult{"auto rows = storage.select(columns(asterisk<T>(), /* * among other result columns */));",
+                          {},
+                          {CodegenWarning{message, SourceLocation{1, 1}, 20}}});
     REQUIRE(generateFull("SELECT DISTINCT *, a FROM t") ==
-            CodeGenResult{
-                "auto rows = storage.select(distinct(columns(/* * among other result columns */, &T::a)));",
-                {columnRefStyleDp(1, "&T::a")},
-                {CodegenWarning{message, SourceLocation{1, 1}, 27}}});
+            CodeGenResult{"auto rows = storage.select(distinct(columns(/* * among other result columns */, &T::a)));",
+                          {columnRefStyleDp(1, "&T::a")},
+                          {CodegenWarning{message, SourceLocation{1, 1}, 27}}});
     // One warning for a result list holding two of them, underlined at the SELECT all the same.
     REQUIRE(generateFull("SELECT *, a, * FROM t") ==
             CodeGenResult{"auto rows = storage.select(columns(/* * among other result columns */, &T::a, "
@@ -354,14 +365,15 @@ TEST_CASE("codegen: a subquery selecting a `*` next to other columns is left unm
             CodeGenResult{"auto rows = storage.select(/* (SELECT ...) */);",
                           {},
                           {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 8}, 20},
+                                          SourceLocation{1, 8},
+                                          20},
                            CodegenWarning{message, SourceLocation{1, 9}, 18}}});
     REQUIRE(generateFull("SELECT a FROM t WHERE b IN (SELECT *, c FROM u)") ==
-            CodeGenResult{"auto rows = storage.select(&T::a, where(/* IN (SELECT ...) */));",
-                          {columnRefStyleDp(1, "&T::a"), columnRefStyleDp(2, "&T::b")},
-                          {CodegenWarning{message, SourceLocation{1, 29}, 18},
-                           CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen",
-                                          SourceLocation{1, 23}, 25}}});
+            CodeGenResult{
+                "auto rows = storage.select(&T::a, where(/* IN (SELECT ...) */));",
+                {columnRefStyleDp(1, "&T::a"), columnRefStyleDp(2, "&T::b")},
+                {CodegenWarning{message, SourceLocation{1, 29}, 18},
+                 CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 23}, 25}}});
     REQUIRE(generateFull("CREATE VIEW v AS SELECT *, a FROM t") ==
             CodeGenResult{"/* CREATE VIEW v — not supported for sqlite_orm */",
                           {},

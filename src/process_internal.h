@@ -15,9 +15,9 @@ namespace sqlite2orm {
      *  generator so CREATE VIEW statements can infer struct field types. Internal to the library;
      *  public callers get the registry built automatically (processMultiSql, processSqliteSchema).
      */
-    ProcessSqlResult processSqlWithSourceTables(
-        std::string_view sql,
-        const CodeGenPolicy* policy,
-        const std::map<std::string, std::vector<SourceTableColumn>>& sourceTables);
+    ProcessSqlResult
+    processSqlWithSourceTables(std::string_view sql,
+                               const CodeGenPolicy* policy,
+                               const std::map<std::string, std::vector<SourceTableColumn>>& sourceTables);
 
 }  // namespace sqlite2orm

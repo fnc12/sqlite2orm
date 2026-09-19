@@ -31,8 +31,11 @@ namespace codegen_test_helpers {
 
     DecisionPoint apiLevelStarSelectDp(int id, const std::string& structName, const std::string& trailingArgs);
 
-    CodeGenResult expectedBinaryLeaf(std::string_view leftCode, std::string_view rightCode,
-                                       std::string_view op, std::string_view funcName, int firstId = 1);
+    CodeGenResult expectedBinaryLeaf(std::string_view leftCode,
+                                     std::string_view rightCode,
+                                     std::string_view op,
+                                     std::string_view funcName,
+                                     int firstId = 1);
 
 }  // namespace codegen_test_helpers
 

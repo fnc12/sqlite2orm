@@ -15,7 +15,7 @@ namespace sqlite2orm {
 
     const Token& TokenStream::peekToken(size_t offset) const {
         size_t index = this->position + offset;
-        if(index >= this->tokens.size()) {
+        if (index >= this->tokens.size()) {
             return this->tokens.back();
         }
         return this->tokens.at(index);
@@ -23,7 +23,7 @@ namespace sqlite2orm {
 
     const Token& TokenStream::advanceToken() {
         const Token& token = this->tokens.at(this->position);
-        if(token.type != TokenType::eof) {
+        if (token.type != TokenType::eof) {
             ++this->position;
         }
         return token;
@@ -31,19 +31,18 @@ namespace sqlite2orm {
 
     SourceSpan TokenStream::consumedSpanFrom(size_t firstTokenIndex) const {
         size_t lastTokenIndex = std::min(this->position, this->tokens.size());
-        while(lastTokenIndex > firstTokenIndex && this->tokens.at(lastTokenIndex - 1).value.empty()) {
+        while (lastTokenIndex > firstTokenIndex && this->tokens.at(lastTokenIndex - 1).value.empty()) {
             --lastTokenIndex;
         }
-        if(lastTokenIndex <= firstTokenIndex || firstTokenIndex >= this->tokens.size()) {
+        if (lastTokenIndex <= firstTokenIndex || firstTokenIndex >= this->tokens.size()) {
             return SourceSpan{};
         }
         const Token& first = this->tokens.at(firstTokenIndex);
         const Token& last = this->tokens.at(lastTokenIndex - 1);
-        if(first.value.empty()) {
+        if (first.value.empty()) {
             return SourceSpan{};
         }
-        const size_t length =
-            static_cast<size_t>(last.value.data() + last.value.size() - first.value.data());
+        const size_t length = static_cast<size_t>(last.value.data() + last.value.size() - first.value.data());
         return SourceSpan{first.location, std::string_view(first.value.data(), length)};
     }
 
@@ -56,7 +55,7 @@ namespace sqlite2orm {
     }
 
     std::optional<Token> TokenStream::match(TokenType type) {
-        if(check(type)) {
+        if (check(type)) {
             return advanceToken();
         }
         return std::nullopt;
@@ -64,29 +63,32 @@ namespace sqlite2orm {
 
     bool TokenStream::isColumnNameToken() const {
         auto type = current().type;
-        if(type == TokenType::identifier || type == TokenType::stringLiteral) return true;
+        if (type == TokenType::identifier || type == TokenType::stringLiteral)
+            return true;
         return type >= TokenType::kwAbort && type <= TokenType::kwWithout;
     }
 
     bool TokenStream::isColumnNameTokenAt(size_t offsetFromCurrent) const {
         size_t index = this->position + offsetFromCurrent;
-        if(index >= this->tokens.size()) return false;
+        if (index >= this->tokens.size())
+            return false;
         auto type = this->tokens.at(index).type;
-        if(type == TokenType::identifier || type == TokenType::stringLiteral) return true;
+        if (type == TokenType::identifier || type == TokenType::stringLiteral)
+            return true;
         return type >= TokenType::kwAbort && type <= TokenType::kwWithout;
     }
 
     void TokenStream::skipToSemicolon() {
         int parenDepth = 0;
-        while(!atEnd()) {
+        while (!atEnd()) {
             const TokenType tokenType = current().type;
-            if(tokenType == TokenType::semicolon && parenDepth == 0) {
+            if (tokenType == TokenType::semicolon && parenDepth == 0) {
                 advanceToken();
                 return;
             }
-            if(tokenType == TokenType::leftParen) {
+            if (tokenType == TokenType::leftParen) {
                 ++parenDepth;
-            } else if(tokenType == TokenType::rightParen && parenDepth > 0) {
+            } else if (tokenType == TokenType::rightParen && parenDepth > 0) {
                 --parenDepth;
             }
             advanceToken();

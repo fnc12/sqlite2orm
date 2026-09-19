@@ -968,3 +968,32 @@ TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQ
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
 }
+
+// sqlite_orm spells `or` and the concatenation with the same `operator||`, and picks between them
+// by the operands, so an OR over operands that are no conditions is generated as the `or_(…)` call
+// — an `or_condition_t` either way, which sqlite_orm negates. The `conc_t` the operator spelling
+// used to build is not negatable, so a NOT over an OR did not compile at all. A NOT over one still
+// carries the CAST every `negated_condition_t` needs under a second NOT. Expected values checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7.
+TEST_CASE("runtime: a NOT over an OR returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a OR 0);"),
+        generate("SELECT NOT (0 OR 0);"),
+        generate("SELECT NOT (NULL OR 0);"),
+        generate("SELECT NOT (NULL OR 1);"),
+        generate("SELECT NOT ('a' OR 0);"),
+        generate("SELECT NOT (a = 7 OR 0);"),
+        generate("SELECT NOT NOT (a OR 0);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(not (or_(&User::a, 0))));",
+                              "auto rows = storage.select(not (or_(0, 0)));",
+                              "auto rows = storage.select(as_optional(not (or_(nullptr, 0))));",
+                              "auto rows = storage.select(as_optional(not (or_(nullptr, 1))));",
+                              "auto rows = storage.select(not (or_(\"a\", 0)));",
+                              "auto rows = storage.select(as_optional(not (c(&User::a) == 7 or 0)));",
+                              "auto rows = storage.select(as_optional(not cast<int64_t>(not (or_(&User::a, 0)))));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"0", "1", "NULL", "0", "1", "0", "1"});
+}

@@ -1243,6 +1243,11 @@ namespace sqlite2orm {
         return false;
     }
 
+    bool generatesConcatenation(const AstNode& astNode) {
+        auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(astNode));
+        return binaryOperator != nullptr && binaryOperator->binaryOperator == BinaryOperator::concatenate;
+    }
+
     bool isLeafNode(const AstNode& astNode) {
         const AstNode& generatedNode = generatedOperandNode(astNode);
         return generatesFoldedNegation(generatedNode) ||

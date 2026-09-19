@@ -689,6 +689,75 @@ TEST_CASE("codegen: a NOT over a NOT carries its comment") {
             std::vector<std::string>{kNotColumnPointerComment, kNegatedConditionCastComment});
 }
 
+// A concatenation is the one operand a NOT has no form for at all: sqlite_orm's `conc_t` is
+// `binary_operator<L, R, conc_string>` and nothing else — neither negatable nor an operator
+// argument — so `not (c(&Users::a) || "x")` stops at `no match for operator!`. The CAST that
+// delimits every other operand does compile over one, and it answers something else, because it
+// truncates the text before the boolean coercion reads it: `NOT ('0' || '.5')` is 0 where
+// `NOT CAST('0' || '.5' AS INTEGER)` is 1 (checked against sqlite3 3.51). `c(0) + …` does not
+// compile over a `conc_t` either. The concatenation stays as it was written and codegen warns.
+TEST_CASE("codegen: a NOT over a concatenation warns instead") {
+    auto check = [](std::string_view sql, const std::string& code, SourceLocation location) {
+        auto result = generateFull(sql);
+        REQUIRE(result.code == code);
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"NOT over a concatenation has no working sqlite_orm form; conc_t is neither "
+                     "negatable nor an operator argument, so the generated code does not compile. A "
+                     "CAST to INTEGER would compile and answer something else: NOT ('0' || '.5') is 0 "
+                     "where NOT CAST('0' || '.5' AS INTEGER) is 1",
+                     location, 3}});
+    };
+    check("SELECT NOT (a || 'x') FROM users;",
+          "auto rows = storage.select(as_optional(not (c(&Users::a) || \"x\")));", SourceLocation{1, 8});
+    check("SELECT NOT ('a' || 'b');", "auto rows = storage.select(not (c(\"a\") || \"b\"));",
+          SourceLocation{1, 8});
+    check("SELECT NOT ('a' || 'b' || 'c');",
+          "auto rows = storage.select(not (c(\"a\") || \"b\" || \"c\"));", SourceLocation{1, 8});
+    // The call spelling a condition operand takes is the same `conc_t`, and so is the one a
+    // predicate delimited with a CAST keeps.
+    check("SELECT NOT ((a = 1) || 'x') FROM users;",
+          "auto rows = storage.select(as_optional(not (conc(c(&Users::a) == 1, \"x\"))));",
+          SourceLocation{1, 8});
+    check("SELECT NOT ((a IS NULL) || 'x') FROM users;",
+          "auto rows = storage.select(not (cast<int64_t>(is_null(&Users::a)) || \"x\"));",
+          SourceLocation{1, 8});
+    check("SELECT 1 FROM users WHERE NOT (a || 'x');",
+          "auto rows = storage.select(1, where(not (c(&Users::a) || \"x\")));", SourceLocation{1, 27});
+}
+
+// A COLLATE generates its operand and nothing else, so the concatenation under one is the operand
+// the NOT really stands over in the generated code.
+TEST_CASE("codegen: a NOT over a collated concatenation warns as well") {
+    auto result = generateFull("SELECT NOT (('a' || 'b') COLLATE NOCASE);");
+    REQUIRE(result.code == "auto rows = storage.select(not (c(\"a\") || \"b\"));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"},
+                {"NOT over a concatenation has no working sqlite_orm form; conc_t is neither "
+                 "negatable nor an operator argument, so the generated code does not compile. A "
+                 "CAST to INTEGER would compile and answer something else: NOT ('0' || '.5') is 0 "
+                 "where NOT CAST('0' || '.5' AS INTEGER) is 1",
+                 SourceLocation{1, 8}, 3}});
+}
+
+// An OR needs nothing: sqlite_orm spells `or` and the concatenation with the same `operator||`, and
+// an OR is generated as the call whenever the operator would pick the `conc_t` — an `or_condition_t`
+// either way, which sqlite_orm does negate. The values are pinned in
+// "runtime: a NOT over an OR returns the value SQLite computes".
+TEST_CASE("codegen: a NOT over an OR is negated as it stands") {
+    auto check = [](std::string_view sql, const std::string& code) {
+        auto result = generateFull(sql);
+        REQUIRE(result.code == code);
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    };
+    check("SELECT NOT (a OR b) FROM users;",
+          "auto rows = storage.select(as_optional(not (or_(&Users::a, &Users::b))));");
+    check("SELECT NOT (1 OR 0);", "auto rows = storage.select(not (or_(1, 0)));");
+    check("SELECT NOT (a = 1 OR b = 2) FROM users;",
+          "auto rows = storage.select(as_optional(not (c(&Users::a) == 1 or c(&Users::b) == 2)));");
+}
+
 TEST_CASE("codegen: double unary minus parenthesized") {
     auto result = generateFull("- -a");
     REQUIRE(result == CodeGenResult{

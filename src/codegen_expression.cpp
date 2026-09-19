@@ -655,6 +655,23 @@ namespace sqlite2orm {
                 appendUniqueString(operandResult.comments, kCommentNegatedConditionCast);
             }
 
+            // A concatenation is the one operand a NOT has no form for at all: a `conc_t` is neither
+            // negatable nor an operator argument, and neither wrapper that rescues another operand
+            // stands in for it. The CAST above compiles and answers something else — NOT ('0' || '.5')
+            // is 0 where NOT CAST('0' || '.5' AS INTEGER) is 1, because the CAST truncates the text
+            // before the boolean coercion reads it — and `c(0) + …` does not compile over a `conc_t`
+            // any more than the NOT does. The concatenation stays as it is and codegen warns, with
+            // the three characters of the NOT keyword underlined.
+            if(unaryOp->unaryOperator == UnaryOperator::logicalNot &&
+               generatesConcatenation(*unaryOp->operand)) {
+                operandResult.warnings.push_back(CodegenWarning{
+                    "NOT over a concatenation has no working sqlite_orm form; conc_t is neither "
+                    "negatable nor an operator argument, so the generated code does not compile. A "
+                    "CAST to INTEGER would compile and answer something else: NOT ('0' || '.5') is 0 "
+                    "where NOT CAST('0' || '.5' AS INTEGER) is 1",
+                    unaryOp->location, 3});
+            }
+
             // A column reference under a NOT is generated as a column pointer rather than wrapped in
             // `c(...)`; the two forms stand in the same place, so the wrapper is skipped for it.
             const bool wrapsOperandInC =

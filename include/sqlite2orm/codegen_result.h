@@ -69,7 +69,14 @@ namespace sqlite2orm {
         std::vector<DecisionPoint> decisionPoints;
         std::vector<CodegenWarning> warnings;
         std::vector<std::string> errors;
-        /** Optional hints for the generated snippet (deduplicated when merging fragments). */
+        /**
+         *  Optional hints explaining the forms the snippet was generated as, deduplicated by text.
+         *  Every entry point that generates from an AST node reports the ones recorded while it ran,
+         *  so a whole statement carries the comments of every clause of its body and a single node
+         *  carries its own. A hint explains generated code, so a fragment that is thrown away — a
+         *  subquery replaced by a placeholder, a statement that ends up with no `code` at all —
+         *  reports none of the ones its generation recorded.
+         */
         std::vector<std::string> comments;
 
         bool operator==(const CodeGenResult&) const = default;
@@ -79,6 +86,8 @@ namespace sqlite2orm {
         std::string structDeclaration;
         std::string makeTableExpression;
         std::vector<CodegenWarning> warnings;
+        /** Optional hints for the generated table, from its CHECK, DEFAULT and generated-column expressions. */
+        std::vector<std::string> comments;
     };
 
     struct CreateViewParts {

@@ -4,6 +4,7 @@
 #include <sqlite2orm/codegen_policy.h>
 #include <sqlite2orm/codegen_result.h>
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -73,6 +74,17 @@ namespace sqlite2orm {
         friend void codegen_test_helpers::setSuppressWithCteStyleDecisionPointForTests(CodeGenerator&, bool);
 
         void syncToContext();
+
+        /** `generateNode` without the bookkeeping that reports what the node recorded. */
+        CodeGenResult dispatchNode(const AstNode& astNode);
+
+        /**
+         *  `result` with the comments the context recorded past `mark` appended: the comments the
+         *  call that produced it recorded, and none of the ones its statement recorded around it.
+         *  A `result` with no code generated nothing for a comment to explain, so the ones recorded
+         *  past `mark` are dropped instead — they belong to the fragment that was thrown away.
+         */
+        CodeGenResult withRecordedComments(CodeGenResult result, size_t mark) const;
 
         /** Prepend user-defined/extension function structs (+ registration) and add their decision points. */
         void injectCustomFunctions(CodeGenResult& result);

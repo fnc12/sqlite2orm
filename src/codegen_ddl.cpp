@@ -10,15 +10,17 @@ namespace sqlite2orm {
         coordinator(coordinator), context(context) {}
 
     CodeGenResult DdlCodeGenerator::generateCreateTable(const CreateTableNode& createTable) {
-        const CreateTableParts parts = this->createTableParts(createTable);
+        CreateTableParts parts = this->createTableParts(createTable);
         if (parts.makeTableExpression.empty()) {
             return CodeGenResult{"/* CREATE TABLE " + createTable.tableName + " — not supported for sqlite_orm */",
                                  {},
-                                 std::vector<CodegenWarning>(parts.warnings)};
+                                 std::move(parts.warnings),
+                                 {},
+                                 std::move(parts.comments)};
         }
         std::string code =
             parts.structDeclaration + "\nauto storage = make_storage(\"\",\n    " + parts.makeTableExpression + ");";
-        return CodeGenResult{std::move(code), {}, std::vector<CodegenWarning>(parts.warnings)};
+        return CodeGenResult{std::move(code), {}, std::move(parts.warnings), {}, std::move(parts.comments)};
     }
 
     CodeGenResult DdlCodeGenerator::generateCreateTrigger(const CreateTriggerNode& createTrigger) {
@@ -824,7 +826,14 @@ namespace sqlite2orm {
     }  // namespace
 
     CreateViewParts DdlCodeGenerator::createViewParts(const CreateViewNode& node) {
+        // A CREATE VIEW is a whole statement, so this is where the comments its body recorded —
+        // every expression of the SELECT included — are taken out of the context. The mark is what
+        // keeps the take to this statement: the generator this one is reached through is public, so
+        // it may have been handed an unrelated node before, and that node's comment is not this
+        // view's.
+        const size_t commentMark = this->context.commentMark();
         CreateViewParts parts = this->viewParts(node);
+        parts.comments = this->context.takeCommentsSince(commentMark);
         if (parts.makeViewExpression.empty()) {
             // A view sqlite_orm has no make_view() for is a name it has no type for either, so
             // whatever rests on the view — a trigger INSTEAD OF it, a view selecting from it —
@@ -867,7 +876,6 @@ namespace sqlite2orm {
                                     std::make_move_iterator(selectExpression.decisionPoints.begin()),
                                     std::make_move_iterator(selectExpression.decisionPoints.end()));
         appendUniqueWarnings(parts.warnings, selectExpression.warnings);
-        appendUniqueStrings(parts.comments, selectExpression.comments);
         if (selectExpression.code.empty()) {
             parts.warnings.push_back("CREATE VIEW " + displayName +
                                      ": SELECT is not supported for sqlite_orm code generation");
@@ -1023,7 +1031,7 @@ namespace sqlite2orm {
 
         parts.structDeclaration = std::move(structDeclaration);
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
-        appendUniqueString(parts.comments, kCommentViewReflection);
+        this->context.recordComment(kCommentViewReflection);
         // sqlite_orm maps views to C++26 reflection (make_view + [[= "…"_orm_name]]); there is no
         // pre-C++26 form. Surface a visible warning (anchored at the statement's opening keywords,
         // as the source spells them) when the target is lower.
@@ -1061,6 +1069,10 @@ namespace sqlite2orm {
     }
 
     CreateTableParts DdlCodeGenerator::createTableParts(const CreateTableNode& createTable) {
+        // Where the comments of this statement start, for the take at the end of it: a public
+        // generator may have generated something else before this table, and that node's comment
+        // belongs to it, not here.
+        const size_t commentMark = this->context.commentMark();
         const auto structName = toStructName(createTable.tableName);
         this->context.structName = structName;
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
@@ -1380,13 +1392,19 @@ namespace sqlite2orm {
                                stripIdentifierQuotes(createTable.tableName) + " (converted as a regular table)");
         }
 
+        // A CREATE TABLE is a whole statement, so this is where the comments its clauses recorded —
+        // every CHECK, DEFAULT and generated-column expression included — are taken out of the context.
+        std::vector<std::string> comments = this->context.takeCommentsSince(commentMark);
         if (!tableIsGeneratable) {
             // Nothing sqlite_orm can map this table to, so every statement naming it is left out
             // by whoever assembles the batch; the mark is what tells them which name that is.
             this->context.markUngeneratableTable(createTable.tableName);
-            return CreateTableParts{{}, {}, std::move(warnings)};
+            return CreateTableParts{{}, {}, std::move(warnings), std::move(comments)};
         }
-        return CreateTableParts{std::move(structDeclaration), std::move(makeExpression), std::move(warnings)};
+        return CreateTableParts{std::move(structDeclaration),
+                                std::move(makeExpression),
+                                std::move(warnings),
+                                std::move(comments)};
     }
 
 }  // namespace sqlite2orm

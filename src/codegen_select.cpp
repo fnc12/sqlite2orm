@@ -10,7 +10,7 @@ namespace sqlite2orm {
         coordinator(coordinator), context(context) {}
 
     CodeGenResult SelectCodeGenerator::generateCompoundSelect(const CompoundSelectNode& compoundNode) {
-        auto inner = this->tryCodegenCompoundSelectSubexpression(compoundNode);
+        auto inner = this->coordinator.tryCodegenCompoundSelectSubexpression(compoundNode);
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if (inner.code.empty()) {
             auto placeholder = unsupportedPlaceholder("compound SELECT",
@@ -21,21 +21,17 @@ namespace sqlite2orm {
             placeholder.warnings.insert(placeholder.warnings.end(),
                                         std::make_move_iterator(compoundWarnings.begin()),
                                         std::make_move_iterator(compoundWarnings.end()));
-            placeholder.comments = std::move(inner.comments);
             return placeholder;
         }
         return CodeGenResult{"auto " + this->context.statementVariableName("rows") + " = storage.select(" + inner.code +
                                  ");",
                              std::move(inner.decisionPoints),
-                             std::move(compoundWarnings),
-                             {},
-                             std::move(inner.comments)};
+                             std::move(compoundWarnings)};
     }
 
     CodeGenResult SelectCodeGenerator::generateSelect(const SelectNode& selectNode) {
         std::vector<CodegenWarning> selectWarnings;
         std::vector<DecisionPoint> selectDecisionPoints;
-        std::vector<std::string> selectComments;
         // Consume the WITH-outer flag here so it applies only to this (top-level) select, not to any
         // nested subselect generated while producing it.
         const bool forceOuterAsterisk = this->context.withOuterSelect;
@@ -45,7 +41,6 @@ namespace sqlite2orm {
                 CodeGenResult carried;
                 carried.decisionPoints = std::move(selectDecisionPoints);
                 carried.warnings = std::move(selectWarnings);
-                carried.comments = std::move(selectComments);
                 return unsupportedPlaceholder("SELECT with derived FROM",
                                               "subselect in FROM is not supported in sqlite_orm codegen",
                                               *fromItem.table.derivedSelect,
@@ -163,7 +158,6 @@ namespace sqlite2orm {
             selectDecisionPoints.insert(selectDecisionPoints.end(),
                                         std::make_move_iterator(result.decisionPoints.begin()),
                                         std::make_move_iterator(result.decisionPoints.end()));
-            appendUniqueStrings(selectComments, result.comments);
             return result.code;
         };
 
@@ -207,7 +201,7 @@ namespace sqlite2orm {
                 auto colCode = expressionCode(*column.expression);
                 if (selectResultNeedsIntegerCast(*column.expression)) {
                     colCode = "cast<int64_t>(" + colCode + ")";
-                    appendUniqueString(selectComments, kCommentBitwiseResultCast);
+                    this->context.recordComment(kCommentBitwiseResultCast);
                 }
                 if (selectResultNeedsAsOptional(*column.expression)) {
                     colCode = "as_optional(" + colCode + ")";
@@ -503,7 +497,7 @@ namespace sqlite2orm {
                 if (!aliasPreamble.empty()) {
                     code = aliasPreamble + code;
                 }
-                appendUniqueString(selectComments, kCommentCpp20ColumnAliases);
+                this->context.recordComment(kCommentCpp20ColumnAliases);
             } else {
                 bool hasBuiltin = false;
                 bool hasCustom = false;
@@ -538,6 +532,9 @@ namespace sqlite2orm {
                         Option cpp20Alt{"cpp20_literal",
                                         altRes.code,
                                         "C++20 literal aliases (`orm_column_alias`, `_col`)"};
+                        // What regenerating the select recorded, and not what the statement around
+                        // it had recorded before: `generateNode` reports the comments of the node it
+                        // was handed, so the baseline's own are left where they are.
                         cpp20Alt.comments = std::move(altRes.comments);
                         cpp20Alt.minCppStandard = 20;
                         aliasOptions.push_back(std::move(cpp20Alt));
@@ -615,11 +612,7 @@ namespace sqlite2orm {
         this->context.cpp20TableAliasDeclarations.clear();
         this->context.activeSelectColumnAliases.clear();
         this->context.activeSelectColumnAliasCpp20Vars.clear();
-        return CodeGenResult{code,
-                             std::move(selectDecisionPoints),
-                             std::move(selectWarnings),
-                             {},
-                             std::move(selectComments)};
+        return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
     }
 
     CodeGenResult SelectCodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode) {
@@ -1025,7 +1018,7 @@ namespace sqlite2orm {
         if (!firstSelect) {
             return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
         }
-        CodeGenResult accumulated = this->tryCodegenSqliteSelectSubexpression(*firstSelect);
+        CodeGenResult accumulated = this->coordinator.tryCodegenSqliteSelectSubexpression(*firstSelect);
         if (accumulated.code.empty()) {
             return accumulated;
         }
@@ -1034,7 +1027,7 @@ namespace sqlite2orm {
             if (!nextSelect) {
                 return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
             }
-            CodeGenResult nextArm = this->tryCodegenSqliteSelectSubexpression(*nextSelect);
+            CodeGenResult nextArm = this->coordinator.tryCodegenSqliteSelectSubexpression(*nextSelect);
             accumulated.decisionPoints.insert(accumulated.decisionPoints.end(),
                                               std::make_move_iterator(nextArm.decisionPoints.begin()),
                                               std::make_move_iterator(nextArm.decisionPoints.end()));
@@ -1053,13 +1046,13 @@ namespace sqlite2orm {
 
     CodeGenResult SelectCodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node) {
         if (auto* selectNode = dynamic_cast<const SelectNode*>(&node)) {
-            return this->tryCodegenSqliteSelectSubexpression(*selectNode);
+            return this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode);
         }
         if (auto* compoundNode = dynamic_cast<const CompoundSelectNode*>(&node)) {
-            return this->tryCodegenCompoundSelectSubexpression(*compoundNode);
+            return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundNode);
         }
         if (auto* withQueryNode = dynamic_cast<const WithQueryNode*>(&node)) {
-            auto inner = this->tryCodegenSelectLikeSubquery(*withQueryNode->statement);
+            auto inner = this->coordinator.tryCodegenSelectLikeSubquery(*withQueryNode->statement);
             std::vector<CodegenWarning> subWarnings = std::move(inner.warnings);
             subWarnings.insert(subWarnings.begin(),
                                "nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs; generated code "

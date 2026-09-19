@@ -45,6 +45,31 @@ TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
                 "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
 }
 
+// The view body is generated through the subquery form of the SELECT generator, which is where the
+// comments its expressions record used to stop: a consumer reading `statements[].comments` of
+// `--db --json` saw the reflection note and nothing about the CAST in the generated code.
+TEST_CASE("codegen: CREATE VIEW - a comment from the view body is attached too") {
+    auto result = generateLastOfBatch("CREATE TABLE t (a INTEGER, b TEXT);\n"
+                                      "CREATE VIEW v AS SELECT 1 - (b LIKE 'x') FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int64_t column_1 = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(c(1) - cast<int64_t>(like(&T::b, \"x\")))));");
+    REQUIRE(result.comments ==
+            std::vector<std::string>{
+                "A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
+                "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses, and "
+                "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
+                "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
+                "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.",
+                "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
+                "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
+                "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
+                "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
+}
+
 TEST_CASE("codegen: CREATE VIEW - field types from CREATE TABLE in same batch") {
     auto result = generateLastOfBatch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER NOT NULL);\n"
                                       "CREATE VIEW adults AS SELECT id, name FROM users WHERE age >= 18;");

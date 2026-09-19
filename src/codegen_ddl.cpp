@@ -146,11 +146,24 @@ namespace sqlite2orm {
         std::string indexLiteral = identifierToCppStringLiteral(createIndex.indexName);
         std::vector<DecisionPoint> decisionPoints;
         std::string columnParts;
+        bool firstColumnNamesTable = false;
+        bool atFirstColumn = true;
         for(const auto& indexedColumn : createIndex.indexedColumns) {
             if(!columnParts.empty()) {
                 columnParts += ", ";
             }
+            this->context.emittedTableTypedColumnRef = false;
             auto expressionResult = this->coordinator.generateNode(*indexedColumn.expression);
+            if(atFirstColumn) {
+                // `make_index` deduces the table an index is made for from its first argument alone,
+                // and only a column reference generated as a pointer into the struct carries one.
+                // COLLATE and a unary plus emit their operand and nothing else, so the form that came
+                // out is the one of the node under them.
+                firstColumnNamesTable =
+                    this->context.emittedTableTypedColumnRef &&
+                    dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*indexedColumn.expression)) != nullptr;
+                atFirstColumn = false;
+            }
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(expressionResult.decisionPoints.begin()),
                        std::make_move_iterator(expressionResult.decisionPoints.end()));
             warnings.insert(warnings.end(), std::make_move_iterator(expressionResult.warnings.begin()),
@@ -179,16 +192,34 @@ namespace sqlite2orm {
             columnParts += part;
         }
 
-        std::string code = functionName + "(" + indexLiteral + ", " + columnParts;
+        // The WHERE of a partial index is generated before it is decided whether the index has a form
+        // at all, so an index that is left out still reports what its clause decides and warns about,
+        // the way an indexed column of the same index does.
+        std::string whereArgument;
         if(createIndex.whereClause) {
             auto whereResult = this->coordinator.generateNode(*createIndex.whereClause);
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(whereResult.decisionPoints.begin()),
                        std::make_move_iterator(whereResult.decisionPoints.end()));
             warnings.insert(warnings.end(), std::make_move_iterator(whereResult.warnings.begin()),
                            std::make_move_iterator(whereResult.warnings.end()));
-            code += ", where(" + whereResult.code + ")";
+            whereArgument = ", where(" + whereResult.code + ")";
         }
-        code += ");";
+
+        if(!firstColumnNamesTable && createIndex.unique) {
+            // `make_unique_index` takes the table as a defaulted template parameter behind its
+            // argument pack, which leaves no way to spell it out, so there is no form of this index.
+            warnings.push_back("UNIQUE index " + stripIdentifierQuotes(createIndex.indexName) +
+                               " starts with an expression: sqlite_orm deduces the table an index is made "
+                               "for from its first indexed column, and make_unique_index has no form that "
+                               "spells that table out, so the index is not generated");
+            this->context.structName = savedStruct;
+            return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
+        }
+
+        // An index that does not start with a column names the table it indexes itself.
+        std::string tableTypeArgument = firstColumnNamesTable ? "" : "<" + tableStruct + ">";
+        std::string code =
+            functionName + tableTypeArgument + "(" + indexLiteral + ", " + columnParts + whereArgument + ");";
 
         this->context.structName = savedStruct;
         return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};

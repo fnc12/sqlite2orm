@@ -137,6 +137,14 @@ namespace sqlite2orm {
          *  pointer came out of it, so it keeps the wrapper and the explanation that form replaces.
          */
         bool emittedColumnPointerUnderLogicalNot = false;
+        /**
+         *  Set by the column reference branch when the form it emitted names the table the column
+         *  belongs to — `&T::x` or `column<T>(&T::x)`. A SELECT alias answers earlier with
+         *  `get<Alias>()`, and a CTE column with a form naming the CTE, and both leave it false.
+         *  `make_index` deduces the table an index is made for from its first argument, so an index
+         *  that starts with anything else has to spell that table out.
+         */
+        bool emittedTableTypedColumnRef = false;
 
         /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
         std::vector<CustomFunctionUse> customFunctions;

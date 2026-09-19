@@ -383,6 +383,7 @@ namespace sqlite2orm {
             if(code.empty()) {
                 continue;
             }
+            const AstNode* root = result.parseResult.astNodePointer.get();
             const size_t markerPosition = code.find(storageMarker);
             if(markerPosition != std::string::npos && code.ends_with(");")) {
                 std::string structPart = code.substr(0, markerPosition);
@@ -397,8 +398,10 @@ namespace sqlite2orm {
                                 code.size() - markerPosition - storageMarker.size() - 2));
                 continue;
             }
-            if(code.starts_with("make_index(") || code.starts_with("make_unique_index(") ||
-               code.starts_with("make_trigger(")) {
+            // An index or a trigger is generated as a bare make_storage() argument, whatever the
+            // form the generator picked for it, so the statement it came from is what tells them
+            // apart from a statement that stands on its own.
+            if(dynamic_cast<const CreateIndexNode*>(root) || dynamic_cast<const CreateTriggerNode*>(root)) {
                 std::string argument = code;
                 while(!argument.empty() &&
                       (argument.back() == '\n' || argument.back() == ';' || argument.back() == ' ')) {
@@ -408,7 +411,7 @@ namespace sqlite2orm {
                 continue;
             }
             otherStatements.push_back(code);
-            otherStatementNodes.push_back(result.parseResult.astNodePointer.get());
+            otherStatementNodes.push_back(root);
         }
         otherStatements = resolveGuardSavepoints(std::move(otherStatements), otherStatementNodes);
         otherStatements = foldFunctionalSavepoints(std::move(otherStatements), otherStatementNodes);

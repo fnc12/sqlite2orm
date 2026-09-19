@@ -78,6 +78,24 @@ See [examples/](examples/) for more: programmatic API, custom policies, database
 | `SQLITE2ORM_BUILD_CLI` | `ON` | Build the `sqlite2orm` CLI tool |
 | `SQLITE2ORM_BUILD_TESTS` | `ON` | Build unit tests (fetches Catch2 and sqlite_orm headers) |
 | `SQLITE2ORM_BUILD_EXAMPLES` | `OFF` | Build example programs |
+| `SQLITE2ORM_SQLITE_ORM_REVISION` | `eb77998ef5e27350b25977b061e46e202742ecc8` | Revision of `fnc12/sqlite_orm` the runtime tests compile against |
+
+### Pinned sqlite_orm revision
+
+The runtime tests compile the generated code against sqlite_orm headers that `FetchContent`
+pulls at the revision above, not at the tip of `dev`. `dev` moves, and a checkout populated a
+few days earlier used to fail those tests in a way that looked like a bug in whatever was under
+test. Bump the revision in `CMakeLists.txt` deliberately, together with the one quoted here —
+`sqlite2orm_tests` checks that the two agree, and that the headers in `build/_deps` are really
+the pinned ones.
+
+A build tree keeps the headers it populated until it reconfigures, which is how a moving `dev`
+stayed invisible to it; a bump edits `CMakeLists.txt`, so the next build picks it up on its own.
+To try the tests against the tip of `dev`:
+
+```bash
+cmake -S . -B build -DSQLITE2ORM_SQLITE_ORM_REVISION=dev
+```
 
 ## Code style
 

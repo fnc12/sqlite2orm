@@ -90,15 +90,35 @@ if(SQLITE2ORM_BUILD_TESTS)
     FetchContent_MakeAvailable(Catch2)
     message(STATUS "[sqlite2orm] Catch2 ready.")
 
-    message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (dev)...")
+    find_program(SQLITE2ORM_GIT_EXECUTABLE git)
+
+    # The runtime tests compile the generated code against these headers, so following the moving
+    # `dev` branch made the same commit of this repository pass or fail depending on when the
+    # checkout was populated, and the failures read like a bug in whatever was under test. Bump the
+    # revision deliberately, together with the one README.md quotes. A commit hash rules out
+    # GIT_SHALLOW, which CMake accepts only for branch and tag names.
+    set(SQLITE2ORM_SQLITE_ORM_REVISION "eb77998ef5e27350b25977b061e46e202742ecc8"
+        CACHE STRING "Revision of fnc12/sqlite_orm the runtime tests compile against")
+    message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (${SQLITE2ORM_SQLITE_ORM_REVISION})...")
     FetchContent_Declare(
         sqlite_orm_headers
         GIT_REPOSITORY https://github.com/fnc12/sqlite_orm.git
-        GIT_TAG dev
-        GIT_SHALLOW TRUE
+        GIT_TAG ${SQLITE2ORM_SQLITE_ORM_REVISION}
     )
     FetchContent_Populate(sqlite_orm_headers)
     message(STATUS "[sqlite2orm] sqlite_orm headers ready.")
+
+    # A build tree configured before the pin keeps whatever it populated back then, and only a
+    # reconfigure moves it; report the revision the tests really see instead of leaving a stale
+    # checkout to surface as a compile error inside a generated program.
+    set(sqlite2orm_sqlite_orm_head "")
+    if(SQLITE2ORM_GIT_EXECUTABLE)
+        execute_process(
+            COMMAND "${SQLITE2ORM_GIT_EXECUTABLE}" -C "${sqlite_orm_headers_SOURCE_DIR}" rev-parse HEAD
+            OUTPUT_VARIABLE sqlite2orm_sqlite_orm_head
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+    endif()
 
     enable_testing()
     add_executable(sqlite2orm_tests
@@ -136,6 +156,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/schema_pipeline_tests.cpp
         tests/schema_report_tests.cpp
         tests/readme_tests.cpp
+        tests/sqlite_orm_revision_tests.cpp
         tests/temp_build_dir.cpp
     )
     # A probe that runs the generated code needs the same libsqlite3 the library links, which is not
@@ -147,13 +168,14 @@ if(SQLITE2ORM_BUILD_TESTS)
     endif()
     target_compile_definitions(sqlite2orm_tests PRIVATE
         SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE="${sqlite_orm_headers_SOURCE_DIR}/include"
+        SQLITE2ORM_TEST_SQLITE_ORM_REVISION="${SQLITE2ORM_SQLITE_ORM_REVISION}"
+        SQLITE2ORM_TEST_SQLITE_ORM_HEAD="${sqlite2orm_sqlite_orm_head}"
         SQLITE2ORM_TEST_SQLITE3_LINK="${sqlite2orm_test_sqlite3_link}"
         SQLITE2ORM_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)
     add_test(NAME sqlite2orm_tests COMMAND sqlite2orm_tests)
 
     if(UNIX)
-        find_program(SQLITE2ORM_GIT_EXECUTABLE git)
         if(SQLITE2ORM_GIT_EXECUTABLE)
             add_test(
                 NAME sqlite2orm_tests_worktree_guard

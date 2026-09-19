@@ -713,6 +713,41 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
     REQUIRE(generate("SELECT a IS NULL FROM users;") == "auto rows = storage.select(is_null(&Users::a));");
 }
 
+// A NaN is the one value SQLite has no storage class for, so it stores one as NULL: `+`, `-` and
+// `*` answer NULL as soon as the double they compute in runs into one — `SELECT typeof(0 * (1e300
+// * 1e300))` and `SELECT typeof(1e300 * 1e300 - 1e300 * 1e300)` are both null in sqlite3 3.51 —
+// however spelled out their operands are, the way `1 / 0` is. sqlite_orm types the arithmetic
+// operators `double`, so that row used to reach the caller as 0. It takes an infinity to reach a
+// NaN, and only a value the SQL no longer spells out, or one a computation can overflow into,
+// counts as one: an INTEGER answer is finite whatever its magnitude, and a finite number spelled
+// out stays finite, so `1e300 * 1e300` (Inf, a REAL SQLite carries), `0 * 1e300`, `1.5 + 2.5`,
+// `(1 + 2) * 0` and a zero times a comparison or a bitwise result are left plain. Values checked in
+// "runtime: an arithmetic result column that overflows into a NaN reads the NULL back".
+TEST_CASE("codegen: an arithmetic result column that can overflow into a NaN is widened") {
+    REQUIRE(generate("SELECT 0 * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));");
+    REQUIRE(generate("SELECT 0.0 * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(0.0) * (c(1e300) * 1e300)));");
+    REQUIRE(generate("SELECT (1e300 * 1e300) * 0;") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 * 0));");
+    REQUIRE(generate("SELECT 1e300 * 1e300 - 1e300 * 1e300;") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 - c(1e300) * 1e300));");
+    REQUIRE(generate("SELECT 1e300 * 1e300 + -1e300 * 1e300;") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 + c(-1e300) * 1e300));");
+    REQUIRE(generate("SELECT (1e300 * 1e300) / (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(1e300) * 1e300 / (c(1e300) * 1e300)));");
+    // SQLite reads a number off the bytes of a blob the way it reads one off a string, and the
+    // bytes of `x'41'` read back as 0, so this column is NULL too.
+    REQUIRE(generate("SELECT x'41' * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(std::vector<char>{'\\x41'}) * (c(1e300) * 1e300)));");
+    REQUIRE(generate("SELECT 1e300 * 1e300;") == "auto rows = storage.select(c(1e300) * 1e300);");
+    REQUIRE(generate("SELECT 0 * 1e300;") == "auto rows = storage.select(c(0) * 1e300);");
+    REQUIRE(generate("SELECT 1.5 + 2.5;") == "auto rows = storage.select(c(1.5) + 2.5);");
+    REQUIRE(generate("SELECT (1 + 2) * 0;") == "auto rows = storage.select((c(1) + 2) * 0);");
+    REQUIRE(generate("SELECT 0 * (1 < 2);") == "auto rows = storage.select(c(0) * (c(1) < 2));");
+    REQUIRE(generate("SELECT 0 * (1 & 2);") == "auto rows = storage.select(c(0) * (c(1) & 2));");
+}
+
 // A NULL test and an EXISTS answer over a NULL operand too, so an operator built on one of them has
 // no NULL to report either and keeps the type sqlite_orm gives it. Checked against sqlite3 3.45.1
 // over `users(a INTEGER)` holding one NULL row: 2, 1, 0, 2, '1x', -2 — no NULL among them. (The

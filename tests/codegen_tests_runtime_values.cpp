@@ -1045,3 +1045,32 @@ TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments read
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "A", "1"});
 }
+
+// A NaN is the one value SQLite has no storage class for, so a computation that runs into one is
+// stored as NULL, and `+`, `-` and `*` answer NULL over operands that are none. sqlite_orm types
+// them `double`, so the first four rows reached the caller as 0. Every value here is what
+// libsqlite3 3.45.1 answers, the version this project links. The last three are the counter-check:
+// an infinity of its own is a REAL SQLite carries back as it is, and arithmetic that cannot reach
+// one is left plain and reads back as it always did.
+TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT 0 * (1e300 * 1e300);"),
+        generate("SELECT 0.0 * (1e300 * 1e300);"),
+        generate("SELECT 1e300 * 1e300 - 1e300 * 1e300;"),
+        generate("SELECT (1e300 * 1e300) / (1e300 * 1e300);"),
+        generate("SELECT 1e300 * 1e300;"),
+        generate("SELECT 0 * 1e300;"),
+        generate("SELECT 1.5 + 2.5;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));",
+                              "auto rows = storage.select(as_optional(c(0.0) * (c(1e300) * 1e300)));",
+                              "auto rows = storage.select(as_optional(c(1e300) * 1e300 - c(1e300) * 1e300));",
+                              "auto rows = storage.select(as_optional(c(1e300) * 1e300 / (c(1e300) * 1e300)));",
+                              "auto rows = storage.select(c(1e300) * 1e300);",
+                              "auto rows = storage.select(c(0) * 1e300);",
+                              "auto rows = storage.select(c(1.5) + 2.5);",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "inf", "0", "4"});
+}

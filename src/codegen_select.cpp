@@ -6,22 +6,27 @@
 
 namespace sqlite2orm {
 
-    SelectCodeGenerator::SelectCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context)
-        : coordinator(coordinator), context(context) {}
+    SelectCodeGenerator::SelectCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
+        coordinator(coordinator), context(context) {}
 
     CodeGenResult SelectCodeGenerator::generateCompoundSelect(const CompoundSelectNode& compoundNode) {
         auto inner = this->tryCodegenCompoundSelectSubexpression(compoundNode);
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
-        if(inner.code.empty()) {
+        if (inner.code.empty()) {
             compoundWarnings.insert(compoundWarnings.begin(),
                                     "compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
                                     "codegen");
-            return CodeGenResult{"/* compound SELECT */", std::move(inner.decisionPoints),
-                                 std::move(compoundWarnings), {}, std::move(inner.comments)};
+            return CodeGenResult{"/* compound SELECT */",
+                                 std::move(inner.decisionPoints),
+                                 std::move(compoundWarnings),
+                                 {},
+                                 std::move(inner.comments)};
         }
-        return CodeGenResult{"auto " + this->context.statementVariableName("rows") + " = storage.select(" +
-                                 inner.code + ");",
-                             std::move(inner.decisionPoints), std::move(compoundWarnings), {},
+        return CodeGenResult{"auto " + this->context.statementVariableName("rows") + " = storage.select(" + inner.code +
+                                 ");",
+                             std::move(inner.decisionPoints),
+                             std::move(compoundWarnings),
+                             {},
                              std::move(inner.comments)};
     }
 
@@ -33,11 +38,14 @@ namespace sqlite2orm {
         // nested subselect generated while producing it.
         const bool forceOuterAsterisk = this->context.withOuterSelect;
         this->context.withOuterSelect = false;
-        for(const auto& fromItem : selectNode.fromClause) {
-            if(fromItem.table.derivedSelect) {
+        for (const auto& fromItem: selectNode.fromClause) {
+            if (fromItem.table.derivedSelect) {
                 selectWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
-                return CodeGenResult{"/* SELECT with derived FROM */", std::move(selectDecisionPoints),
-                                     std::move(selectWarnings), {}, std::move(selectComments)};
+                return CodeGenResult{"/* SELECT with derived FROM */",
+                                     std::move(selectDecisionPoints),
+                                     std::move(selectWarnings),
+                                     {},
+                                     std::move(selectComments)};
             }
         }
         this->context.fromTableAliasToStructName.clear();
@@ -45,43 +53,40 @@ namespace sqlite2orm {
         this->context.nextAliasLetter = 0;
         auto isCteKey = [&](std::string_view tableSqlName) -> bool {
             auto key = normalizeSqlIdentifier(tableSqlName);
-            return this->context.activeCteTypedefByTableKey.find(key) !=
-                   this->context.activeCteTypedefByTableKey.end();
+            return this->context.activeCteTypedefByTableKey.find(key) != this->context.activeCteTypedefByTableKey.end();
         };
         auto structForFromTable = [&](std::string_view tableSqlName) -> std::string {
             auto key = normalizeSqlIdentifier(tableSqlName);
-            if(auto cteLookup = this->context.activeCteTypedefByTableKey.find(key);
-               cteLookup != this->context.activeCteTypedefByTableKey.end()) {
+            if (auto cteLookup = this->context.activeCteTypedefByTableKey.find(key);
+                cteLookup != this->context.activeCteTypedefByTableKey.end()) {
                 return cteLookup->second;
             }
             return this->context.structNameForTable(tableSqlName);
         };
         auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
             const auto key = normalizeSqlIdentifier(tableSqlName);
-            if(this->context.activeCteTypedefByTableKey.find(key) !=
-               this->context.activeCteTypedefByTableKey.end()) {
+            if (this->context.activeCteTypedefByTableKey.find(key) != this->context.activeCteTypedefByTableKey.end()) {
                 return toStructName(tableSqlName);
             }
             return structForFromTable(tableSqlName);
         };
-        if(!selectNode.fromClause.empty()) {
-            for(const auto& fromItem : selectNode.fromClause) {
+        if (!selectNode.fromClause.empty()) {
+            for (const auto& fromItem: selectNode.fromClause) {
                 const auto& ft = fromItem.table;
-                if(ft.schemaName) {
+                if (ft.schemaName) {
                     selectWarnings.push_back("FROM clause schema qualifier '" + *ft.schemaName + "' for table '" +
                                              ft.tableName + "' is not represented in sqlite_orm mapping");
                 }
                 std::string mappedStructName = structForFromTable(ft.tableName);
                 this->context.fromTableAliasToStructName[ft.tableName] = mappedStructName;
-                if(ft.alias && !isCteKey(ft.tableName)) {
-                    if(this->context.useCpp20TableAliasStyle()) {
+                if (ft.alias && !isCteKey(ft.tableName)) {
+                    if (this->context.useCpp20TableAliasStyle()) {
                         std::string varName = toCppIdentifier(*ft.alias);
                         TableAliasInfo info{varName, mappedStructName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                         this->context.cpp20TableAliasDeclarations.push_back(
-                            Cpp20TableAliasDeclaration{varName, mappedStructName,
-                                                       stripIdentifierQuotes(*ft.alias)});
+                            Cpp20TableAliasDeclaration{varName, mappedStructName, stripIdentifierQuotes(*ft.alias)});
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);
                         std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
@@ -90,13 +95,13 @@ namespace sqlite2orm {
                         this->context.activeTableAliases[ft.tableName] = info;
                     }
                     this->context.fromTableAliasToStructName[*ft.alias] = mappedStructName;
-                } else if(ft.alias) {
+                } else if (ft.alias) {
                     this->context.fromTableAliasToStructName[*ft.alias] = mappedStructName;
                 }
             }
             std::string_view structNameSource = selectNode.fromClause.at(0).table.tableName;
-            for(const auto& fromItem : selectNode.fromClause) {
-                if(!isCteKey(fromItem.table.tableName)) {
+            for (const auto& fromItem: selectNode.fromClause) {
+                if (!isCteKey(fromItem.table.tableName)) {
                     structNameSource = fromItem.table.tableName;
                     break;
                 }
@@ -106,19 +111,19 @@ namespace sqlite2orm {
 
         std::optional<std::string> implicitCte;
         std::optional<std::string> implicitCteTableKey;
-        if(!selectNode.fromClause.empty()) {
+        if (!selectNode.fromClause.empty()) {
             const auto& firstFrom = selectNode.fromClause.at(0).table;
             const auto firstKey = normalizeSqlIdentifier(firstFrom.tableName);
-            if(this->context.activeCteTypedefByTableKey.find(firstKey) !=
-               this->context.activeCteTypedefByTableKey.end()) {
+            if (this->context.activeCteTypedefByTableKey.find(firstKey) !=
+                this->context.activeCteTypedefByTableKey.end()) {
                 bool allCte = true;
-                for(const auto& fromItem : selectNode.fromClause) {
-                    if(!isCteKey(fromItem.table.tableName)) {
+                for (const auto& fromItem: selectNode.fromClause) {
+                    if (!isCteKey(fromItem.table.tableName)) {
                         allCte = false;
                         break;
                     }
                 }
-                if(selectNode.fromClause.size() == 1u || allCte) {
+                if (selectNode.fromClause.size() == 1u || allCte) {
                     implicitCte = this->context.activeCteTypedefByTableKey.at(firstKey);
                     implicitCteTableKey = firstKey;
                 }
@@ -128,10 +133,11 @@ namespace sqlite2orm {
             CodeGeneratorContext* ctx;
             std::optional<std::string> savedTypedef;
             std::optional<std::string> savedTableKey;
-            ImplicitCteScope(CodeGeneratorContext* context, std::optional<std::string> implTypedef,
-                             std::optional<std::string> implTableKey)
-                : ctx(context), savedTypedef(std::move(context->implicitSingleSourceCteTypedef)),
-                  savedTableKey(std::move(context->implicitCteFromTableKeyNorm)) {
+            ImplicitCteScope(CodeGeneratorContext* context,
+                             std::optional<std::string> implTypedef,
+                             std::optional<std::string> implTableKey) :
+                ctx(context), savedTypedef(std::move(context->implicitSingleSourceCteTypedef)),
+                savedTableKey(std::move(context->implicitCteFromTableKeyNorm)) {
                 ctx->implicitSingleSourceCteTypedef = std::move(implTypedef);
                 ctx->implicitCteFromTableKeyNorm = std::move(implTableKey);
             }
@@ -147,7 +153,8 @@ namespace sqlite2orm {
 
         auto expressionCode = [&](const AstNode& node) -> std::string {
             auto result = this->coordinator.generateNode(node);
-            selectWarnings.insert(selectWarnings.end(), std::make_move_iterator(result.warnings.begin()),
+            selectWarnings.insert(selectWarnings.end(),
+                                  std::make_move_iterator(result.warnings.begin()),
                                   std::make_move_iterator(result.warnings.end()));
             selectDecisionPoints.insert(selectDecisionPoints.end(),
                                         std::make_move_iterator(result.decisionPoints.begin()),
@@ -159,15 +166,15 @@ namespace sqlite2orm {
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
         int apiLevelDecisionId = -1;
         // No api_level choice for a WITH outer: it is fixed to the `select(asterisk<T>())` form.
-        if(isStar && !selectNode.fromClause.empty() && !forceOuterAsterisk) {
+        if (isStar && !selectNode.fromClause.empty() && !forceOuterAsterisk) {
             apiLevelDecisionId = this->context.nextDecisionPointId++;
         }
         std::string code;
         std::string aliasPreamble;
         const bool cpp20ColumnAliases = this->context.useCpp20ColumnAliasStyle();
-        if(!isStar) {
-            if(hasAnyColumnAlias(selectNode.columns)) {
-                if(cpp20ColumnAliases) {
+        if (!isStar) {
+            if (hasAnyColumnAlias(selectNode.columns)) {
+                if (cpp20ColumnAliases) {
                     aliasPreamble = generateCpp20ColumnAliasPreamble(selectNode.columns);
                 } else {
                     aliasPreamble = generateColumnAliasPreamble(selectNode.columns);
@@ -182,36 +189,38 @@ namespace sqlite2orm {
             // computed with the same operator report once, anchored at the first of them.
             auto resultColumnCode = [&](const SelectColumn& column) -> std::string {
                 auto colCode = expressionCode(*column.expression);
-                if(selectResultNeedsIntegerCast(*column.expression)) {
+                if (selectResultNeedsIntegerCast(*column.expression)) {
                     colCode = "cast<int64_t>(" + colCode + ")";
                     appendUniqueString(selectComments, kCommentBitwiseResultCast);
                 }
-                if(selectResultNeedsAsOptional(*column.expression)) {
+                if (selectResultNeedsAsOptional(*column.expression)) {
                     colCode = "as_optional(" + colCode + ")";
                 }
-                if(auto warning = selectResultDoublePrecisionWarning(*column.expression)) {
+                if (auto warning = selectResultDoublePrecisionWarning(*column.expression)) {
                     appendUniqueWarnings(selectWarnings, {std::move(*warning)});
                 }
                 return wrapWithColumnAlias(colCode, column.alias, cpp20ColumnAliases);
             };
             code = "auto " + rowsVariable + " = storage.select(";
-            if(selectNode.distinct) {
-                if(selectNode.columns.size() == 1) {
+            if (selectNode.distinct) {
+                if (selectNode.columns.size() == 1) {
                     code += "distinct(" + resultColumnCode(selectNode.columns.at(0)) + ")";
                 } else {
                     code += "distinct(columns(";
-                    for(size_t i = 0; i < selectNode.columns.size(); ++i) {
-                        if(i > 0) code += ", ";
+                    for (size_t i = 0; i < selectNode.columns.size(); ++i) {
+                        if (i > 0)
+                            code += ", ";
                         code += resultColumnCode(selectNode.columns.at(i));
                     }
                     code += "))";
                 }
-            } else if(selectNode.columns.size() == 1) {
+            } else if (selectNode.columns.size() == 1) {
                 code += resultColumnCode(selectNode.columns.at(0));
             } else {
                 code += "columns(";
-                for(size_t i = 0; i < selectNode.columns.size(); ++i) {
-                    if(i > 0) code += ", ";
+                for (size_t i = 0; i < selectNode.columns.size(); ++i) {
+                    if (i > 0)
+                        code += ", ";
                     code += resultColumnCode(selectNode.columns.at(i));
                 }
                 code += ")";
@@ -220,8 +229,8 @@ namespace sqlite2orm {
 
         this->context.activeSelectColumnAliases.clear();
         this->context.activeSelectColumnAliasCpp20Vars.clear();
-        for(const auto& column : selectNode.columns) {
-            if(!column.alias.empty()) {
+        for (const auto& column: selectNode.columns) {
+            if (!column.alias.empty()) {
                 std::string key = toLowerAscii(stripColumnAliasQuotes(column.alias));
                 this->context.activeSelectColumnAliases[key] = columnAliasTypeName(column.alias);
                 this->context.activeSelectColumnAliasCpp20Vars[key] = columnAliasCpp20VarName(column.alias);
@@ -229,17 +238,18 @@ namespace sqlite2orm {
         }
 
         std::vector<std::string> selectTrailingClauses;
-        auto appendClause = [&](const std::string& clause) { selectTrailingClauses.push_back(clause); };
+        auto appendClause = [&](const std::string& clause) {
+            selectTrailingClauses.push_back(clause);
+        };
 
         auto isCteSource = [&](std::string_view tableName) -> bool {
             auto key = normalizeSqlIdentifier(tableName);
-            return this->context.activeCteTypedefByTableKey.find(key) !=
-                   this->context.activeCteTypedefByTableKey.end();
+            return this->context.activeCteTypedefByTableKey.find(key) != this->context.activeCteTypedefByTableKey.end();
         };
         auto resolveJoinType = [&](const FromTableClause& ft) -> std::string {
             std::string key = ft.alias ? *ft.alias : ft.tableName;
             auto it = this->context.activeTableAliases.find(key);
-            if(it != this->context.activeTableAliases.end()) {
+            if (it != this->context.activeTableAliases.end()) {
                 return it->second.ormAliasType;
             }
             return structForFromTable(ft.tableName);
@@ -247,44 +257,43 @@ namespace sqlite2orm {
         auto cteUsingColumnCode = [&](std::string_view tableName, std::string_view colSql) -> std::string {
             auto tableKey = normalizeSqlIdentifier(tableName);
             auto cteIt = this->context.activeCteTypedefByTableKey.find(tableKey);
-            if(cteIt != this->context.activeCteTypedefByTableKey.end()) {
+            if (cteIt != this->context.activeCteTypedefByTableKey.end()) {
                 std::string colKey = normalizeSqlIdentifier(colSql);
                 std::string pipe = tableKey + "|" + colKey;
                 auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
-                if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                if (indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + indexedIt->second + ")";
                 }
                 auto legacyIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
-                if(legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
+                if (legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + legacyIt->second + ")";
                 }
                 auto cpp20It = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
-                if(cpp20It != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                if (cpp20It != this->context.withCteCpp20ColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + cpp20It->second + ")";
                 }
-                if(this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
+                if (this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
                     return "column<" + cteIt->second + ">(" +
                            identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) + ")";
                 }
                 auto baseIt = this->context.cteBaseStructByKey.find(tableKey);
-                if(baseIt != this->context.cteBaseStructByKey.end()) {
-                    return "column<" + cteIt->second + ">(&" + baseIt->second + "::" + toCppIdentifier(colSql) +
-                           ")";
+                if (baseIt != this->context.cteBaseStructByKey.end()) {
+                    return "column<" + cteIt->second + ">(&" + baseIt->second + "::" + toCppIdentifier(colSql) + ")";
                 }
-                return "column<" + cteIt->second + ">(" +
-                       identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) + ")";
+                return "column<" + cteIt->second + ">(" + identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) +
+                       ")";
             }
             return "&" + structForFromTable(tableName) + "::" + toCppIdentifier(colSql);
         };
         bool firstFromIsCte =
             !selectNode.fromClause.empty() && isCteSource(selectNode.fromClause.at(0).table.tableName);
         bool emittedNonCteJoin = false;
-        for(size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
+        for (size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
-            if(isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
                 continue;
             }
-            if(firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
                 emittedNonCteJoin = true;
                 continue;
             }
@@ -294,101 +303,99 @@ namespace sqlite2orm {
             std::string rightStruct = structForFromTable(joinItem.table.tableName);
             std::string leftStruct = structForFromTable(leftTable.tableName);
             std::string joinCode;
-            switch(joinItem.leadingJoin) {
-            case JoinKind::crossJoin:
-            case JoinKind::naturalInnerJoin:
-                joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightType + ">()";
-                break;
-            case JoinKind::naturalLeftJoin:
-                selectWarnings.push_back(
-                    "NATURAL LEFT JOIN is not supported in sqlite_orm; generated natural_join does not match SQL "
-                    "semantics");
-                joinCode = "natural_join<" + rightType + ">()";
-                break;
-            default: {
-                std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
-                if(!joinItem.usingColumnNames.empty()) {
-                    bool rightIsCte = isCteSource(joinItem.table.tableName);
-                    if(joinItem.usingColumnNames.size() == 1) {
-                        std::string usingCol;
-                        if(rightIsCte) {
-                            usingCol = cteUsingColumnCode(leftTable.tableName, joinItem.usingColumnNames.at(0));
-                        } else {
-                            usingCol = "&" + rightStruct + "::" +
-                                       toCppIdentifier(joinItem.usingColumnNames.at(0));
-                        }
-                        joinCode = std::string(api) + "<" + rightType + ">(using_(" + usingCol + "))";
-                    } else {
-                        std::string cond;
-                        for(size_t ci = 0; ci < joinItem.usingColumnNames.size(); ++ci) {
-                            if(ci > 0) {
-                                cond += " and ";
+            switch (joinItem.leadingJoin) {
+                case JoinKind::crossJoin:
+                case JoinKind::naturalInnerJoin:
+                    joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightType + ">()";
+                    break;
+                case JoinKind::naturalLeftJoin:
+                    selectWarnings.push_back(
+                        "NATURAL LEFT JOIN is not supported in sqlite_orm; generated natural_join does not match SQL "
+                        "semantics");
+                    joinCode = "natural_join<" + rightType + ">()";
+                    break;
+                default: {
+                    std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
+                    if (!joinItem.usingColumnNames.empty()) {
+                        bool rightIsCte = isCteSource(joinItem.table.tableName);
+                        if (joinItem.usingColumnNames.size() == 1) {
+                            std::string usingCol;
+                            if (rightIsCte) {
+                                usingCol = cteUsingColumnCode(leftTable.tableName, joinItem.usingColumnNames.at(0));
+                            } else {
+                                usingCol = "&" + rightStruct + "::" + toCppIdentifier(joinItem.usingColumnNames.at(0));
                             }
-                            auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
-                            cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col +
-                                    ")";
+                            joinCode = std::string(api) + "<" + rightType + ">(using_(" + usingCol + "))";
+                        } else {
+                            std::string cond;
+                            for (size_t ci = 0; ci < joinItem.usingColumnNames.size(); ++ci) {
+                                if (ci > 0) {
+                                    cond += " and ";
+                                }
+                                auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
+                                cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col + ")";
+                            }
+                            joinCode = std::string(api) + "<" + rightType + ">(on(" + cond + "))";
                         }
-                        joinCode = std::string(api) + "<" + rightType + ">(on(" + cond + "))";
+                    } else if (joinItem.onExpression) {
+                        joinCode = std::string(api) + "<" + rightType + ">(on(" +
+                                   expressionCode(*joinItem.onExpression) + "))";
+                    } else {
+                        joinCode = std::string(api) + "<" + rightType + ">(on(true))";
                     }
-                } else if(joinItem.onExpression) {
-                    joinCode = std::string(api) + "<" + rightType + ">(on(" +
-                               expressionCode(*joinItem.onExpression) + "))";
-                } else {
-                    joinCode = std::string(api) + "<" + rightType + ">(on(true))";
+                    break;
                 }
-                break;
-            }
             }
             appendClause(joinCode);
         }
 
-        if(selectNode.whereClause) {
+        if (selectNode.whereClause) {
             appendClause("where(" + expressionCode(*selectNode.whereClause) + ")");
         }
 
-        if(selectNode.groupBy) {
+        if (selectNode.groupBy) {
             std::string groupCode = "group_by(";
-            for(size_t i = 0; i < selectNode.groupBy->expressions.size(); ++i) {
-                if(i > 0) groupCode += ", ";
+            for (size_t i = 0; i < selectNode.groupBy->expressions.size(); ++i) {
+                if (i > 0)
+                    groupCode += ", ";
                 groupCode += expressionCode(*selectNode.groupBy->expressions.at(i));
             }
             groupCode += ")";
-            if(selectNode.groupBy->having) {
+            if (selectNode.groupBy->having) {
                 groupCode += ".having(" + expressionCode(*selectNode.groupBy->having) + ")";
             }
             appendClause(groupCode);
         }
 
-        for(const auto& namedWindow : selectNode.namedWindows) {
-            if(!namedWindow.definition) {
+        for (const auto& namedWindow: selectNode.namedWindows) {
+            if (!namedWindow.definition) {
                 continue;
             }
             std::string windowArgs =
                 this->coordinator.codegenOverClause(*namedWindow.definition, selectDecisionPoints, selectWarnings);
-            if(!windowArgs.empty()) {
-                appendClause("window(" + identifierToCppStringLiteral(namedWindow.name) + ", " + windowArgs +
-                             ")");
+            if (!windowArgs.empty()) {
+                appendClause("window(" + identifierToCppStringLiteral(namedWindow.name) + ", " + windowArgs + ")");
             } else {
                 selectWarnings.push_back("WINDOW `" + namedWindow.name +
                                          "`: empty or unmapped window definition omitted in sqlite_orm codegen");
             }
         }
 
-        if(!selectNode.orderBy.empty()) {
+        if (!selectNode.orderBy.empty()) {
             auto formatOrderTerm = [&](const OrderByTerm& term) -> std::string {
                 std::string orderCode = "order_by(" + expressionCode(*term.expression) + ")";
-                if(term.direction == SortDirection::asc) {
+                if (term.direction == SortDirection::asc) {
                     orderCode += ".asc()";
-                } else if(term.direction == SortDirection::desc) {
+                } else if (term.direction == SortDirection::desc) {
                     orderCode += ".desc()";
                 }
-                if(!term.collation.empty()) {
+                if (!term.collation.empty()) {
                     std::string collLower = toLowerAscii(term.collation);
-                    if(collLower == "nocase") {
+                    if (collLower == "nocase") {
                         orderCode += ".collate_nocase()";
-                    } else if(collLower == "binary") {
+                    } else if (collLower == "binary") {
                         orderCode += ".collate_binary()";
-                    } else if(collLower == "rtrim") {
+                    } else if (collLower == "rtrim") {
                         orderCode += ".collate_rtrim()";
                     } else {
                         orderCode += ".collate(" + identifierToCppStringLiteral(term.collation) + ")";
@@ -399,12 +406,13 @@ namespace sqlite2orm {
                 }
                 return orderCode;
             };
-            if(selectNode.orderBy.size() == 1) {
+            if (selectNode.orderBy.size() == 1) {
                 appendClause(formatOrderTerm(selectNode.orderBy.at(0)));
             } else {
                 std::string multiCode = "multi_order_by(";
-                for(size_t i = 0; i < selectNode.orderBy.size(); ++i) {
-                    if(i > 0) multiCode += ", ";
+                for (size_t i = 0; i < selectNode.orderBy.size(); ++i) {
+                    if (i > 0)
+                        multiCode += ", ";
                     multiCode += formatOrderTerm(selectNode.orderBy.at(i));
                 }
                 multiCode += ")";
@@ -412,9 +420,9 @@ namespace sqlite2orm {
             }
         }
 
-        if(selectNode.limitValue) {
+        if (selectNode.limitValue) {
             std::string limitCode = "limit(" + expressionCode(*selectNode.limitValue);
-            if(selectNode.offsetValue) {
+            if (selectNode.offsetValue) {
                 limitCode += ", offset(" + expressionCode(*selectNode.offsetValue) + ")";
             }
             limitCode += ")";
@@ -422,14 +430,14 @@ namespace sqlite2orm {
         }
 
         std::string trailingJoined;
-        for(size_t ti = 0; ti < selectTrailingClauses.size(); ++ti) {
-            if(ti > 0) {
+        for (size_t ti = 0; ti < selectTrailingClauses.size(); ++ti) {
+            if (ti > 0) {
                 trailingJoined += ", ";
             }
             trailingJoined += selectTrailingClauses.at(ti);
         }
 
-        if(isStar) {
+        if (isStar) {
             const std::string& starRowType = this->context.implicitSingleSourceCteTypedef
                                                  ? *this->context.implicitSingleSourceCteTypedef
                                                  : this->context.structName;
@@ -442,25 +450,25 @@ namespace sqlite2orm {
                 "auto " + rowsVariable + " = storage.select(asterisk<" + starRowType + ">()" + tail + ");";
             std::string chosenApi = "get_all";
             code = codeGetAll;
-            if(policyEquals(this->context.codeGenPolicy, "api_level", "select_object")) {
+            if (policyEquals(this->context.codeGenPolicy, "api_level", "select_object")) {
                 chosenApi = "select_object";
                 code = codeSelectObject;
-            } else if(policyEquals(this->context.codeGenPolicy, "api_level", "select_asterisk")) {
+            } else if (policyEquals(this->context.codeGenPolicy, "api_level", "select_asterisk")) {
                 chosenApi = "select_asterisk";
                 code = codeSelectAsterisk;
             }
             // A WITH outer cannot use storage.get_all<T>() (not a with() argument); use asterisk instead.
-            if(forceOuterAsterisk && chosenApi == "get_all") {
+            if (forceOuterAsterisk && chosenApi == "get_all") {
                 chosenApi = "select_asterisk";
                 code = codeSelectAsterisk;
             }
-            if(apiLevelDecisionId >= 0) {
+            if (apiLevelDecisionId >= 0) {
                 // options lists every variant (the chosen one included, default get_all first).
                 std::vector<Option> apiOptions = {
                     Option{"get_all", codeGetAll, "get_all<T>(...) returns full row objects"},
-                    Option{"select_object", codeSelectObject,
-                           "select(object<T>(), ...) returns std::tuple of columns"},
-                    Option{"select_asterisk", codeSelectAsterisk,
+                    Option{"select_object", codeSelectObject, "select(object<T>(), ...) returns std::tuple of columns"},
+                    Option{"select_asterisk",
+                           codeSelectAsterisk,
                            "select(asterisk<T>(), ...) returns full row objects"},
                 };
                 selectDecisionPoints.insert(
@@ -468,88 +476,94 @@ namespace sqlite2orm {
                     DecisionPoint{apiLevelDecisionId, "api_level", chosenApi, code, std::move(apiOptions)});
             }
         } else {
-            if(!trailingJoined.empty()) {
+            if (!trailingJoined.empty()) {
                 code += ", ";
                 code += trailingJoined;
             }
             code += ");";
         }
-        if(hasAnyColumnAlias(selectNode.columns)) {
-            if(this->context.useCpp20ColumnAliasStyle()) {
-                if(!aliasPreamble.empty()) {
+        if (hasAnyColumnAlias(selectNode.columns)) {
+            if (this->context.useCpp20ColumnAliasStyle()) {
+                if (!aliasPreamble.empty()) {
                     code = aliasPreamble + code;
                 }
                 appendUniqueString(selectComments, kCommentCpp20ColumnAliases);
             } else {
                 bool hasBuiltin = false;
                 bool hasCustom = false;
-                for(const auto& column : selectNode.columns) {
-                    if(column.alias.empty()) continue;
-                    if(needsCustomAliasStruct(column.alias))
+                for (const auto& column: selectNode.columns) {
+                    if (column.alias.empty())
+                        continue;
+                    if (needsCustomAliasStruct(column.alias))
                         hasCustom = true;
                     else
                         hasBuiltin = true;
                 }
-                if(hasCustom) {
+                if (hasCustom) {
                     code = aliasPreamble + code;
                     selectWarnings.push_back(
                         "SELECT column alias uses as<AliasTag>() with a generated sqlite_orm::alias_tag struct");
                 }
-                if(hasBuiltin) {
-                    selectWarnings.push_back(
-                        "SELECT column alias uses sqlite_orm built-in colalias_* types; "
-                        "requires `using namespace sqlite_orm`");
+                if (hasBuiltin) {
+                    selectWarnings.push_back("SELECT column alias uses sqlite_orm built-in colalias_* types; "
+                                             "requires `using namespace sqlite_orm`");
                 }
-                if(!this->context.columnAliasStyleOverride) {
+                if (!this->context.columnAliasStyleOverride) {
                     // options lists every applicable variant (the chosen one included).
                     std::vector<Option> aliasOptions = {
-                        Option{"alias_tag", code,
+                        Option{"alias_tag",
+                               code,
                                "alias_tag / colalias_* / generated struct (default; wider compiler support)"}};
-                    if(cpp20Allowed(this->context.codeGenPolicy)) {
+                    if (cpp20Allowed(this->context.codeGenPolicy)) {
                         CodeGenerator altGen;
                         altGen.context() = selectAltBaseline;
                         altGen.context().columnAliasStyleOverride = "cpp20_literal";
                         auto altRes = altGen.generateNode(selectNode);
-                        Option cpp20Alt{"cpp20_literal", altRes.code,
+                        Option cpp20Alt{"cpp20_literal",
+                                        altRes.code,
                                         "C++20 literal aliases (`orm_column_alias`, `_col`)"};
                         cpp20Alt.comments = std::move(altRes.comments);
                         cpp20Alt.minCppStandard = 20;
                         aliasOptions.push_back(std::move(cpp20Alt));
                     }
-                    selectDecisionPoints.push_back(
-                        DecisionPoint{this->context.nextDecisionPointId++, "column_alias_style", "alias_tag",
-                                      code, std::move(aliasOptions)});
+                    selectDecisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
+                                                                 "column_alias_style",
+                                                                 "alias_tag",
+                                                                 code,
+                                                                 std::move(aliasOptions)});
                 }
             }
         }
-        if(hasAnyColumnAlias(selectNode.columns) && this->context.useCpp20ColumnAliasStyle() &&
-           !this->context.columnAliasStyleOverride) {
+        if (hasAnyColumnAlias(selectNode.columns) && this->context.useCpp20ColumnAliasStyle() &&
+            !this->context.columnAliasStyleOverride) {
             CodeGenerator altGen;
             altGen.context() = selectAltBaseline;
             altGen.context().columnAliasStyleOverride = "alias_tag";
             auto altRes = altGen.generateNode(selectNode);
             // options lists every variant (the chosen one included).
-            Option cpp20LiteralChosen{"cpp20_literal", code,
-                                      "C++20 literal aliases (`orm_column_alias`, `_col`)"};
+            Option cpp20LiteralChosen{"cpp20_literal", code, "C++20 literal aliases (`orm_column_alias`, `_col`)"};
             cpp20LiteralChosen.minCppStandard = 20;
-            selectDecisionPoints.push_back(DecisionPoint{
-                this->context.nextDecisionPointId++, "column_alias_style", "cpp20_literal", code,
-                {Option{"alias_tag", altRes.code,
-                        "alias_tag / colalias_* / generated struct (default; wider compiler support)"},
-                 std::move(cpp20LiteralChosen)}});
+            selectDecisionPoints.push_back(
+                DecisionPoint{this->context.nextDecisionPointId++,
+                              "column_alias_style",
+                              "cpp20_literal",
+                              code,
+                              {Option{"alias_tag",
+                                      altRes.code,
+                                      "alias_tag / colalias_* / generated struct (default; wider compiler support)"},
+                               std::move(cpp20LiteralChosen)}});
         }
         bool hasTableAliases = !this->context.activeTableAliases.empty();
-        if(!this->context.cpp20TableAliasDeclarations.empty() && !this->context.activeWithCteStyle) {
+        if (!this->context.cpp20TableAliasDeclarations.empty() && !this->context.activeWithCteStyle) {
             std::string prelude;
-            for(const auto& tad : this->context.cpp20TableAliasDeclarations) {
+            for (const auto& tad: this->context.cpp20TableAliasDeclarations) {
                 prelude += "constexpr orm_table_alias auto " + tad.variableName + " = " +
-                           identifierToCppStringLiteral(tad.sqlAlias) + "_alias.for_<" + tad.baseStructName +
-                           ">();\n";
+                           identifierToCppStringLiteral(tad.sqlAlias) + "_alias.for_<" + tad.baseStructName + ">();\n";
             }
             code = prelude + code;
         }
-        if(hasTableAliases) {
-            if(!this->context.activeWithCteStyle && !this->context.suppressTableAliasStyleDecisionPoint) {
+        if (hasTableAliases) {
+            if (!this->context.activeWithCteStyle && !this->context.suppressTableAliasStyleDecisionPoint) {
                 const bool allowCpp20 = cpp20Allowed(this->context.codeGenPolicy);
                 const std::string currentStyle =
                     (allowCpp20 && policyEquals(this->context.codeGenPolicy, "table_alias_style", "cpp20"))
@@ -568,21 +582,27 @@ namespace sqlite2orm {
                 std::vector<Option> tableAliasOptions = {
                     Option{"pre_cpp20", makeAlt("pre_cpp20"), "alias_a<T> + alias_column<> (wider compiler support)"},
                 };
-                if(allowCpp20) {
-                    Option cpp20TableAlias{"cpp20", makeAlt("cpp20"),
+                if (allowCpp20) {
+                    Option cpp20TableAlias{"cpp20",
+                                           makeAlt("cpp20"),
                                            "\"name\"_alias.for_<T>() + ->* (C++20 sqlite_orm)"};
                     cpp20TableAlias.minCppStandard = 20;
                     tableAliasOptions.push_back(std::move(cpp20TableAlias));
                 }
                 selectDecisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
-                                                             "table_alias_style", currentStyle, code,
+                                                             "table_alias_style",
+                                                             currentStyle,
+                                                             code,
                                                              std::move(tableAliasOptions)});
             }
         }
         this->context.cpp20TableAliasDeclarations.clear();
         this->context.activeSelectColumnAliases.clear();
         this->context.activeSelectColumnAliasCpp20Vars.clear();
-        return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings), {},
+        return CodeGenResult{code,
+                             std::move(selectDecisionPoints),
+                             std::move(selectWarnings),
+                             {},
                              std::move(selectComments)};
     }
 
@@ -598,15 +618,14 @@ namespace sqlite2orm {
             std::optional<std::string> savedImplicitCte;
             std::optional<std::string> savedImplicitCteTableKey;
 
-            SubselectAliasRestore(CodeGeneratorContext* context)
-                : ctx(context), savedAliases(context->fromTableAliasToStructName),
-                  savedTableAliases(context->activeTableAliases),
-                  savedNextAliasLetter(context->nextAliasLetter),
-                  savedColumnAliases(context->activeSelectColumnAliases),
-                  savedColumnAliasCpp20Vars(context->activeSelectColumnAliasCpp20Vars),
-                  savedStructName(context->structName),
-                  savedImplicitCte(std::move(context->implicitSingleSourceCteTypedef)),
-                  savedImplicitCteTableKey(std::move(context->implicitCteFromTableKeyNorm)) {}
+            SubselectAliasRestore(CodeGeneratorContext* context) :
+                ctx(context), savedAliases(context->fromTableAliasToStructName),
+                savedTableAliases(context->activeTableAliases), savedNextAliasLetter(context->nextAliasLetter),
+                savedColumnAliases(context->activeSelectColumnAliases),
+                savedColumnAliasCpp20Vars(context->activeSelectColumnAliasCpp20Vars),
+                savedStructName(context->structName),
+                savedImplicitCte(std::move(context->implicitSingleSourceCteTypedef)),
+                savedImplicitCteTableKey(std::move(context->implicitCteFromTableKeyNorm)) {}
 
             ~SubselectAliasRestore() {
                 ctx->fromTableAliasToStructName = std::move(savedAliases);
@@ -623,19 +642,17 @@ namespace sqlite2orm {
         std::vector<CodegenWarning> subWarnings;
         std::vector<DecisionPoint> subDecisionPoints;
 
-        if(selectNode.groupBy) {
-            subWarnings.push_back(
-                "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)");
+        if (selectNode.groupBy) {
+            subWarnings.push_back("GROUP BY in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
         }
-        if(selectNode.offsetValue && !selectNode.limitValue) {
-            subWarnings.push_back(
-                "OFFSET without LIMIT in subquery is not yet mapped to sqlite_orm select(...)");
+        if (selectNode.offsetValue && !selectNode.limitValue) {
+            subWarnings.push_back("OFFSET without LIMIT in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
         }
 
-        for(const auto& fromItem : selectNode.fromClause) {
-            if(fromItem.table.derivedSelect) {
+        for (const auto& fromItem: selectNode.fromClause) {
+            if (fromItem.table.derivedSelect) {
                 subWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
                 return CodeGenResult{{}, {}, std::move(subWarnings)};
             }
@@ -646,43 +663,40 @@ namespace sqlite2orm {
         this->context.nextAliasLetter = 0;
         auto isCteKey = [&](std::string_view tableSqlName) -> bool {
             auto key = normalizeSqlIdentifier(tableSqlName);
-            return this->context.activeCteTypedefByTableKey.find(key) !=
-                   this->context.activeCteTypedefByTableKey.end();
+            return this->context.activeCteTypedefByTableKey.find(key) != this->context.activeCteTypedefByTableKey.end();
         };
         auto structForFromTable = [&](std::string_view tableSqlName) -> std::string {
             auto key = normalizeSqlIdentifier(tableSqlName);
-            if(auto cteLookup = this->context.activeCteTypedefByTableKey.find(key);
-               cteLookup != this->context.activeCteTypedefByTableKey.end()) {
+            if (auto cteLookup = this->context.activeCteTypedefByTableKey.find(key);
+                cteLookup != this->context.activeCteTypedefByTableKey.end()) {
                 return cteLookup->second;
             }
             return this->context.structNameForTable(tableSqlName);
         };
         auto prefixStructNameForFromTable = [&](std::string_view tableSqlName) -> std::string {
             const auto key = normalizeSqlIdentifier(tableSqlName);
-            if(this->context.activeCteTypedefByTableKey.find(key) !=
-               this->context.activeCteTypedefByTableKey.end()) {
+            if (this->context.activeCteTypedefByTableKey.find(key) != this->context.activeCteTypedefByTableKey.end()) {
                 return toStructName(tableSqlName);
             }
             return structForFromTable(tableSqlName);
         };
-        if(!selectNode.fromClause.empty()) {
-            for(const auto& fromItem : selectNode.fromClause) {
+        if (!selectNode.fromClause.empty()) {
+            for (const auto& fromItem: selectNode.fromClause) {
                 const auto& ft = fromItem.table;
-                if(ft.schemaName) {
+                if (ft.schemaName) {
                     subWarnings.push_back("FROM clause schema qualifier '" + *ft.schemaName + "' for table '" +
                                           ft.tableName + "' is not represented in sqlite_orm mapping");
                 }
                 std::string mappedStructName = structForFromTable(ft.tableName);
                 this->context.fromTableAliasToStructName[ft.tableName] = mappedStructName;
-                if(ft.alias && !isCteKey(ft.tableName)) {
-                    if(this->context.useCpp20TableAliasStyle()) {
+                if (ft.alias && !isCteKey(ft.tableName)) {
+                    if (this->context.useCpp20TableAliasStyle()) {
                         std::string varName = toCppIdentifier(*ft.alias);
                         TableAliasInfo info{varName, mappedStructName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                         this->context.cpp20TableAliasDeclarations.push_back(
-                            Cpp20TableAliasDeclaration{varName, mappedStructName,
-                                                       stripIdentifierQuotes(*ft.alias)});
+                            Cpp20TableAliasDeclaration{varName, mappedStructName, stripIdentifierQuotes(*ft.alias)});
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);
                         std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
@@ -691,32 +705,32 @@ namespace sqlite2orm {
                         this->context.activeTableAliases[ft.tableName] = info;
                     }
                     this->context.fromTableAliasToStructName[*ft.alias] = mappedStructName;
-                } else if(ft.alias) {
+                } else if (ft.alias) {
                     this->context.fromTableAliasToStructName[*ft.alias] = mappedStructName;
                 }
             }
             std::string_view structNameSource = selectNode.fromClause.at(0).table.tableName;
-            for(const auto& fromItem : selectNode.fromClause) {
-                if(!isCteKey(fromItem.table.tableName)) {
+            for (const auto& fromItem: selectNode.fromClause) {
+                if (!isCteKey(fromItem.table.tableName)) {
                     structNameSource = fromItem.table.tableName;
                     break;
                 }
             }
             this->context.structName = prefixStructNameForFromTable(structNameSource);
         }
-        if(!selectNode.fromClause.empty()) {
+        if (!selectNode.fromClause.empty()) {
             const auto& firstFrom = selectNode.fromClause.at(0).table;
             const auto firstKey = normalizeSqlIdentifier(firstFrom.tableName);
-            if(this->context.activeCteTypedefByTableKey.find(firstKey) !=
-               this->context.activeCteTypedefByTableKey.end()) {
+            if (this->context.activeCteTypedefByTableKey.find(firstKey) !=
+                this->context.activeCteTypedefByTableKey.end()) {
                 bool allCte = true;
-                for(const auto& fromItem : selectNode.fromClause) {
-                    if(!isCteKey(fromItem.table.tableName)) {
+                for (const auto& fromItem: selectNode.fromClause) {
+                    if (!isCteKey(fromItem.table.tableName)) {
                         allCte = false;
                         break;
                     }
                 }
-                if(selectNode.fromClause.size() == 1u || allCte) {
+                if (selectNode.fromClause.size() == 1u || allCte) {
                     this->context.implicitSingleSourceCteTypedef =
                         this->context.activeCteTypedefByTableKey.at(firstKey);
                     this->context.implicitCteFromTableKeyNorm = firstKey;
@@ -726,7 +740,8 @@ namespace sqlite2orm {
 
         auto expressionCode = [&](const AstNode& node) -> std::string {
             auto result = this->coordinator.generateNode(node);
-            subWarnings.insert(subWarnings.end(), std::make_move_iterator(result.warnings.begin()),
+            subWarnings.insert(subWarnings.end(),
+                               std::make_move_iterator(result.warnings.begin()),
                                std::make_move_iterator(result.warnings.end()));
             subDecisionPoints.insert(subDecisionPoints.end(),
                                      std::make_move_iterator(result.decisionPoints.begin()),
@@ -735,8 +750,8 @@ namespace sqlite2orm {
         };
 
         auto colExprWithBinding = [&](size_t colIndex, const std::string& expr) -> std::string {
-            if(colIndex < this->context.pendingAnchorCteBindings.size() &&
-               !this->context.pendingAnchorCteBindings[colIndex].empty()) {
+            if (colIndex < this->context.pendingAnchorCteBindings.size() &&
+                !this->context.pendingAnchorCteBindings[colIndex].empty()) {
                 return expr + " >>= " + this->context.pendingAnchorCteBindings[colIndex];
             }
             return expr;
@@ -744,8 +759,8 @@ namespace sqlite2orm {
 
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
         std::string columnPart;
-        if(isStar) {
-            if(selectNode.fromClause.empty()) {
+        if (isStar) {
+            if (selectNode.fromClause.empty()) {
                 subWarnings.push_back("SELECT * subexpression requires FROM for sqlite_orm asterisk<...>()");
                 return CodeGenResult{{}, std::move(subDecisionPoints), std::move(subWarnings)};
             }
@@ -754,33 +769,33 @@ namespace sqlite2orm {
                                                 : this->context.structName;
             columnPart = "asterisk<" + subStarRow + ">()";
         } else {
-            if(selectNode.distinct) {
+            if (selectNode.distinct) {
                 // A trigger's WHEN clause is default-constructed by sqlite_orm, so a subquery
                 // standing in one only compiles while every clause it carries has a default
                 // constructor. `distinct_t`, `where_t`, `order_by_t` and a join that carries an
                 // `on(...)` or a `using_(...)` declare a constructor and no default one; `from_t`,
                 // `limit_t`, a cross or natural join and a named window hold nothing and do.
                 this->context.recordFormWithoutDefaultConstructor("DISTINCT");
-                if(selectNode.columns.size() == 1) {
-                    columnPart = "distinct(" +
-                                 colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression)) + ")";
+                if (selectNode.columns.size() == 1) {
+                    columnPart =
+                        "distinct(" + colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression)) + ")";
                 } else {
                     columnPart = "distinct(columns(";
-                    for(size_t i = 0; i < selectNode.columns.size(); ++i) {
-                        if(i > 0) columnPart += ", ";
-                        columnPart +=
-                            colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
+                    for (size_t i = 0; i < selectNode.columns.size(); ++i) {
+                        if (i > 0)
+                            columnPart += ", ";
+                        columnPart += colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
                     }
                     columnPart += "))";
                 }
-            } else if(selectNode.columns.size() == 1) {
+            } else if (selectNode.columns.size() == 1) {
                 columnPart = colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression));
             } else {
                 columnPart = "columns(";
-                for(size_t i = 0; i < selectNode.columns.size(); ++i) {
-                    if(i > 0) columnPart += ", ";
-                    columnPart +=
-                        colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
+                for (size_t i = 0; i < selectNode.columns.size(); ++i) {
+                    if (i > 0)
+                        columnPart += ", ";
+                    columnPart += colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
                 }
                 columnPart += ")";
             }
@@ -790,7 +805,7 @@ namespace sqlite2orm {
         auto resolveJoinType = [&](const FromTableClause& ft) -> std::string {
             std::string key = ft.alias ? *ft.alias : ft.tableName;
             auto it = this->context.activeTableAliases.find(key);
-            if(it != this->context.activeTableAliases.end()) {
+            if (it != this->context.activeTableAliases.end()) {
                 return it->second.ormAliasType;
             }
             return structForFromTable(ft.tableName);
@@ -798,50 +813,48 @@ namespace sqlite2orm {
         auto cteUsingColumnCode = [&](std::string_view tableName, std::string_view colSql) -> std::string {
             auto tableKey = normalizeSqlIdentifier(tableName);
             auto cteIt = this->context.activeCteTypedefByTableKey.find(tableKey);
-            if(cteIt != this->context.activeCteTypedefByTableKey.end()) {
+            if (cteIt != this->context.activeCteTypedefByTableKey.end()) {
                 std::string colKey = normalizeSqlIdentifier(colSql);
                 std::string pipe = tableKey + "|" + colKey;
                 auto indexedIt = this->context.withCteIndexedColVarByPipeKey.find(pipe);
-                if(indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
+                if (indexedIt != this->context.withCteIndexedColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + indexedIt->second + ")";
                 }
                 auto legacyIt = this->context.withCteLegacyColVarByPipeKey.find(pipe);
-                if(legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
+                if (legacyIt != this->context.withCteLegacyColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + legacyIt->second + ")";
                 }
                 auto cpp20It = this->context.withCteCpp20ColVarByPipeKey.find(pipe);
-                if(cpp20It != this->context.withCteCpp20ColVarByPipeKey.end()) {
+                if (cpp20It != this->context.withCteCpp20ColVarByPipeKey.end()) {
                     return "column<" + cteIt->second + ">(" + cpp20It->second + ")";
                 }
-                if(this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
+                if (this->context.isExplicitCteColumn(tableKey, std::string(colSql))) {
                     return "column<" + cteIt->second + ">(" +
                            identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) + ")";
                 }
                 auto baseIt = this->context.cteBaseStructByKey.find(tableKey);
-                if(baseIt != this->context.cteBaseStructByKey.end()) {
-                    return "column<" + cteIt->second + ">(&" + baseIt->second + "::" + toCppIdentifier(colSql) +
-                           ")";
+                if (baseIt != this->context.cteBaseStructByKey.end()) {
+                    return "column<" + cteIt->second + ">(&" + baseIt->second + "::" + toCppIdentifier(colSql) + ")";
                 }
-                return "column<" + cteIt->second + ">(" +
-                       identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) + ")";
+                return "column<" + cteIt->second + ">(" + identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) +
+                       ")";
             }
             return "&" + structForFromTable(tableName) + "::" + toCppIdentifier(colSql);
         };
         auto isCteSource = [&](std::string_view tableName) -> bool {
             auto key = normalizeSqlIdentifier(tableName);
-            return this->context.activeCteTypedefByTableKey.find(key) !=
-                   this->context.activeCteTypedefByTableKey.end();
+            return this->context.activeCteTypedefByTableKey.find(key) != this->context.activeCteTypedefByTableKey.end();
         };
         bool firstFromIsCte =
             !selectNode.fromClause.empty() && isCteSource(selectNode.fromClause.at(0).table.tableName);
         bool emittedNonCteJoin = false;
         std::vector<std::string> tailParts;
-        for(size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
+        for (size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
-            if(isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
                 continue;
             }
-            if(firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
                 emittedNonCteJoin = true;
                 continue;
             }
@@ -851,110 +864,108 @@ namespace sqlite2orm {
             std::string rightStruct = structForFromTable(joinItem.table.tableName);
             std::string leftStruct = structForFromTable(leftTable.tableName);
             std::string joinCode;
-            switch(joinItem.leadingJoin) {
-            case JoinKind::crossJoin:
-            case JoinKind::naturalInnerJoin:
-                joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightType + ">()";
-                break;
-            case JoinKind::naturalLeftJoin:
-                subWarnings.push_back(
-                    "NATURAL LEFT JOIN is not supported in sqlite_orm; generated natural_join does not match SQL "
-                    "semantics");
-                joinCode = "natural_join<" + rightType + ">()";
-                break;
-            default: {
-                std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
-                if(!joinItem.usingColumnNames.empty()) {
-                    bool rightIsCte = isCteSource(joinItem.table.tableName);
-                    if(joinItem.usingColumnNames.size() == 1) {
-                        std::string usingCol;
-                        if(rightIsCte) {
-                            usingCol = cteUsingColumnCode(leftTable.tableName, joinItem.usingColumnNames.at(0));
-                        } else {
-                            usingCol = "&" + rightStruct + "::" +
-                                       toCppIdentifier(joinItem.usingColumnNames.at(0));
-                        }
-                        joinCode = std::string(api) + "<" + rightType + ">(using_(" + usingCol + "))";
-                    } else {
-                        std::string cond;
-                        for(size_t ci = 0; ci < joinItem.usingColumnNames.size(); ++ci) {
-                            if(ci > 0) {
-                                cond += " and ";
+            switch (joinItem.leadingJoin) {
+                case JoinKind::crossJoin:
+                case JoinKind::naturalInnerJoin:
+                    joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightType + ">()";
+                    break;
+                case JoinKind::naturalLeftJoin:
+                    subWarnings.push_back(
+                        "NATURAL LEFT JOIN is not supported in sqlite_orm; generated natural_join does not match SQL "
+                        "semantics");
+                    joinCode = "natural_join<" + rightType + ">()";
+                    break;
+                default: {
+                    std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
+                    if (!joinItem.usingColumnNames.empty()) {
+                        bool rightIsCte = isCteSource(joinItem.table.tableName);
+                        if (joinItem.usingColumnNames.size() == 1) {
+                            std::string usingCol;
+                            if (rightIsCte) {
+                                usingCol = cteUsingColumnCode(leftTable.tableName, joinItem.usingColumnNames.at(0));
+                            } else {
+                                usingCol = "&" + rightStruct + "::" + toCppIdentifier(joinItem.usingColumnNames.at(0));
                             }
-                            auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
-                            cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col +
-                                    ")";
+                            joinCode = std::string(api) + "<" + rightType + ">(using_(" + usingCol + "))";
+                        } else {
+                            std::string cond;
+                            for (size_t ci = 0; ci < joinItem.usingColumnNames.size(); ++ci) {
+                                if (ci > 0) {
+                                    cond += " and ";
+                                }
+                                auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
+                                cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col + ")";
+                            }
+                            joinCode = std::string(api) + "<" + rightType + ">(on(" + cond + "))";
                         }
-                        joinCode = std::string(api) + "<" + rightType + ">(on(" + cond + "))";
+                    } else if (joinItem.onExpression) {
+                        joinCode = std::string(api) + "<" + rightType + ">(on(" +
+                                   expressionCode(*joinItem.onExpression) + "))";
+                    } else {
+                        joinCode = std::string(api) + "<" + rightType + ">(on(true))";
                     }
-                } else if(joinItem.onExpression) {
-                    joinCode = std::string(api) + "<" + rightType + ">(on(" +
-                               expressionCode(*joinItem.onExpression) + "))";
-                } else {
-                    joinCode = std::string(api) + "<" + rightType + ">(on(true))";
+                    break;
                 }
-                break;
             }
-            }
-            if(joinItem.leadingJoin != JoinKind::crossJoin &&
-               joinItem.leadingJoin != JoinKind::naturalInnerJoin &&
-               joinItem.leadingJoin != JoinKind::naturalLeftJoin) {
+            if (joinItem.leadingJoin != JoinKind::crossJoin && joinItem.leadingJoin != JoinKind::naturalInnerJoin &&
+                joinItem.leadingJoin != JoinKind::naturalLeftJoin) {
                 this->context.recordFormWithoutDefaultConstructor("JOIN");
             }
             tailParts.push_back(std::move(joinCode));
         }
 
-        if(selectNode.whereClause) {
+        if (selectNode.whereClause) {
             this->context.recordFormWithoutDefaultConstructor("WHERE");
             tailParts.push_back("where(" + expressionCode(*selectNode.whereClause) + ")");
         }
 
-        for(const auto& namedWindow : selectNode.namedWindows) {
-            if(!namedWindow.definition) {
+        for (const auto& namedWindow: selectNode.namedWindows) {
+            if (!namedWindow.definition) {
                 continue;
             }
             std::string windowArgs =
                 this->coordinator.codegenOverClause(*namedWindow.definition, subDecisionPoints, subWarnings);
-            if(!windowArgs.empty()) {
-                tailParts.push_back("window(" + identifierToCppStringLiteral(namedWindow.name) + ", " +
-                                    windowArgs + ")");
+            if (!windowArgs.empty()) {
+                tailParts.push_back("window(" + identifierToCppStringLiteral(namedWindow.name) + ", " + windowArgs +
+                                    ")");
             }
         }
 
-        if(!selectNode.orderBy.empty()) {
+        if (!selectNode.orderBy.empty()) {
             this->context.recordFormWithoutDefaultConstructor("ORDER BY");
             auto formatSubOrderTerm = [&](const OrderByTerm& term) -> std::string {
                 std::string orderCode = "order_by(" + expressionCode(*term.expression) + ")";
-                if(term.direction == SortDirection::asc) {
+                if (term.direction == SortDirection::asc) {
                     orderCode += ".asc()";
-                } else if(term.direction == SortDirection::desc) {
+                } else if (term.direction == SortDirection::desc) {
                     orderCode += ".desc()";
                 }
-                if(!term.collation.empty()) {
+                if (!term.collation.empty()) {
                     std::string collLower = toLowerAscii(term.collation);
-                    if(collLower == "nocase") {
+                    if (collLower == "nocase") {
                         orderCode += ".collate_nocase()";
-                    } else if(collLower == "binary") {
+                    } else if (collLower == "binary") {
                         orderCode += ".collate_binary()";
-                    } else if(collLower == "rtrim") {
+                    } else if (collLower == "rtrim") {
                         orderCode += ".collate_rtrim()";
                     } else {
                         orderCode += ".collate(" + identifierToCppStringLiteral(term.collation) + ")";
                     }
                 }
-                if(term.nulls == NullsOrdering::first) {
+                if (term.nulls == NullsOrdering::first) {
                     orderCode += ".nulls_first()";
-                } else if(term.nulls == NullsOrdering::last) {
+                } else if (term.nulls == NullsOrdering::last) {
                     orderCode += ".nulls_last()";
                 }
                 return orderCode;
             };
-            if(selectNode.orderBy.size() == 1) {
+            if (selectNode.orderBy.size() == 1) {
                 tailParts.push_back(formatSubOrderTerm(selectNode.orderBy.at(0)));
             } else {
                 std::string multiCode = "multi_order_by(";
-                for(size_t i = 0; i < selectNode.orderBy.size(); ++i) {
-                    if(i > 0) multiCode += ", ";
+                for (size_t i = 0; i < selectNode.orderBy.size(); ++i) {
+                    if (i > 0)
+                        multiCode += ", ";
                     multiCode += formatSubOrderTerm(selectNode.orderBy.at(i));
                 }
                 multiCode += ")";
@@ -963,13 +974,13 @@ namespace sqlite2orm {
         }
 
         std::string code = "select(" + columnPart;
-        for(const auto& part : tailParts) {
+        for (const auto& part: tailParts) {
             code += ", ";
             code += part;
         }
-        if(selectNode.limitValue) {
+        if (selectNode.limitValue) {
             code += ", limit(" + expressionCode(*selectNode.limitValue);
-            if(selectNode.offsetValue) {
+            if (selectNode.offsetValue) {
                 code += ", offset(" + expressionCode(*selectNode.offsetValue) + ")";
             }
             code += ")";
@@ -978,23 +989,21 @@ namespace sqlite2orm {
         return CodeGenResult{code, std::move(subDecisionPoints), std::move(subWarnings)};
     }
 
-    CodeGenResult
-    SelectCodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode) {
-        if(compoundNode.selects.size() != compoundNode.operators.size() + 1) {
+    CodeGenResult SelectCodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode) {
+        if (compoundNode.selects.size() != compoundNode.operators.size() + 1) {
             return CodeGenResult{{}, {}, {"internal: compound SELECT operand count mismatch"}};
         }
         auto* firstSelect = dynamic_cast<const SelectNode*>(compoundNode.selects.at(0).get());
-        if(!firstSelect) {
+        if (!firstSelect) {
             return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
         }
         CodeGenResult accumulated = this->tryCodegenSqliteSelectSubexpression(*firstSelect);
-        if(accumulated.code.empty()) {
+        if (accumulated.code.empty()) {
             return accumulated;
         }
-        for(size_t operatorIndex = 0; operatorIndex < compoundNode.operators.size(); ++operatorIndex) {
-            auto* nextSelect =
-                dynamic_cast<const SelectNode*>(compoundNode.selects.at(operatorIndex + 1).get());
-            if(!nextSelect) {
+        for (size_t operatorIndex = 0; operatorIndex < compoundNode.operators.size(); ++operatorIndex) {
+            auto* nextSelect = dynamic_cast<const SelectNode*>(compoundNode.selects.at(operatorIndex + 1).get());
+            if (!nextSelect) {
                 return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
             }
             CodeGenResult nextArm = this->tryCodegenSqliteSelectSubexpression(*nextSelect);
@@ -1004,9 +1013,8 @@ namespace sqlite2orm {
             accumulated.warnings.insert(accumulated.warnings.end(),
                                         std::make_move_iterator(nextArm.warnings.begin()),
                                         std::make_move_iterator(nextArm.warnings.end()));
-            if(nextArm.code.empty()) {
-                return CodeGenResult{
-                    {}, std::move(accumulated.decisionPoints), std::move(accumulated.warnings)};
+            if (nextArm.code.empty()) {
+                return CodeGenResult{{}, std::move(accumulated.decisionPoints), std::move(accumulated.warnings)};
             }
             this->context.recordFormWithoutDefaultConstructor("a compound SELECT");
             accumulated.code = std::string(compoundSelectApi(compoundNode.operators.at(operatorIndex))) + "(" +
@@ -1016,20 +1024,19 @@ namespace sqlite2orm {
     }
 
     CodeGenResult SelectCodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node) {
-        if(auto* selectNode = dynamic_cast<const SelectNode*>(&node)) {
+        if (auto* selectNode = dynamic_cast<const SelectNode*>(&node)) {
             return this->tryCodegenSqliteSelectSubexpression(*selectNode);
         }
-        if(auto* compoundNode = dynamic_cast<const CompoundSelectNode*>(&node)) {
+        if (auto* compoundNode = dynamic_cast<const CompoundSelectNode*>(&node)) {
             return this->tryCodegenCompoundSelectSubexpression(*compoundNode);
         }
-        if(auto* withQueryNode = dynamic_cast<const WithQueryNode*>(&node)) {
+        if (auto* withQueryNode = dynamic_cast<const WithQueryNode*>(&node)) {
             auto inner = this->tryCodegenSelectLikeSubquery(*withQueryNode->statement);
             std::vector<CodegenWarning> subWarnings = std::move(inner.warnings);
             subWarnings.insert(subWarnings.begin(),
                                "nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs; generated code "
                                "uses the inner SELECT only (WITH clause dropped)");
-            return CodeGenResult{std::move(inner.code), std::move(inner.decisionPoints),
-                                 std::move(subWarnings)};
+            return CodeGenResult{std::move(inner.code), std::move(inner.decisionPoints), std::move(subWarnings)};
         }
         return CodeGenResult{{}, {}, {"subquery is not a SELECT or compound SELECT for sqlite_orm codegen"}};
     }

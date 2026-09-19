@@ -14,7 +14,9 @@ namespace sqlite2orm {
         explicit AstNode(SourceLocation location) : location(location) {}
 
         virtual bool operator==(const AstNode& other) const = 0;
-        bool operator!=(const AstNode& other) const { return !(*this == other); }
+        bool operator!=(const AstNode& other) const {
+            return !(*this == other);
+        }
     };
 
     using AstNodePointer = std::unique_ptr<AstNode>;

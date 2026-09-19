@@ -2,6 +2,17 @@
 
 namespace sqlite2orm {
 
+    const AstNode& withoutUnaryPluses(const AstNode& astNode) {
+        const AstNode* node = &astNode;
+        while(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(node)) {
+            if(unaryOperator->unaryOperator != UnaryOperator::plus || !unaryOperator->operand) {
+                break;
+            }
+            node = unaryOperator->operand.get();
+        }
+        return *node;
+    }
+
     bool FunctionCallNode::operator==(const AstNode& other) const {
         auto* o = dynamic_cast<const FunctionCallNode*>(&other);
         if(!o || this->name != o->name || this->distinct != o->distinct || this->star != o->star) {

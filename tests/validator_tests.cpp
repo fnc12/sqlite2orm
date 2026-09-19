@@ -30,6 +30,28 @@ TEST_CASE("validator: unary plus is valid") {
     REQUIRE(validate("SELECT +upper(a);").empty());
 }
 
+// SQLite reads the sign of a minus down to the literal through a unary plus and through
+// parentheses, so the one literal whose negation it refuses is refused behind either: sqlite3 3.51
+// answers `SELECT -0x8000000000000000`, `-+0x8000000000000000`, `-(+0x8000000000000000)` and
+// `- + + 0x8000000000000000` with the same `hex literal too big: -0x8000000000000000`. Only the
+// innermost sign is read as part of the literal, so `-+-0x8000000000000000` — which SQLite refuses
+// too — is reported once, by the minus that stands on the literal.
+TEST_CASE("validator: a sign over a unary plus still reaches the literal it stands on") {
+    const std::vector<ValidationError> hexTooBig{
+        {"hex literal too big: -0x8000000000000000", {1, 1}, "UnaryOperatorNode"}
+    };
+    REQUIRE(validate("-0x8000000000000000") == hexTooBig);
+    REQUIRE(validate("-+0x8000000000000000") == hexTooBig);
+    REQUIRE(validate("- + + 0x8000000000000000") == hexTooBig);
+    REQUIRE(validate("-+-0x8000000000000000") == std::vector<ValidationError>{
+        {"hex literal too big: -0x8000000000000000", {1, 3}, "UnaryOperatorNode"}
+    });
+    // A COLLATE is not read through: sqlite3 answers `-+(0x8000000000000000 COLLATE BINARY)` with
+    // the negation 9.22337203685478e+18 rather than refusing it, so neither does the validator.
+    REQUIRE(validate("-+(0x8000000000000000 COLLATE BINARY)").empty());
+    REQUIRE(validate("+0x8000000000000000").empty());
+}
+
 TEST_CASE("validator: unary minus is valid") {
     REQUIRE(validate("-5").empty());
 }

@@ -198,6 +198,17 @@ namespace sqlite2orm {
         }
     };
 
+    /**
+     *  The node a sign written in front of `astNode` really stands over. SQLite's parser drops a
+     *  unary plus before it looks at what the sign applies to, so the plus does not break a chain
+     *  of signs: sqlite3 3.51 answers `SELECT -+9223372036854775807` with the INTEGER
+     *  `-9223372036854775807`, and refuses `SELECT -+0x8000000000000000` with the very
+     *  `hex literal too big: -0x8000000000000000` a single minus over that literal gets. A COLLATE
+     *  is not dropped that way — `SELECT -+(0x8000000000000000 COLLATE BINARY)` is a negation
+     *  SQLite computes — so only the pluses are stepped through here.
+     */
+    const AstNode& withoutUnaryPluses(const AstNode& astNode);
+
     struct IsNullNode : AstNode {
         AstNodePointer operand;
 

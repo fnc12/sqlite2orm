@@ -104,6 +104,24 @@ namespace sqlite2orm {
         return result;
     }
 
+    bool isAnnotationConstantValueCode(std::string_view code) {
+        if (code == "true" || code == "false") {
+            return true;
+        }
+        std::string_view body = code;
+        if (!body.empty() && (body.front() == '-' || body.front() == '+')) {
+            body.remove_prefix(1);
+        }
+        if (body.empty() || !std::isdigit(static_cast<unsigned char>(body.front()))) {
+            return false;
+        }
+        // Everything a numeric literal is spelled with: the digits and hex letters, the radix and
+        // exponent markers, an exponent's sign, the digit separator and the integer/floating-point
+        // suffixes. A call, a string or an operator brings a character that is none of them.
+        static constexpr std::string_view kNumericLiteralCharacters = "0123456789abcdefABCDEF.xXpP+-'_LlUuFf";
+        return body.find_first_not_of(kNumericLiteralCharacters) == std::string_view::npos;
+    }
+
     std::string identifierToCppStringLiteral(std::string_view sqlIdentifier) {
         auto body = stripIdentifierQuotes(sqlIdentifier);
         std::string result = "\"";
@@ -381,6 +399,14 @@ namespace sqlite2orm {
         "LIKE, GLOB, IS [NOT] NULL, EXISTS or NOT) and the concatenation otherwise. So `1 OR 0` "
         "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
         "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
+
+    const std::string kCommentTableReflection =
+        "The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and "
+        "their constraints are read off the struct's members and `[[= …]]` annotations, and the "
+        "`[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler "
+        "with reflection (P2996/P3394); sqlite_orm detects support automatically "
+        "(SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` "
+        "decision point is the classical form and compiles from C++14 on.";
 
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "

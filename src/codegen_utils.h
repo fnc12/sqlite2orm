@@ -42,11 +42,21 @@ namespace sqlite2orm {
     std::string wrapWithColumnAlias(const std::string& expressionCode, const std::string& rawAlias, bool cpp20Style);
     bool hasAnyColumnAlias(const std::vector<SelectColumn>& columns);
 
+    /**
+     *  Whether generated code for a column DEFAULT may stand inside a `[[= default_value(…)]]`
+     *  annotation. An annotation is a constant expression, so only a literal the compiler folds —
+     *  an integer, a floating-point number or a boolean — qualifies. A text default is generated
+     *  as a `const char*` pointing at a string literal, which is not one, and an expression
+     *  default is not a literal at all.
+     */
+    bool isAnnotationConstantValueCode(std::string_view code);
+
     bool sqliteScalarFirstArgTextContext(std::string_view functionLower);
     std::string defaultCppTypeForSyntheticColumn(std::string_view cppIdentifier);
 
     extern const std::string kCommentCpp20ColumnAliases;
     extern const std::string kCommentViewReflection;
+    extern const std::string kCommentTableReflection;
     extern const std::string kCommentNegationAsZeroMinus;
     extern const std::string kCommentPredicateGroupingCast;
     extern const std::string kCommentNotColumnPointer;

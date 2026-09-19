@@ -89,6 +89,15 @@ missing wtB
 EOF
 diff "$dir/check_lost.expected" "$dir/check_lost.txt"
 
+# `protect` is what a person reaches for first on a clone that has already been pruned -- stop the
+# bleeding, then restore -- and by then the manifest is the only record left of where those
+# worktrees were. Running it while their administrative directories are gone has to carry every
+# entry forward rather than record the empty truth it can see.
+cp .git/worktrees.manifest "$dir/manifest_pruned.before"
+sh "$guard" protect > "$dir/protect_pruned.txt"
+test ! -s "$dir/protect_pruned.txt"
+diff "$dir/manifest_pruned.before" .git/worktrees.manifest
+
 # The recorded commit survives a garbage collection that has no other reason to keep it: the
 # detached worktree that held it is not a repository any more, and its reflog went with it.
 git -c gc.reflogExpire=now -c gc.reflogExpireUnreachable=now gc --prune=now -q
@@ -129,6 +138,23 @@ incomplete wtB
 EOF
 diff "$dir/check_incomplete.expected" "$dir/check_incomplete.txt"
 
+# `protect` cannot read that directory either, and one of those is no more a reason to leave the
+# other worktrees unrecorded than one lock git refuses: it names the bad one on stderr, exits
+# non-zero, and leaves the entry the manifest already held for it alone.
+cp .git/worktrees.manifest "$dir/manifest_incomplete.before"
+status=0
+sh "$guard" protect > "$dir/protect_incomplete.txt" 2> "$dir/protect_incomplete.err" || status=$?
+test "$status" -eq 1
+cat > "$dir/protect_incomplete.expected" <<'EOF'
+already-locked wtA
+EOF
+diff "$dir/protect_incomplete.expected" "$dir/protect_incomplete.txt"
+cat > "$dir/protect_incomplete.err.expected" <<'EOF'
+incomplete wtB
+EOF
+diff "$dir/protect_incomplete.err.expected" "$dir/protect_incomplete.err"
+diff "$dir/manifest_incomplete.before" .git/worktrees.manifest
+
 sh "$guard" restore > "$dir/restore_incomplete.txt"
 cat > "$dir/restore_incomplete.expected" <<EOF
 ok wtA
@@ -153,6 +179,20 @@ unlocked wtA
 ok wtB
 EOF
 diff "$dir/check_unlocked.expected" "$dir/check_unlocked.txt"
+
+# An id `unlock` does not know is reported and the rest of the arguments are still unlocked, the
+# way `forget` treats one.
+status=0
+sh "$guard" unlock wtZ wtA > "$dir/unlock_unknown.txt" 2> "$dir/unlock_unknown.err" || status=$?
+test "$status" -eq 1
+cat > "$dir/unlock_unknown.expected" <<'EOF'
+unlocked wtA
+EOF
+diff "$dir/unlock_unknown.expected" "$dir/unlock_unknown.txt"
+cat > "$dir/unlock_unknown.err.expected" <<'EOF'
+no worktree wtZ
+EOF
+diff "$dir/unlock_unknown.err.expected" "$dir/unlock_unknown.err"
 
 # A worktree added after the last `protect` is recorded nowhere, so a restore could not bring it
 # back; `check` names it too.
@@ -283,6 +323,25 @@ echo three > "$dir/wtB/tracked.txt"
 git -C "$dir/wtB" commit -q -am three
 orphan=$(git -C "$dir/wtB" rev-parse HEAD)
 test "$orphan" != "$recorded"
+
+# Before any of that is lost, the manifest has already gone stale, and `check` is the only thing
+# that can notice: the rule "run `protect` whenever a HEAD moves" is a rule nothing executes. A
+# branch-backed worktree that commits is not stale -- `ref: refs/heads/feat` stays true as the
+# branch moves, and a restore from it loses nothing.
+echo four > "$dir/wtA/tracked.txt"
+git -C "$dir/wtA" commit -q -am four
+status=0
+sh "$guard" check > "$dir/check_stale.txt" || status=$?
+test "$status" -eq 1
+cat > "$dir/check_stale.expected" <<EOF
+ok wtA
+ok $nested_id
+stale wtB
+EOF
+by_id "$dir/check_stale.expected"
+by_id "$dir/check_stale.txt"
+diff "$dir/check_stale.expected" "$dir/check_stale.txt"
+
 rm -rf .git/worktrees
 sh "$guard" restore > "$dir/restore_rewound.txt"
 cat > "$dir/restore_rewound.expected" <<EOF
@@ -297,3 +356,26 @@ test "$(git -C "$dir/wtB" rev-parse HEAD)" = "$recorded"
 
 git fsck --lost-found > /dev/null 2>&1
 test -f ".git/lost-found/commit/$orphan"
+
+# The manifest is a plain-text file this tool's own recovery procedure invites a person to edit, and
+# `restore` removes the directory its first column names. An id that is not a single path component
+# names something outside `.git/worktrees` -- here the object database of the very clone the script
+# exists to protect -- so it is refused by name before anything is removed.
+printf '../objects\t%s\t%s\n' "$dir/ghost/.git" "$recorded" >> .git/worktrees.manifest
+status=0
+sh "$guard" restore > "$dir/restore_traversal.txt" 2> "$dir/restore_traversal.err" || status=$?
+test "$status" -eq 1
+cat > "$dir/restore_traversal.expected" <<EOF
+ok wtA
+ok $nested_id
+ok wtB
+EOF
+by_id "$dir/restore_traversal.expected"
+by_id "$dir/restore_traversal.txt"
+diff "$dir/restore_traversal.expected" "$dir/restore_traversal.txt"
+cat > "$dir/restore_traversal.err.expected" <<'EOF'
+invalid id ../objects
+EOF
+diff "$dir/restore_traversal.err.expected" "$dir/restore_traversal.err"
+test -d .git/objects
+git cat-file -e "$recorded^{commit}"

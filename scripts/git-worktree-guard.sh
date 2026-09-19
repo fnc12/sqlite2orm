@@ -14,8 +14,8 @@
 #
 # What the manifest holds is a snapshot: the HEAD a worktree had when `protect` last ran. A worktree
 # that has committed since is recorded at the commit it left behind, so `protect` belongs on every
-# HEAD change and not only on every `git worktree add`, and `restore` names the HEAD it used rather
-# than claiming the checkout came back where it was.
+# HEAD change and not only on every `git worktree add`, `check` calls such a record `stale`, and
+# `restore` names the HEAD it used rather than claiming the checkout came back where it was.
 set -e
 
 lock_reason='registered path is not visible from every process sharing this clone'
@@ -26,7 +26,7 @@ usage() {
 usage: git-worktree-guard.sh <command> [<id>...]
 
   protect       lock every registered worktree and record it in the manifest
-  check         name every recorded worktree that lost its administrative files or its lock
+  check         name every recorded worktree that lost its files or its lock, or has moved since
   restore       rebuild the administrative files of every recorded worktree that lost them
   forget <id>   drop one worktree from the manifest, for a checkout that is finished with
   unlock <id>   drop one worktree's lock, so `git worktree remove` accepts it again
@@ -75,18 +75,37 @@ admin_complete() {
     [ -f "$1/HEAD" ] && [ -f "$1/gitdir" ] && [ -f "$1/commondir" ]
 }
 
+# The manifest is a documented plain-text file, and the repair a moved mount point calls for is to
+# open it and fix a path by hand. An id is a directory name under `.git/worktrees`, so anything that
+# is not a single path component names something outside it -- and `restore` removes what it names,
+# in a repository that is by definition already damaged.
+single_component_id() {
+    case "$1" in
+        */* | . | ..) return 1 ;;
+    esac
+}
+
 cmd_protect() {
     tmp=$(mktemp "$manifest.XXXXXX")
     ids=$(mktemp "$manifest.XXXXXX")
-    trap 'rm -f "$tmp" "$ids"' EXIT INT TERM
+    seen=$(mktemp "$manifest.XXXXXX")
+    trap 'rm -f "$tmp" "$ids" "$seen"' EXIT INT TERM
     registered_ids > "$ids"
     status=0
     while read -r id; do
         [ -n "$id" ] || continue
         dir="$common/worktrees/$id"
+        if ! admin_complete "$dir"; then
+            # One administrative directory too incomplete to read is no more a reason to leave the
+            # others unrecorded than one worktree git refuses to lock.
+            echo "incomplete $id" >&2
+            status=1
+            continue
+        fi
         gitdir=$(cat "$dir/gitdir")
         head=$(cat "$dir/HEAD")
         printf '%s\t%s\t%s\n' "$id" "$gitdir" "$head" >> "$tmp"
+        printf '%s\n' "$id" >> "$seen"
         # A ref of our own keeps the recorded commit reachable, so a later `git gc` cannot turn a
         # detached worktree's HEAD into something `restore` has to call `unresolvable`, and leaves
         # the owner something to compare a restored checkout against.
@@ -104,12 +123,13 @@ cmd_protect() {
             status=1
         fi
     done < "$ids"
-    # A worktree whose administrative files are already gone stays in the manifest: it is the only
+    # A worktree this run could not record -- because its administrative files are already gone, or
+    # because what is left of them cannot be read -- stays in the manifest: the entry is the only
     # record left of where it was and what it had checked out.
     if [ -f "$manifest" ]; then
         while IFS=$(printf '\t') read -r id gitdir head; do
             [ -n "$id" ] || continue
-            [ -d "$common/worktrees/$id" ] || printf '%s\t%s\t%s\n' "$id" "$gitdir" "$head"
+            grep -qxF "$id" "$seen" || printf '%s\t%s\t%s\n' "$id" "$gitdir" "$head"
         done < "$manifest" >> "$tmp"
     fi
     LC_ALL=C sort -o "$tmp" "$tmp"
@@ -131,6 +151,13 @@ cmd_check() {
                 status=1
             elif [ ! -f "$dir/locked" ]; then
                 echo "unlocked $id"
+                status=1
+            elif [ "$(cat "$dir/HEAD")" != "$head" ]; then
+                # The record is a snapshot, and a worktree that moved since would be restored where
+                # it no longer is. Both spellings of HEAD come from the same file in the same format,
+                # so comparing them is what notices that `protect` did not follow a HEAD change --
+                # which nothing else does.
+                echo "stale $id"
                 status=1
             else
                 echo "ok $id"
@@ -156,6 +183,11 @@ cmd_restore() {
     status=0
     while IFS=$(printf '\t') read -r id gitdir head; do
         [ -n "$id" ] || continue
+        if ! single_component_id "$id"; then
+            echo "invalid id $id" >&2
+            status=1
+            continue
+        fi
         dir="$common/worktrees/$id"
         if [ -d "$dir" ] && admin_complete "$dir"; then
             echo "ok $id"
@@ -225,16 +257,19 @@ cmd_unlock() {
         echo "unlock needs at least one worktree id" >&2
         return 1
     fi
+    status=0
     for id in "$@"; do
         if [ ! -d "$common/worktrees/$id" ]; then
             echo "no worktree $id" >&2
-            return 1
+            status=1
+            continue
         fi
         if [ -f "$common/worktrees/$id/locked" ]; then
             git worktree unlock "$(worktree_path "$(cat "$common/worktrees/$id/gitdir")")"
         fi
         echo "unlocked $id"
     done
+    return $status
 }
 
 command=${1:-}

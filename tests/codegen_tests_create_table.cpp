@@ -978,21 +978,25 @@ TEST_CASE("codegen: CREATE TABLE - a text DEFAULT keeps the classical mapping un
                                                    "constant expression an annotation can carry")}}});
 }
 
-TEST_CASE("codegen: CREATE TABLE - a column UNIQUE keeps the classical mapping under C++26") {
+// `unique_t` is one of sqlite_orm's column constraints (`is_column_constraint`), and a member
+// annotation is handed straight to `make_column()`, whose only gate is that very list — so a
+// column UNIQUE annotates the member like the primary key and the collation do.
+TEST_CASE("codegen: CREATE TABLE - a column UNIQUE annotates the member of the reflected struct") {
     const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER UNIQUE);");
-    const std::string classicalCode = "struct T {\n"
-                                      "    std::optional<int64_t> a;\n"
-                                      "};\n"
-                                      "\n"
-                                      "make_table(\"t\",\n"
-                                      "        make_column(\"a\", &T::a, unique()))";
-    REQUIRE(result.decisionPoints ==
-            std::vector<DecisionPoint>{DecisionPoint{
-                1,
-                "table_mapping_style",
-                "make_table",
-                classicalCode,
-                {classicalOnlyOption(classicalCode, "UNIQUE on column `a` has no annotation form in sqlite_orm")}}});
+    REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
+                           "    [[= unique()]] std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<T>());");
+    REQUIRE(result.decisionPoints.size() == 1);
+    REQUIRE(result.decisionPoints.at(0).chosenValue == "reflection");
+    REQUIRE(result.decisionPoints.at(0).options.at(0).code == "struct T {\n"
+                                                              "    std::optional<int64_t> a;\n"
+                                                              "};\n"
+                                                              "\n"
+                                                              "make_table(\"t\",\n"
+                                                              "        make_column(\"a\", &T::a, unique()))");
 }
 
 // A column CHECK and a generated column both name the struct's own members, and a member annotation

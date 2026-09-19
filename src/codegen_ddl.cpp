@@ -1192,10 +1192,10 @@ namespace sqlite2orm {
             }
             if (column.unique) {
                 makeExpression += ", unique()";
-                // sqlite_orm accepts `unique()` as a column constraint, but its reflected form is
-                // not exercised upstream, so a column-level UNIQUE keeps the table on the
-                // classical mapping rather than betting on an annotation that may not compile.
-                blockReflection("UNIQUE on column `" + rawColumnName + "` has no annotation form in sqlite_orm");
+                // `unique_t` is one of sqlite_orm's column constraints, and a member annotation is
+                // handed straight to `make_column()`, whose only gate is that very list — so it
+                // travels the same path as the primary key and the collation above.
+                annotate("unique()");
                 if (column.uniqueConflict != ConflictClause::none) {
                     warnings.push_back("UNIQUE ON CONFLICT clause on column '" + rawColumnName +
                                        "' is not supported by sqlite_orm::unique()");

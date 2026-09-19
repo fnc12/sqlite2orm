@@ -390,14 +390,19 @@ reflection), #1492 (reflection-based `make_table`), #1488 (`from()` value form).
   `CodeGenPolicy::targetCppStandard` is 26 or newer: `make_table` (classic,
   `minCppStandard` 14) against `reflection` (annotated struct —
   `[[= "name"_orm_name]]`, `[[= primary_key()]]`, `[[= default_value(…)]]`,
-  `[[= collate_*()]]` — mapped by `make_table<T>(tableConstraints…)`,
-  `minCppStandard` 26), which is the chosen one there. NOT NULL needs no
-  annotation: nullability is carried by the member type. A table holding a
-  construct with no annotation form — a column name that is not the C++
-  identifier generated for it, a DEFAULT that is no constant expression, a
-  column CHECK or UNIQUE, a generated column — keeps `make_table` chosen and is
-  not offered the reflected variant, with the reason in that option's comments.
-  Below C++26 no decision point is emitted and the output is unchanged.
+  `[[= unique()]]`, `[[= collate_*()]]` — mapped by
+  `make_table<T>(tableConstraints…)`, `minCppStandard` 26), which is the chosen
+  one unless the category asks for
+  `make_table` back — what a consumer targeting C++26 on a compiler without
+  reflection does. NOT NULL needs no annotation: nullability is carried by the
+  member type. A table holding a construct with no annotation form — a column
+  name that is not the C++ identifier generated for it, a DEFAULT that is no
+  constant expression, a column CHECK, a generated column — keeps `make_table`
+  chosen and is not offered the reflected variant, with the reason in that
+  option's comments. Below C++26 no decision point is emitted and the output is
+  unchanged. A header whose structs carry annotations declares
+  `using namespace sqlite_orm;` in front of them, as every name inside an
+  annotation is looked up where the struct is written.
 - [ ] 25.4: `from()` value form (sqlite_orm #1488) — alternative `from(u)` vs
   `from<u>()` where explicit `from` is generated.
 

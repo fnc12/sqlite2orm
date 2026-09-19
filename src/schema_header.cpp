@@ -228,6 +228,7 @@ namespace sqlite2orm {
             for (size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
                 const CreateTableParts& parts = tableParts[tableIndex];
                 allWarnings.insert(allWarnings.end(), parts.warnings.begin(), parts.warnings.end());
+                appendUniqueStrings(allComments, parts.comments);
                 if (parts.makeTableExpression.empty()) {
                     allWarnings.push_back("CREATE TABLE `" +
                                           stripIdentifierQuotes(sortedTables[tableIndex]->tableName) +

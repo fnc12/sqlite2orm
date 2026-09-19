@@ -429,7 +429,6 @@ namespace sqlite2orm {
             CodeGenResult carried;
             carried.decisionPoints = std::move(step.decisionPoints);
             carried.warnings = std::move(step.warnings);
-            carried.comments = std::move(step.comments);
             return unsupportedPlaceholder("trigger step not mapped to sqlite_orm",
                                           "a statement in the trigger body is not mapped to sqlite_orm codegen",
                                           statement,

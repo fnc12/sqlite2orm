@@ -165,12 +165,24 @@ namespace sqlite2orm {
     }
 
     CodeGenResult CodeGenerator::generate(const AstNode& astNode) {
+        // Marked before anything runs, so the take at the end of the statement erases this
+        // generation and nothing below it. `resetForGeneration` empties the log, which makes the
+        // mark zero today; taking since it rather than from zero is what keeps that an
+        // implementation detail if a generation is ever nested inside another one's mark.
+        const size_t commentMark = this->generatorContext->commentMark();
         this->syncToContext();
         this->generatorContext->resetForGeneration();
         auto result = this->generateNode(astNode);
         if (!this->generatorContext->accumulatedErrors.empty()) {
             return CodeGenResult{{}, {}, {}, std::move(this->generatorContext->accumulatedErrors), {}};
         }
+        // A comment belongs to the statement whose body the expression was generated in, and this is
+        // that statement. `generateNode` has already reported everything recorded since the mark, so
+        // the append here adds nothing: the take is here for the erase, which leaves the context
+        // clean for the next statement of the batch. `createTableParts` and `createViewParts` take
+        // theirs when they run, so a CREATE TABLE and a CREATE VIEW carry them in the result and
+        // leave none here either.
+        appendUniqueStrings(result.comments, this->generatorContext->takeCommentsSince(commentMark));
         this->injectCustomFunctions(result);
         return result;
     }
@@ -199,6 +211,11 @@ namespace sqlite2orm {
     }
 
     CodeGenResult CodeGenerator::generateNode(const AstNode& astNode) {
+        const size_t mark = this->generatorContext->commentMark();
+        return this->withRecordedComments(this->dispatchNode(astNode), mark);
+    }
+
+    CodeGenResult CodeGenerator::dispatchNode(const AstNode& astNode) {
         if (dynamic_cast<const IntegerLiteralNode*>(&astNode) || dynamic_cast<const RealLiteralNode*>(&astNode) ||
             dynamic_cast<const StringLiteralNode*>(&astNode) || dynamic_cast<const NullLiteralNode*>(&astNode) ||
             dynamic_cast<const BoolLiteralNode*>(&astNode) || dynamic_cast<const RaiseNode*>(&astNode) ||
@@ -285,19 +302,41 @@ namespace sqlite2orm {
     }
 
     CodeGenResult CodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode) {
-        return this->selectCodeGenerator->tryCodegenSqliteSelectSubexpression(selectNode);
+        const size_t mark = this->generatorContext->commentMark();
+        return this->withRecordedComments(this->selectCodeGenerator->tryCodegenSqliteSelectSubexpression(selectNode),
+                                          mark);
     }
 
     CodeGenResult CodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode) {
-        return this->selectCodeGenerator->tryCodegenCompoundSelectSubexpression(compoundNode);
+        const size_t mark = this->generatorContext->commentMark();
+        return this->withRecordedComments(
+            this->selectCodeGenerator->tryCodegenCompoundSelectSubexpression(compoundNode),
+            mark);
     }
 
     CodeGenResult CodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node) {
-        return this->selectCodeGenerator->tryCodegenSelectLikeSubquery(node);
+        const size_t mark = this->generatorContext->commentMark();
+        return this->withRecordedComments(this->selectCodeGenerator->tryCodegenSelectLikeSubquery(node), mark);
     }
 
     CodeGenResult CodeGenerator::generateTriggerStep(const AstNode& statement, const std::string& subjectTableStruct) {
-        return this->dmlCodeGenerator->generateTriggerStep(statement, subjectTableStruct);
+        const size_t mark = this->generatorContext->commentMark();
+        return this->withRecordedComments(this->dmlCodeGenerator->generateTriggerStep(statement, subjectTableStruct),
+                                          mark);
+    }
+
+    CodeGenResult CodeGenerator::withRecordedComments(CodeGenResult result, size_t mark) {
+        if (result.code.empty()) {
+            // Nothing was generated, so there is no form left for a comment recorded here to
+            // explain: a node that answers with no code has its comments dropped along with the
+            // code the generation of it threw away. An index sqlite_orm has no form for is the
+            // whole statement doing this — it generates its expression, drops the statement and
+            // would otherwise explain a `0 - expr` the consumer never gets.
+            this->generatorContext->discardCommentsSince(mark);
+            return result;
+        }
+        appendUniqueStrings(result.comments, this->generatorContext->commentsRecordedSince(mark));
+        return result;
     }
 
     std::string CodeGenerator::codegenOverClause(const OverClause& overClause,

@@ -1013,3 +1013,55 @@ TEST_CASE("codegen: a statement with a unary plus generates what the bare operan
     REQUIRE(generate("SELECT a FROM users WHERE +a ORDER BY +a LIMIT +1;") ==
             "auto rows = storage.select(&Users::a, where(&Users::a), order_by(&Users::a), limit(1));");
 }
+
+// The one thing a unary plus carries that its operand does not: SQLite applies the affinity of a
+// column to the other side of a comparison, and `+a` is not a column reference, so the comparison
+// runs without it. Over `t(a TEXT)` holding '1', sqlite3 3.51 answers `a = 1` with 1 and `+a = 1`
+// with 0; the same pair of answers comes out of `<`, `<>` and the other comparisons. sqlite_orm
+// has no form that takes an affinity away, so the generated comparison is the plus-less one and
+// the loss is reported.
+TEST_CASE("codegen: a compared unary plus reports the column affinity it takes away") {
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a = 1;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
+                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
+                               "column holding '1', SQLite answers `+a = 1` with 0 and the generated "
+                               "comparison with 1",
+                               SourceLocation{1, 27}, 1}});
+    // Both operands are read for their affinity, and both are reported, in the order written.
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a <> +b;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
+                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
+                               "column holding '1', SQLite answers `+a = 1` with 0 and the generated "
+                               "comparison with 1",
+                               SourceLocation{1, 27}, 1},
+                CodegenWarning{"unary plus over column `b` is dropped: it takes the column's affinity "
+                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
+                               "column holding '1', SQLite answers `+b = 1` with 0 and the generated "
+                               "comparison with 1",
+                               SourceLocation{1, 33}, 1}});
+    // A COLLATE keeps the affinity of the column under it — sqlite3 3.51 answers
+    // `(a COLLATE BINARY) = 1` the way it answers `a = 1` — and a plus over one takes it away
+    // just the same, so the column under both is the one reported.
+    REQUIRE(generateFull("SELECT * FROM users WHERE +(a COLLATE BINARY) > 1;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"COLLATE BINARY on expressions is not directly supported in sqlite_orm "
+                               "codegen"},
+                CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
+                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
+                               "column holding '1', SQLite answers `+a = 1` with 0 and the generated "
+                               "comparison with 1",
+                               SourceLocation{1, 27}, 1}});
+}
+
+// Only a comparison against a plain column reference reads an affinity, so a plus anywhere else is
+// dropped without changing an answer and is not reported. sqlite3 3.51 over `t(a TEXT)` holding
+// '1' answers `a + 1 = 2` and `+a + 1 = 2` with 1, and `(a || '') = 1` and `(+a || '') = 1` with 0.
+TEST_CASE("codegen: a unary plus that costs no affinity is not reported") {
+    REQUIRE(generateFull("SELECT +a FROM users;").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a + 1 = 2;").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE a = +1;").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE +1 = 1;").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE +upper(a) = 'A';").warnings.empty());
+}

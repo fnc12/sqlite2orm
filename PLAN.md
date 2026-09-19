@@ -164,7 +164,7 @@ Statuses: `[ ]` not started, `[~]` in progress, `[x]` done
 - [x] 4.5: `Modulo` — `%`
 - [x] 4.6: `Concatenate` — `||`
 - [x] 4.7: `UnaryMinus` — `-expr`
-- [x] 4.8: `UnaryPlus` — `+expr` (not in sqlite_orm — validator error)
+- [x] 4.8: `UnaryPlus` — `+expr` (an identity in SQLite — the operand is generated and the plus dropped; a compared column under one loses its affinity: codegen warning)
 - [x] 4.9: `BitwiseAnd` — `&`
 - [x] 4.10: `BitwiseOr` — `|`
 - [x] 4.11: `BitwiseNot` — `~`
@@ -403,7 +403,6 @@ type and source location (unless noted as warning-only):
 - Subselect in FROM (`FromTableClause.derivedSelect`; codegen stub)
 - NULLS FIRST / NULLS LAST (`OrderByTerm::nulls`)
 - RETURNING (`InsertNode` / `UpdateNode` / `DeleteNode`)
-- Unary plus (`+expr`)
 - `snippet()`, `bm25()` (FTS5); some newer SQLite built-ins
 - SAVEPOINT / RELEASE
 - ATTACH DATABASE / DETACH DATABASE

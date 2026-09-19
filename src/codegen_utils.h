@@ -293,6 +293,16 @@ namespace sqlite2orm {
      *  or a NULL whenever an operand is one.
      */
     std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode);
+    /**
+     *  The report for a unary plus that stands over a column reference on one side of a comparison,
+     *  if `astNode` is one. A unary plus is an identity for the value, which is why codegen emits
+     *  the operand and nothing else, but it is not one for the comparison around it: SQLite applies
+     *  the affinity of a column to the other operand, and `+a` is no longer a column reference, so
+     *  the comparison runs without it. Over `t(a TEXT)` holding '1', sqlite3 3.51 answers `a = 1`
+     *  with 1 and `+a = 1` with 0, while the generated `c(&T::a) == 1` is the former either way.
+     *  sqlite_orm has no spelling that takes a column's affinity away, so the loss is reported.
+     */
+    std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode);
 
     std::string sqliteTypeToCpp(std::string_view typeName);
     std::string defaultInitializer(std::string_view cppType);

@@ -510,6 +510,26 @@ namespace sqlite2orm {
                                       "— return type may differ from sqlite");
             }
 
+            // Only a comparison reads the affinity of its operands, so only there does dropping a
+            // unary plus over a column change what SQLite answers. The operands are reported in
+            // the order they are written in.
+            switch(binaryOp->binaryOperator) {
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:
+                for(const AstNode* operand: {binaryOp->lhs.get(), binaryOp->rhs.get()}) {
+                    if(auto warning = comparisonUnaryPlusAffinityWarning(*operand)) {
+                        binWarnings.push_back(std::move(*warning));
+                    }
+                }
+                break;
+            default:
+                break;
+            }
+
             std::vector<std::string> binComments;
             appendUniqueStrings(binComments, leftResult.comments);
             appendUniqueStrings(binComments, rightResult.comments);

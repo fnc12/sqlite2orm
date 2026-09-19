@@ -1390,6 +1390,29 @@ namespace sqlite2orm {
         return false;
     }
 
+    std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode) {
+        auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
+        if(!unaryOp || unaryOp->unaryOperator != UnaryOperator::plus) {
+            return std::nullopt;
+        }
+        // A second plus and a COLLATE stand between the plus and the column without putting an
+        // expression of their own in the way — sqlite3 3.51 answers `+(a COLLATE BINARY) = 1` the
+        // way it answers `+a = 1` — so the column under them is the one whose affinity is lost.
+        auto* column = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(astNode));
+        if(!column) {
+            return std::nullopt;
+        }
+        std::string message = "unary plus over column `";
+        message += column->columnName;
+        message += "` is dropped: it takes the column's affinity out of the comparison, which "
+                   "sqlite_orm has no form for — over a TEXT column holding '1', SQLite answers "
+                   "`+";
+        message += column->columnName;
+        message += " = 1` with 0 and the generated comparison with 1";
+        // The plus is the token the node is located at, and it is the token that goes missing.
+        return CodegenWarning{std::move(message), unaryOp->location, 1};
+    }
+
     std::string sqliteTypeToCpp(std::string_view typeName) {
         std::string lower = toLowerAscii(typeName);
         if(lower.find("bool") != std::string::npos) return "bool";

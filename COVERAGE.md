@@ -51,7 +51,7 @@ Statuses:
 
 ### Unary operators
 - [~] `-` (unary minus — folded into the numeric literal it precedes, as SQLite's own parser does; over any other operand generated as the `0 - expr` subtraction SQLite computes identically, because sqlite_orm's own unary minus reads back as 0. Over a predicate (`IN` / `BETWEEN` / `LIKE` / `GLOB` / `MATCH` / `IS [NOT] NULL` / `NOT`) neither form works — the generated code does not compile: codegen warning)
-- [!] `+` (unary plus — not in sqlite_orm, validator error)
+- [~] `+` (unary plus — an identity SQLite applies to the value, so the operand is generated and the plus is dropped. Over a column on one side of a comparison the plus also takes the column's affinity out of that comparison, which sqlite_orm has no form for: over `t(a TEXT)` holding '1', SQLite answers `a = 1` with 1 and `+a = 1` with 0, and the generated comparison is the former either way: codegen warning)
 - [x] `~` (bitwise NOT)
 - [~] `NOT` — `operator!` is the one sqlite_orm operator that keeps the `c(...)` its operand carries instead of unwrapping it, and the walk that collects a statement's tables and binds its values stops at such a wrapper. A column under a NOT is therefore generated as `column<T>(&T::x)` — the same SQL, but a form the walk reads, where `not c(&T::x)` came out with no FROM clause and threw `SQL logic error`; a column that names a SELECT alias stays `c(get<Alias>())`, because the aliased result column names the table already — and a value as `(c(0) + value)`, because an unbound literal made `NOT 0` answer NULL and `0 + x` is the numeric coercion SQLite applies in a boolean context anyway. A NOT over a NOT (or over the `!predicate` spelling of a negated `BETWEEN` / `LIKE` / `GLOB` / `MATCH`) is generated as `not cast<int64_t>(…)`: sqlite_orm's `negated_condition_t` is neither negatable nor an operator argument, so a second NOT over it does not compile. Partial because a NOT over a concatenation (`NOT (a || 'x')`, and `NOT (a OR b)` while `OR` is generated as `||`) still has no sqlite_orm form: `conc_t` is not negatable either and that code does not compile. Prefix `NOT` is also weaker than every binary operator SQLite has bar `AND` and `OR`, so its operand runs down to the `=` level: `NOT a + 1` is `NOT (a + 1)` and `NOT a IN (1, 2)` is `NOT (a IN (1, 2))`
 
@@ -637,7 +637,6 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [!] Subselect in FROM
 - [!] NULLS FIRST / NULLS LAST
 - [!] RETURNING clause
-- [!] Unary plus (`+expr`)
 - [!] Unary minus over a predicate (`-(a BETWEEN 1 AND 9)`, `-(a IN (…))`, `-(a IS NULL)`, `- NOT a`, …) — sqlite_orm has no unary minus that reads back correctly, and the `0 - expr` spelling the other operands use would regroup a predicate SQLite binds looser than `-`; the generated negation does not compile (codegen warning)
 - [x] DROP TABLE — `storage.drop_table("name")` / `storage.drop_table_if_exists("name")`
 - [x] DROP INDEX — `storage.drop_index("name")` / `storage.drop_index_if_exists("name")`

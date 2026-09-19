@@ -73,6 +73,18 @@ namespace sqlite2orm {
     std::string_view binaryOperatorWithoutDefaultConstructor(BinaryOperator binaryOperator);
 
     /**
+     *  True when a call of `lowerFunctionName` — written with a star for its argument list or with
+     *  arguments of its own — is generated as a sqlite_orm type that has a default constructor. Most
+     *  functions are generated as a `builtin_function_t` or a `built_in_aggregate_function_t`, which
+     *  declare a constructor and no default one; the window functions are each generated as an
+     *  aggregate of their own — `row_number_t`, `lag_t` and the rest — and a MATCH in its function
+     *  spelling as `match_t`, an aggregate too. `count(*)` is a `count_asterisk_t`, which holds
+     *  nothing. A star under any other name is generated as `name()`, a form only the window
+     *  functions that take no argument have.
+     */
+    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star);
+
+    /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
      *  `internal::condition_t`: a comparison, AND, OR, IN, BETWEEN, LIKE, GLOB, IS [NOT] NULL,
      *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.

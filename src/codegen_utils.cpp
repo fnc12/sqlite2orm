@@ -460,6 +460,30 @@ namespace sqlite2orm {
         return {};
     }
 
+    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
+        // These take no argument, so the `name()` a star is generated as is the same call.
+        static constexpr std::array<std::string_view, 5> kNullaryWindowFunctions{{
+            "row_number", "rank", "dense_rank", "percent_rank", "cume_dist",
+        }};
+        for(std::string_view windowFunction : kNullaryWindowFunctions) {
+            if(lowerFunctionName == windowFunction) {
+                return true;
+            }
+        }
+        if(star) {
+            return lowerFunctionName == "count";
+        }
+        static constexpr std::array<std::string_view, 7> kArgumentTakingAggregateForms{{
+            "ntile", "lag", "lead", "first_value", "last_value", "nth_value", "match",
+        }};
+        for(std::string_view aggregateForm : kArgumentTakingAggregateForms) {
+            if(lowerFunctionName == aggregateForm) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {
         switch(binaryOperator) {
             case BinaryOperator::logicalOr:          return "or_";

@@ -256,6 +256,30 @@ TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm cannot default-con
                      "which default-constructs the expression before assigning it, so the generated trigger does "
                      "not compile"}});
     }
+    SECTION("an aggregate function, which is not one of the window forms") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT count(y) "
+                                         "FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(count(&T::y))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses count() in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("the ORDER BY of a window function's OVER clause, the one part of it with a constructor") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT row_number() "
+                                         "OVER (ORDER BY y) FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(row_number().over(order_by(&T::y)))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses ORDER BY in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
     SECTION("a subquery is read clause by clause") {
         const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT y FROM t "
                                          "WHERE y = 'a') BEGIN DELETE FROM t; END");
@@ -318,6 +342,27 @@ TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm can default-constr
         REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
                                "select(count<T>().over(partition_by(&T::y), rows(unbounded_preceding(), "
                                "current_row())))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("a window function, whose row_number_t holds nothing") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT row_number() "
+                                         "OVER () FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(row_number().over())).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("a window function over an argument, whose lag_t keeps it in a tuple") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT lag(x, 1, 0) "
+                                         "OVER () FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(lag(&T::x, 1, 0).over())).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("MATCH in its function spelling, the same match_t as the operator one") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN match(NEW.y, 'x') BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(match(new_(&T::y), "
+                               "\"x\")).begin(remove_all<T>()));");
         REQUIRE(result.warnings.empty());
     }
     SECTION("a subquery over a bare FROM") {

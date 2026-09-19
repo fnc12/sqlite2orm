@@ -821,8 +821,13 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
 // FILTER or an OVER is the other side of that: `count_asterisk_t::filter()` unwraps the `where_t`
 // and `over_t` is an aggregate, so those compile and warning about them would be wrong. An OR is
 // here because it holds only while it is spelled `or_(...)`: the `||` token it used to be generated
-// with reads as a concatenation, and `conc_t` has no default constructor. SQLite stores all seven
-// triggers below and fires them (checked against sqlite3 3.51.0).
+// with reads as a concatenation, and `conc_t` has no default constructor. The window functions are
+// the same story once more: each is generated as an aggregate of its own — `row_number_t`, `lag_t`
+// and the rest — and not as the `builtin_function_t` every other function call comes out, and so is
+// a MATCH written as a call. SQLite stores all ten triggers below and fires every one of them but
+// the MATCH, which it stores and then refuses to run — `unsafe use of MATCH()`, since an FTS
+// function is direct-only — exactly as it does for the MATCH operator (checked against sqlite3
+// 3.51.0).
 TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile") {
     const auto results = processMultiSql(
         "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
@@ -834,7 +839,12 @@ TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile
         "CREATE TRIGGER tr_filter AFTER INSERT ON t WHEN NEW.a = (SELECT count(*) FILTER (WHERE a > 0) FROM t) "
         "BEGIN DELETE FROM t; END;\n"
         "CREATE TRIGGER tr_over AFTER INSERT ON t WHEN NEW.a = (SELECT count(*) OVER (PARTITION BY b ROWS "
-        "BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t) BEGIN DELETE FROM t; END;");
+        "BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t) BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_row_number AFTER INSERT ON t WHEN NEW.a = (SELECT row_number() OVER () FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_lag AFTER INSERT ON t WHEN NEW.a = (SELECT lag(a, 1, 0) OVER (PARTITION BY b) FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_match AFTER INSERT ON t WHEN match(NEW.b, 'x') BEGIN DELETE FROM t; END;");
 
     for(const auto& result : results) {
         REQUIRE(result.codegen.warnings.empty());

@@ -1,5 +1,8 @@
 #include "codegen_tests_common.hpp"
 
+#include <sqlite2orm/parser.h>
+#include <sqlite2orm/tokenizer.h>
+
 namespace {
 
     // The hint attached to every negation generated as a subtraction from zero; spelled out once
@@ -1759,4 +1762,32 @@ TEST_CASE("codegen: an expression's comment reaches the statement whose body gen
             predicateCastOnly);
     REQUIRE(generateFull("SELECT * FROM t WHERE a IN (SELECT 1 - (b LIKE 'x') FROM t);").comments ==
             predicateCastOnly);
+}
+
+// The comments belong to a statement, but an embedder does not only ask for statements: the
+// playground and SQLite ORM Studio reach the codegen entry points directly, and an entry point
+// answers with the comments recorded while it ran — the ones of the node it was handed, and not the
+// ones the statement around it recorded before or after.
+TEST_CASE("codegen: an entry point reports the comments of the node it was handed") {
+    Tokenizer tokenizer;
+    Parser parser;
+    auto parseResult = parser.parse(tokenizer.tokenize("SELECT 1 - (b LIKE 'x'), -a FROM t;"));
+    REQUIRE(parseResult);
+    const auto* selectNode = dynamic_cast<const SelectNode*>(parseResult.astNodePointer.get());
+    REQUIRE(selectNode != nullptr);
+    const AstNode& predicateUnderOperator = *selectNode->columns.at(0).expression;
+    const AstNode& negation = *selectNode->columns.at(1).expression;
+
+    CodeGenerator codeGenerator;
+    REQUIRE(codeGenerator.generateNode(predicateUnderOperator).comments ==
+            std::vector<std::string>{kPredicateCastComment});
+    // The same generator, a second node: the first node's comment stays recorded for the statement
+    // the two belong to, and what comes back here is this node's own.
+    REQUIRE(codeGenerator.generateNode(negation).comments == std::vector<std::string>{kZeroMinusComment});
+    REQUIRE(codeGenerator.generateStoredExpression(predicateUnderOperator).comments ==
+            std::vector<std::string>{kPredicateCastComment});
+    // The SELECT the two stand in is generated through the subexpression entry point a view body
+    // and a trigger step go through, and it answers with the comments of the whole body.
+    REQUIRE(codeGenerator.tryCodegenSqliteSelectSubexpression(*selectNode).comments ==
+            std::vector<std::string>{kPredicateCastComment, kZeroMinusComment});
 }

@@ -69,7 +69,12 @@ namespace sqlite2orm {
         std::vector<DecisionPoint> decisionPoints;
         std::vector<CodegenWarning> warnings;
         std::vector<std::string> errors;
-        /** Optional hints for the generated snippet (deduplicated when merging fragments). */
+        /**
+         *  Optional hints explaining the forms the snippet was generated as, deduplicated by text.
+         *  Every entry point that generates from an AST node reports the ones recorded while it ran,
+         *  so a whole statement carries the comments of every clause of its body and a single node
+         *  carries its own.
+         */
         std::vector<std::string> comments;
 
         bool operator==(const CodeGenResult&) const = default;

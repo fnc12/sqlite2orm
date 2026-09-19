@@ -248,14 +248,28 @@ namespace sqlite2orm {
         this->formsWithoutDefaultConstructor.push_back(std::move(form));
     }
 
-    void CodeGeneratorContext::recordComment(std::string comment) {
-        appendUniqueString(this->comments, comment);
+    void CodeGeneratorContext::recordComment(std::string_view comment) {
+        this->comments.emplace_back(comment);
     }
 
     std::vector<std::string> CodeGeneratorContext::takeComments() {
-        std::vector<std::string> taken = std::move(this->comments);
+        std::vector<std::string> taken = this->commentsRecordedSince(0);
         this->comments.clear();
         return taken;
+    }
+
+    size_t CodeGeneratorContext::commentMark() const {
+        return this->comments.size();
+    }
+
+    std::vector<std::string> CodeGeneratorContext::commentsRecordedSince(size_t mark) const {
+        // A `takeComments()` in between leaves fewer than `mark` behind: the statement the comments
+        // belong to has carried them off already, so there is nothing left for this node to report.
+        std::vector<std::string> recorded;
+        for(size_t index = mark; index < this->comments.size(); ++index) {
+            appendUniqueString(recorded, this->comments[index]);
+        }
+        return recorded;
     }
 
     void CodeGeneratorContext::markUngeneratableTable(std::string_view tableName) {

@@ -149,10 +149,6 @@ namespace sqlite2orm {
         // Resolved before the baseline snapshot so options regenerate with the same name.
         const std::string rowsVariable = this->context.statementVariableName("rows");
         CodeGeneratorContext selectAltBaseline = this->context;
-        // An option's own comments are what regenerating it records, so the baseline starts with
-        // none — the statement this select belongs to may already have recorded some (a CTE body
-        // generated before it, say), and those are not this option's.
-        selectAltBaseline.comments.clear();
 
         auto expressionCode = [&](const AstNode& node) -> std::string {
             auto result = this->coordinator.generateNode(node);
@@ -532,7 +528,10 @@ namespace sqlite2orm {
                         auto altRes = altGen.generateNode(selectNode);
                         Option cpp20Alt{"cpp20_literal", altRes.code,
                                         "C++20 literal aliases (`orm_column_alias`, `_col`)"};
-                        cpp20Alt.comments = altGen.context().takeComments();
+                        // What regenerating the select recorded, and not what the statement around
+                        // it had recorded before: `generateNode` reports the comments of the node it
+                        // was handed, so the baseline's own are left where they are.
+                        cpp20Alt.comments = std::move(altRes.comments);
                         cpp20Alt.minCppStandard = 20;
                         aliasOptions.push_back(std::move(cpp20Alt));
                     }

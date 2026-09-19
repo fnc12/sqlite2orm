@@ -431,6 +431,12 @@ namespace sqlite2orm {
      *  the comparison runs without it. Over `t(a TEXT)` holding '1', sqlite3 3.51 answers `a = 1`
      *  with 1 and `+a = 1` with 0, while the generated `c(&T::a) == 1` is the former either way.
      *  sqlite_orm has no spelling that takes a column's affinity away, so the loss is reported.
+     *
+     *  The affinity the column was declared with is not read here, so the report also fires where
+     *  the plus costs nothing — over an INTEGER column, or one with no declared type, both sides
+     *  answer the same — which is why it names what the plus takes away rather than asserting a
+     *  divergence for the column in hand. Narrowing it to the columns whose affinity carries is
+     *  card 1867077683549045974.
      */
     std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode);
 

@@ -1155,8 +1155,10 @@ TEST_CASE("codegen: a statement with a unary plus generates what the bare operan
             "auto rows = storage.select(as_optional(c(1) + &Users::a));");
     REQUIRE(generate("SELECT 1 + a FROM users;") ==
             "auto rows = storage.select(as_optional(c(1) + &Users::a));");
-    REQUIRE(generate("SELECT +upper(a) FROM users;") == "auto rows = storage.select(upper(&Users::a));");
-    REQUIRE(generate("SELECT upper(a) FROM users;") == "auto rows = storage.select(upper(&Users::a));");
+    REQUIRE(generate("SELECT +upper(a) FROM users;") ==
+            "auto rows = storage.select(as_optional(upper(&Users::a)));");
+    REQUIRE(generate("SELECT upper(a) FROM users;") ==
+            "auto rows = storage.select(as_optional(upper(&Users::a)));");
     // A plus over a plus is the same identity twice, and so is one over a parenthesised operand.
     REQUIRE(generate("SELECT + +a FROM users;") == "auto rows = storage.select(&Users::a);");
     REQUIRE(generate("SELECT +(a) FROM users;") == "auto rows = storage.select(&Users::a);");
@@ -1165,33 +1167,100 @@ TEST_CASE("codegen: a statement with a unary plus generates what the bare operan
             "auto rows = storage.select(&Users::a, where(&Users::a), order_by(&Users::a), limit(1));");
 }
 
+// Dropping the plus is not enough on its own: what the generation around it asks of its operand
+// has to reach that operand too. `operator!` is the one sqlite_orm operator that keeps the `c(...)`
+// its operand carries, and the walk that collects a statement's tables stops at such a wrapper, so
+// a column under a NOT is generated as `column<T>(&T::a)` instead — a request the plus used to
+// reset on its way down, which put `not c(&Users::a)` back and ran the select with no FROM clause
+// at all (`SQL logic error`, the very bug #49 fixed). Read back in "runtime: a unary plus under a
+// NOT keeps the column form the table walk reads".
+TEST_CASE("codegen: a unary plus passes on what the generation around it asks of its operand") {
+    REQUIRE(generate("SELECT NOT a FROM users;") ==
+            "auto rows = storage.select(as_optional(not column<Users>(&Users::a)));");
+    REQUIRE(generate("SELECT NOT +a FROM users;") ==
+            "auto rows = storage.select(as_optional(not column<Users>(&Users::a)));");
+    REQUIRE(generate("SELECT NOT +(a) FROM users;") ==
+            "auto rows = storage.select(as_optional(not column<Users>(&Users::a)));");
+    REQUIRE(generate("SELECT NOT + +a FROM users;") ==
+            "auto rows = storage.select(as_optional(not column<Users>(&Users::a)));");
+    REQUIRE(generate("SELECT * FROM users WHERE NOT +a;") ==
+            "auto rows = storage.get_all<Users>(where(not column<Users>(&Users::a)));");
+    // A column that names a SELECT alias is generated as `get<Alias>()` whatever is asked for, and
+    // the plus is transparent for that answer as well.
+    REQUIRE(generate("SELECT a AS i FROM users WHERE NOT +i;") ==
+            "auto rows = storage.select(as<colalias_i>(&Users::a), where(not c(get<colalias_i>())));");
+}
+
+// SQLite's parser drops a unary plus before it reads the sign above it, so the plus does not break
+// a chain of signs: sqlite3 3.51 answers `SELECT -+1` with the INTEGER -1 and `typeof(-+1)` with
+// `integer`, where the `0 - expr` subtraction the generator falls back to would read the row back
+// through a double. A COLLATE does break it — `SELECT -+(0x8000000000000000 COLLATE BINARY)` is
+// the negation 9.22337203685478e+18 SQLite computes, not a literal it refuses — so only the
+// pluses are stepped through.
+TEST_CASE("codegen: a sign over a unary plus is folded the way SQLite folds it") {
+    REQUIRE(generate("SELECT -1 FROM users;") == "auto rows = storage.select(-1);");
+    REQUIRE(generate("SELECT -+1 FROM users;") == "auto rows = storage.select(-1);");
+    REQUIRE(generate("SELECT - + + 1 FROM users;") == "auto rows = storage.select(-1);");
+    REQUIRE(generate("SELECT -+1.5 FROM users;") == "auto rows = storage.select(-1.5);");
+    REQUIRE(generate("SELECT -+0x10 FROM users;") == "auto rows = storage.select(-0x10);");
+    REQUIRE(generate("SELECT -+2147483648 FROM users;") == "auto rows = storage.select(-2147483648);");
+    REQUIRE(generate("SELECT -+9223372036854775807 FROM users;") ==
+            "auto rows = storage.select(-9223372036854775807);");
+    // A COLLATE under the plus stops the fold, exactly as it stops it without one.
+    REQUIRE(generate("SELECT -+(1 COLLATE BINARY) FROM users;") ==
+            "auto rows = storage.select((c(0) - c(1)));");
+    REQUIRE(generate("SELECT -(1 COLLATE BINARY) FROM users;") ==
+            "auto rows = storage.select((c(0) - c(1)));");
+}
+
 // The one thing a unary plus carries that its operand does not: SQLite applies the affinity of a
 // column to the other side of a comparison, and `+a` is not a column reference, so the comparison
 // runs without it. Over `t(a TEXT)` holding '1', sqlite3 3.51 answers `a = 1` with 1 and `+a = 1`
-// with 0; the same pair of answers comes out of `<`, `<>` and the other comparisons. sqlite_orm
-// has no form that takes an affinity away, so the generated comparison is the plus-less one and
-// the loss is reported.
+// with 0; the same pair of answers comes out of `<`, `<>` and the other comparisons, and a table
+// qualifier changes nothing — `+t.a = 1` is 0 as well. sqlite_orm has no form that takes an
+// affinity away, so the generated comparison is the plus-less one and the loss is reported.
 TEST_CASE("codegen: a compared unary plus reports the column affinity it takes away") {
     REQUIRE(generateFull("SELECT * FROM users WHERE +a = 1;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
-                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
-                               "column holding '1', SQLite answers `+a = 1` with 0 and the generated "
-                               "comparison with 1",
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
                                SourceLocation{1, 27}, 1}});
     // Both operands are read for their affinity, and both are reported, in the order written.
     REQUIRE(generateFull("SELECT * FROM users WHERE +a <> +b;").warnings ==
             std::vector<CodegenWarning>{
                 CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
-                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
-                               "column holding '1', SQLite answers `+a = 1` with 0 and the generated "
-                               "comparison with 1",
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
                                SourceLocation{1, 27}, 1},
                 CodegenWarning{"unary plus over column `b` is dropped: it takes the column's affinity "
-                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
-                               "column holding '1', SQLite answers `+b = 1` with 0 and the generated "
-                               "comparison with 1",
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
                                SourceLocation{1, 33}, 1}});
+    // A table qualifier is a column reference all the same, and the affinity it loses is the
+    // same one: sqlite3 3.51 answers `+t.a = 1` the way it answers `+a = 1`.
+    REQUIRE(generateFull("SELECT * FROM users WHERE +users.a >= 1;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
+                               SourceLocation{1, 27}, 1}});
     // A COLLATE keeps the affinity of the column under it — sqlite3 3.51 answers
     // `(a COLLATE BINARY) = 1` the way it answers `a = 1` — and a plus over one takes it away
     // just the same, so the column under both is the one reported.
@@ -1200,19 +1269,31 @@ TEST_CASE("codegen: a compared unary plus reports the column affinity it takes a
                 CodegenWarning{"COLLATE BINARY on expressions is not directly supported in sqlite_orm "
                                "codegen"},
                 CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
-                               "out of the comparison, which sqlite_orm has no form for — over a TEXT "
-                               "column holding '1', SQLite answers `+a = 1` with 0 and the generated "
-                               "comparison with 1",
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
                                SourceLocation{1, 27}, 1}});
 }
 
-// Only a comparison against a plain column reference reads an affinity, so a plus anywhere else is
+// Only a comparison against a column reference reads an affinity, so a plus anywhere else is
 // dropped without changing an answer and is not reported. sqlite3 3.51 over `t(a TEXT)` holding
-// '1' answers `a + 1 = 2` and `+a + 1 = 2` with 1, and `(a || '') = 1` and `(+a || '') = 1` with 0.
+// '1' answers `a + 1 = 2` and `+a + 1 = 2` with 1, `(a || '') = 1` and `(+a || '') = 1` with 0,
+// `a = +1` and `a = 1` with 1, and `a LIKE 1` and `+a LIKE 1` with 1 — LIKE, GLOB and MATCH apply
+// no column affinity at all. Two slots that do read one are silent all the same: the BETWEEN and
+// IN branches build their result without any codegen warning (card 1867000382920590460), and so
+// `+a BETWEEN 1 AND 2` and `+a IN (1, 2)` are generated plus-less and unreported although sqlite3
+// answers them 0 where the plus-less form answers 1.
 TEST_CASE("codegen: a unary plus that costs no affinity is not reported") {
     REQUIRE(generateFull("SELECT +a FROM users;").warnings.empty());
     REQUIRE(generateFull("SELECT * FROM users WHERE +a + 1 = 2;").warnings.empty());
     REQUIRE(generateFull("SELECT * FROM users WHERE a = +1;").warnings.empty());
     REQUIRE(generateFull("SELECT * FROM users WHERE +1 = 1;").warnings.empty());
     REQUIRE(generateFull("SELECT * FROM users WHERE +upper(a) = 'A';").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a LIKE 'x';").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a GLOB 'x';").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a BETWEEN 1 AND 2;").warnings.empty());
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a IN (1, 2);").warnings.empty());
 }

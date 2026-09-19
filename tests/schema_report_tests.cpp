@@ -173,7 +173,7 @@ TEST_CASE("reportSqliteSchema: a trigger on a view that did not generate goes wi
     TempDbFile file{makeTempDbPath()};
     execSql(file.path,
             "CREATE TABLE t (id INTEGER PRIMARY KEY);"
-            "CREATE VIEW v AS SELECT +id AS id FROM t;"
+            "CREATE VIEW v AS SELECT -0x8000000000000000 AS id FROM t;"
             "CREATE TRIGGER iv INSTEAD OF INSERT ON v BEGIN SELECT 1; END;");
     const SchemaReport result = report(file.path, false);
     REQUIRE(result.out == R"(#pragma once
@@ -198,7 +198,7 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 )");
     REQUIRE(result.err == "warning: CREATE VIEW `v` did not generate and is not merged into make_storage()\n"
             "warning: `iv` rests on a view that is not generated and is not merged into make_storage()\n"
-            "validation [view v]: unary plus (+expr) is not supported in sqlite_orm (UnaryOperatorNode)\n");
+            "validation [view v]: hex literal too big: -0x8000000000000000 (UnaryOperatorNode)\n");
     REQUIRE(result.exitCode == 1);
 }
 

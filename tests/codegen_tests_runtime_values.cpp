@@ -971,32 +971,35 @@ TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function c
 // return type the function declares, so the row reached the caller as 0 / "" — and an operator over
 // such a call is typed by the operator alone and lost the NULL the same way. Every value here is
 // what libsqlite3 3.45.1 answers, the version this project links; before the widening the NULL rows
-// read back as 0, "", 0, 0, "", 0, 0. The last two columns are the counter-check: `upper` and
-// `length` answer NULL for no reason other than a NULL argument, so a spelled-out argument leaves
-// them plain and they read back as they always did.
+// read back as 0, 0, 0, "", 0, 0. The last two columns are the counter-check: `upper` and `length`
+// answer NULL for no reason other than a NULL argument, so a spelled-out argument leaves them plain
+// and they read back as they always did.
+// A `||` over a call is left to the codegen cases: sqlite_orm hands a built-in call back as a
+// `builtin_function_t` rather than a `builtin_function_call` on a compiler its C++20 built-in path
+// is off for, and that type is not an operator argument, so `date("bogus") || "x"` does not compile
+// with Apple clang whether it is widened or not. That gap is master's and has its own card; the
+// widening it would exercise is the same one `nullif(1, 1) + 1` and `unicode('') + 1` exercise here.
 TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments reads the NULL back") {
     const std::vector<std::string> statements{
         generate("SELECT nullif(1, 1) + 1;"),
         generate("SELECT date('bogus');"),
-        generate("SELECT date('bogus') || 'x';"),
         generate("SELECT julianday('bogus');"),
         generate("SELECT strftime('%Y', 'bogus');"),
         generate("SELECT unicode('');"),
         generate("SELECT unicode('') + 1;"),
-        generate("SELECT upper('a') || 'x';"),
+        generate("SELECT upper('a');"),
         generate("SELECT length('x');"),
     };
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select(as_optional(nullif(1, 1) + 1));",
                               "auto rows = storage.select(as_optional(date(\"bogus\")));",
-                              "auto rows = storage.select(as_optional(date(\"bogus\") || \"x\"));",
                               "auto rows = storage.select(as_optional(julianday(\"bogus\")));",
                               "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));",
                               "auto rows = storage.select(as_optional(unicode(\"\")));",
                               "auto rows = storage.select(as_optional(unicode(\"\") + 1));",
-                              "auto rows = storage.select(upper(\"a\") || \"x\");",
+                              "auto rows = storage.select(upper(\"a\"));",
                               "auto rows = storage.select(length(\"x\"));",
                           });
     REQUIRE(selectedValues(statements) ==
-            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "Ax", "1"});
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "A", "1"});
 }

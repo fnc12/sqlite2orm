@@ -1168,10 +1168,14 @@ namespace sqlite2orm {
             }
 
             // `builtin_function_t` and the `function_call` a user-defined function is generated as
-            // both declare a constructor and no default one, and so do the `filter` and `over`
-            // wrappers — a trigger's WHEN clause, which sqlite_orm default-constructs, holds none of
-            // them. `count(*)` is the exception: it is a `count_asterisk_t`, which holds nothing.
-            const bool countAsterisk = funcCall->star && !funcCall->filterWhere && !funcCall->over;
+            // both declare a constructor and no default one, so a trigger's WHEN clause, which
+            // sqlite_orm default-constructs, holds neither. `count(*)` is the exception: it is a
+            // `count_asterisk_t`, which holds nothing, and the `filter` and `over` wrappers are
+            // aggregates that keep only what they are given — `count_asterisk_t::filter()` unwraps
+            // the `where_t` and keeps its expression, so none of them costs the default constructor
+            // on their own. What they carry records itself: a FILTER expression through its own
+            // emitter, an OVER clause's ORDER BY through `codegenOverClause`.
+            const bool countAsterisk = funcCall->star && funcName == "count";
             if(!countAsterisk) {
                 this->context.recordFormWithoutDefaultConstructor(std::string(funcCall->name) + "()");
             }
@@ -1286,6 +1290,9 @@ namespace sqlite2orm {
             parts.push_back("partition_by(" + inner + ")");
         }
         if(!overClause.orderBy.empty()) {
+            // `order_by_t` declares a constructor and no default one, and it is the only part of a
+            // window definition that does: `partition_by` and the frame boundaries are aggregates.
+            this->context.recordFormWithoutDefaultConstructor("ORDER BY");
             auto formatOrderTerm = [&](const OrderByTerm& term) -> std::string {
                 auto expressionResult = this->coordinator.generateNode(*term.expression);
                 decisionPoints.insert(decisionPoints.end(),

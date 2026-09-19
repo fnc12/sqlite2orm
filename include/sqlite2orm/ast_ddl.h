@@ -227,12 +227,21 @@ namespace sqlite2orm {
         std::string viewName;
         std::vector<std::string> columnNames;
         AstNodePointer selectQuery;
+        /**
+         *  The statement's opening keywords as written, from `CREATE` through `VIEW`, which a
+         *  warning about the view as a whole underlines. They are not always the 11 characters of
+         *  `CREATE VIEW` — `CREATE TEMP VIEW` names three, and any amount of whitespace, a newline
+         *  included, may sit between them — so the span is taken from the source, not assumed.
+         *  Empty for a node built by hand rather than parsed; the warning then goes unanchored.
+         */
+        std::string_view headerText;
 
         CreateViewNode(SourceLocation location, bool ifNotExists, std::optional<std::string> viewSchemaName,
-                       std::string viewName, std::vector<std::string> columnNames, AstNodePointer selectQuery)
+                       std::string viewName, std::vector<std::string> columnNames, AstNodePointer selectQuery,
+                       std::string_view headerText = {})
             : AstNode(location), ifNotExists(ifNotExists), viewSchemaName(std::move(viewSchemaName)),
               viewName(std::move(viewName)), columnNames(std::move(columnNames)),
-              selectQuery(std::move(selectQuery)) {}
+              selectQuery(std::move(selectQuery)), headerText(headerText) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const CreateViewNode*>(&other);

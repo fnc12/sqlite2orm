@@ -2,12 +2,15 @@
 #include "codegen_context.h"
 
 #include <sqlite2orm/utils.h>
+#include <sqlite2orm/validator.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
+#include <span>
 
 namespace sqlite2orm {
 
@@ -332,12 +335,38 @@ namespace sqlite2orm {
         "is neither negatable nor an operator argument, so a second NOT over it does not compile. The "
         "CAST leaves what the inner NOT stands for alone: it is 0, 1 or NULL, and a CAST to INTEGER "
         "keeps all three.";
+
+    const std::string kCommentConcatenationCast =
+        "A NOT over a concatenation is generated as `not cast<double>(…)`: sqlite_orm's `conc_t` is "
+        "`binary_operator<L, R, conc_string>` and nothing else — neither negatable nor an operator "
+        "argument — so `not (c(&T::a) || \"x\")` does not compile. A concatenation answers TEXT or "
+        "NULL, and SQLite reads the truth of a text value through its real value: `NOT ('0' || '.5')` "
+        "is 0, where `NOT CAST('0' || '.5' AS INTEGER)` is 1. A CAST to REAL parses the text exactly "
+        "as that truth test does, so `NOT x` and `NOT CAST(x AS REAL)` answer alike.";
+
     const std::string kCommentBitwiseResultCast =
         "A bitwise result column is generated as `cast<int64_t>(expr)`: sqlite_orm types `&`, `|`, "
         "`<<`, `>>` and `~` as `int`, so a result outside the int32 range comes back truncated "
         "(`9223372036854775807 & -1` reads back as -1). SQLite answers a bitwise operator with an "
         "INTEGER or a NULL whatever its operands hold, and a CAST to INTEGER keeps both, typeof "
         "included, so the CAST widens the C++ type and leaves the value alone.";
+
+    const std::string kCommentAndOrPredicateArgumentCast =
+        "An AND or an OR in the argument of a predicate is generated as `cast<int64_t>(…)`: "
+        "sqlite_orm serializes IN, BETWEEN, LIKE, GLOB, MATCH and IS [NOT] NULL with no "
+        "parentheses around their arguments, and SQLite binds AND and OR looser than every "
+        "predicate, so `is_null(or_(1, 0))` would be read back as `1 OR (0 IS NULL)` and "
+        "`between(1, or_(1, 0), 3)` would not even parse. The CAST delimits the argument and "
+        "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
+        "INTEGER keeps all three, typeof included.";
+
+    const std::string kCommentOrTokenCallSpelling =
+        "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
+        "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
+        "the OR condition only when one of them is a condition (a comparison, AND, OR, IN, BETWEEN, "
+        "LIKE, GLOB, IS [NOT] NULL, EXISTS or NOT) and the concatenation otherwise. So `1 OR 0` "
+        "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
+        "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
 
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
@@ -413,6 +442,67 @@ namespace sqlite2orm {
         return {};
     }
 
+    std::string_view binaryOperatorWithoutDefaultConstructor(BinaryOperator binaryOperator) {
+        switch(binaryOperator) {
+            case BinaryOperator::logicalOr:
+            case BinaryOperator::logicalAnd:
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:  return {};
+            case BinaryOperator::add:                return "+";
+            case BinaryOperator::subtract:           return "-";
+            case BinaryOperator::multiply:           return "*";
+            case BinaryOperator::divide:             return "/";
+            case BinaryOperator::modulo:             return "%";
+            case BinaryOperator::concatenate:        return "||";
+            case BinaryOperator::bitwiseAnd:         return "&";
+            case BinaryOperator::bitwiseOr:          return "|";
+            case BinaryOperator::shiftLeft:          return "<<";
+            case BinaryOperator::shiftRight:         return ">>";
+            case BinaryOperator::jsonArrow:          return "->";
+            case BinaryOperator::jsonArrow2:         return "->>";
+        }
+        return {};
+    }
+
+    namespace {
+        // The window functions that take no argument, so the `name()` a star is generated as is the
+        // same call as the one written without one.
+        constexpr std::array<std::string_view, 5> kNullaryWindowFunctions{{
+            "row_number", "rank", "dense_rank", "percent_rank", "cume_dist",
+        }};
+        // The window functions that take arguments, and MATCH in its function spelling.
+        constexpr std::array<std::string_view, 7> kArgumentTakingAggregateForms{{
+            "ntile", "lag", "lead", "first_value", "last_value", "nth_value", "match",
+        }};
+
+        bool nameIsIn(std::string_view name, std::span<const std::string_view> names) {
+            return std::find(names.begin(), names.end(), name) != names.end();
+        }
+    }
+
+    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
+        if(nameIsIn(lowerFunctionName, kNullaryWindowFunctions)) {
+            return true;
+        }
+        if(star) {
+            return lowerFunctionName == "count";
+        }
+        return nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
+    }
+
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName) {
+        return nameIsIn(lowerFunctionName, kNullaryWindowFunctions) ||
+               nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
+    }
+
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {
         switch(binaryOperator) {
             case BinaryOperator::logicalOr:          return "or_";
@@ -461,7 +551,8 @@ namespace sqlite2orm {
             case BinaryOperator::bitwiseAnd:         return 11;
             case BinaryOperator::bitwiseOr:          return 13;
             case BinaryOperator::logicalAnd:         return 14;
-            // `or` and `||` are the same C++ token; sqlite_orm reads the latter as a concatenation.
+            // `or` and `||` are the same C++ token, which is also why the operator spelling is not
+            // always the operator that was written — see `binaryOperatorNeedsCallSpelling`.
             case BinaryOperator::logicalOr:
             case BinaryOperator::concatenate:        return 15;
             // json_extract() is a call, and an IS operator never reaches an emitted operator at all.
@@ -517,8 +608,8 @@ namespace sqlite2orm {
             case BinaryOperator::isNot:
             case BinaryOperator::isDistinctFrom:
             case BinaryOperator::isNotDistinctFrom:  return kSqlPrecedencePredicate;
-            case BinaryOperator::logicalAnd:         return 8;
-            case BinaryOperator::logicalOr:          return 9;
+            case BinaryOperator::logicalAnd:         return kSqlPrecedenceAnd;
+            case BinaryOperator::logicalOr:          return kSqlPrecedenceOr;
         }
         return kSqlPrecedencePredicate;
     }
@@ -541,16 +632,42 @@ namespace sqlite2orm {
             }
             return kSqlPrecedenceTerm;
         }
+        if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            // The JSON arrows are the one binary operator serialized as a call, `json_extract(…)`,
+            // which reads as one term; every other one is serialized as the SQL operator it was
+            // parsed as, and binds the way SQLite binds that operator.
+            if(binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
+               binaryOp->binaryOperator == BinaryOperator::jsonArrow2) {
+                return kSqlPrecedenceTerm;
+            }
+            return sqlOperatorPrecedence(binaryOp->binaryOperator);
+        }
         // Everything else is a term of its own in the serialized SQL: a literal, a column, a call,
-        // CAST, CASE, a parenthesized subquery, or a binary operator sqlite_orm parenthesizes.
+        // CAST, CASE, a parenthesized subquery.
         return sqlPredicateLooserThanMinus(generatedNode).empty() ? kSqlPrecedenceTerm
                                                                   : kSqlPrecedencePredicate;
+    }
+
+    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode) {
+        // sqlite_orm's binary operator and binary condition serializer parenthesizes an operand
+        // that is itself a binary operator or condition — everything a `BinaryOperatorNode`
+        // generates — so however loosely SQLite binds it, it comes back as one term there.
+        if(dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(astNode))) {
+            return kSqlPrecedenceTerm;
+        }
+        return serializedSqlPrecedence(astNode);
+    }
+
+    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode) {
+        return serializedSqlPrecedence(astNode) >= kSqlPrecedenceAnd;
     }
 
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
         const AstNode& generatedNode = generatedOperandNode(astNode);
         if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
-            if(policyEquals(policy, "expr_style", "functional")) {
+            // An operator the C++ `||` token would misread is generated as a call whatever the
+            // policy asks for, and a call is a primary.
+            if(policyEquals(policy, "expr_style", "functional") || binaryOperatorNeedsCallSpelling(*binaryOp)) {
                 return kCppPrecedencePrimary;
             }
             return cppOperatorPrecedence(binaryOp->binaryOperator);
@@ -734,6 +851,42 @@ namespace sqlite2orm {
         return foldedSigns > 1 && integerLiteralExceedsInt64(integerLiteral->value);
     }
 
+    size_t underlineLengthOf(std::string_view sourceText) {
+        const size_t lineBreak = sourceText.find('\n');
+        return lineBreak == std::string_view::npos ? sourceText.size() : lineBreak;
+    }
+
+    CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
+        if(astNode.sourceSpan.text.empty()) {
+            return CodegenWarning{std::move(message)};
+        }
+        return CodegenWarning{std::move(message), astNode.sourceSpan.location,
+                              underlineLengthOf(astNode.sourceSpan.text)};
+    }
+
+    namespace {
+
+        /** The `/*` … `*\/` placeholder text a funnelled placeholder generates for `label`. */
+        std::string placeholderCode(std::string_view label) {
+            return "/* " + std::string(label) + " */";
+        }
+
+    }  // namespace
+
+    CodeGenResult unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode,
+                                         CodeGenResult carried) {
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
+        return carried;
+    }
+
+    CodeGenResult unsupportedPlaceholder(std::string_view label, const PlaceholderMessage& message,
+                                         const AstNode& astNode, CodeGenResult carried) {
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(message(carried.code), astNode));
+        return carried;
+    }
+
     std::string numericLiteralSqlText(const AstNode& value) {
         std::size_t foldedSigns = 0;
         const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, foldedSigns));
@@ -751,7 +904,7 @@ namespace sqlite2orm {
             return CodegenWarning{std::move(message)};
         }
         SourceLocation location = literal.location;
-        size_t length = text.size();
+        size_t length = underlineLengthOf(text);
         // The minus signs the message quotes along with the digits stand in front of the literal,
         // so the underline starts at the value rather than at the token it ends with.
         if(value.location.line == location.line && value.location.column < location.column) {
@@ -818,6 +971,15 @@ namespace sqlite2orm {
             return false;
         }
         return static_cast<std::int64_t>(asDouble) == *number;
+    }
+
+    bool boolFieldCarriesValue(const AstNode& value) {
+        if(dynamic_cast<const BoolLiteralNode*>(&value)) {
+            // SQLite stores TRUE and FALSE as the integers 1 and 0, the whole range of the field.
+            return true;
+        }
+        const std::optional<std::int64_t> number = integerLiteralInt64Value(value);
+        return number && (*number == 0 || *number == 1);
     }
 
     ValueStorageClass valueStorageClass(const AstNode& value) {
@@ -973,6 +1135,87 @@ namespace sqlite2orm {
         return {};
     }
 
+    bool generatesSqliteOrmCondition(const AstNode& astNode) {
+        // A COLLATE and a unary plus generate their operand and nothing else, so the sqlite_orm
+        // node standing here is the one the operand generates.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            switch(binaryOperator->binaryOperator) {
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:
+            case BinaryOperator::logicalAnd:
+                // A comparison is a `binary_condition`, `&&` an `and_condition_t`.
+                return true;
+            case BinaryOperator::logicalOr:
+                // An OR is an `or_condition_t` either way: `or_()` builds one whatever its operands
+                // are, and the `or` spelling is only generated when one of them is a condition.
+                return true;
+            default:
+                // The arithmetic, bitwise and concatenation operators build a `binary_operator`,
+                // the JSON arrows a `json_extract()` call, and an IS never reaches codegen.
+                return false;
+            }
+        }
+        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            // `not x` is a `negated_condition_t`; a negation generates a subtraction from zero and
+            // `~x` a `bitwise_not_t`, neither of them a condition.
+            return unaryOperator->unaryOperator == UnaryOperator::logicalNot;
+        }
+        // MATCH is the one predicate missing here on purpose: `match_t` derives from nothing, so
+        // sqlite_orm does not count it as a condition either.
+        return dynamic_cast<const InNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const BetweenNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const LikeNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const GlobNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const IsNullNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const IsNotNullNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const ExistsNode*>(&generatedNode) != nullptr;
+    }
+
+    bool binaryOperatorNeedsCallSpelling(const BinaryOperatorNode& binaryOperatorNode) {
+        switch(binaryOperatorNode.binaryOperator) {
+        case BinaryOperator::logicalOr:
+            // `operator||` builds the `or_condition_t` only when one of its operands is a condition.
+            if(!generatesSqliteOrmCondition(*binaryOperatorNode.lhs) &&
+               !generatesSqliteOrmCondition(*binaryOperatorNode.rhs)) {
+                return true;
+            }
+            break;
+        case BinaryOperator::concatenate: {
+            // …and the `conc_t` only when neither of them is. `||` binds tighter than every other
+            // SQL operator, so a predicate operand is delimited with a CAST already — it is the
+            // grouping the serialized SQL needs — and a `cast_t` is not a condition any more. What
+            // is left is the conditions sqlite_orm serializes as one term of their own: the
+            // comparisons, AND, OR and EXISTS.
+            auto operandStaysCondition = [](const AstNode& operand) {
+                return generatesSqliteOrmCondition(operand) &&
+                       serializedSqlPrecedenceAsBinaryOperand(operand) == kSqlPrecedenceTerm;
+            };
+            if(operandStaysCondition(*binaryOperatorNode.lhs) || operandStaysCondition(*binaryOperatorNode.rhs)) {
+                return true;
+            }
+            break;
+        }
+        default:
+            return false;
+        }
+        // An operand spelled as a call of the same operator takes the rest of the chain with it, so
+        // that one chain is spelled one way throughout: `1 OR 0 OR a = 1` comes out as
+        // `or_(or_(1, 0), c(&User::a) == 1)` rather than as `or_(1, 0) or c(&User::a) == 1`.
+        auto operandNeedsCallSpelling = [&](const AstNode& operand) {
+            auto* binaryOperand = dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(operand));
+            return binaryOperand != nullptr &&
+                   binaryOperand->binaryOperator == binaryOperatorNode.binaryOperator &&
+                   binaryOperatorNeedsCallSpelling(*binaryOperand);
+        };
+        return operandNeedsCallSpelling(*binaryOperatorNode.lhs) ||
+               operandNeedsCallSpelling(*binaryOperatorNode.rhs);
+    }
+
     NegationForm negationFormFor(const AstNode& operand) {
         // SQLite's parser folds the sign into the literal the minus stands directly over — through
         // parentheses, but NOT through a COLLATE: `-(0x8000000000000000)` is the `hex literal too
@@ -1042,6 +1285,11 @@ namespace sqlite2orm {
         return false;
     }
 
+    bool generatesConcatenation(const AstNode& astNode) {
+        auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(astNode));
+        return binaryOperator != nullptr && binaryOperator->binaryOperator == BinaryOperator::concatenate;
+    }
+
     bool isLeafNode(const AstNode& astNode) {
         const AstNode& generatedNode = generatedOperandNode(astNode);
         return generatesFoldedNegation(generatedNode) ||
@@ -1063,6 +1311,134 @@ namespace sqlite2orm {
     std::string wrap(std::string_view code) {
         return "c(" + std::string(code) + ")";
     }
+
+    namespace {
+
+        /** Whether `functionLower` is one of `names`. */
+        bool isOneOfFunctions(std::string_view functionLower, std::initializer_list<std::string_view> names) {
+            return std::find(names.begin(), names.end(), functionLower) != names.end();
+        }
+
+        /**
+         *  Whether SQLite answers a call of this built-in function with a value even when an
+         *  argument is NULL. Checked against libsqlite3 3.45.1 over a NULL argument: `hex(NULL)` is
+         *  the empty text, `quote(NULL)` the text 'NULL', `typeof(NULL)` 'null', `char(NULL)` the
+         *  empty text, `json_object('k', NULL)` '{"k":null}', `json_quote(NULL)` 'null',
+         *  `randomblob(NULL)` and `zeroblob(NULL)` a blob; the ones taking no argument have nothing
+         *  to propagate. The aggregates here answer a value over an empty rowset too: `count` 0,
+         *  `total` 0.0, `json_group_array` '[]' and `json_group_object` '{}'.
+         */
+        bool sqliteFunctionNeverAnswersNull(std::string_view functionLower) {
+            return isOneOfFunctions(functionLower, {"changes", "char", "count", "hex", "json_group_array",
+                                                    "json_group_object", "json_object", "json_quote",
+                                                    "last_insert_rowid", "pi", "quote", "random",
+                                                    "randomblob", "total", "total_changes", "typeof",
+                                                    "zeroblob"});
+        }
+
+        /**
+         *  Whether the only way SQLite answers a call of this built-in function with NULL is a NULL
+         *  argument. Every other known function answers NULL over arguments the SQL spells out —
+         *  `nullif(1, 1)`, `date('bogus')`, `unicode('')`, `sign('abc')`, `substr(x'', 1)`,
+         *  `printf('')`, `json_extract('{}', '$.a')`, `sqrt(-1)`, `ln(0)`, `sin('a')` — or, being an
+         *  aggregate, over an empty rowset: `avg`, `group_concat`, `max`, `min` and `sum`. This is
+         *  the list SQLite answered a value for over every non-NULL argument of a 11.7M expression
+         *  corpus run through libsqlite3 3.45.1, the version this project links, which unlike the
+         *  `sqlite3` CLI in the image carries the math functions. `iif` belongs here for its
+         *  three-argument form alone, which is why the name is not enough to answer with — see
+         *  `iifNotInItsThreeArgumentForm`.
+         */
+        bool sqliteFunctionOnlyPropagatesANullArgument(std::string_view functionLower) {
+            return isOneOfFunctions(functionLower, {"abs", "coalesce", "glob", "ifnull", "iif", "instr",
+                                                    "json", "json_array", "json_patch", "json_valid",
+                                                    "length", "like", "likelihood", "likely", "lower",
+                                                    "ltrim", "replace", "round", "rtrim", "soundex",
+                                                    "trim", "unlikely", "upper"});
+        }
+
+        /**
+         *  Whether `functionCall` is an `iif` in any arity but three. SQLite 3.48 added
+         *  `iif(X, Y)` as a spelling of `iif(X, Y, NULL)`, so it answers NULL whenever X is false
+         *  whatever the two arguments hold — `SELECT iif(0, 1)` is NULL — while the three-argument
+         *  form merely propagates a NULL. sqlite_orm declares the three-argument form alone, as the
+         *  common type of the second and third argument, so the short one is not typed nullably
+         *  either; that it has no overload at all is what an arity check would report, and this file
+         *  does not run one.
+         */
+        bool iifNotInItsThreeArgumentForm(const FunctionCallNode& functionCall, std::string_view functionLower) {
+            return functionLower == "iif" && functionCall.arguments.size() != 3;
+        }
+
+        /** Whether any of `nodes`, the absent ones skipped, may be NULL. */
+        bool anyOperandMayBeNull(std::initializer_list<const AstNode*> nodes) {
+            for(const AstNode* node: nodes) {
+                if(node && expressionMayBeNull(*node)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** Whether any argument of `functionCall` may be NULL. */
+        bool anyFunctionArgumentMayBeNull(const FunctionCallNode& functionCall) {
+            for(const AstNodePointer& argument: functionCall.arguments) {
+                if(argument && expressionMayBeNull(*argument)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         *  Whether SQLite can answer a call of `functionCall` with NULL. Only the two lists above
+         *  rule it out; every other built-in answers NULL over arguments that hold none, the same
+         *  way an expression this file does not know does. The two directions do not cost the same:
+         *  a call widened for nothing carries an `std::optional` that is always engaged, while a
+         *  call left narrow hands the caller 0 or the empty string where the row held NULL.
+         */
+        bool functionCallMayBeNull(const FunctionCallNode& functionCall) {
+            const std::string functionLower = toLowerAscii(functionCall.name);
+            if(!isKnownSqlFunction(functionLower)) {
+                // A user-defined function is called through the generated struct's `operator()`,
+                // and its declared return type is what the row carries back, never a NULL.
+                return false;
+            }
+            if(sqliteFunctionNeverAnswersNull(functionLower)) {
+                return false;
+            }
+            if(iifNotInItsThreeArgumentForm(functionCall, functionLower)) {
+                return true;
+            }
+            if(!sqliteFunctionOnlyPropagatesANullArgument(functionLower)) {
+                return true;
+            }
+            return anyFunctionArgumentMayBeNull(functionCall);
+        }
+
+        /**
+         *  Whether sqlite_orm already types a call of this built-in function nullably. This asks
+         *  what the generated C++ carries back, not what SQLite can answer — that one is
+         *  `expressionMayBeNull` — so a name can belong to both lists. `abs`, `max`,
+         *  `min` and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif`
+         *  (its three-argument form, the only one sqlite_orm declares), `likely`, `unlikely` and
+         *  `likelihood` are declared as the result of an argument, so the call is nullable exactly
+         *  when sqlite_orm types that argument nullably — a nullable column makes it an
+         *  `std::optional`. Widening one of those would nest a second nullable around the first.
+         *  This answers over the name alone, and that is also the hole it leaves: `length(a)` and
+         *  `CAST(a AS INT)` are typed `int` however NULL the row is, so `iif(1, length(a), 2)` and
+         *  `likely(length(a))` are typed `int` too and read a NULL back as 0. Asking the argument
+         *  rather than the name is a rule of its own; a known hole, carded separately.
+         */
+        bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall) {
+            const std::string functionLower = toLowerAscii(functionCall.name);
+            if(iifNotInItsThreeArgumentForm(functionCall, functionLower)) {
+                return false;
+            }
+            return isOneOfFunctions(functionLower, {"abs", "coalesce", "ifnull", "iif", "likelihood",
+                                                    "likely", "max", "min", "nullif", "sum", "unlikely"});
+        }
+
+    }  // namespace
 
     bool expressionMayBeNull(const AstNode& astNode) {
         if(dynamic_cast<const IntegerLiteralNode*>(&astNode) ||
@@ -1099,6 +1475,46 @@ namespace sqlite2orm {
         }
         if(auto* collate = dynamic_cast<const CollateNode*>(&astNode)) {
             return expressionMayBeNull(*collate->operand);
+        }
+        if(auto* between = dynamic_cast<const BetweenNode*>(&astNode)) {
+            // `1 BETWEEN NULL AND 9` is NULL and `1 BETWEEN NULL AND 0` is 0, so an operand that
+            // can be NULL is what makes the whole test one. Negating it changes nothing.
+            return anyOperandMayBeNull({between->operand.get(), between->low.get(), between->high.get()});
+        }
+        if(auto* in = dynamic_cast<const InNode*>(&astNode)) {
+            if(!in->tableName.empty() || in->subquerySelect) {
+                // What the right-hand side holds is not spelled out here, and `1 IN (SELECT a)`
+                // over a NULL row is NULL.
+                return true;
+            }
+            if(in->values.empty()) {
+                // An empty list is the one form SQLite answers without looking at the operand:
+                // `NULL IN ()` is 0.
+                return false;
+            }
+            if(expressionMayBeNull(*in->operand)) {
+                return true;
+            }
+            for(const AstNodePointer& value: in->values) {
+                if(value && expressionMayBeNull(*value)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if(auto* like = dynamic_cast<const LikeNode*>(&astNode)) {
+            // The ESCAPE operand counts too: `'x' LIKE 'x' ESCAPE NULL` is NULL rather than an error.
+            return anyOperandMayBeNull({like->operand.get(), like->pattern.get(), like->escape.get()});
+        }
+        if(auto* glob = dynamic_cast<const GlobNode*>(&astNode)) {
+            return anyOperandMayBeNull({glob->operand.get(), glob->pattern.get()});
+        }
+        if(auto* cast = dynamic_cast<const CastNode*>(&astNode)) {
+            // A CAST changes the type of a value, never whether it is one: `CAST(NULL AS TEXT)` is NULL.
+            return expressionMayBeNull(*cast->operand);
+        }
+        if(auto* functionCall = dynamic_cast<const FunctionCallNode*>(&astNode)) {
+            return functionCallMayBeNull(*functionCall);
         }
         return true;
     }
@@ -1387,6 +1803,35 @@ namespace sqlite2orm {
             }
             return expressionMayBeNull(generatedNode);
         }
+        if(dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
+           dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
+            // sqlite_orm types `between_t`, `in_t`, `like_t` and `glob_t` — and the
+            // `negated_condition_t` a NOT form comes out as — as `bool`, so a NULL row was read
+            // back as false. A MATCH is left out: SQLite refuses `a MATCH 'x'` as a result column
+            // outside an FTS table, and sqlite_orm has no result type for `match_t` either.
+            return expressionMayBeNull(generatedNode);
+        }
+        if(dynamic_cast<const CastNode*>(&generatedNode)) {
+            // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
+            // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
+            return expressionMayBeNull(generatedNode);
+        }
+        if(auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            if(functionCall->over) {
+                // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
+                // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
+                // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
+                // nullable argument carries its nullability through on its own. What this arm does
+                // not cover is the NULL the window itself answers: over a NOT NULL column the
+                // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
+                // first row, and that NULL still reads back as 0. A known hole, carded separately.
+                return false;
+            }
+            if(generatedFunctionResultIsAlreadyNullable(*functionCall)) {
+                return false;
+            }
+            return expressionMayBeNull(generatedNode);
+        }
         return false;
     }
 
@@ -1512,12 +1957,39 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
+    namespace {
+
+        /**
+         *  The name a keyword PRAGMA value reads as. SQLite's `nmnum` rule falls `ON`, `TRUE`,
+         *  `FALSE` and `CURRENT_DATE` and its siblings back to a bare name, and the PRAGMA's reader
+         *  gets those very letters — so `PRAGMA integrity_check(on)` looks a table called `on` up,
+         *  it does not pass a boolean on.
+         */
+        std::optional<std::string> pragmaKeywordValueName(const AstNode& valueNode) {
+            if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
+                return std::string(boolLiteral->spelling);
+            }
+            if(const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
+                switch(currentDatetime->kind) {
+                    case CurrentDatetimeKind::date: return std::string{"current_date"};
+                    case CurrentDatetimeKind::time: return std::string{"current_time"};
+                    default:                        return std::string{"current_timestamp"};
+                }
+            }
+            return std::nullopt;
+        }
+
+    }  // namespace
+
     std::optional<std::string> pragmaTableNameLiteral(const AstNode& valueNode) {
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return sqlStringToCpp(stringLiteral->value);
         }
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return identifierToCppStringLiteral(columnRef->columnName);
+        }
+        if(auto keywordName = pragmaKeywordValueName(valueNode)) {
+            return identifierToCppStringLiteral(*keywordName);
         }
         return std::nullopt;
     }
@@ -1631,35 +2103,24 @@ namespace sqlite2orm {
     std::optional<PragmaValue> pragmaValue(const AstNode& valueNode) {
         if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
             return PragmaValue{std::string(integerLiteral->value), std::string(integerLiteral->value),
-                               integerLiteral->location, integerLiteral->value.size()};
+                               integerLiteral->location, underlineLengthOf(integerLiteral->value)};
         }
         if(const auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&valueNode)) {
             return PragmaValue{std::string(realLiteral->value), std::string(realLiteral->value),
-                               realLiteral->location, realLiteral->value.size()};
-        }
-        if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
-            // `ON` is a bool literal too, and it is shorter than the `true` the message spells
-            // back, so the underline is measured on the keyword the user wrote.
-            const std::string written = boolLiteral->value ? "true" : "false";
-            return PragmaValue{written, written, boolLiteral->location, boolLiteral->spelling.size()};
+                               realLiteral->location, underlineLengthOf(realLiteral->value)};
         }
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value),
-                               stringLiteral->location, stringLiteral->value.size()};
+                               stringLiteral->location, underlineLengthOf(stringLiteral->value)};
         }
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName),
-                               columnRef->location, columnRef->columnName.size()};
+                               columnRef->location, underlineLengthOf(columnRef->columnName)};
         }
-        if(const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
-            // `CURRENT_DATE` and its two siblings are names to a PRAGMA — SQLite's `nmnum` rule
-            // falls them back to an identifier, and the reader gets those very letters — so the
-            // value is whatever that text reads as, not today's date.
-            const std::string written = currentDatetime->kind == CurrentDatetimeKind::date ? "current_date"
-                                        : currentDatetime->kind == CurrentDatetimeKind::time
-                                            ? "current_time"
-                                            : "current_timestamp";
-            return PragmaValue{written, written, currentDatetime->location, written.size()};
+        if(auto keywordName = pragmaKeywordValueName(valueNode)) {
+            // A keyword here is a name, not the literal it looks like: `TRUE` is the four letters
+            // the reader gets and `CURRENT_DATE` is not today's date.
+            return PragmaValue{*keywordName, *keywordName, valueNode.location, underlineLengthOf(*keywordName)};
         }
         if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             const bool numericOperand =

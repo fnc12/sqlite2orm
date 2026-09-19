@@ -25,11 +25,14 @@ namespace sqlite2orm {
             for(const CodegenWarning& warning: header.warnings) {
                 err << "warning: " << warning.message << "\n";
             }
-            if(schema.allOk()) {
-                out << header.code;
-                if(!header.code.empty() && header.code.back() != '\n') {
-                    out << "\n";
-                }
+            // The header is printed whatever happened to the individual statements: SQLite stores
+            // a view or trigger body without compiling it, so a body sqlite2orm cannot map says
+            // nothing about the rest of the schema, and dropping the whole header over one of them
+            // left the tables around it with nothing generated at all. The statement that did not
+            // generate is reported below and the exit code still says the translation is partial.
+            out << header.code;
+            if(!header.code.empty() && header.code.back() != '\n') {
+                out << "\n";
             }
         }
         if(!schema.allOk()) {

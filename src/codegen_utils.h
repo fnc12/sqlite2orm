@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -51,7 +52,10 @@ namespace sqlite2orm {
     extern const std::string kCommentNotColumnPointer;
     extern const std::string kCommentNotValueAddedToZero;
     extern const std::string kCommentNegatedConditionCast;
+    extern const std::string kCommentConcatenationCast;
     extern const std::string kCommentBitwiseResultCast;
+    extern const std::string kCommentOrTokenCallSpelling;
+    extern const std::string kCommentAndOrPredicateArgumentCast;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -62,6 +66,50 @@ namespace sqlite2orm {
 
     std::string_view binaryOperatorString(BinaryOperator binaryOperator);
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator);
+    /**
+     *  SQLite's spelling of `binaryOperator` when the sqlite_orm type it is generated as has no
+     *  default constructor, and an empty view otherwise. The comparisons, AND and OR all produce a
+     *  `binary_condition`, which declares one; every arithmetic, bit and concatenation operator
+     *  produces a `binary_operator` and the JSON arrows a `builtin_function_t`, which do not.
+     */
+    std::string_view binaryOperatorWithoutDefaultConstructor(BinaryOperator binaryOperator);
+
+    /**
+     *  True when a call of `lowerFunctionName` — written with a star for its argument list or with
+     *  arguments of its own — is generated as a sqlite_orm type that has a default constructor. Most
+     *  functions are generated as a `builtin_function_t` or a `built_in_aggregate_function_t`, which
+     *  declare a constructor and no default one; the window functions are each generated as an
+     *  aggregate of their own — `row_number_t`, `lag_t` and the rest — and a MATCH in its function
+     *  spelling as `match_t`, an aggregate too. `count(*)` is a `count_asterisk_t`, which holds
+     *  nothing. A star under any other name is generated as `name()`, a form only the window
+     *  functions that take no argument have.
+     */
+    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star);
+
+    /**
+     *  True when a call of `lowerFunctionName` is generated as a form sqlite_orm gives no
+     *  `filter()`: the window functions and a MATCH in its function spelling hold their arguments
+     *  and an `over()` and nothing else, while `count(*)` and the aggregate function calls do have
+     *  one. SQLite refuses a FILTER on the same calls — `FILTER clause may only be used with
+     *  aggregate window functions` — but stores a trigger or a view that holds one.
+     */
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName);
+
+    /**
+     *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
+     *  `internal::condition_t`: a comparison, AND, OR, IN, BETWEEN, LIKE, GLOB, IS [NOT] NULL,
+     *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.
+     */
+    bool generatesSqliteOrmCondition(const AstNode& astNode);
+    /**
+     *  True when the node has to be generated as a call — `or_(…)` or `conc(…)` — because the C++
+     *  token `||` would build the other sqlite_orm node than the SQL operator stands for. C++
+     *  spells `or` and the concatenation alike, and sqlite_orm's two `operator||` overloads pick
+     *  between `or_condition_t` and `conc_t` by the operands: an OR over operands that are not
+     *  conditions comes out a concatenation, and a concatenation over an operand that is one comes
+     *  out an OR. The call form names the node it builds, so it says which operator was written.
+     */
+    bool binaryOperatorNeedsCallSpelling(const BinaryOperatorNode& binaryOperatorNode);
 
     /** Precedence of code that is one C++ term already, so no operator around it can regroup it. */
     inline constexpr int kCppPrecedencePrimary = 0;
@@ -85,6 +133,10 @@ namespace sqlite2orm {
     inline constexpr int kSqlPrecedencePredicate = 6;
     /** Precedence SQLite gives `NOT expr`, one rank looser than the predicates. */
     inline constexpr int kSqlPrecedenceNot = 7;
+    /** Precedence SQLite gives `AND`, the loosest rank but one. */
+    inline constexpr int kSqlPrecedenceAnd = 8;
+    /** Precedence SQLite gives `OR`, the loosest rank of all. */
+    inline constexpr int kSqlPrecedenceOr = 9;
     /**
      *  Precedence SQLite parses `binaryOperator` with, numbered as its own operator table ranks it:
      *  the smaller the number, the tighter it binds. This is the SQL the serialized statement is
@@ -92,11 +144,30 @@ namespace sqlite2orm {
      */
     int sqlOperatorPrecedence(BinaryOperator binaryOperator);
     /**
-     *  Precedence of the SQL sqlite_orm serializes the node's generated code into, or
-     *  `kSqlPrecedenceTerm` when that SQL reads as one term. Only the predicates sqlite_orm leaves
-     *  unparenthesized — the ones `sqlPredicateLooserThanMinus` names — answer anything else.
+     *  Precedence of the SQL sqlite_orm serializes the node's generated code into, as that SQL
+     *  stands by itself — what the node *serializes as*, before any parentheses the enclosing
+     *  serializer puts around it. `kSqlPrecedenceTerm` is for SQL that reads as one term: a
+     *  literal, a column, a call, CAST, CASE, a parenthesized subquery.
      */
     int serializedSqlPrecedence(const AstNode& astNode);
+    /**
+     *  The same precedence seen from a binary operator or condition around the node — what that
+     *  parent *parenthesizes*. sqlite_orm's binary serializer puts parentheses around an operand
+     *  that is itself a binary operator or condition, so such an operand reads as one term there
+     *  however loosely SQLite binds it; everything else it leaves bare. The predicate serializers
+     *  parenthesize no argument at all, which is why their slots ask `serializedSqlPrecedence`.
+     */
+    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode);
+    /**
+     *  True when the node stands for an AND or an OR, the two operators SQLite binds looser than
+     *  every predicate. A predicate serializer leaves its argument bare, so such an argument takes
+     *  the predicate into itself: `is_null(or_(1, 0))` comes out `1 OR 0 IS NULL`, which SQLite
+     *  reads as `1 OR (0 IS NULL)`, and `between(1, or_(1, 0), 3)` comes out
+     *  `1 BETWEEN 1 OR 0 AND 3`, which SQLite refuses as a syntax error. The `cast<int64_t>`
+     *  wrapper delimits it and leaves what it stands for alone — an AND and an OR are 0, 1 or
+     *  NULL, and a CAST to INTEGER keeps all three.
+     */
+    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode);
 
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 
@@ -147,6 +218,13 @@ namespace sqlite2orm {
      */
     bool doubleFieldCarriesValue(const AstNode& value);
     /**
+     *  True when a `bool` field is known to hold exactly the value SQLite gives `value`: a BOOLEAN
+     *  column has NUMERIC affinity, which leaves every number the way SQLite typed it, while the
+     *  field holds no number besides 0 and 1 and turns `2` into `1`. TRUE and FALSE are the 1 and
+     *  0 SQLite stores for them, so they pass.
+     */
+    bool boolFieldCarriesValue(const AstNode& value);
+    /**
      *  The storage class SQLite gives a value before it applies any column affinity, as far as the
      *  SQL spells it out. A value that is not a literal is an expression SQLite computes while it
      *  runs the statement, and `unknown` stands for it.
@@ -165,6 +243,42 @@ namespace sqlite2orm {
      *  `sqliteTypeToCpp` gives a table column; `unknown` for any other type.
      */
     ValueStorageClass fieldTypeStorageClass(std::string_view cppType);
+    /**
+     *  Characters of `sourceText` a warning anchored at its first character underlines. A consumer
+     *  draws the underline from the warning's location along a single line, so a span written
+     *  across lines — a quoted name or a string literal holding a newline, a pair of keywords split
+     *  by one — is underlined up to the end of the line it starts on and no further.
+     */
+    size_t underlineLengthOf(std::string_view sourceText);
+    /**
+     *  `message` anchored at the source span `astNode` was parsed from, so that a consumer
+     *  underlines the very SQL the message is about. Unanchored for a node carrying no span, which
+     *  is a node no parse built — one a test constructed by hand, say.
+     */
+    CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
+    /**
+     *  The code generated in place of a construct sqlite_orm has no form for: a `/*` … `*\/`
+     *  placeholder named by `label`, and `message` anchored at the construct appended to the
+     *  warnings of `carried`, which brings along whatever was collected before the construct turned
+     *  out to be unmappable. Such a placeholder stands where an expression or a statement would
+     *  have, so the generated code does not compile there; going through one funnel is what keeps
+     *  every one of them saying which SQL to underline (`codegen: every generated placeholder is
+     *  funnelled through unsupportedPlaceholder` pins that). The placeholders standing for a WHOLE
+     *  statement do not come here — the PRAGMA ones and the `CREATE TABLE` / `CREATE VIEW` headers:
+     *  each leaves the generated code compiling and already carries the warning saying why the
+     *  statement generated nothing.
+     */
+    CodeGenResult unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode,
+                                         CodeGenResult carried = {});
+    /** A placeholder's message built from the placeholder text itself. */
+    using PlaceholderMessage = std::function<std::string(const std::string& placeholder)>;
+    /**
+     *  The same, for a message that quotes the placeholder text itself: `message` is handed the
+     *  `/*` … `*\/` the placeholder generates, so that the shape of a placeholder stays known to
+     *  this one function and a caller cannot spell a second one of its own.
+     */
+    CodeGenResult unsupportedPlaceholder(std::string_view label, const PlaceholderMessage& message,
+                                         const AstNode& astNode, CodeGenResult carried = {});
     /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.
@@ -248,25 +362,41 @@ namespace sqlite2orm {
      *  one without delimiting it first.
      */
     bool generatesNegatedCondition(const AstNode& astNode);
+    /**
+     *  True for a node generated as sqlite_orm's `conc_t`, which every SQL `||` that really is a
+     *  concatenation comes out as — the `left || right` spelling and the `conc(left, right)` one
+     *  alike. `conc_t` is `binary_operator<L, R, conc_string>` and nothing else: not negatable, not
+     *  an arithmetic operand, not an operator argument, so nothing can be built on top of one
+     *  without delimiting it first.
+     */
+    bool generatesConcatenation(const AstNode& astNode);
     /** True for a node that generates a bare C++ value, which `wrap` turns into a sqlite_orm expression. */
     bool isLeafNode(const AstNode& astNode);
     std::string wrap(std::string_view code);
 
     /**
      *  Whether SQLite can answer `astNode` with NULL. Conservative: only a node whose value is
-     *  spelled out in the SQL — a literal, or an operator over such operands — is ruled out, and
-     *  everything SQLite computes at runtime counts as nullable. `/` and `%` count whatever their
-     *  operands are, because SQLite answers a division by zero with NULL rather than an error.
+     *  spelled out in the SQL — a literal, or an operator, a predicate or a CAST over such operands
+     *  — is ruled out, and everything SQLite computes at runtime counts as nullable. `/` and `%`
+     *  count whatever their operands are, because SQLite answers a division by zero with NULL
+     *  rather than an error. A call is ruled out only for the built-ins that answer NULL for no
+     *  reason other than a NULL argument; every other one — `nullif`, `date`, `unicode`, `sign`,
+     *  `substr`, `printf`, `json_extract`, the math functions, and an aggregate over an empty
+     *  rowset — counts as nullable whatever its arguments hold. `iif` propagates for its
+     *  three-argument form alone: the `iif(X, Y)` SQLite 3.48 added is `iif(X, Y, NULL)`, NULL
+     *  whenever X is false.
      */
     bool expressionMayBeNull(const AstNode& astNode);
     /**
      *  Whether a SELECT result column has to be generated as `as_optional(...)` for a NULL row to
      *  survive the round trip. sqlite_orm types a binary operator by the operator alone — `double`
-     *  for the arithmetic ones, `std::string` for `||`, `bool` for a comparison — none of which can
-     *  hold a NULL, so such a row is read back as 0 / "" / false. `as_optional` leaves the SQL
-     *  untouched and yields `std::optional<T>` instead. Every other expression sqlite_orm already
-     *  types nullably where it has to (a column carries its field's type, `abs(...)` is a
-     *  `std::unique_ptr`, NULL itself is a `std::nullptr_t`).
+     *  for the arithmetic ones, `std::string` for `||`, `bool` for a comparison —, a BETWEEN, an
+     *  IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for, and a built-in function
+     *  call the return type that function declares. None of those can hold a NULL, so such a row
+     *  is read back as 0 / "" / false. `as_optional` leaves the SQL untouched and yields
+     *  `std::optional<T>` instead. Every other expression sqlite_orm already types nullably where
+     *  it has to (a column carries its field's type, `abs(...)` is a `std::unique_ptr`, `max(...)`
+     *  and `coalesce(...)` carry the type of an argument, NULL itself is a `std::nullptr_t`).
      */
     bool selectResultNeedsAsOptional(const AstNode& astNode);
     /**
@@ -326,7 +456,8 @@ namespace sqlite2orm {
         SourceLocation location;
         /**
          *  Characters the value occupies from `location`: the value as written, its quotes and
-         *  its minus sign included, which `ON` spells shorter than `text` reads it back as.
+         *  its minus sign included, which `ON` spells shorter than `text` reads it back as, and
+         *  no further than the end of the line it starts on (see `underlineLengthOf`).
          */
         size_t length = 0;
     };

@@ -245,6 +245,23 @@ TEST_CASE("codegen: aggregate FILTER (WHERE) without OVER") {
             "auto rows = storage.select(count<Users>().filter(where(c(&Users::id) > 0)));");
 }
 
+// sqlite_orm puts `filter()` on the aggregate function calls and on `count_asterisk_t` only, so a
+// FILTER over a window function generates a call that does not exist. SQLite refuses the same
+// thing at prepare — `FILTER clause may only be used with aggregate window functions` — but stores
+// a trigger or a view that holds one (checked against sqlite3 3.51.0), so the code is generated
+// with a warning rather than left out.
+TEST_CASE("codegen: a FILTER over a window function warns") {
+    const auto result = generateFull("SELECT row_number() FILTER (WHERE id > 0) OVER () FROM users;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(row_number().filter(where(c(&Users::id) > 0)).over());");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"row_number() has no filter() in sqlite_orm: only the aggregate function calls and count(*) "
+                 "take a FILTER, so the generated code does not compile. SQLite refuses the same call — FILTER "
+                 "clause may only be used with aggregate window functions — but stores a trigger or a view "
+                 "holding it"}});
+}
+
 TEST_CASE("codegen: WINDOW clause maps to window(...) on select") {
     REQUIRE(generate("SELECT row_number() OVER w FROM users WINDOW w AS (ORDER BY id);") ==
             "auto rows = storage.select(row_number().over(window_ref(\"w\")), "

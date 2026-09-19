@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace sqlite2orm {
@@ -17,7 +18,7 @@ namespace sqlite2orm {
         DdlParser(Parser& parser, TokenStream& tokenStream);
 
         AstNodePointer parseCreate();
-        AstNodePointer parseCreateViewTail(SourceLocation location);
+        AstNodePointer parseCreateViewTail(SourceLocation location, std::string_view headerText);
         AstNodePointer parseCreateTableTail(SourceLocation location);
         AstNodePointer parseCreateTriggerAfterKeyword(SourceLocation location, bool temporary);
         AstNodePointer parseCreateIndexAfterKeyword(SourceLocation location, bool unique);

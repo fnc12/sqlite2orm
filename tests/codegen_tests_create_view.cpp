@@ -4,13 +4,14 @@ namespace {
 
     /**
      *  The warning every view carries below C++26 (views need reflection). `displayName` is the
-     *  name as it appears in the DDL; the span underlines the `CREATE VIEW` keyword (11 chars).
+     *  name as it appears in the DDL; the span underlines the statement's opening keywords as the
+     *  source writes them, `CREATE VIEW` (11 chars) unless `headerLength` says otherwise.
      */
-    CodegenWarning cpp26ViewWarning(const std::string& displayName, size_t line) {
+    CodegenWarning cpp26ViewWarning(const std::string& displayName, size_t line, size_t headerLength = 11) {
         return {"CREATE VIEW " + displayName +
                     ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
                     "requires C++26 and will not compile under the selected C++ standard",
-                SourceLocation{line, 1}, 11};
+                SourceLocation{line, 1}, headerLength};
     }
 
 }  // namespace
@@ -156,6 +157,79 @@ TEST_CASE("codegen: view column-type warning carries a source location to underl
             std::vector<CodegenWarning>{
                 {"view v: type of column `id` could not be inferred; defaulting to int",
                  SourceLocation{1, 25}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
+// The opening keywords are underlined as the source spells them, not as the message spells them
+// back: SQLite takes any whitespace between CREATE and VIEW, and a consumer draws the underline
+// along one line, so a statement broken across lines underlines what stands on the first one.
+TEST_CASE("codegen: CREATE VIEW split across two lines underlines CREATE alone") {
+    auto result = generateFull("CREATE\nVIEW v AS SELECT id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `id` could not be inferred; defaulting to int",
+                 SourceLocation{2, 18}, 2},
+                cpp26ViewWarning("v", 1, 6)});
+}
+
+TEST_CASE("codegen: CREATE VIEW written with two spaces underlines both keywords") {
+    auto result = generateFull("CREATE  VIEW v AS SELECT id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `id` could not be inferred; defaulting to int",
+                 SourceLocation{1, 26}, 2},
+                cpp26ViewWarning("v", 1, 12)});
+}
+
+TEST_CASE("codegen: CREATE TEMP VIEW underlines the three keywords it is written with") {
+    auto result = generateFull("CREATE TEMP VIEW v AS SELECT id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `id` could not be inferred; defaulting to int",
+                 SourceLocation{1, 30}, 2},
+                cpp26ViewWarning("v", 1, 16)});
+}
+
+// SQLite reads a newline inside a quoted name as part of the name, so the column reference spans
+// two lines while its underline runs along the first one.
+TEST_CASE("codegen: a view column quoted across two lines underlines its first line") {
+    auto result = generateFull("CREATE VIEW v AS SELECT \"a\nb\" FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `a\nb` could not be inferred; defaulting to int",
+                 SourceLocation{1, 25}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
+// The name the field ends up carrying does not move the underline: it stays on the expression
+// whose type could not be inferred, so a view column list longer than the expression it renames
+// still underlines the expression.
+TEST_CASE("codegen: a view column list renaming a column underlines the column, not the name") {
+    auto result = generateFull("CREATE VIEW v(averylongname) AS SELECT id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `averylongname` could not be inferred; defaulting to int",
+                 SourceLocation{1, 40}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
+TEST_CASE("codegen: a view column alias underlines the aliased column, not the alias") {
+    auto result = generateFull("CREATE VIEW v AS SELECT id AS averylongalias FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `averylongalias` could not be inferred; defaulting to int",
+                 SourceLocation{1, 25}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
+// The field name a qualified reference gives the view stands nowhere in the SELECT by itself: `id`
+// is written after `users.`, and the expression starts at the table name. Underlining the name's
+// length from there would cover text the message is not about, so the warning carries no span.
+TEST_CASE("codegen: a view column-type warning over a qualified reference is left unanchored") {
+    auto result = generateFull("CREATE VIEW v AS SELECT users.id FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `id` could not be inferred; defaulting to int"},
                 cpp26ViewWarning("v", 1)});
 }
 

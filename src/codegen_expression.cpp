@@ -7,6 +7,23 @@
 
 namespace sqlite2orm {
 
+    namespace {
+        /**
+         *  `code`, delimited with a CAST to INTEGER when the argument it was generated from stands
+         *  for an AND or an OR, and the comment that explains the CAST appended to `comments`. A
+         *  predicate serializer parenthesizes no argument of its own, and SQLite binds AND and OR
+         *  looser than every predicate, so a bare one there would take the predicate into itself.
+         */
+        std::string groupPredicateArgument(std::string code, const AstNode& argumentNode,
+                                           std::vector<std::string>& comments) {
+            if(!predicateArgumentNeedsGroupingCast(argumentNode)) {
+                return code;
+            }
+            appendUniqueString(comments, kCommentAndOrPredicateArgumentCast);
+            return "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
+        }
+    }
+
     ExpressionCodeGenerator::ExpressionCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context)
         : coordinator(coordinator), context(context) {}
 
@@ -158,6 +175,7 @@ namespace sqlite2orm {
             }
             std::string memberPointer = "&" + this->context.structName + "::" + cppName;
             std::string columnPointer = "column<" + this->context.structName + ">(" + memberPointer + ")";
+            this->context.emittedTableTypedColumnRef = true;
             if(this->context.columnRefUnderLogicalNot) {
                 // Only the column-pointer form survives under a NOT, so there is no style left to
                 // decide between and no decision point to offer.
@@ -346,10 +364,13 @@ namespace sqlite2orm {
                binaryOp->binaryOperator == BinaryOperator::isNot ||
                binaryOp->binaryOperator == BinaryOperator::isDistinctFrom ||
                binaryOp->binaryOperator == BinaryOperator::isNotDistinctFrom) {
-                this->context.accumulatedErrors.push_back(
-                    "binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                    "is not supported in sqlite_orm");
-                return CodeGenResult{"/* unsupported IS expression */"};
+                std::string message = "binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                                      "is not supported in sqlite_orm";
+                this->context.accumulatedErrors.push_back(message);
+                // The error already stops the whole statement from being generated, but the
+                // placeholder goes through the same funnel as every other one: what stands in the
+                // code says where it came from, whichever channel carries it out.
+                return unsupportedPlaceholder("unsupported IS expression", std::move(message), *binaryOp);
             }
             auto leftResult = this->coordinator.generateNode(*binaryOp->lhs);
             auto rightResult = this->coordinator.generateNode(*binaryOp->rhs);
@@ -424,7 +445,7 @@ namespace sqlite2orm {
             bool castsPredicateOperand = false;
             auto castPredicate = [&](std::string& code, const AstNode& operandNode, bool rightOperand) {
                 if(operandsBecomeCallArguments) return;
-                const int operandPrecedence = serializedSqlPrecedence(operandNode);
+                const int operandPrecedence = serializedSqlPrecedenceAsBinaryOperand(operandNode);
                 // SQL reads these operators left-associatively too, so the right operand regroups at
                 // equal precedence as well: `1 = (a IS NULL)` comes back as `(1 = "a") IS NULL`.
                 const bool regroups = rightOperand ? operandPrecedence >= sqlPrecedence
@@ -478,23 +499,38 @@ namespace sqlite2orm {
                 chosenExprVal = "operator_wrap_both";
                 emittedExpr = wrapBothCode;
             }
-            if(binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
-               binaryOp->binaryOperator == BinaryOperator::jsonArrow2) {
+            // C++ spells a logical OR and a concatenation with the same token, `||`, and
+            // sqlite_orm's two `operator||` overloads pick between the `or_condition_t` and the
+            // `conc_t` by the operands: the OR only when one of them is a condition, the
+            // concatenation only when neither is. So `SELECT 1 OR 0` spelled `c(1) or 0` runs as
+            // `SELECT 1 || 0` and answers '10', and `SELECT (a = 1) || 'x'` spelled
+            // `c(&User::a) == 1 || "x"` runs as `SELECT (a = 1) OR 'x'`. `or_()` and `conc()` name
+            // the node they build, so the call is the only form offered where the operator
+            // spelling would not be the operator that was written.
+            const bool needsCallSpelling = binaryOperatorNeedsCallSpelling(*binaryOp);
+            // The JSON arrows have no C++ operator spelling at all — they are generated as a
+            // `json_extract()` call — so the call is the only form they offer either.
+            const bool onlyCallSpellingCompiles = needsCallSpelling || operandsBecomeCallArguments;
+            if(onlyCallSpellingCompiles) {
                 chosenExprVal = "functional";
                 emittedExpr = functionalCode;
             }
 
             // options lists every variant (the chosen one included); the consumer decides how to
-            // present the selection.
-            decisionPoints.push_back(DecisionPoint{
-                this->context.nextDecisionPointId++,
-                "expr_style",
-                chosenExprVal,
-                emittedExpr,
-                {Option{"operator_wrap_left", wrapLeftCode, "wrap left operand"},
-                 Option{"operator_wrap_right", wrapRightCode, "wrap right operand"},
-                 Option{"functional", functionalCode, "functional style"},
-                 Option{"operator_wrap_both", wrapBothCode, "wrap both operands", true}}});
+            // present the selection. Where the operator spelling would be the wrong operator or no
+            // C++ operator at all, the call is the only option offered.
+            std::vector<Option> exprStyleOptions;
+            if(onlyCallSpellingCompiles) {
+                exprStyleOptions.push_back(Option{"functional", functionalCode, "functional style"});
+            } else {
+                exprStyleOptions.push_back(Option{"operator_wrap_left", wrapLeftCode, "wrap left operand"});
+                exprStyleOptions.push_back(Option{"operator_wrap_right", wrapRightCode, "wrap right operand"});
+                exprStyleOptions.push_back(Option{"functional", functionalCode, "functional style"});
+                exprStyleOptions.push_back(Option{"operator_wrap_both", wrapBothCode, "wrap both operands", true});
+            }
+            decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++, "expr_style",
+                                                   chosenExprVal, emittedExpr,
+                                                   std::move(exprStyleOptions)});
 
             std::vector<CodegenWarning> binWarnings;
             binWarnings.insert(binWarnings.end(),
@@ -530,11 +566,26 @@ namespace sqlite2orm {
                 break;
             }
 
+            // A trigger keeps its WHEN expression in an `optional_container`, which default-constructs
+            // it, so the WHEN clause of a generated trigger only compiles while every sqlite_orm type
+            // in it has a default constructor. `binary_operator` — what the arithmetic, bit and
+            // concatenation operators produce — and the `builtin_function_t` behind the JSON arrows
+            // have none; the `binary_condition` behind a comparison, an AND and an OR does.
+            if(const std::string_view formWithoutDefaultConstructor =
+                   binaryOperatorWithoutDefaultConstructor(binaryOp->binaryOperator);
+               !formWithoutDefaultConstructor.empty()) {
+                this->context.recordFormWithoutDefaultConstructor(
+                    std::string(formWithoutDefaultConstructor));
+            }
+
             std::vector<std::string> binComments;
             appendUniqueStrings(binComments, leftResult.comments);
             appendUniqueStrings(binComments, rightResult.comments);
             if(castsPredicateOperand) {
                 appendUniqueString(binComments, kCommentPredicateGroupingCast);
+            }
+            if(needsCallSpelling) {
+                appendUniqueString(binComments, kCommentOrTokenCallSpelling);
             }
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings), {},
                                  std::move(binComments)};
@@ -627,6 +678,20 @@ namespace sqlite2orm {
                 appendUniqueString(operandResult.comments, kCommentNegatedConditionCast);
             }
 
+            // A concatenation needs the same CAST for the same reason — a `conc_t` is
+            // `binary_operator<L, R, conc_string>` and nothing else, so it is neither negatable nor
+            // an operator argument — but it has to be a CAST to REAL rather than to INTEGER. A
+            // concatenation answers TEXT (or NULL), and SQLite reads the truth of a text value
+            // through its real value, not its integer one: `NOT ('0' || '.5')` is 0, where
+            // `NOT CAST('0' || '.5' AS INTEGER)` is 1. A CAST to REAL parses the text exactly as
+            // that truth test does, so the two agree for every value.
+            const bool castsConcatenatedOperand = unaryOp->unaryOperator == UnaryOperator::logicalNot &&
+                                                  generatesConcatenation(*unaryOp->operand);
+            if(castsConcatenatedOperand) {
+                operandResult.code = "cast<" + sqliteTypeToCpp("REAL") + ">(" + operandResult.code + ")";
+                appendUniqueString(operandResult.comments, kCommentConcatenationCast);
+            }
+
             // A column reference under a NOT is generated as a column pointer rather than wrapped in
             // `c(...)`; the two forms stand in the same place, so the wrapper is skipped for it.
             const bool wrapsOperandInC =
@@ -650,7 +715,7 @@ namespace sqlite2orm {
             }
 
             std::string operandStr;
-            if(castsNegatedOperand) {
+            if(castsNegatedOperand || castsConcatenatedOperand) {
                 // A CAST delimits itself, both in C++ and in the SQL sqlite_orm serializes.
                 operandStr = operandResult.code;
             } else if(operandIsAddedToZeroUnderNot) {
@@ -718,6 +783,17 @@ namespace sqlite2orm {
                 functionalCode = "sub(0, " + operandResult.code + ")";
             }
 
+            // Neither `negated_condition_t` nor `bitwise_not_t` has a default constructor, and a
+            // negation generated as a subtraction from zero is a `binary_operator`, which has none
+            // either — so none of the three can stand in a trigger's WHEN clause.
+            if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+                this->context.recordFormWithoutDefaultConstructor("NOT");
+            } else if(unaryOp->unaryOperator == UnaryOperator::bitwiseNot) {
+                this->context.recordFormWithoutDefaultConstructor("~");
+            } else if(negationAsSubtraction) {
+                this->context.recordFormWithoutDefaultConstructor("unary -");
+            }
+
             std::string chosenUnaryVal = "operator";
             std::string emittedUnary = operatorCode;
             if(policyEquals(this->context.codeGenPolicy, "expr_style", "functional") &&
@@ -749,11 +825,17 @@ namespace sqlite2orm {
                                  std::move(operandResult.comments)};
         } else if(auto* isNullNode = dynamic_cast<const IsNullNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*isNullNode->operand);
-            return CodeGenResult{"is_null(" + operandResult.code + ")", std::move(operandResult.decisionPoints), {},
+            std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
+                                                             *isNullNode->operand, operandResult.comments);
+            this->context.recordFormWithoutDefaultConstructor("IS NULL");
+            return CodeGenResult{"is_null(" + operandCode + ")", std::move(operandResult.decisionPoints), {},
                                  {}, std::move(operandResult.comments)};
         } else if(auto* isNotNullNode = dynamic_cast<const IsNotNullNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*isNotNullNode->operand);
-            return CodeGenResult{"is_not_null(" + operandResult.code + ")",
+            std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
+                                                             *isNotNullNode->operand, operandResult.comments);
+            this->context.recordFormWithoutDefaultConstructor("IS NOT NULL");
+            return CodeGenResult{"is_not_null(" + operandCode + ")",
                                  std::move(operandResult.decisionPoints), {}, {},
                                  std::move(operandResult.comments)};
         } else if(auto* betweenNode = dynamic_cast<const BetweenNode*>(&astNode)) {
@@ -779,26 +861,43 @@ namespace sqlite2orm {
                                   std::make_move_iterator(highResult.decisionPoints.begin()),
                                   std::make_move_iterator(highResult.decisionPoints.end()));
 
-            std::string betweenCode =
-                "between(" + operandResult.code + ", " + lowResult.code + ", " + highResult.code + ")";
+            std::vector<std::string> betweenComments;
+            std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
+                                                             *betweenNode->operand, betweenComments);
+            std::string lowCode =
+                groupPredicateArgument(std::move(lowResult.code), *betweenNode->low, betweenComments);
+            std::string highCode =
+                groupPredicateArgument(std::move(highResult.code), *betweenNode->high, betweenComments);
+
+            this->context.recordFormWithoutDefaultConstructor("BETWEEN");
+            std::string betweenCode = "between(" + operandCode + ", " + lowCode + ", " + highCode + ")";
             std::string code = betweenNode->negated ? "!" + betweenCode : betweenCode;
-            return CodeGenResult{code, std::move(decisionPoints)};
+            return CodeGenResult{code, std::move(decisionPoints), {}, {}, std::move(betweenComments)};
         } else if(auto* subqueryNode = dynamic_cast<const SubqueryNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*subqueryNode->select);
             if(sub.code.empty()) {
-                sub.warnings.insert(sub.warnings.begin(),
-                                    "scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen");
-                return CodeGenResult{"/* (SELECT ...) */", std::move(sub.decisionPoints), std::move(sub.warnings)};
+                auto placeholder = unsupportedPlaceholder(
+                    "(SELECT ...)", "scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                    *subqueryNode);
+                placeholder.decisionPoints = std::move(sub.decisionPoints);
+                placeholder.warnings.insert(placeholder.warnings.end(),
+                                            std::make_move_iterator(sub.warnings.begin()),
+                                            std::make_move_iterator(sub.warnings.end()));
+                return placeholder;
             }
             return CodeGenResult{sub.code, std::move(sub.decisionPoints), std::move(sub.warnings)};
         } else if(auto* existsNode = dynamic_cast<const ExistsNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*existsNode->select);
             if(sub.code.empty()) {
-                sub.warnings.insert(sub.warnings.begin(),
-                                    "EXISTS (SELECT ...) is not mapped to sqlite_orm codegen");
-                return CodeGenResult{"/* EXISTS (SELECT ...) */", std::move(sub.decisionPoints),
-                                     std::move(sub.warnings)};
+                auto placeholder = unsupportedPlaceholder(
+                    "EXISTS (SELECT ...)", "EXISTS (SELECT ...) is not mapped to sqlite_orm codegen", *existsNode);
+                placeholder.decisionPoints = std::move(sub.decisionPoints);
+                placeholder.warnings.insert(placeholder.warnings.end(),
+                                            std::make_move_iterator(sub.warnings.begin()),
+                                            std::make_move_iterator(sub.warnings.end()));
+                return placeholder;
             }
+            this->context.recordFormWithoutDefaultConstructor("EXISTS");
             return CodeGenResult{"exists(" + sub.code + ")", std::move(sub.decisionPoints),
                                  std::move(sub.warnings)};
         } else if(auto* inNode = dynamic_cast<const InNode*>(&astNode)) {
@@ -874,16 +973,22 @@ namespace sqlite2orm {
                     } else {
                         selectColumnCode = "asterisk<" + cteTypedef + ">()";
                     }
+                    this->context.recordFormWithoutDefaultConstructor("IN");
                     std::string inFunc = inNode->negated ? "not_in" : "in";
+                    std::string operandCode = groupPredicateArgument(
+                        std::move(operandResult.code), *inNode->operand, operandResult.comments);
                     std::string code =
-                        inFunc + "(" + operandResult.code + ", select(" + selectColumnCode + "))";
+                        inFunc + "(" + operandCode + ", select(" + selectColumnCode + "))";
                     return CodeGenResult{std::move(code), std::move(operandResult.decisionPoints),
-                                         std::move(operandResult.warnings)};
+                                         std::move(operandResult.warnings), {},
+                                         std::move(operandResult.comments)};
                 }
-                operandResult.warnings.push_back("IN table-name is not supported in sqlite_orm codegen");
-                return CodeGenResult{"/* " + operandResult.code + " IN " + inNode->tableName + " */",
-                                     std::move(operandResult.decisionPoints),
-                                     std::move(operandResult.warnings)};
+                CodeGenResult carried;
+                carried.decisionPoints = std::move(operandResult.decisionPoints);
+                carried.warnings = std::move(operandResult.warnings);
+                return unsupportedPlaceholder(operandResult.code + " IN " + inNode->tableName,
+                                              "IN table-name is not supported in sqlite_orm codegen", *inNode,
+                                              std::move(carried));
             }
             if(inNode->subquerySelect) {
                 auto operandResult = this->coordinator.generateNode(*inNode->operand);
@@ -900,14 +1005,20 @@ namespace sqlite2orm {
                                      std::make_move_iterator(sub.warnings.begin()),
                                      std::make_move_iterator(sub.warnings.end()));
                 if(sub.code.empty()) {
-                    inSubWarnings.push_back("IN (SELECT ...) is not mapped to sqlite_orm codegen");
-                    return CodeGenResult{"/* IN (SELECT ...) */", std::move(decisionPoints),
-                                         std::move(inSubWarnings)};
+                    CodeGenResult carried;
+                    carried.decisionPoints = std::move(decisionPoints);
+                    carried.warnings = std::move(inSubWarnings);
+                    return unsupportedPlaceholder("IN (SELECT ...)",
+                                                  "IN (SELECT ...) is not mapped to sqlite_orm codegen", *inNode,
+                                                  std::move(carried));
                 }
-                std::string code = inNode->negated
-                                       ? "not_in(" + operandResult.code + ", " + sub.code + ")"
-                                       : "in(" + operandResult.code + ", " + sub.code + ")";
-                return CodeGenResult{code, std::move(decisionPoints), std::move(inSubWarnings)};
+                std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
+                                                                 *inNode->operand, operandResult.comments);
+                this->context.recordFormWithoutDefaultConstructor("IN");
+                std::string code = inNode->negated ? "not_in(" + operandCode + ", " + sub.code + ")"
+                                                   : "in(" + operandCode + ", " + sub.code + ")";
+                return CodeGenResult{code, std::move(decisionPoints), std::move(inSubWarnings), {},
+                                     std::move(operandResult.comments)};
             }
             auto operandResult = this->coordinator.generateNode(*inNode->operand);
             auto decisionPoints = std::move(operandResult.decisionPoints);
@@ -932,9 +1043,14 @@ namespace sqlite2orm {
                 valuesList += valueResult.code;
             }
 
-            std::string inCode = "in(" + operandResult.code + ", {" + valuesList + "})";
+            // Every value of the list is delimited by the commas around it, so only the operand
+            // stands where the SQL an AND or an OR serializes into would run into the predicate.
+            std::string inOperandCode = groupPredicateArgument(std::move(operandResult.code),
+                                                               *inNode->operand, operandResult.comments);
+            this->context.recordFormWithoutDefaultConstructor("IN");
+            std::string inCode = "in(" + inOperandCode + ", {" + valuesList + "})";
             if(inNode->negated) {
-                std::string notInCode = "not_in(" + operandResult.code + ", {" + valuesList + "})";
+                std::string notInCode = "not_in(" + inOperandCode + ", {" + valuesList + "})";
                 std::string negatedInCode = "!" + inCode;
                 const bool useOperator =
                     policyEquals(this->context.codeGenPolicy, "negation_style", "operator_excl");
@@ -945,9 +1061,11 @@ namespace sqlite2orm {
                     useOperator ? "operator_excl" : "not_in", chosenNegation,
                     {Option{"not_in", notInCode, "use not_in()"},
                      Option{"operator_excl", negatedInCode, "use the ! operator"}}});
-                return CodeGenResult{chosenNegation, std::move(decisionPoints)};
+                return CodeGenResult{chosenNegation, std::move(decisionPoints), {}, {},
+                                     std::move(operandResult.comments)};
             }
-            return CodeGenResult{inCode, std::move(decisionPoints)};
+            return CodeGenResult{inCode, std::move(decisionPoints), {}, {},
+                                 std::move(operandResult.comments)};
         } else if(auto* likeNode = dynamic_cast<const LikeNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*likeNode->operand);
             auto patternResult = this->coordinator.generateNode(*likeNode->pattern);
@@ -961,18 +1079,26 @@ namespace sqlite2orm {
                                   std::make_move_iterator(patternResult.decisionPoints.begin()),
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
 
-            std::string likeCode = "like(" + operandResult.code + ", " + patternResult.code;
+            std::vector<std::string> likeComments;
+            std::string operandCode =
+                groupPredicateArgument(std::move(operandResult.code), *likeNode->operand, likeComments);
+            std::string patternCode =
+                groupPredicateArgument(std::move(patternResult.code), *likeNode->pattern, likeComments);
+
+            this->context.recordFormWithoutDefaultConstructor("LIKE");
+            std::string likeCode = "like(" + operandCode + ", " + patternCode;
             if(likeNode->escape) {
                 auto escapeResult = this->coordinator.generateNode(*likeNode->escape);
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(escapeResult.decisionPoints.begin()),
                                       std::make_move_iterator(escapeResult.decisionPoints.end()));
-                likeCode += ", " + escapeResult.code;
+                likeCode += ", " + groupPredicateArgument(std::move(escapeResult.code),
+                                                          *likeNode->escape, likeComments);
             }
             likeCode += ")";
 
             std::string code = likeNode->negated ? "!" + likeCode : likeCode;
-            return CodeGenResult{code, std::move(decisionPoints)};
+            return CodeGenResult{code, std::move(decisionPoints), {}, {}, std::move(likeComments)};
         } else if(auto* globNode = dynamic_cast<const GlobNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*globNode->operand);
             auto patternResult = this->coordinator.generateNode(*globNode->pattern);
@@ -986,12 +1112,20 @@ namespace sqlite2orm {
                                   std::make_move_iterator(patternResult.decisionPoints.begin()),
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
 
-            std::string globCode = "glob(" + operandResult.code + ", " + patternResult.code + ")";
+            std::vector<std::string> globComments;
+            std::string operandCode =
+                groupPredicateArgument(std::move(operandResult.code), *globNode->operand, globComments);
+            std::string patternCode =
+                groupPredicateArgument(std::move(patternResult.code), *globNode->pattern, globComments);
+
+            this->context.recordFormWithoutDefaultConstructor("GLOB");
+            std::string globCode = "glob(" + operandCode + ", " + patternCode + ")";
             std::string code = globNode->negated ? "!" + globCode : globCode;
-            return CodeGenResult{code, std::move(decisionPoints)};
+            return CodeGenResult{code, std::move(decisionPoints), {}, {}, std::move(globComments)};
         } else if(auto* matchNode = dynamic_cast<const MatchNode*>(&astNode)) {
             std::vector<DecisionPoint> decisionPoints;
             std::vector<CodegenWarning> warnings;
+            std::vector<std::string> matchComments;
 
             // `fts_table MATCH pattern` targets the hidden FTS5 "any" column of that table.
             std::string lhsCode;
@@ -1014,22 +1148,29 @@ namespace sqlite2orm {
                     this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
                 }
                 decisionPoints = std::move(operandResult.decisionPoints);
-                lhsCode = std::move(operandResult.code);
+                lhsCode = groupPredicateArgument(std::move(operandResult.code), *matchNode->operand,
+                                                 matchComments);
             }
 
             auto patternResult = this->coordinator.generateNode(*matchNode->pattern);
             decisionPoints.insert(decisionPoints.end(),
                                   std::make_move_iterator(patternResult.decisionPoints.begin()),
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
+            std::string patternCode =
+                groupPredicateArgument(std::move(patternResult.code), *matchNode->pattern, matchComments);
 
-            std::string matchCode = "match(" + lhsCode + ", " + patternResult.code + ")";
+            // `match_t` is an aggregate holding its two operands, so unlike the other predicates it
+            // default-constructs with them and can stand in a trigger's WHEN clause. A negated MATCH
+            // does not compile at all, which the warning below is about.
+            std::string matchCode = "match(" + lhsCode + ", " + patternCode + ")";
             std::string code = matchNode->negated ? "!" + matchCode : matchCode;
             if(matchNode->negated) {
                 warnings.push_back(
                     "negated MATCH does not compile against sqlite_orm dev yet: match_t is not accepted by "
                     "operator! (https://github.com/fnc12/sqlite_orm/issues/1501)");
             }
-            return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
+            return CodeGenResult{code, std::move(decisionPoints), std::move(warnings), {},
+                                 std::move(matchComments)};
         } else if(auto* castNode = dynamic_cast<const CastNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*castNode->operand);
             std::string cppType = sqliteTypeToCpp(castNode->typeName);
@@ -1072,6 +1213,10 @@ namespace sqlite2orm {
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if(auto* bindParam = dynamic_cast<const BindParameterNode*>(&astNode)) {
             std::string paramStr(bindParam->value);
+            auto bindParameterMessage = [&paramStr](const std::string& variable) {
+                return "bind parameter " + paramStr + " -> C++ variable '" + variable +
+                       "'; for prepared statements use storage.prepare() + get<N>(stmt)";
+            };
             std::string cppVar;
             if(paramStr.size() > 1 && (paramStr[0] == ':' || paramStr[0] == '@' || paramStr[0] == '$')) {
                 cppVar = toCppIdentifier(paramStr.substr(1));
@@ -1080,11 +1225,11 @@ namespace sqlite2orm {
             } else if(paramStr.size() > 1 && paramStr[0] == '?') {
                 cppVar = "bindParam" + paramStr.substr(1);
             } else {
-                cppVar = "/* " + paramStr + " */";
+                // A marker with nothing behind it — a lone `:`, which SQLite refuses outright —
+                // names no variable, so a placeholder stands where the value would have gone.
+                return unsupportedPlaceholder(paramStr, bindParameterMessage, *bindParam);
             }
-            return CodeGenResult{cppVar, {},
-                                 {"bind parameter " + paramStr + " -> C++ variable '" + cppVar +
-                                  "'; for prepared statements use storage.prepare() + get<N>(stmt)"}};
+            return CodeGenResult{cppVar, {}, {bindParameterMessage(cppVar)}};
         } else if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*collateNode->operand);
             operandResult.warnings.push_back("COLLATE " + collateNode->collationName +
@@ -1151,6 +1296,19 @@ namespace sqlite2orm {
                 }
             }
 
+            // `builtin_function_t` and the `function_call` a user-defined function is generated as
+            // both declare a constructor and no default one, so a trigger's WHEN clause, which
+            // sqlite_orm default-constructs, holds neither. The window functions, `count(*)` and a
+            // function-spelled MATCH are the exceptions — each is generated as an aggregate — and so
+            // are the `filter` and `over` wrappers, which keep only what they are given:
+            // `count_asterisk_t::filter()` unwraps the `where_t` and keeps its expression, so none
+            // of them costs the default constructor on their own. What they carry records itself: an
+            // argument and a FILTER expression through their own emitters, an OVER clause's ORDER BY
+            // through `codegenOverClause`.
+            if(!functionCallHasDefaultConstructor(funcName, funcCall->star)) {
+                this->context.recordFormWithoutDefaultConstructor(std::string(funcCall->name) + "()");
+            }
+
             if(funcCall->filterWhere) {
                 auto filterResult = this->coordinator.generateNode(*funcCall->filterWhere);
                 decisionPoints.insert(decisionPoints.end(),
@@ -1160,6 +1318,13 @@ namespace sqlite2orm {
                                     std::make_move_iterator(filterResult.warnings.begin()),
                                     std::make_move_iterator(filterResult.warnings.end()));
                 baseCode += ".filter(where(" + filterResult.code + "))";
+                if(functionCallFormHasNoFilter(funcName)) {
+                    funcWarnings.push_back(std::string(funcCall->name) +
+                                           "() has no filter() in sqlite_orm: only the aggregate function calls "
+                                           "and count(*) take a FILTER, so the generated code does not compile. "
+                                           "SQLite refuses the same call — FILTER clause may only be used with "
+                                           "aggregate window functions — but stores a trigger or a view holding it");
+                }
             }
             if(funcCall->over) {
                 std::string overArgs = this->codegenOverClause(*funcCall->over, decisionPoints, funcWarnings);
@@ -1261,6 +1426,9 @@ namespace sqlite2orm {
             parts.push_back("partition_by(" + inner + ")");
         }
         if(!overClause.orderBy.empty()) {
+            // `order_by_t` declares a constructor and no default one, and it is the only part of a
+            // window definition that does: `partition_by` and the frame boundaries are aggregates.
+            this->context.recordFormWithoutDefaultConstructor("ORDER BY");
             auto formatOrderTerm = [&](const OrderByTerm& term) -> std::string {
                 auto expressionResult = this->coordinator.generateNode(*term.expression);
                 decisionPoints.insert(decisionPoints.end(),

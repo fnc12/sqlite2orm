@@ -76,17 +76,34 @@ namespace sqlite2orm {
             base += ".for_each_row()";
         }
         std::vector<DecisionPoint> decisionPoints;
+        std::vector<CodegenWarning> whenClauseWarnings;
         // Like a view body, a trigger body is stored and compiled only when the trigger fires, so
         // SQLite accepts a hex literal in it that it refuses in a query of its own.
         this->context.storedHexLiteralsTooBig.clear();
         const bool triggerWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
         if(createTrigger.whenClause) {
+            // `trigger_base_t::when()` keeps the expression in an `optional_container`, whose field
+            // is default-constructed before the expression is assigned to it, so the WHEN clause
+            // only compiles while every sqlite_orm type in it has a default constructor. The
+            // comparisons, AND and OR do; the predicates, the arithmetic and bit operators and the
+            // functions do not, and the emitters record what they put out.
+            this->context.formsWithoutDefaultConstructor.clear();
             auto whenResult = this->coordinator.generateNode(*createTrigger.whenClause);
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(whenResult.decisionPoints.begin()),
                        std::make_move_iterator(whenResult.decisionPoints.end()));
             warnings.insert(warnings.end(), std::make_move_iterator(whenResult.warnings.begin()),
                            std::make_move_iterator(whenResult.warnings.end()));
+            for(const std::string& form : this->context.formsWithoutDefaultConstructor) {
+                // Held back until the trigger is known to generate: a trigger that is left out
+                // altogether has no generated code to fail to compile.
+                whenClauseWarnings.push_back(
+                    "CREATE TRIGGER " + stripIdentifierQuotes(createTrigger.triggerName) + " uses " + form +
+                    " in its WHEN clause, a form sqlite_orm gives no default constructor: make_trigger() keeps "
+                    "a trigger's WHEN expression in an optional_container, which default-constructs the "
+                    "expression before assigning it, so the generated trigger does not compile");
+            }
+            this->context.formsWithoutDefaultConstructor.clear();
             base += ".when(" + whenResult.code + ")";
         }
 
@@ -115,6 +132,8 @@ namespace sqlite2orm {
             }
             return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
         }
+        warnings.insert(warnings.end(), std::make_move_iterator(whenClauseWarnings.begin()),
+                        std::make_move_iterator(whenClauseWarnings.end()));
 
         std::string triggerLiteral = identifierToCppStringLiteral(createTrigger.triggerName);
         std::string code = "make_trigger(" + triggerLiteral + ", " + base + ".begin(" + stepsJoined + "));";
@@ -146,11 +165,24 @@ namespace sqlite2orm {
         std::string indexLiteral = identifierToCppStringLiteral(createIndex.indexName);
         std::vector<DecisionPoint> decisionPoints;
         std::string columnParts;
+        bool firstColumnNamesTable = false;
+        bool atFirstColumn = true;
         for(const auto& indexedColumn : createIndex.indexedColumns) {
             if(!columnParts.empty()) {
                 columnParts += ", ";
             }
+            this->context.emittedTableTypedColumnRef = false;
             auto expressionResult = this->coordinator.generateNode(*indexedColumn.expression);
+            if(atFirstColumn) {
+                // `make_index` deduces the table an index is made for from its first argument alone,
+                // and only a column reference generated as a pointer into the struct carries one.
+                // COLLATE and a unary plus emit their operand and nothing else, so the form that came
+                // out is the one of the node under them.
+                firstColumnNamesTable =
+                    this->context.emittedTableTypedColumnRef &&
+                    dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*indexedColumn.expression)) != nullptr;
+                atFirstColumn = false;
+            }
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(expressionResult.decisionPoints.begin()),
                        std::make_move_iterator(expressionResult.decisionPoints.end()));
             warnings.insert(warnings.end(), std::make_move_iterator(expressionResult.warnings.begin()),
@@ -179,16 +211,34 @@ namespace sqlite2orm {
             columnParts += part;
         }
 
-        std::string code = functionName + "(" + indexLiteral + ", " + columnParts;
+        // The WHERE of a partial index is generated before it is decided whether the index has a form
+        // at all, so an index that is left out still reports what its clause decides and warns about,
+        // the way an indexed column of the same index does.
+        std::string whereArgument;
         if(createIndex.whereClause) {
             auto whereResult = this->coordinator.generateNode(*createIndex.whereClause);
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(whereResult.decisionPoints.begin()),
                        std::make_move_iterator(whereResult.decisionPoints.end()));
             warnings.insert(warnings.end(), std::make_move_iterator(whereResult.warnings.begin()),
                            std::make_move_iterator(whereResult.warnings.end()));
-            code += ", where(" + whereResult.code + ")";
+            whereArgument = ", where(" + whereResult.code + ")";
         }
-        code += ");";
+
+        if(!firstColumnNamesTable && createIndex.unique) {
+            // `make_unique_index` takes the table as a defaulted template parameter behind its
+            // argument pack, which leaves no way to spell it out, so there is no form of this index.
+            warnings.push_back("UNIQUE index " + stripIdentifierQuotes(createIndex.indexName) +
+                               " starts with an expression: sqlite_orm deduces the table an index is made "
+                               "for from its first indexed column, and make_unique_index has no form that "
+                               "spells that table out, so the index is not generated");
+            this->context.structName = savedStruct;
+            return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
+        }
+
+        // An index that does not start with a column names the table it indexes itself.
+        std::string tableTypeArgument = firstColumnNamesTable ? "" : "<" + tableStruct + ">";
+        std::string code =
+            functionName + tableTypeArgument + "(" + indexLiteral + ", " + columnParts + whereArgument + ");";
 
         this->context.structName = savedStruct;
         return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
@@ -327,15 +377,21 @@ namespace sqlite2orm {
                                          literal + ");",
                                      {},
                                      std::move(warnings)};
-            case DropObjectKind::view:
-                warnings.push_back(
+            case DropObjectKind::view: {
+                CodeGenResult carried;
+                carried.warnings = std::move(warnings);
+                return unsupportedPlaceholder(
+                    "DROP VIEW: not supported as storage.drop_* in sqlite_orm",
                     "DROP VIEW is not supported as a sqlite_orm storage method; sqlite_orm sync_schema() applies "
-                    "to mapped tables/indexes/triggers, not views");
-                return CodeGenResult{"/* DROP VIEW: not supported as storage.drop_* in sqlite_orm */",
-                                     {},
-                                     std::move(warnings)};
-            default:
-                return CodeGenResult{"/* DROP */", {}, std::move(warnings)};
+                    "to mapped tables/indexes/triggers, not views",
+                    node, std::move(carried));
+            }
+            default: {
+                CodeGenResult carried;
+                carried.warnings = std::move(warnings);
+                return unsupportedPlaceholder("DROP", "this DROP statement is not mapped to sqlite_orm codegen",
+                                              node, std::move(carried));
+            }
         }
     }
 
@@ -363,27 +419,38 @@ namespace sqlite2orm {
         std::string nameLiteral = identifierToCppStringLiteral(node.tableName);
         std::string structName = toStructName(node.tableName);
 
-        auto allSimpleColumnRefs = [&]() -> bool {
+        // The first module argument sqlite_orm's using_*() forms have no place for, i.e. the one a
+        // warning about unmapped arguments points at; null when every argument is a plain column.
+        auto firstArgumentThatIsNoColumnRef = [&]() -> const AstNode* {
             for(const auto& moduleArgument : node.moduleArguments) {
                 if(!dynamic_cast<const ColumnRefNode*>(moduleArgument.get())) {
-                    return false;
+                    return moduleArgument.get();
                 }
             }
-            return true;
+            return nullptr;
+        };
+        // Whatever was collected before the statement turned out to be unmappable, moved out of the
+        // two vectors: exactly one of the branches below reaches this, on its way out.
+        auto carriedParts = [](std::vector<DecisionPoint>& collectedDecisionPoints,
+                               std::vector<CodegenWarning>& collectedWarnings) {
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(collectedDecisionPoints);
+            carried.warnings = std::move(collectedWarnings);
+            return carried;
         };
 
         if(moduleLower == "fts5") {
             if(node.moduleArguments.empty()) {
-                warnings.push_back("FTS5 requires at least one column argument for sqlite_orm::using_fts5()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: fts5 (no columns) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: fts5 (no columns)",
+                    "FTS5 requires at least one column argument for sqlite_orm::using_fts5()", node,
+                    carriedParts(decisionPoints, warnings));
             }
-            if(!allSimpleColumnRefs()) {
-                warnings.push_back(
-                    "FTS5 module arguments that are not plain column names cannot be mapped to "
-                    "sqlite_orm::using_fts5()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: fts5 (unmapped arguments) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+            if(const AstNode* unmapped = firstArgumentThatIsNoColumnRef()) {
+                return unsupportedPlaceholder("CREATE VIRTUAL TABLE: fts5 (unmapped arguments)",
+                                              "FTS5 module arguments that are not plain column names cannot be "
+                                              "mapped to sqlite_orm::using_fts5()",
+                                              *unmapped, carriedParts(decisionPoints, warnings));
             }
             std::string code = "struct " + structName + " {\n";
             for(const auto& moduleArgument : node.moduleArguments) {
@@ -420,18 +487,18 @@ namespace sqlite2orm {
         if(moduleLower == "rtree" || moduleLower == "rtree_i32") {
             const size_t moduleArgumentsCount = node.moduleArguments.size();
             if(moduleArgumentsCount < 3 || moduleArgumentsCount > 11 || (moduleArgumentsCount % 2 == 0)) {
-                warnings.push_back(
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: rtree (invalid column count)",
                     "RTREE virtual table for sqlite_orm needs 3, 5, 7, 9, or 11 simple column identifiers (id + "
-                    "min/max pairs)");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: rtree (invalid column count) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                    "min/max pairs)",
+                    node, carriedParts(decisionPoints, warnings));
             }
-            if(!allSimpleColumnRefs()) {
-                warnings.push_back(
+            if(const AstNode* unmapped = firstArgumentThatIsNoColumnRef()) {
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: rtree (unmapped arguments)",
                     "RTREE module arguments that are not plain column names cannot be mapped to sqlite_orm "
-                    "using_rtree() / using_rtree_i32()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: rtree (unmapped arguments) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                    "using_rtree() / using_rtree_i32()",
+                    *unmapped, carriedParts(decisionPoints, warnings));
             }
             const bool isInt32 = (moduleLower == "rtree_i32");
             std::string code = "struct " + structName + " {\n";
@@ -476,11 +543,11 @@ namespace sqlite2orm {
 
         if(moduleLower == "generate_series") {
             if(!node.moduleArguments.empty()) {
-                warnings.push_back(
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: generate_series (unmapped arguments)",
                     "generate_series module arguments are not mapped to sqlite_orm; expected empty argument list "
-                    "for make_virtual_table<generate_series>(..., internal::using_generate_series())");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: generate_series (unmapped arguments) */",
-                                     std::move(decisionPoints), std::move(warnings)};
+                    "for make_virtual_table<generate_series>(..., internal::using_generate_series())",
+                    *node.moduleArguments.front(), carriedParts(decisionPoints, warnings));
             }
             std::string code = "auto " + this->context.statementVariableName("vtab") + " = make_virtual_table<generate_series>(" + nameLiteral +
                                ", internal::using_generate_series());\n";
@@ -489,10 +556,10 @@ namespace sqlite2orm {
 
         if(moduleLower == "dbstat") {
             if(node.moduleArguments.size() > 1) {
-                warnings.push_back(
-                    "dbstat accepts at most one optional schema string argument for sqlite_orm::using_dbstat()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: dbstat (too many arguments) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: dbstat (too many arguments)",
+                    "dbstat accepts at most one optional schema string argument for sqlite_orm::using_dbstat()",
+                    *node.moduleArguments.at(1), carriedParts(decisionPoints, warnings));
             }
             if(node.moduleArguments.empty()) {
                 std::string code =
@@ -504,15 +571,16 @@ namespace sqlite2orm {
                                    sqlStringToCpp(stringLiteral->value) + "));\n";
                 return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
             }
-            warnings.push_back(
-                "dbstat optional argument should be a SQL string literal for sqlite_orm::using_dbstat(\"...\")");
-            return CodeGenResult{"/* CREATE VIRTUAL TABLE: dbstat (unmapped argument) */", std::move(decisionPoints),
-                                 std::move(warnings)};
+            return unsupportedPlaceholder(
+                "CREATE VIRTUAL TABLE: dbstat (unmapped argument)",
+                "dbstat optional argument should be a SQL string literal for sqlite_orm::using_dbstat(\"...\")",
+                *node.moduleArguments.front(), carriedParts(decisionPoints, warnings));
         }
 
-        warnings.push_back("virtual table module \"" + std::string(node.moduleName) +
-                           "\" has no sqlite_orm mapping in sqlite2orm codegen");
-        return CodeGenResult{"/* CREATE VIRTUAL TABLE: unknown module */", std::move(decisionPoints), std::move(warnings)};
+        return unsupportedPlaceholder("CREATE VIRTUAL TABLE: unknown module",
+                                      "virtual table module \"" + std::string(node.moduleName) +
+                                          "\" has no sqlite_orm mapping in sqlite2orm codegen",
+                                      node, carriedParts(decisionPoints, warnings));
     }
 
     namespace {
@@ -893,11 +961,21 @@ namespace sqlite2orm {
                 }
                 std::optional<InferredFieldType> inferred;
                 std::optional<SourceLocation> columnLocation;
+                size_t underlineLength = 0;
                 if(selectColumn.expression) {
                     inferred = inferrer.infer(*selectColumn.expression);
-                    columnLocation = selectColumn.expression->location;
+                    // The underline covers the SELECT expression whose type could not be
+                    // inferred, as the source spells it, and only when that expression is a bare
+                    // column reference — whatever name the field ends up carrying, be it one from
+                    // the view's column list or an alias. A qualified reference, or any other
+                    // expression, has no single token to measure at that location, so such a
+                    // warning is left unanchored rather than underlining whatever is there.
+                    if(const auto* columnRef =
+                           dynamic_cast<const ColumnRefNode*>(selectColumn.expression.get())) {
+                        columnLocation = columnRef->location;
+                        underlineLength = underlineLengthOf(columnRef->columnName);
+                    }
                 }
-                const size_t underlineLength = sqlName.size();
                 appendField(std::move(sqlName), inferred, columnLocation, underlineLength);
             }
         }
@@ -920,13 +998,19 @@ namespace sqlite2orm {
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
         appendUniqueString(parts.comments, kCommentViewReflection);
         // sqlite_orm maps views to C++26 reflection (make_view + [[= "…"_orm_name]]); there is no
-        // pre-C++26 form. Surface a visible warning (anchored at CREATE VIEW) when the target is lower.
+        // pre-C++26 form. Surface a visible warning (anchored at the statement's opening keywords,
+        // as the source spells them) when the target is lower.
         if(policyTargetCppStandard(this->context.codeGenPolicy) < 26) {
-            parts.warnings.push_back(CodegenWarning{
+            std::string message =
                 "CREATE VIEW " + displayName +
-                    ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
-                    "requires C++26 and will not compile under the selected C++ standard",
-                node.location, std::string_view("CREATE VIEW").size()});
+                ": sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
+                "requires C++26 and will not compile under the selected C++ standard";
+            if(node.headerText.empty()) {
+                parts.warnings.push_back(CodegenWarning{std::move(message)});
+            } else {
+                parts.warnings.push_back(
+                    CodegenWarning{std::move(message), node.location, underlineLengthOf(node.headerText)});
+            }
         }
         return parts;
     }

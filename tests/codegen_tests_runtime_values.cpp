@@ -363,8 +363,8 @@ TEST_CASE("runtime: a negation over a general operand keeps its value") {
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select((c(0) - (c(2) + 3)));",
                               "auto rows = storage.select((c(0) - (~c(2))));",
-                              "auto rows = storage.select(as_optional((c(0) - (length(\"abc\")))));",
-                              "auto rows = storage.select(as_optional((c(0) - (cast<int64_t>(1)))));",
+                              "auto rows = storage.select((c(0) - (length(\"abc\"))));",
+                              "auto rows = storage.select((c(0) - (cast<int64_t>(1))));",
                               "auto rows = storage.select(c(1) - (c(0) - (c(2) + 3)));",
                               "auto rows = storage.select(as_optional((c(0) - c(&User::a))));",
                               "auto rows = storage.select(as_optional((c(0) - (c(&User::a) + 1))));",
@@ -464,6 +464,48 @@ TEST_CASE("runtime: an INSERT value out of reach of a bool field keeps the value
             });
     REQUIRE(insertedColumnRows(statements, "bool") ==
             std::vector<std::string>{"real|1.0e+20", "real|1.5", "integer|2"});
+}
+
+// A whole number is out of reach of a `bool` field as soon as it is neither 0 nor 1, and the
+// NUMERIC affinity of a BOOLEAN column keeps every one of these as SQLite typed it. Expected rows
+// checked against sqlite3 3.51 with the same five INSERT statements over `t(x BOOLEAN)`.
+TEST_CASE("runtime: an INSERT of a whole number no bool holds keeps the value SQLite stores") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (5);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (9223372036854775807);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1_0);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (0xFFFFFFFFFFFFFFFF);").code,
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN); INSERT INTO t VALUES (1);").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(5)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(9223372036854775807)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(1'0)));",
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(static_cast<int64_t>("
+                "0xFFFFFFFFFFFFFFFF))));",
+                "storage.insert(T{1});",
+            });
+    REQUIRE(insertedColumnRows(statements, "bool") ==
+            std::vector<std::string>{"integer|5",
+                                     "integer|9223372036854775807",
+                                     "integer|10",
+                                     "integer|-1",
+                                     "integer|1"});
+}
+
+// The bare `bool` field of a NOT NULL column refuses the value at compile time rather than
+// converting it — "narrowing conversion of '2' from 'int' to 'bool'" — so this one only builds
+// through the column list. sqlite3 3.51 stores `integer|2`.
+TEST_CASE("runtime: an INSERT of a whole number no bool holds into a NOT NULL BOOLEAN column") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE t(x BOOLEAN NOT NULL); INSERT INTO t VALUES (2);").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(2)));",
+            });
+    REQUIRE(insertedColumnRows(statements, "bool", false) == std::vector<std::string>{"integer|2"});
 }
 
 // A column with no type maps to a `std::vector<char>` field, which only a blob literal initializes:
@@ -848,6 +890,224 @@ TEST_CASE("runtime: a prefix NOT groups the way SQLite groups it") {
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "1", "1", "0"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "0"});
+}
+
+// C++ spells a logical OR and a concatenation with the same token, `||`, and sqlite_orm picks
+// between its `or_condition_t` and its `conc_t` by the operands: `operator||` builds the OR only
+// when one of them is a condition. So `SELECT 1 OR 0` spelled `c(1) or 0` ran as `SELECT 1 || 0`
+// and printed '10', and `SELECT (a = 7) || 'x'` spelled `c(&User::a) == 7 || "x"` ran as
+// `SELECT (a = 7) OR 'x'` and printed 1. `or_()` and `conc()` name the node they build. Expected
+// values checked against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7.
+TEST_CASE("runtime: an OR and a concatenation return the values SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 OR 0;"),
+        generate("SELECT 0 OR 0;"),
+        generate("SELECT a OR 0;"),
+        generate("SELECT NULL OR 0;"),
+        generate("SELECT NULL OR 1;"),
+        generate("SELECT 'a' OR 0;"),
+        generate("SELECT a OR 0 OR 0;"),
+        generate("SELECT -(1 OR 0);"),
+        generate("SELECT a = 7 OR 0;"),
+        generate("SELECT (a = 7) || 'x';"),
+        generate("SELECT (1 OR 0) || 'x';"),
+        generate("SELECT (a IS NULL) || 'x';"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(or_(1, 0));",
+                              "auto rows = storage.select(or_(0, 0));",
+                              "auto rows = storage.select(as_optional(or_(&User::a, 0)));",
+                              "auto rows = storage.select(as_optional(or_(nullptr, 0)));",
+                              "auto rows = storage.select(as_optional(or_(nullptr, 1)));",
+                              "auto rows = storage.select(or_(\"a\", 0));",
+                              "auto rows = storage.select(as_optional(or_(or_(&User::a, 0), 0)));",
+                              "auto rows = storage.select((c(0) - (or_(1, 0))));",
+                              "auto rows = storage.select(as_optional(c(&User::a) == 7 or 0));",
+                              "auto rows = storage.select(as_optional(conc(c(&User::a) == 7, \"x\")));",
+                              "auto rows = storage.select(conc(or_(1, 0), \"x\"));",
+                              "auto rows = storage.select(cast<int64_t>(is_null(&User::a)) || \"x\");",
+                          });
+    REQUIRE(selectedValues(statements, "int", "7") ==
+            std::vector<std::string>{"1", "0", "1", "NULL", "1", "0", "1", "-1", "1", "1x", "1x", "0x"});
+}
+
+// A predicate serializer parenthesizes none of its arguments, and SQLite binds AND and OR looser
+// than every predicate, so an AND or an OR standing there bare escapes into the predicate:
+// `is_null(or_(1, 0))` runs as `SELECT 1 OR 0 IS NULL`, which is `1 OR (0 IS NULL)` and answers 1
+// where `(1 OR 0) IS NULL` answers 0, and `between(1, or_(1, 0), 3)` runs as
+// `SELECT 1 BETWEEN 1 OR 0 AND 3`, which SQLite refuses as a syntax error. The `cast<int64_t>`
+// wrapper delimits the argument. A bound of a BETWEEN is not run here: `between(A, T, T)` deduces
+// one type for both bounds, so an AND or an OR in one of them does not compile whatever it is
+// wrapped in — it did not on master either, where the bound was a `conc_t`. Expected values
+// checked against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7.
+TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT (1 OR 0) IS NULL;"),
+        generate("SELECT (NULL OR 0) IS NULL;"),
+        generate("SELECT (a OR 0) IS NOT NULL;"),
+        generate("SELECT (1 OR 0) LIKE 'x';"),
+        generate("SELECT (a OR 0) NOT LIKE 'x';"),
+        generate("SELECT (1 OR 0) GLOB 'x';"),
+        generate("SELECT (1 OR 0) IN (0, 1);"),
+        generate("SELECT (1 AND 0) IN (0, 1);"),
+        generate("SELECT (a OR 0) NOT IN (0, 1);"),
+        generate("SELECT (a OR 0) BETWEEN 0 AND 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(is_null(cast<int64_t>(or_(1, 0))));",
+                              "auto rows = storage.select(is_null(cast<int64_t>(or_(nullptr, 0))));",
+                              "auto rows = storage.select(is_not_null(cast<int64_t>(or_(&User::a, 0))));",
+                              "auto rows = storage.select(like(cast<int64_t>(or_(1, 0)), \"x\"));",
+                              "auto rows = storage.select(as_optional(!like(cast<int64_t>(or_(&User::a, 0)), \"x\")));",
+                              "auto rows = storage.select(glob(cast<int64_t>(or_(1, 0)), \"x\"));",
+                              "auto rows = storage.select(in(cast<int64_t>(or_(1, 0)), {0, 1}));",
+                              "auto rows = storage.select(in(cast<int64_t>(c(1) and 0), {0, 1}));",
+                              "auto rows = storage.select(as_optional(not_in(cast<int64_t>(or_(&User::a, 0)), "
+                              "{0, 1})));",
+                              "auto rows = storage.select(as_optional(between(cast<int64_t>(or_(&User::a, 0)), "
+                              "0, 1)));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
+}
+
+// sqlite_orm spells `or` and the concatenation with the same `operator||`, and picks between them
+// by the operands, so an OR over operands that are no conditions is generated as the `or_(…)` call
+// — an `or_condition_t` either way, which sqlite_orm negates. The `conc_t` the operator spelling
+// used to build is not negatable, so a NOT over an OR did not compile at all. A NOT over one still
+// carries the CAST every `negated_condition_t` needs under a second NOT. Expected values checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7.
+TEST_CASE("runtime: a NOT over an OR returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a OR 0);"),
+        generate("SELECT NOT (0 OR 0);"),
+        generate("SELECT NOT (NULL OR 0);"),
+        generate("SELECT NOT (NULL OR 1);"),
+        generate("SELECT NOT ('a' OR 0);"),
+        generate("SELECT NOT (a = 7 OR 0);"),
+        generate("SELECT NOT NOT (a OR 0);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(not (or_(&User::a, 0))));",
+                              "auto rows = storage.select(not (or_(0, 0)));",
+                              "auto rows = storage.select(as_optional(not (or_(nullptr, 0))));",
+                              "auto rows = storage.select(as_optional(not (or_(nullptr, 1))));",
+                              "auto rows = storage.select(not (or_(\"a\", 0)));",
+                              "auto rows = storage.select(as_optional(not (c(&User::a) == 7 or 0)));",
+                              "auto rows = storage.select(as_optional(not cast<int64_t>(not (or_(&User::a, 0)))));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"0", "1", "NULL", "0", "1", "0", "1"});
+}
+
+// A concatenation under a NOT is delimited with a CAST to REAL, and REAL is the only type that
+// reproduces what SQLite answers: a concatenation gives TEXT (or NULL), and SQLite reads the truth
+// of a text value through its real value, so `NOT ('0' || '.5')` is 0 where
+// `NOT CAST('0' || '.5' AS INTEGER)` is 1. Expected values checked against sqlite3 3.51 and the
+// linked libsqlite3 3.45.1 over `users(a TEXT)` holding one row with a = '0'; the two agree on
+// every one of 2032 text values for `NOT x` against `NOT CAST(x AS REAL)`.
+TEST_CASE("runtime: a NOT over a concatenation returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a || '.5');"),
+        generate("SELECT NOT (a || '');"),
+        generate("SELECT NOT (a || '1');"),
+        generate("SELECT NOT ('abc' || 'd');"),
+        generate("SELECT NOT ('1' || '2');"),
+        generate("SELECT NOT (NULL || 'x');"),
+        generate("SELECT NOT (a || 'e-400');"),
+        generate("SELECT NOT ((a IS NULL) || '5');"),
+        generate("SELECT NOT NOT (a || '.5');"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \".5\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"1\")));",
+                "auto rows = storage.select(not cast<double>(c(\"abc\") || \"d\"));",
+                "auto rows = storage.select(not cast<double>(c(\"1\") || \"2\"));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(nullptr) || \"x\")));",
+                "auto rows = storage.select(as_optional(not cast<double>(c(&User::a) || \"e-400\")));",
+                "auto rows = storage.select(not cast<double>(cast<int64_t>(is_null(&User::a)) || \"5\"));",
+                "auto rows = storage.select(as_optional(not cast<int64_t>(not cast<double>(c(&User::a) || "
+                "\".5\"))));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", "\"0\"") ==
+            std::vector<std::string>{"0", "1", "0", "1", "0", "NULL", "1", "0", "1"});
+}
+
+// sqlite_orm types a BETWEEN, an IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for,
+// and a call of a built-in function the return type that function declares, so a NULL row reached
+// the caller as false / "" / 0 — silently, with the serialized SQL right. `as_optional` keeps the
+// SQL and widens the type. Both expected rows checked against sqlite3 3.51 over `users(a INTEGER)`
+// holding one row, NULL first and 7 second; on master the NULL row reads back as 0, 0, 0, 0, 0,
+// "", 0, "", 0. The `hex` column is the counter-check: SQLite answers `hex(NULL)` with the empty
+// text rather than NULL, so it is not widened and reads back empty either way.
+TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function call reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a BETWEEN 1 AND 9;"),
+        generate("SELECT a NOT BETWEEN 1 AND 9;"),
+        generate("SELECT a IN (1, 7);"),
+        generate("SELECT a NOT IN (1, 7);"),
+        generate("SELECT a LIKE 'x';"),
+        generate("SELECT CAST(a AS TEXT);"),
+        generate("SELECT length(a);"),
+        generate("SELECT upper(a);"),
+        generate("SELECT avg(a);"),
+        generate("SELECT hex(a);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(between(&User::a, 1, 9)));",
+                              "auto rows = storage.select(as_optional(!between(&User::a, 1, 9)));",
+                              "auto rows = storage.select(as_optional(in(&User::a, {1, 7})));",
+                              "auto rows = storage.select(as_optional(not_in(&User::a, {1, 7})));",
+                              "auto rows = storage.select(as_optional(like(&User::a, \"x\")));",
+                              "auto rows = storage.select(as_optional(cast<std::string>(&User::a)));",
+                              "auto rows = storage.select(as_optional(length(&User::a)));",
+                              "auto rows = storage.select(as_optional(upper(&User::a)));",
+                              "auto rows = storage.select(as_optional(avg(&User::a)));",
+                              "auto rows = storage.select(hex(&User::a));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", ""});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"1", "0", "1", "0", "0", "7", "1", "7", "7", "37"});
+}
+
+// Most built-ins answer NULL over arguments that hold none, and sqlite_orm types the call by the
+// return type the function declares, so the row reached the caller as 0 / "" — and an operator over
+// such a call is typed by the operator alone and lost the NULL the same way. Every value here is
+// what libsqlite3 3.45.1 answers, the version this project links; before the widening the NULL rows
+// read back as 0, "", 0, "", 0, 0. The last two columns are the counter-check: `upper` and `length`
+// answer NULL for no reason other than a NULL argument, so a spelled-out argument leaves them plain
+// and they read back as they always did.
+// A `||` over a call is left to the codegen cases: sqlite_orm hands a built-in call back as a
+// `builtin_function_t` rather than a `builtin_function_call` on a compiler its C++20 built-in path
+// is off for, and that type is not an operator argument, so `date("bogus") || "x"` does not compile
+// with Apple clang whether it is widened or not. That gap is master's and has its own card; the
+// widening it would exercise is the same one `nullif(1, 1) + 1` and `unicode('') + 1` exercise here.
+TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT nullif(1, 1) + 1;"),
+        generate("SELECT date('bogus');"),
+        generate("SELECT julianday('bogus');"),
+        generate("SELECT strftime('%Y', 'bogus');"),
+        generate("SELECT unicode('');"),
+        generate("SELECT unicode('') + 1;"),
+        generate("SELECT upper('a');"),
+        generate("SELECT length('x');"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(nullif(1, 1) + 1));",
+                              "auto rows = storage.select(as_optional(date(\"bogus\")));",
+                              "auto rows = storage.select(as_optional(julianday(\"bogus\")));",
+                              "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));",
+                              "auto rows = storage.select(as_optional(unicode(\"\")));",
+                              "auto rows = storage.select(as_optional(unicode(\"\") + 1));",
+                              "auto rows = storage.select(upper(\"a\"));",
+                              "auto rows = storage.select(length(\"x\"));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "A", "1"});
 }
 
 // A unary plus is dropped, so a result column under one is read back exactly the way the bare

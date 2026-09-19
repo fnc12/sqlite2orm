@@ -13,11 +13,16 @@ namespace sqlite2orm {
         auto inner = this->tryCodegenCompoundSelectSubexpression(compoundNode);
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if(inner.code.empty()) {
-            compoundWarnings.insert(compoundWarnings.begin(),
-                                    "compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
-                                    "codegen");
-            return CodeGenResult{"/* compound SELECT */", std::move(inner.decisionPoints),
-                                 std::move(compoundWarnings), {}, std::move(inner.comments)};
+            auto placeholder = unsupportedPlaceholder("compound SELECT",
+                                                      "compound SELECT (UNION / INTERSECT / EXCEPT) is not "
+                                                      "mapped to sqlite_orm codegen",
+                                                      compoundNode);
+            placeholder.decisionPoints = std::move(inner.decisionPoints);
+            placeholder.warnings.insert(placeholder.warnings.end(),
+                                        std::make_move_iterator(compoundWarnings.begin()),
+                                        std::make_move_iterator(compoundWarnings.end()));
+            placeholder.comments = std::move(inner.comments);
+            return placeholder;
         }
         return CodeGenResult{"auto " + this->context.statementVariableName("rows") + " = storage.select(" +
                                  inner.code + ");",
@@ -35,9 +40,13 @@ namespace sqlite2orm {
         this->context.withOuterSelect = false;
         for(const auto& fromItem : selectNode.fromClause) {
             if(fromItem.table.derivedSelect) {
-                selectWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
-                return CodeGenResult{"/* SELECT with derived FROM */", std::move(selectDecisionPoints),
-                                     std::move(selectWarnings), {}, std::move(selectComments)};
+                CodeGenResult carried;
+                carried.decisionPoints = std::move(selectDecisionPoints);
+                carried.warnings = std::move(selectWarnings);
+                carried.comments = std::move(selectComments);
+                return unsupportedPlaceholder("SELECT with derived FROM",
+                                              "subselect in FROM is not supported in sqlite_orm codegen",
+                                              *fromItem.table.derivedSelect, std::move(carried));
             }
         }
         this->context.fromTableAliasToStructName.clear();
@@ -181,6 +190,18 @@ namespace sqlite2orm {
             // truncating the REAL they answer with. Warnings dedupe by message, so several columns
             // computed with the same operator report once, anchored at the first of them.
             auto resultColumnCode = [&](const SelectColumn& column) -> std::string {
+                if(!column.expression) {
+                    // A bare `*` standing next to other result columns: SQLite runs it, and the
+                    // parser leaves it as a column with no expression of its own, so the whole
+                    // SELECT is what the warning underlines.
+                    auto starPlaceholder =
+                        unsupportedPlaceholder("* among other result columns",
+                                               "a `*` result column next to other result columns is not "
+                                               "mapped to sqlite_orm codegen",
+                                               selectNode);
+                    appendUniqueWarnings(selectWarnings, starPlaceholder.warnings);
+                    return starPlaceholder.code;
+                }
                 auto colCode = expressionCode(*column.expression);
                 if(selectResultNeedsIntegerCast(*column.expression)) {
                     colCode = "cast<int64_t>(" + colCode + ")";
@@ -754,7 +775,25 @@ namespace sqlite2orm {
                                                 : this->context.structName;
             columnPart = "asterisk<" + subStarRow + ">()";
         } else {
+            // `asterisk<T>()` is the form for a result list that is a `*` and nothing else, so a
+            // `*` standing next to other columns leaves the subquery unmapped; the caller places
+            // the placeholder and underlines the subquery it stands for.
+            for(const auto& column : selectNode.columns) {
+                if(!column.expression) {
+                    subWarnings.push_back(
+                        sourceSpanWarning("a `*` result column next to other result columns is not mapped "
+                                          "to sqlite_orm select(...)",
+                                          selectNode));
+                    return CodeGenResult{{}, std::move(subDecisionPoints), std::move(subWarnings)};
+                }
+            }
             if(selectNode.distinct) {
+                // A trigger's WHEN clause is default-constructed by sqlite_orm, so a subquery
+                // standing in one only compiles while every clause it carries has a default
+                // constructor. `distinct_t`, `where_t`, `order_by_t` and a join that carries an
+                // `on(...)` or a `using_(...)` declare a constructor and no default one; `from_t`,
+                // `limit_t`, a cross or natural join and a named window hold nothing and do.
+                this->context.recordFormWithoutDefaultConstructor("DISTINCT");
                 if(selectNode.columns.size() == 1) {
                     columnPart = "distinct(" +
                                  colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression)) + ")";
@@ -890,10 +929,16 @@ namespace sqlite2orm {
                 break;
             }
             }
+            if(joinItem.leadingJoin != JoinKind::crossJoin &&
+               joinItem.leadingJoin != JoinKind::naturalInnerJoin &&
+               joinItem.leadingJoin != JoinKind::naturalLeftJoin) {
+                this->context.recordFormWithoutDefaultConstructor("JOIN");
+            }
             tailParts.push_back(std::move(joinCode));
         }
 
         if(selectNode.whereClause) {
+            this->context.recordFormWithoutDefaultConstructor("WHERE");
             tailParts.push_back("where(" + expressionCode(*selectNode.whereClause) + ")");
         }
 
@@ -910,6 +955,7 @@ namespace sqlite2orm {
         }
 
         if(!selectNode.orderBy.empty()) {
+            this->context.recordFormWithoutDefaultConstructor("ORDER BY");
             auto formatSubOrderTerm = [&](const OrderByTerm& term) -> std::string {
                 std::string orderCode = "order_by(" + expressionCode(*term.expression) + ")";
                 if(term.direction == SortDirection::asc) {
@@ -995,6 +1041,7 @@ namespace sqlite2orm {
                 return CodeGenResult{
                     {}, std::move(accumulated.decisionPoints), std::move(accumulated.warnings)};
             }
+            this->context.recordFormWithoutDefaultConstructor("a compound SELECT");
             accumulated.code = std::string(compoundSelectApi(compoundNode.operators.at(operatorIndex))) + "(" +
                                accumulated.code + ", " + nextArm.code + ")";
         }

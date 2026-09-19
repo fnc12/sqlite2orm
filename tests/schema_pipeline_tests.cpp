@@ -62,6 +62,19 @@ namespace {
         REQUIRE(exitCode == 0);
     }
 
+    /**
+     *  One `sqlite_master` row, run through the pipeline as `processSqliteSchema` would run it.
+     *  A CREATE VIRTUAL TABLE only reaches a database when its module is compiled into the
+     *  sqlite3 the tests link, and which modules those are differs per platform, so the row that
+     *  SQLite would have stored is handed to the header generator directly.
+     */
+    [[nodiscard]] SchemaStatementResult masterRow(std::string type, std::string name, std::string sql) {
+        SchemaStatementResult statement;
+        statement.meta = SchemaStatementMeta{std::move(type), name, name, sql};
+        statement.pipeline = processSql(sql);
+        return statement;
+    }
+
     void execSql(const std::filesystem::path& dbPath, std::string_view sql) {
         sqlite3* db = nullptr;
         REQUIRE(sqlite3_open(dbPath.string().c_str(), &db) == SQLITE_OK);
@@ -813,6 +826,133 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
                     joinGeneratedCode(results));
 }
 
+// A trigger's WHEN expression lives in an `optional_container`, which default-constructs it, so
+// only a WHEN clause whose every sqlite_orm type has a default constructor compiles. These are the
+// forms codegen claims are safe, and the claim is worth nothing unless a compiler agrees: before
+// the check existed, `WHEN NEW.a IS NULL` and `WHEN NOT NEW.a` generated silently and failed here
+// with `use of deleted function optional_container<...>::optional_container()`. A count(*) with a
+// FILTER or an OVER is the other side of that: `count_asterisk_t::filter()` unwraps the `where_t`
+// and `over_t` is an aggregate, so those compile and warning about them would be wrong. An OR is
+// here because it holds only while it is spelled `or_(...)`: the `||` token it used to be generated
+// with reads as a concatenation, and `conc_t` has no default constructor. The window functions are
+// the same story once more: each is generated as an aggregate of its own — `row_number_t`, `lag_t`
+// and the rest — and not as the `builtin_function_t` every other function call comes out, and so is
+// a MATCH written as a call. SQLite stores all ten triggers below and fires every one of them but
+// the MATCH, which it stores and then refuses to run, an FTS function being direct-only — exactly
+// as it does for the MATCH operator (checked against the linked sqlite3 3.45.1 and against 3.51.0).
+TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile") {
+    const auto results = processMultiSql(
+        "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
+        "CREATE TRIGGER tr_cmp AFTER INSERT ON t WHEN NEW.a = 0 BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_and AFTER INSERT ON t WHEN NEW.a > 0 AND NEW.b = 'x' BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_or AFTER INSERT ON t WHEN NEW.a OR NEW.b BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_cast AFTER INSERT ON t WHEN CAST(NEW.a AS INTEGER) > 0 BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_sub AFTER INSERT ON t WHEN NEW.a = (SELECT a FROM t) BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_filter AFTER INSERT ON t WHEN NEW.a = (SELECT count(*) FILTER (WHERE a > 0) FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_over AFTER INSERT ON t WHEN NEW.a = (SELECT count(*) OVER (PARTITION BY b ROWS "
+        "BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t) BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_row_number AFTER INSERT ON t WHEN NEW.a = (SELECT row_number() OVER () FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_lag AFTER INSERT ON t WHEN NEW.a = (SELECT lag(a, 1, 0) OVER (PARTITION BY b) FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_match AFTER INSERT ON t WHEN match(NEW.b, 'x') BEGIN DELETE FROM t; END;");
+
+    for(const auto& result : results) {
+        REQUIRE(result.codegen.warnings.empty());
+    }
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
+// `make_index` deduces the table an index is made for from its first argument, and an expression
+// names none, so an index over one spells the table out. Before it did, every header of a database
+// holding an index over an expression — `CREATE INDEX i_expr ON t(a + 1)`, which SQLite takes and
+// stores — failed to compile as a whole: `no matching function for call to make_index(const
+// char[7], indexed_column_t<...>)`. `make_unique_index` has no parameter to spell it out with, so a
+// UNIQUE index over an expression is left out of the storage instead. Checked against sqlite3 3.51.0.
+TEST_CASE("generateSqliteSchemaHeader: an index over an expression compiles") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT);"
+            "CREATE INDEX i_expr ON t (a + 1);"
+            "CREATE UNIQUE INDEX u_expr ON t (b || 'x');"
+            "CREATE INDEX i_col ON t (b);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == std::string("#pragma once\n\n"
+                                       "#include <sqlite_orm/sqlite_orm.h>\n"
+                                       "#include <cstdint>\n"
+                                       "#include <optional>\n"
+                                       "#include <string>\n"
+                                       "#include <vector>\n\n"
+                                       "struct T {\n"
+                                       "    int64_t a = 0;\n"
+                                       "    std::optional<std::string> b;\n"
+                                       "};\n\n\n"
+                                       "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                                       "    using namespace sqlite_orm;\n"
+                                       "    return make_storage(db_path,\n"
+                                       "        make_table(\"t\",\n"
+                                       "        make_column(\"a\", &T::a, primary_key()),\n"
+                                       "        make_column(\"b\", &T::b)),\n"
+                                       "        make_index(\"i_col\", indexed_column(&T::b)),\n"
+                                       "        make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"
+                                       "}\n"));
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                "sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                "from serialized output",
+                "sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                "from serialized output",
+                "sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                "from serialized output",
+                "UNIQUE index u_expr starts with an expression: sqlite_orm deduces the table an index is made for "
+                "from its first indexed column, and make_unique_index has no form that spells that table out, so "
+                "the index is not generated",
+                "CREATE INDEX `u_expr` is not merged into make_storage()"});
+
+    requireCompiles(header.code);
+}
+
+// The snippet path joins what it generated into one make_storage(), and an index is a bare argument
+// of it whatever form the generator picked for it, so what tells the two apart is the statement and
+// not the text of its code.
+TEST_CASE("processMultiSql: the snippet of a batch with an index over an expression compiles") {
+    const auto results = processMultiSql(
+        "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
+        "CREATE INDEX i_expr ON t(a + 1);\n"
+        "CREATE UNIQUE INDEX u_expr ON t(b || 'x');");
+
+    REQUIRE(joinGeneratedCode(results) == std::string("struct T {\n"
+                                                      "    int64_t a = 0;\n"
+                                                      "    std::optional<std::string> b;\n"
+                                                      "};\n\n"
+                                                      "auto storage = make_storage(\"\",\n"
+                                                      "    make_table(\"t\",\n"
+                                                      "        make_column(\"a\", &T::a, primary_key()),\n"
+                                                      "        make_column(\"b\", &T::b)),\n"
+                                                      "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"));
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view compiles") {
     const auto results = processMultiSql(
         "CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"
@@ -827,4 +967,163 @@ TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view comp
                     "#include <vector>\n"
                     "using namespace sqlite_orm;\n" +
                     joinGeneratedCode(results));
+}
+
+// A statement the pipeline refuses is left out of the header now instead of taking the header with
+// it, so the names it created have to be left out too: the trigger on `bad_v` and the view on
+// `bad_t` would otherwise reach a compiler as `.on<BadV>()` and `&BadT::a` with no struct behind
+// them, at a header that looks fine as text. SQLite accepts every statement below — it stores a
+// view body and a CHECK without compiling them — so this whole schema comes back from sqlite_master.
+TEST_CASE("generateSqliteSchemaHeader: a schema with a statement that did not generate still compiles") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok_t (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE bad_t (a INTEGER CHECK (a IS NOT 1));"
+            "CREATE VIEW bad_v AS SELECT +id AS id FROM ok_t;"
+            "CREATE VIEW on_bad_t AS SELECT a FROM bad_t;"
+            "CREATE TRIGGER on_bad_v INSTEAD OF INSERT ON bad_v BEGIN DELETE FROM ok_t; END;");
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE_FALSE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    requireCompiles(header.code);
+}
+
+// A view SQLite keeps but sqlite_orm has no spelling for is left out of the storage, and a foreign
+// key into it would name a struct the header never declares — `foreign_key(&T::r).references(&V1::a)`
+// with no `struct V1`, at exit 0. Which views are left out is only known after the tables have been
+// generated, so the whole header is generated again once that name is in. SQLite itself takes this
+// schema: a foreign key into a view is created without complaint and only `PRAGMA foreign_keys=ON`
+// plus an INSERT reports `foreign key mismatch - "t" referencing "v1"`. Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a foreign key into a view that is left out goes with it") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE ok1 (a INTEGER PRIMARY KEY);"
+            "CREATE VIEW v1 AS SELECT a FROM ok1 GROUP BY a HAVING count(*) > 1;"
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, r INTEGER REFERENCES v1(a));");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Ok1 {\n"
+            "    int64_t a = 0;\n"
+            "};\n\n"
+            "struct T {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> r;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"ok1\",\n"
+            "        make_column(\"a\", &Ok1::a, primary_key())),\n"
+            "        make_table(\"t\",\n"
+            "        make_column(\"id\", &T::id, primary_key()),\n"
+            "        make_column(\"r\", &T::r)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"foreign key on column 'r' references v1, which is not generated, so the generated "
+                 "table has no foreign_key()"},
+                {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"},
+                {"CREATE VIEW v1: SELECT is not supported for sqlite_orm code generation"},
+                {"CREATE VIEW `v1` is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// A virtual table is never merged into make_storage() — sqlite_orm spells one `make_virtual_table`,
+// which is not a storage argument — so the header declares no struct for it, and a foreign key into
+// it or a view over it used to name `Ft` anyway, at exit 0. Its name is marked before the first
+// table is generated, because a virtual table is left out whatever it generates.
+TEST_CASE("generateSqliteSchemaHeader: nothing that names a virtual table is merged into the storage") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "ft", "CREATE VIRTUAL TABLE ft USING fts5(a)"));
+    schema.statements.push_back(
+        masterRow("table", "tv", "CREATE TABLE tv(id INTEGER PRIMARY KEY, r INTEGER REFERENCES ft(a))"));
+    schema.statements.push_back(masterRow("view", "vv", "CREATE VIEW vv AS SELECT a FROM ft"));
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct Tv {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> r;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"tv\",\n"
+            "        make_column(\"id\", &Tv::id, primary_key()),\n"
+            "        make_column(\"r\", &Tv::r)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"foreign key on column 'r' references ft, which is not generated, so the generated "
+                 "table has no foreign_key()"},
+                {"CREATE VIRTUAL TABLE `ft` is not merged into make_storage(); run sqlite2orm on its "
+                 "SQL separately"},
+                {"`vv` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// A trigger body statement with no sqlite_orm form is reachable from an ordinary database, not only
+// from `-e`: SQLite stores `SELECT *, a FROM t` as a trigger step and runs it, while sqlite_orm's
+// `asterisk<T>()` is the form for a result list that is a `*` and nothing else. The step that
+// cannot be generated is a placeholder inside `begin(...)`, so the reader of the header sees which
+// step did not come through instead of a body silently short of one. Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a trigger step with no sqlite_orm form is placeheld in the body") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER, b TEXT);"
+            "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct T {\n"
+            "    std::optional<int64_t> a;\n"
+            "    std::optional<std::string> b;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a),\n"
+            "        make_column(\"b\", &T::b)),\n"
+            "        make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
+            "/* trigger step not mapped to sqlite_orm */)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"a `*` result column next to other result columns is not mapped to sqlite_orm select(...)",
+                 SourceLocation{1, 60}, 18},
+                {"a statement in the trigger body is not mapped to sqlite_orm codegen", SourceLocation{1, 60}, 18}});
+    REQUIRE(header.errors.empty());
 }

@@ -14,7 +14,8 @@ namespace sqlite2orm {
         /**
          *  The C++ field types that hold whole numbers only, so a value SQLite keeps a REAL reaches
          *  the database converted. `bool`, which a BOOLEAN column maps to, holds no whole number
-         *  besides 0 and 1 and belongs here all the more.
+         *  besides 0 and 1 and belongs here all the more; `boolFieldCarriesValue` rules on the
+         *  range of that field, this predicate on the storage class alone.
          */
         bool isWholeNumberFieldType(std::string_view cppType) {
             return cppType == "int64_t" || cppType == "int" || cppType == "bool";
@@ -27,8 +28,8 @@ namespace sqlite2orm {
          *  ch(x); INSERT INTO ch VALUES (1)` generated `Ch{1}` for a `std::vector<char>` field,
          *  which does not compile — and an expression, whose value only SQLite knows, initializes
          *  no field at all. A field of the right storage class still has a range: a braced
-         *  initializer refuses a whole number past the int64 range, and a `double` one refuses
-         *  every integer constant it would round.
+         *  initializer refuses a whole number past the int64 range, a `double` one refuses every
+         *  integer constant it would round, and a `bool` one holds no number besides 0 and 1.
          */
         bool objectFormCarriesValue(const SourceTableColumn& column, const AstNode& value) {
             const ValueStorageClass fieldClass = fieldTypeStorageClass(column.cppType);
@@ -43,6 +44,9 @@ namespace sqlite2orm {
             }
             if(storageClass != fieldClass) {
                 return false;
+            }
+            if(column.cppType == "bool") {
+                return boolFieldCarriesValue(value);
             }
             if(isWholeNumberFieldType(column.cppType)) {
                 return integerFieldCarriesValue(value);
@@ -208,8 +212,13 @@ namespace sqlite2orm {
                        std::make_move_iterator(sub.decisionPoints.end()));
             if(sub.code.empty()) {
                 this->context.structName = savedStruct;
-                return CodeGenResult{"/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */",
-                                     std::move(dps), std::move(warnings)};
+                CodeGenResult carried;
+                carried.decisionPoints = std::move(dps);
+                carried.warnings = std::move(warnings);
+                return unsupportedPlaceholder(
+                    "INSERT ... SELECT: inner SELECT not mapped to sqlite_orm",
+                    "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
+                    *insertNode.selectStatement, std::move(carried));
             }
             if(!insertNode.columnNames.empty()) {
                 std::string cols = "columns(";
@@ -406,11 +415,31 @@ namespace sqlite2orm {
             }
         } scope{&this->context, subjectTableStruct};
 
+        // `make_trigger(...).begin(step, step)` joins the steps with commas, so a step answering
+        // with no code at all would leave a dangling comma behind — and, as the only step of a
+        // trigger, would leave `begin()` installing a trigger that does less than the schema it was
+        // read from, with nothing in the generated code saying so. A step is a placeholder site
+        // like every other one: the placeholder stands where the step would have, and its warning
+        // names the SQL to underline.
+        auto stepOrPlaceholder = [&statement](CodeGenResult step) {
+            if(!step.code.empty()) {
+                return step;
+            }
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(step.decisionPoints);
+            carried.warnings = std::move(step.warnings);
+            carried.comments = std::move(step.comments);
+            return unsupportedPlaceholder("trigger step not mapped to sqlite_orm",
+                                          "a statement in the trigger body is not mapped to sqlite_orm codegen",
+                                          statement, std::move(carried));
+        };
+
         if(auto* selectNode = dynamic_cast<const SelectNode*>(&statement)) {
-            return this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode);
+            return stepOrPlaceholder(this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode));
         }
         if(auto* compoundSelectNode = dynamic_cast<const CompoundSelectNode*>(&statement)) {
-            return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundSelectNode);
+            return stepOrPlaceholder(
+                this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundSelectNode));
         }
         auto outer = this->coordinator.generateNode(statement);
         std::string code = outer.code;
@@ -427,7 +456,8 @@ namespace sqlite2orm {
         while(!code.empty() && std::isspace(static_cast<unsigned char>(code.back()))) {
             code.pop_back();
         }
-        return CodeGenResult{std::move(code), std::move(outer.decisionPoints), std::move(outer.warnings)};
+        return stepOrPlaceholder(
+            CodeGenResult{std::move(code), std::move(outer.decisionPoints), std::move(outer.warnings)});
     }
 
 }  // namespace sqlite2orm

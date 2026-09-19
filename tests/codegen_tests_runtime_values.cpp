@@ -1094,6 +1094,67 @@ TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments read
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "A", "1"});
 }
 
+// A unary plus is dropped, so a result column under one is read back exactly the way the bare
+// operand is: the same code, and so the same value and the same NULL. sqlite3 3.51 over
+// `users(a INTEGER)` answers `+a` and `+upper(a)` with 7 and '7' on the row a = 7, and with NULL
+// on the row a = NULL.
+TEST_CASE("runtime: a result column under a unary plus reads back as the bare operand does") {
+    const std::vector<std::string> statements{
+        generate("SELECT +a;"),
+        generate("SELECT a;"),
+        generate("SELECT +upper(a);"),
+        generate("SELECT upper(a);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(&User::a);",
+                              "auto rows = storage.select(&User::a);",
+                              "auto rows = storage.select(as_optional(upper(&User::a)));",
+                              "auto rows = storage.select(as_optional(upper(&User::a)));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"7", "7", "7", "7"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL"});
+}
+
+// `operator!` keeps the `c(...)` its operand carries, and the walk that collects the tables a
+// statement reads stops at that wrapper, so `storage.select(not c(&User::a))` runs as
+// `SELECT NOT "users"."a"` with no FROM clause at all and throws. A column under a NOT is
+// generated as `column<T>(&T::a)` for that reason, and a unary plus between the two has to pass
+// the request on rather than reset it. sqlite3 3.51 over `users(a INTEGER)` holding 7 answers both
+// `NOT a` and `NOT +a` with 0.
+TEST_CASE("runtime: a unary plus under a NOT keeps the column form the table walk reads") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT a;"),
+        generate("SELECT NOT +a;"),
+        generate("SELECT NOT + +a;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(not column<User>(&User::a)));",
+                              "auto rows = storage.select(as_optional(not column<User>(&User::a)));",
+                              "auto rows = storage.select(as_optional(not column<User>(&User::a)));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "0", "0"});
+}
+
+// SQLite's parser reads the sign of a minus through a unary plus, so `-+9223372036854775807` is
+// the INTEGER `-9223372036854775807` rather than a subtraction computed in a double, which would
+// hand the caller -9223372036854775808. sqlite3 3.51 answers `-+1` with -1 and
+// `-+9223372036854775807` with -9223372036854775807.
+TEST_CASE("runtime: a sign folded through a unary plus keeps the whole int64") {
+    const std::vector<std::string> statements{
+        generate("SELECT -+1;"),
+        generate("SELECT -+9223372036854775807;"),
+        generate("SELECT -9223372036854775807;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(-1);",
+                              "auto rows = storage.select(-9223372036854775807);",
+                              "auto rows = storage.select(-9223372036854775807);",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"-1", "-9223372036854775807", "-9223372036854775807"});
+}
+
 // A NaN is the one value SQLite has no storage class for, so a computation that runs into one is
 // stored as NULL, and `+`, `-` and `*` answer NULL over operands that are none. sqlite_orm types
 // them `double`, so the first four rows reached the caller as 0. Every value here is what

@@ -960,12 +960,16 @@ TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view comp
 // `bad_t` would otherwise reach a compiler as `.on<BadV>()` and `&BadT::a` with no struct behind
 // them, at a header that looks fine as text. SQLite accepts every statement below — it stores a
 // view body and a CHECK without compiling them — so this whole schema comes back from sqlite_master.
+// `bad_v` selects the one literal SQLite itself refuses to compile, `hex literal too big`, so that
+// the view stays ungeneratable: a view that does generate is C++26 reflection code by design
+// (`make_view<T>` over a `struct [[= "…"_orm_name]]`, carrying its own codegen warning) and no
+// fixture here can be compiled at this project's standard.
 TEST_CASE("generateSqliteSchemaHeader: a schema with a statement that did not generate still compiles") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path,
             "CREATE TABLE ok_t (id INTEGER PRIMARY KEY);"
             "CREATE TABLE bad_t (a INTEGER CHECK (a IS NOT 1));"
-            "CREATE VIEW bad_v AS SELECT +id AS id FROM ok_t;"
+            "CREATE VIEW bad_v AS SELECT -0x8000000000000000 AS id FROM ok_t;"
             "CREATE VIEW on_bad_t AS SELECT a FROM bad_t;"
             "CREATE TRIGGER on_bad_v INSTEAD OF INSERT ON bad_v BEGIN DELETE FROM ok_t; END;");
     SqliteSchemaReader reader(file.path.string());

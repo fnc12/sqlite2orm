@@ -1311,12 +1311,14 @@ namespace sqlite2orm {
         return operandNeedsCallSpelling(*binaryOperatorNode.lhs) || operandNeedsCallSpelling(*binaryOperatorNode.rhs);
     }
 
-    NegationForm negationFormFor(const AstNode& operand) {
+    NegationForm negationFormFor(const AstNode& operandAsWritten) {
         // SQLite's parser folds the sign into the literal the minus stands directly over — through
-        // parentheses, but NOT through a COLLATE: `-(0x8000000000000000)` is the `hex literal too
-        // big` it refuses, while `-(0x8000000000000000 COLLATE BINARY)` is a negation it computes
-        // (9.22337203685478e+18, checked against sqlite3 3.51). So the literal a sign is folded
-        // into is the operand as written, and a COLLATE over one keeps the subtraction form.
+        // parentheses and through a unary plus, but NOT through a COLLATE: `-(0x8000000000000000)`
+        // and `-+0x8000000000000000` are both the `hex literal too big` it refuses, while
+        // `-(0x8000000000000000 COLLATE BINARY)` is a negation it computes (9.22337203685478e+18,
+        // checked against sqlite3 3.51). So the literal a sign is folded into is the operand with
+        // the pluses taken off, and a COLLATE over one keeps the subtraction form.
+        const AstNode& operand = withoutUnaryPluses(operandAsWritten);
         if (isNumericLiteral(operand)) {
             return numericLiteralRejectsFoldedSign(operand) ? NegationForm::zeroMinusSubtraction
                                                             : NegationForm::foldedIntoConstant;
@@ -2134,6 +2136,36 @@ namespace sqlite2orm {
             return expressionMayBeNull(generatedNode);
         }
         return false;
+    }
+
+    std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode) {
+        auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
+        if (!unaryOp || unaryOp->unaryOperator != UnaryOperator::plus) {
+            return std::nullopt;
+        }
+        // A second plus and a COLLATE stand between the plus and the column without putting an
+        // expression of their own in the way — sqlite3 3.51 answers `+(a COLLATE BINARY) = 1` the
+        // way it answers `+a = 1` — so the column under them is the one whose affinity is lost. A
+        // table qualifier changes nothing: `+t.a = 1` answers what `+a = 1` does.
+        const AstNode& operandNode = generatedOperandNode(astNode);
+        std::string_view columnName;
+        if (auto* column = dynamic_cast<const ColumnRefNode*>(&operandNode)) {
+            columnName = column->columnName;
+        } else if (auto* qualified = dynamic_cast<const QualifiedColumnRefNode*>(&operandNode)) {
+            columnName = qualified->columnName;
+        } else {
+            return std::nullopt;
+        }
+        std::string message = "unary plus over column `";
+        message += columnName;
+        message += "` is dropped: it takes the column's affinity out of the comparison, and "
+                   "sqlite_orm has no form that does. Where that affinity carries — a TEXT column "
+                   "`t` holding '1' — SQLite answers `t = 1` with 1 and `+t = 1` with 0, while the "
+                   "generated comparison is the one without the plus either way. Whether this "
+                   "column is one of those depends on the affinity it was declared with, which is "
+                   "not read here";
+        // The plus is the token the node is located at, and it is the token that goes missing.
+        return CodegenWarning{std::move(message), unaryOp->location, 1};
     }
 
     std::string sqliteTypeToCpp(std::string_view typeName) {

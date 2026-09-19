@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <clocale>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -1693,14 +1694,27 @@ namespace sqlite2orm {
                 // above is the only one it has; anything else here is not a number at all.
                 return std::nullopt;
             }
+            // `std::strtod` reads the radix character of the current `LC_NUMERIC`, which a host
+            // embedding this library leaves wherever its own startup put it, so the `.` SQLite
+            // spells a literal with is rewritten to whatever that locale expects. Without it a
+            // locale that separates with a comma stops the parse at the `.`, and `1.0e400` reads
+            // back as a finite 1, which is the answer this predicate rests on not getting.
+            const std::string_view radix = std::localeconv()->decimal_point;
             std::string digits;
             digits.reserve(text.size());
             for(char character: text) {
                 // The `_` separators SQLite allows between digits carry no value.
-                if(character != '_') {
+                if(character == '_') {
+                    continue;
+                }
+                if(character == '.') {
+                    digits += radix;
+                } else {
                     digits += character;
                 }
             }
+            // Overflowing to an infinity is `strtod`'s own answer and the one the caller asks
+            // about; a stream extraction would report a failure and the largest finite double.
             return sign * std::strtod(digits.c_str(), nullptr);
         }
 

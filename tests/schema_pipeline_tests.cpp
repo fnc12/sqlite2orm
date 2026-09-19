@@ -838,9 +838,8 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
 // the same story once more: each is generated as an aggregate of its own — `row_number_t`, `lag_t`
 // and the rest — and not as the `builtin_function_t` every other function call comes out, and so is
 // a MATCH written as a call. SQLite stores all ten triggers below and fires every one of them but
-// the MATCH, which it stores and then refuses to run — `unsafe use of MATCH()`, since an FTS
-// function is direct-only — exactly as it does for the MATCH operator (checked against sqlite3
-// 3.51.0).
+// the MATCH, which it stores and then refuses to run, an FTS function being direct-only — exactly
+// as it does for the MATCH operator (checked against the linked sqlite3 3.45.1 and against 3.51.0).
 TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile") {
     const auto results = processMultiSql(
         "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"

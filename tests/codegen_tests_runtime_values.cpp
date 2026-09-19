@@ -966,3 +966,37 @@ TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function c
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
             std::vector<std::string>{"1", "0", "1", "0", "0", "7", "1", "7", "7", "37"});
 }
+
+// Most built-ins answer NULL over arguments that hold none, and sqlite_orm types the call by the
+// return type the function declares, so the row reached the caller as 0 / "" — and an operator over
+// such a call is typed by the operator alone and lost the NULL the same way. Every value here is
+// what libsqlite3 3.45.1 answers, the version this project links; before the widening the NULL rows
+// read back as 0, "", 0, 0, "", 0, 0. The last two columns are the counter-check: `upper` and
+// `length` answer NULL for no reason other than a NULL argument, so a spelled-out argument leaves
+// them plain and they read back as they always did.
+TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT nullif(1, 1) + 1;"),
+        generate("SELECT date('bogus');"),
+        generate("SELECT date('bogus') || 'x';"),
+        generate("SELECT julianday('bogus');"),
+        generate("SELECT strftime('%Y', 'bogus');"),
+        generate("SELECT unicode('');"),
+        generate("SELECT unicode('') + 1;"),
+        generate("SELECT upper('a') || 'x';"),
+        generate("SELECT length('x');"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(nullif(1, 1) + 1));",
+                              "auto rows = storage.select(as_optional(date(\"bogus\")));",
+                              "auto rows = storage.select(as_optional(date(\"bogus\") || \"x\"));",
+                              "auto rows = storage.select(as_optional(julianday(\"bogus\")));",
+                              "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));",
+                              "auto rows = storage.select(as_optional(unicode(\"\")));",
+                              "auto rows = storage.select(as_optional(unicode(\"\") + 1));",
+                              "auto rows = storage.select(upper(\"a\") || \"x\");",
+                              "auto rows = storage.select(length(\"x\"));",
+                          });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "Ax", "1"});
+}

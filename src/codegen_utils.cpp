@@ -1200,27 +1200,37 @@ namespace sqlite2orm {
 
         /**
          *  Whether SQLite answers a call of this built-in function with a value even when an
-         *  argument is NULL. Checked against sqlite3 3.51 over a NULL argument: `hex(NULL)` is the
-         *  empty text, `quote(NULL)` the text 'NULL', `typeof(NULL)` 'null', `char(NULL)` the empty
-         *  text, `printf('%d', NULL)` '0', `json_object('k', NULL)` '{"k":null}', `count(NULL)` 0
-         *  and `total(NULL)` 0.0; the ones taking no argument have nothing to propagate.
+         *  argument is NULL. Checked against libsqlite3 3.45.1 over a NULL argument: `hex(NULL)` is
+         *  the empty text, `quote(NULL)` the text 'NULL', `typeof(NULL)` 'null', `char(NULL)` the
+         *  empty text, `json_object('k', NULL)` '{"k":null}', `json_quote(NULL)` 'null',
+         *  `randomblob(NULL)` and `zeroblob(NULL)` a blob; the ones taking no argument have nothing
+         *  to propagate. The aggregates here answer a value over an empty rowset too: `count` 0,
+         *  `total` 0.0, `json_group_array` '[]' and `json_group_object` '{}'.
          */
         bool sqliteFunctionNeverAnswersNull(std::string_view functionLower) {
             return isOneOfFunctions(functionLower, {"changes", "char", "count", "hex", "json_group_array",
                                                     "json_group_object", "json_object", "json_quote",
-                                                    "last_insert_rowid", "printf", "quote", "random",
+                                                    "last_insert_rowid", "pi", "quote", "random",
                                                     "randomblob", "total", "total_changes", "typeof",
                                                     "zeroblob"});
         }
 
         /**
-         *  Whether SQLite answers this aggregate with NULL over an empty rowset, which it does
-         *  whatever its argument holds: `SELECT avg(a) FROM users` over no rows is NULL, and so is
-         *  `SELECT group_concat(a) FROM users`. (`count` and `total` answer 0 and 0.0 instead, and
-         *  sqlite_orm types `max`, `min` and `sum` nullably on its own.)
+         *  Whether the only way SQLite answers a call of this built-in function with NULL is a NULL
+         *  argument. Every other known function answers NULL over arguments the SQL spells out —
+         *  `nullif(1, 1)`, `date('bogus')`, `unicode('')`, `sign('abc')`, `substr(x'', 1)`,
+         *  `printf('')`, `json_extract('{}', '$.a')`, `sqrt(-1)`, `ln(0)`, `sin('a')` — or, being an
+         *  aggregate, over an empty rowset: `avg`, `group_concat`, `max`, `min` and `sum`. This is
+         *  the list SQLite answered a value for over every non-NULL argument of a 11.7M expression
+         *  corpus run through libsqlite3 3.45.1, the version this project links, which unlike the
+         *  `sqlite3` CLI in the image carries the math functions.
          */
-        bool sqliteAggregateIsNullOverAnEmptyRowset(std::string_view functionLower) {
-            return isOneOfFunctions(functionLower, {"avg", "group_concat"});
+        bool sqliteFunctionOnlyPropagatesANullArgument(std::string_view functionLower) {
+            return isOneOfFunctions(functionLower, {"abs", "coalesce", "glob", "ifnull", "iif", "instr",
+                                                    "json", "json_array", "json_patch", "json_valid",
+                                                    "length", "like", "likelihood", "likely", "lower",
+                                                    "ltrim", "replace", "round", "rtrim", "soundex",
+                                                    "trim", "unlikely", "upper"});
         }
 
         /** Whether any of `nodes`, the absent ones skipped, may be NULL. */
@@ -1244,8 +1254,11 @@ namespace sqlite2orm {
         }
 
         /**
-         *  Whether SQLite can answer a call of `functionCall` with NULL. A built-in either never
-         *  does, answers NULL over an empty rowset, or propagates a NULL argument.
+         *  Whether SQLite can answer a call of `functionCall` with NULL. Only the two lists above
+         *  rule it out; every other built-in answers NULL over arguments that hold none, the same
+         *  way an expression this file does not know does. The two directions do not cost the same:
+         *  a call widened for nothing carries an `std::optional` that is always engaged, while a
+         *  call left narrow hands the caller 0 or the empty string where the row held NULL.
          */
         bool functionCallMayBeNull(const FunctionCallNode& functionCall) {
             const std::string functionLower = toLowerAscii(functionCall.name);
@@ -1257,14 +1270,16 @@ namespace sqlite2orm {
             if(sqliteFunctionNeverAnswersNull(functionLower)) {
                 return false;
             }
-            if(sqliteAggregateIsNullOverAnEmptyRowset(functionLower)) {
+            if(!sqliteFunctionOnlyPropagatesANullArgument(functionLower)) {
                 return true;
             }
             return anyFunctionArgumentMayBeNull(functionCall);
         }
 
         /**
-         *  Whether sqlite_orm already types a call of this built-in function nullably. `abs`, `max`,
+         *  Whether sqlite_orm already types a call of this built-in function nullably. This asks
+         *  what the generated C++ carries back, not what SQLite can answer — that one is
+         *  `expressionMayBeNull` — so a name can belong to both lists. `abs`, `max`,
          *  `min` and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif`,
          *  `likely`, `unlikely` and `likelihood` are declared as the result of an argument, which is
          *  a `std::optional` as soon as that argument is a nullable column. Widening one of those

@@ -295,11 +295,13 @@ namespace sqlite2orm {
 
     /**
      *  Whether SQLite can answer `astNode` with NULL. Conservative: only a node whose value is
-     *  spelled out in the SQL — a literal, or an operator, a predicate, a CAST or a built-in
-     *  function call over such operands — is ruled out, and everything SQLite computes at runtime
-     *  counts as nullable. `/` and `%` count whatever their operands are, because SQLite answers a
-     *  division by zero with NULL rather than an error, and so do the aggregates SQLite answers
-     *  NULL for over an empty rowset.
+     *  spelled out in the SQL — a literal, or an operator, a predicate or a CAST over such operands
+     *  — is ruled out, and everything SQLite computes at runtime counts as nullable. `/` and `%`
+     *  count whatever their operands are, because SQLite answers a division by zero with NULL
+     *  rather than an error. A call is ruled out only for the built-ins that answer NULL for no
+     *  reason other than a NULL argument; every other one — `nullif`, `date`, `unicode`, `sign`,
+     *  `substr`, `printf`, `json_extract`, the math functions, and an aggregate over an empty
+     *  rowset — counts as nullable whatever its arguments hold.
      */
     bool expressionMayBeNull(const AstNode& astNode);
     /**

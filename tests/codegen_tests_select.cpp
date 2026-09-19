@@ -472,7 +472,7 @@ TEST_CASE("codegen: SELECT alias referenced in WHERE and ORDER BY") {
         "ORDER BY i");
     REQUIRE(result ==
         "auto rows = storage.select("
-        "columns(&Marvel::name, as<colalias_i>(instr(&Marvel::abilities, \"o\"))), "
+        "columns(&Marvel::name, as<colalias_i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
         "where(c(get<colalias_i>()) > 0), "
         "order_by(get<colalias_i>()));");
 }
@@ -528,10 +528,11 @@ TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
 
     const std::string mainCode =
         "constexpr orm_column_alias auto i = \"i\"_col;\n"
-        "auto rows = storage.select(columns(&Marvel::name, as<i>(instr(&Marvel::abilities, \"o\"))), "
+        "auto rows = storage.select(columns(&Marvel::name, as<i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
         "where(i > 0), order_by(i));";
     const std::string aliasTagAltCode =
-        "auto rows = storage.select(columns(&Marvel::name, as<colalias_i>(instr(&Marvel::abilities, \"o\"))), "
+        "auto rows = storage.select(columns(&Marvel::name, "
+        "as<colalias_i>(as_optional(instr(&Marvel::abilities, \"o\")))), "
         "where(c(get<colalias_i>()) > 0), order_by(get<colalias_i>()));";
 
     REQUIRE(generateWithPolicy(sql, policy) ==
@@ -735,6 +736,154 @@ TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
             "auto rows = storage.select(cast<int64_t>(is_null(&Users::a)) || \"x\");");
     REQUIRE(generate("SELECT ~(a IS NULL) FROM users;") ==
             "auto rows = storage.select(cast<int64_t>(~(is_null(&Users::a))));");
+}
+
+// sqlite_orm types a BETWEEN, an IN, a LIKE and a GLOB — and the `negated_condition_t` a NOT form
+// comes out as — `bool`, a CAST the very type the CAST asks for, and a call of a built-in function
+// the return type that function declares. None of those holds a NULL, so a NULL row reached the
+// caller as false / "" / 0 where sqlite3 3.51 answers NULL. Values checked in "runtime: a result
+// column typed by a predicate, a CAST or a function call reads the NULL back".
+TEST_CASE("codegen: a result column typed by a predicate, a CAST or a function call is widened") {
+    REQUIRE(generate("SELECT a BETWEEN 1 AND 9 FROM users;") ==
+            "auto rows = storage.select(as_optional(between(&Users::a, 1, 9)));");
+    REQUIRE(generate("SELECT a NOT BETWEEN 1 AND 9 FROM users;") ==
+            "auto rows = storage.select(as_optional(!between(&Users::a, 1, 9)));");
+    REQUIRE(generate("SELECT a IN (1, 7) FROM users;") ==
+            "auto rows = storage.select(as_optional(in(&Users::a, {1, 7})));");
+    REQUIRE(generate("SELECT a NOT IN (1, 7) FROM users;") ==
+            "auto rows = storage.select(as_optional(not_in(&Users::a, {1, 7})));");
+    // What a subquery holds is not spelled out in the SQL, so the right-hand side alone makes the
+    // test nullable: `1 IN (SELECT a)` is NULL over a NULL row.
+    REQUIRE(generate("SELECT a IN (SELECT 1) FROM users;") ==
+            "auto rows = storage.select(as_optional(in(&Users::a, select(1))));");
+    REQUIRE(generate("SELECT a LIKE 'x' FROM users;") ==
+            "auto rows = storage.select(as_optional(like(&Users::a, \"x\")));");
+    REQUIRE(generate("SELECT a GLOB 'x' FROM users;") ==
+            "auto rows = storage.select(as_optional(glob(&Users::a, \"x\")));");
+    REQUIRE(generate("SELECT CAST(a AS TEXT) FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<std::string>(&Users::a)));");
+    REQUIRE(generate("SELECT CAST(a AS INTEGER) FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(&Users::a)));");
+    REQUIRE(generate("SELECT length(a) FROM users;") ==
+            "auto rows = storage.select(as_optional(length(&Users::a)));");
+    REQUIRE(generate("SELECT upper(a) FROM users;") ==
+            "auto rows = storage.select(as_optional(upper(&Users::a)));");
+    // An aggregate SQLite answers NULL for over an empty rowset is widened whatever its argument
+    // holds: `SELECT avg(1) FROM users` over no rows is NULL.
+    REQUIRE(generate("SELECT avg(1) FROM users;") == "auto rows = storage.select(as_optional(avg(1)));");
+    REQUIRE(generate("SELECT group_concat(a) FROM users;") ==
+            "auto rows = storage.select(as_optional(group_concat(&Users::a)));");
+    // Only the top-level node of a result column decides the type the row is read back with, and a
+    // function call SQLite propagates a NULL through makes the operator over it nullable too.
+    REQUIRE(generate("SELECT length(a) + 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(length(&Users::a) + 1));");
+}
+
+// A built-in answers NULL over arguments that hold none far more often than it merely propagates
+// one, so a call is ruled nullable unless the function is known to answer NULL for no reason other
+// than a NULL argument. Every expression here is NULL in libsqlite3 3.45.1, the version this
+// project links, over arguments the SQL spells out; the math ones need that library rather than the
+// `sqlite3` CLI in the image, which is built without the math functions. Read back in "runtime: a
+// built-in that answers NULL over spelled-out arguments reads the NULL back".
+TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-out arguments is widened") {
+    REQUIRE(generate("SELECT nullif(1, 1) + 1;") == "auto rows = storage.select(as_optional(nullif(1, 1) + 1));");
+    REQUIRE(generate("SELECT date('bogus');") == "auto rows = storage.select(as_optional(date(\"bogus\")));");
+    REQUIRE(generate("SELECT date('bogus') || 'x';") ==
+            "auto rows = storage.select(as_optional(date(\"bogus\") || \"x\"));");
+    REQUIRE(generate("SELECT julianday('bogus');") ==
+            "auto rows = storage.select(as_optional(julianday(\"bogus\")));");
+    REQUIRE(generate("SELECT strftime('%Y', 'bogus');") ==
+            "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));");
+    REQUIRE(generate("SELECT unicode('');") == "auto rows = storage.select(as_optional(unicode(\"\")));");
+    REQUIRE(generate("SELECT unicode('') + 1;") ==
+            "auto rows = storage.select(as_optional(unicode(\"\") + 1));");
+    REQUIRE(generate("SELECT sign('abc');") == "auto rows = storage.select(as_optional(sign(\"abc\")));");
+    REQUIRE(generate("SELECT json_extract('{}', '$.a');") ==
+            "auto rows = storage.select(as_optional(json_extract(\"{}\", \"$.a\")));");
+    REQUIRE(generate("SELECT sqrt(-1);") == "auto rows = storage.select(as_optional(sqrt(-1)));");
+    // `substr(x'', 1)` is NULL rather than an empty blob, and `printf('')` NULL rather than an
+    // empty string, so neither is a function that only propagates a NULL argument.
+    REQUIRE(generate("SELECT substr('abc', 1, 1);") ==
+            "auto rows = storage.select(as_optional(substr(\"abc\", 1, 1)));");
+    REQUIRE(generate("SELECT printf('') || 'x';") ==
+            "auto rows = storage.select(as_optional(printf(\"\") || \"x\"));");
+    // An aggregate is NULL over an empty rowset whatever its argument holds. `sum`, `max` and `min`
+    // are left plain as a result column — sqlite_orm declares them `std::unique_ptr` — but an
+    // operator over one is typed by the operator alone and has to carry the NULL itself.
+    REQUIRE(generate("SELECT sum(1) + 1;") == "auto rows = storage.select(as_optional(sum(1) + 1));");
+    REQUIRE(generate("SELECT avg(1) + 1;") == "auto rows = storage.select(as_optional(avg(1) + 1));");
+}
+
+// SQLite 3.48 added `iif(X, Y)` as a spelling of `iif(X, Y, NULL)`, so the short form answers NULL
+// whenever X is false whatever its arguments hold — `SELECT iif(0, 1)` is NULL in sqlite3 3.51,
+// while libsqlite3 3.45.1, the version this project links, refuses the call — and only the
+// three-argument form propagates a NULL argument and nothing else. The name alone therefore does
+// not answer whether the call can be NULL, in either position: a result column and an operand are
+// both widened for the short form and both left plain for the long one. No runtime case reads the
+// short form back: sqlite_orm declares the three-argument `iif` alone, so `iif(0, 1)` does not
+// compile whether it is widened or not.
+TEST_CASE("codegen: an iif without its ELSE argument is widened, the three-argument one is not") {
+    REQUIRE(generate("SELECT iif(0, 1);") == "auto rows = storage.select(as_optional(iif(0, 1)));");
+    REQUIRE(generate("SELECT iif(0, 1) + 1;") == "auto rows = storage.select(as_optional(iif(0, 1) + 1));");
+    REQUIRE(generate("SELECT iif(0, 1, 2);") == "auto rows = storage.select(iif(0, 1, 2));");
+    REQUIRE(generate("SELECT iif(0, 1, 2) + 1;") == "auto rows = storage.select(iif(0, 1, 2) + 1);");
+    // The name is matched without regard to case, the way SQLite resolves it.
+    REQUIRE(generate("SELECT IIF(0, 1) || 'x';") ==
+            "auto rows = storage.select(as_optional(iif(0, 1) || \"x\"));");
+}
+
+// The widening stops where SQLite never answers NULL and where sqlite_orm reports a nullable type
+// already. Checked against sqlite3 3.51 over a NULL argument: `hex(NULL)` is the empty text,
+// `quote(NULL)` the text 'NULL', `count(NULL)` 0, `total(NULL)` 0.0, `iif(NULL, 1, 2)` 2 and
+// `NULL IN ()` 0, and a predicate, a CAST or a function call over operands the SQL spells out has
+// no NULL to report either, as long as the function answers NULL for no reason other than a NULL
+// argument — `abs`, `instr`, `length`, `round`, `upper` and the rest of the list in
+// `sqliteFunctionOnlyPropagatesANullArgument`. `abs`, `max`, `min` and `sum` are declared
+// `std::unique_ptr` in sqlite_orm and `coalesce`, `ifnull`, `nullif`, `iif`, `likely`, `unlikely`
+// and `likelihood` as the result of an argument, so widening one of those would nest a second
+// nullable around the first. That answer is given over the name alone, and the two `length(a)`
+// cases are what it leaves behind: `length` is typed `int` however NULL the row is, so
+// `iif(1, length(a), 2)` and `likely(length(a))` are typed `int` too and still read a NULL back as
+// 0 — a known hole with a card of its own, not one this widening reaches. A window function is
+// left alone as well: `row_number` and the other ranks are never NULL, and `lag`, `lead`,
+// `first_value`, `last_value` and `nth_value` are typed as their argument, which leaves the NULL
+// an empty window answers over a NOT NULL argument — `lag(b) OVER (ORDER BY b)` is NULL on the
+// first row — also carded. A MATCH has no widening either: SQLite refuses `a MATCH 'x'` as a
+// result column outside an FTS table, and sqlite_orm has no result type for `match_t`.
+// A user-defined function is left alone too — it is called through the generated struct's
+// `operator()`, and the row carries back the type that operator declares — which
+// "codegen: an argument under a dropped COLLATE keeps its name and type" spells out in full.
+TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL keeps the type sqlite_orm gives it") {
+    REQUIRE(generate("SELECT 1 BETWEEN 2 AND 3;") == "auto rows = storage.select(between(1, 2, 3));");
+    REQUIRE(generate("SELECT a IN () FROM users;") == "auto rows = storage.select(in(&Users::a, {}));");
+    REQUIRE(generate("SELECT CAST(1 AS TEXT);") == "auto rows = storage.select(cast<std::string>(1));");
+    REQUIRE(generate("SELECT length('x');") == "auto rows = storage.select(length(\"x\"));");
+    REQUIRE(generate("SELECT upper('a') || 'x';") == "auto rows = storage.select(upper(\"a\") || \"x\");");
+    REQUIRE(generate("SELECT instr('abc', 'b');") == "auto rows = storage.select(instr(\"abc\", \"b\"));");
+    REQUIRE(generate("SELECT json_valid('{}');") == "auto rows = storage.select(json_valid(\"{}\"));");
+    REQUIRE(generate("SELECT round(1.5);") == "auto rows = storage.select(round(1.5));");
+    REQUIRE(generate("SELECT pi();") == "auto rows = storage.select(pi());");
+    REQUIRE(generate("SELECT hex(a) FROM users;") == "auto rows = storage.select(hex(&Users::a));");
+    REQUIRE(generate("SELECT quote(a) FROM users;") == "auto rows = storage.select(quote(&Users::a));");
+    REQUIRE(generate("SELECT count(a) FROM users;") == "auto rows = storage.select(count(&Users::a));");
+    REQUIRE(generate("SELECT total(a) FROM users;") == "auto rows = storage.select(total(&Users::a));");
+    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");
+    REQUIRE(generate("SELECT max(a) FROM users;") == "auto rows = storage.select(max(&Users::a));");
+    REQUIRE(generate("SELECT sum(a) FROM users;") == "auto rows = storage.select(sum(&Users::a));");
+    REQUIRE(generate("SELECT coalesce(a, 1) FROM users;") ==
+            "auto rows = storage.select(coalesce(&Users::a, 1));");
+    REQUIRE(generate("SELECT iif(a, 1, 2) FROM users;") == "auto rows = storage.select(iif(&Users::a, 1, 2));");
+    REQUIRE(generate("SELECT iif(1, length(a), 2) FROM users;") ==
+            "auto rows = storage.select(iif(1, length(&Users::a), 2));");
+    REQUIRE(generate("SELECT likely(length(a)) FROM users;") ==
+            "auto rows = storage.select(likely(length(&Users::a)));");
+    REQUIRE(generate("SELECT lag(a) OVER () FROM users;") == "auto rows = storage.select(lag(&Users::a).over());");
+    REQUIRE(generate("SELECT lag(a) OVER (ORDER BY a) FROM users;") ==
+            "auto rows = storage.select(lag(&Users::a).over(order_by(&Users::a)));");
+    REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
+            "auto rows = storage.select(row_number().over());");
+    REQUIRE(generate("SELECT a MATCH 'x' FROM users;") == "auto rows = storage.select(match(&Users::a, \"x\"));");
+    REQUIRE(generate("SELECT count(*) FROM users;") == "auto rows = storage.select(count<Users>());");
 }
 
 // A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the

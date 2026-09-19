@@ -1,5 +1,7 @@
 #include "codegen_tests_common.hpp"
 
+#include <sqlite2orm/parser.h>
+
 namespace {
 
     // The hint attached to every negation generated as a subtraction from zero; spelled out once
@@ -1771,4 +1773,16 @@ TEST_CASE("codegen: a hex literal past the int64 range is refused in a compiled 
 TEST_CASE("codegen: the sixteen-digit hex literals around the boundary still generate") {
     REQUIRE(generate("0xFFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)");
     REQUIRE(generate("0x0000FFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0x0000FFFFFFFFFFFFFFFF)");
+}
+
+// A tree at the depth limit still has to survive every recursive pass over it — the validator and
+// the generator included - since that limit is exactly the promise the parser makes to them.
+TEST_CASE("codegen: an expression at the depth limit still generates") {
+    std::string sql = "1";
+    std::string expected = "c(1)";
+    for (size_t i = 1; i < kMaxExpressionDepth; ++i) {
+        sql += " + 1";
+        expected += " + 1";
+    }
+    REQUIRE(generate(sql) == expected);
 }

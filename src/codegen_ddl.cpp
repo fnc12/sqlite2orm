@@ -76,17 +76,34 @@ namespace sqlite2orm {
             base += ".for_each_row()";
         }
         std::vector<DecisionPoint> decisionPoints;
+        std::vector<CodegenWarning> whenClauseWarnings;
         // Like a view body, a trigger body is stored and compiled only when the trigger fires, so
         // SQLite accepts a hex literal in it that it refuses in a query of its own.
         this->context.storedHexLiteralsTooBig.clear();
         const bool triggerWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
         if(createTrigger.whenClause) {
+            // `trigger_base_t::when()` keeps the expression in an `optional_container`, whose field
+            // is default-constructed before the expression is assigned to it, so the WHEN clause
+            // only compiles while every sqlite_orm type in it has a default constructor. The
+            // comparisons, AND and OR do; the predicates, the arithmetic and bit operators and the
+            // functions do not, and the emitters record what they put out.
+            this->context.formsWithoutDefaultConstructor.clear();
             auto whenResult = this->coordinator.generateNode(*createTrigger.whenClause);
             decisionPoints.insert(decisionPoints.end(), std::make_move_iterator(whenResult.decisionPoints.begin()),
                        std::make_move_iterator(whenResult.decisionPoints.end()));
             warnings.insert(warnings.end(), std::make_move_iterator(whenResult.warnings.begin()),
                            std::make_move_iterator(whenResult.warnings.end()));
+            for(const std::string& form : this->context.formsWithoutDefaultConstructor) {
+                // Held back until the trigger is known to generate: a trigger that is left out
+                // altogether has no generated code to fail to compile.
+                whenClauseWarnings.push_back(
+                    "CREATE TRIGGER " + stripIdentifierQuotes(createTrigger.triggerName) + " uses " + form +
+                    " in its WHEN clause, a form sqlite_orm gives no default constructor: make_trigger() keeps "
+                    "a trigger's WHEN expression in an optional_container, which default-constructs the "
+                    "expression before assigning it, so the generated trigger does not compile");
+            }
+            this->context.formsWithoutDefaultConstructor.clear();
             base += ".when(" + whenResult.code + ")";
         }
 
@@ -115,6 +132,8 @@ namespace sqlite2orm {
             }
             return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
         }
+        warnings.insert(warnings.end(), std::make_move_iterator(whenClauseWarnings.begin()),
+                        std::make_move_iterator(whenClauseWarnings.end()));
 
         std::string triggerLiteral = identifierToCppStringLiteral(createTrigger.triggerName);
         std::string code = "make_trigger(" + triggerLiteral + ", " + base + ".begin(" + stepsJoined + "));";

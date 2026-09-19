@@ -826,6 +826,51 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
                     joinGeneratedCode(results));
 }
 
+// A trigger's WHEN expression lives in an `optional_container`, which default-constructs it, so
+// only a WHEN clause whose every sqlite_orm type has a default constructor compiles. These are the
+// forms codegen claims are safe, and the claim is worth nothing unless a compiler agrees: before
+// the check existed, `WHEN NEW.a IS NULL` and `WHEN NOT NEW.a` generated silently and failed here
+// with `use of deleted function optional_container<...>::optional_container()`. A count(*) with a
+// FILTER or an OVER is the other side of that: `count_asterisk_t::filter()` unwraps the `where_t`
+// and `over_t` is an aggregate, so those compile and warning about them would be wrong. An OR is
+// here because it holds only while it is spelled `or_(...)`: the `||` token it used to be generated
+// with reads as a concatenation, and `conc_t` has no default constructor. The window functions are
+// the same story once more: each is generated as an aggregate of its own — `row_number_t`, `lag_t`
+// and the rest — and not as the `builtin_function_t` every other function call comes out, and so is
+// a MATCH written as a call. SQLite stores all ten triggers below and fires every one of them but
+// the MATCH, which it stores and then refuses to run, an FTS function being direct-only — exactly
+// as it does for the MATCH operator (checked against the linked sqlite3 3.45.1 and against 3.51.0).
+TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile") {
+    const auto results = processMultiSql(
+        "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
+        "CREATE TRIGGER tr_cmp AFTER INSERT ON t WHEN NEW.a = 0 BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_and AFTER INSERT ON t WHEN NEW.a > 0 AND NEW.b = 'x' BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_or AFTER INSERT ON t WHEN NEW.a OR NEW.b BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_cast AFTER INSERT ON t WHEN CAST(NEW.a AS INTEGER) > 0 BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_sub AFTER INSERT ON t WHEN NEW.a = (SELECT a FROM t) BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_filter AFTER INSERT ON t WHEN NEW.a = (SELECT count(*) FILTER (WHERE a > 0) FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_over AFTER INSERT ON t WHEN NEW.a = (SELECT count(*) OVER (PARTITION BY b ROWS "
+        "BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t) BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_row_number AFTER INSERT ON t WHEN NEW.a = (SELECT row_number() OVER () FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_lag AFTER INSERT ON t WHEN NEW.a = (SELECT lag(a, 1, 0) OVER (PARTITION BY b) FROM t) "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_match AFTER INSERT ON t WHEN match(NEW.b, 'x') BEGIN DELETE FROM t; END;");
+
+    for(const auto& result : results) {
+        REQUIRE(result.codegen.warnings.empty());
+    }
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 // `make_index` deduces the table an index is made for from its first argument, and an expression
 // names none, so an index over one spells the table out. Before it did, every header of a database
 // holding an index over an expression — `CREATE INDEX i_expr ON t(a + 1)`, which SQLite takes and

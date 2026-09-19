@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdint>
 #include <limits>
+#include <span>
 
 namespace sqlite2orm {
 
@@ -428,6 +429,67 @@ namespace sqlite2orm {
             case BinaryOperator::jsonArrow2:         return " ->> ";
         }
         return {};
+    }
+
+    std::string_view binaryOperatorWithoutDefaultConstructor(BinaryOperator binaryOperator) {
+        switch(binaryOperator) {
+            case BinaryOperator::logicalOr:
+            case BinaryOperator::logicalAnd:
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:  return {};
+            case BinaryOperator::add:                return "+";
+            case BinaryOperator::subtract:           return "-";
+            case BinaryOperator::multiply:           return "*";
+            case BinaryOperator::divide:             return "/";
+            case BinaryOperator::modulo:             return "%";
+            case BinaryOperator::concatenate:        return "||";
+            case BinaryOperator::bitwiseAnd:         return "&";
+            case BinaryOperator::bitwiseOr:          return "|";
+            case BinaryOperator::shiftLeft:          return "<<";
+            case BinaryOperator::shiftRight:         return ">>";
+            case BinaryOperator::jsonArrow:          return "->";
+            case BinaryOperator::jsonArrow2:         return "->>";
+        }
+        return {};
+    }
+
+    namespace {
+        // The window functions that take no argument, so the `name()` a star is generated as is the
+        // same call as the one written without one.
+        constexpr std::array<std::string_view, 5> kNullaryWindowFunctions{{
+            "row_number", "rank", "dense_rank", "percent_rank", "cume_dist",
+        }};
+        // The window functions that take arguments, and MATCH in its function spelling.
+        constexpr std::array<std::string_view, 7> kArgumentTakingAggregateForms{{
+            "ntile", "lag", "lead", "first_value", "last_value", "nth_value", "match",
+        }};
+
+        bool nameIsIn(std::string_view name, std::span<const std::string_view> names) {
+            return std::find(names.begin(), names.end(), name) != names.end();
+        }
+    }
+
+    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
+        if(nameIsIn(lowerFunctionName, kNullaryWindowFunctions)) {
+            return true;
+        }
+        if(star) {
+            return lowerFunctionName == "count";
+        }
+        return nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
+    }
+
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName) {
+        return nameIsIn(lowerFunctionName, kNullaryWindowFunctions) ||
+               nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
     }
 
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {

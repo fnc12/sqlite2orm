@@ -171,6 +171,209 @@ TEST_CASE("codegen: CREATE TRIGGER schema-qualified names warn") {
              "schema-qualified ON table in TRIGGER is not represented in sqlite_orm mapping"}});
 }
 
+// sqlite_orm keeps a trigger's WHEN expression in an `optional_container`, whose field is
+// default-constructed before the expression is assigned to it, so the WHEN clause only compiles
+// while every sqlite_orm type in it has a default constructor. `negated_condition_t`, `is_null_t`,
+// `binary_operator` and `builtin_function_t` declare a constructor and no default one, so
+// `when(not c(new_(&T::x)))` fails with `use of deleted function
+// optional_container<negated_condition_t<...>>::optional_container()`. SQLite takes every WHEN
+// clause below (checked against sqlite3 3.51.0), so the statement still generates, with a warning
+// naming the form that cannot be held.
+TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm cannot default-construct warns") {
+    SECTION("NOT") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NOT NEW.x BEGIN DELETE FROM t; END");
+        REQUIRE(result.code ==
+                "make_trigger(\"tr\", after().insert().on<T>().when(not c(new_(&T::x))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses NOT in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("IS NULL") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x IS NULL BEGIN DELETE FROM t; END");
+        REQUIRE(result.code ==
+                "make_trigger(\"tr\", after().insert().on<T>().when(is_null(new_(&T::x))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses IS NULL in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("a function and an operator are named one by one, innermost first") {
+        const auto result = generateFull(
+            "CREATE TRIGGER tr AFTER INSERT ON t WHEN length(NEW.y) + 1 > 0 BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(length(new_(&T::y)) + 1 > "
+                               "0).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses length() in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"},
+                    {"CREATE TRIGGER tr uses + in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("the ORDER BY of an OVER clause, the one part of a window definition that has a constructor") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT count(*) "
+                                         "OVER (ORDER BY y) FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(count<T>().over(order_by(&T::y)))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses ORDER BY in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("a FILTER keeps recording what its expression puts out") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT count(*) "
+                                         "FILTER (WHERE y IS NULL) FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(count<T>().filter(where(is_null(&T::y))))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses IS NULL in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("a concatenation, the half of the || token that is not an OR") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.y || 'a' BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::y)) || "
+                               "\"a\").begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses || in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("an aggregate function, which is not one of the window forms") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT count(y) "
+                                         "FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(count(&T::y))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses count() in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("the ORDER BY of a window function's OVER clause, the one part of it with a constructor") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT row_number() "
+                                         "OVER (ORDER BY y) FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(row_number().over(order_by(&T::y)))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses ORDER BY in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+    SECTION("a subquery is read clause by clause") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT y FROM t "
+                                         "WHERE y = 'a') BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(&T::y, where(c(&T::y) == \"a\"))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses WHERE in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
+}
+
+// The comparisons, AND and OR all produce a `binary_condition`, which declares a default
+// constructor, and a CAST, a CASE and a subquery over a bare FROM hold only what they are given —
+// so these WHEN clauses carry no warning and do compile (see the compile test in
+// schema_pipeline_tests.cpp). An OR only holds since it is spelled `or_(...)`: the `||` token it
+// used to be generated with reads as a concatenation, whose `conc_t` has no default constructor.
+TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm can default-construct is not warned about") {
+    SECTION("a comparison") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = 0 BEGIN DELETE FROM t; END");
+        REQUIRE(result.code ==
+                "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == 0).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("a CAST over a column") {
+        const auto result = generateFull(
+            "CREATE TRIGGER tr AFTER INSERT ON t WHEN CAST(NEW.x AS INTEGER) > 0 BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(cast<int64_t>(new_(&T::x)) > "
+                               "0).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("an OR, which is spelled or_() because the || token would read as a concatenation") {
+        const auto result = generateFull(
+            "CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x OR NEW.y BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(or_(new_(&T::x), "
+                               "new_(&T::y))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("MATCH, whose match_t is an aggregate holding its two operands") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.y MATCH 'x' BEGIN DELETE FROM t; END");
+        REQUIRE(result.code ==
+                "make_trigger(\"tr\", after().insert().on<T>().when(match(new_(&T::y), \"x\")).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("count(*) with a FILTER, which keeps only the expression of its where") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT count(*) "
+                                         "FILTER (WHERE y = 'a') FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(count<T>().filter(where(c(&T::y) == \"a\")))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("count(*) with an OVER clause of a PARTITION BY and a frame, both aggregates") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT count(*) OVER (PARTITION BY y "
+                         "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(count<T>().over(partition_by(&T::y), rows(unbounded_preceding(), "
+                               "current_row())))).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("a window function, whose row_number_t holds nothing") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT row_number() "
+                                         "OVER () FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(row_number().over())).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("a window function over an argument, whose lag_t keeps it in a tuple") {
+        const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT lag(x, 1, 0) "
+                                         "OVER () FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(lag(&T::x, 1, 0).over())).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("MATCH in its function spelling, the same match_t as the operator one") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN match(NEW.y, 'x') BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(match(new_(&T::y), "
+                               "\"x\")).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("a subquery over a bare FROM") {
+        const auto result = generateFull(
+            "CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT y FROM t) BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
+                               "select(&T::y)).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+}
+
 TEST_CASE("codegen: CREATE INDEX single column") {
     REQUIRE(generate("CREATE INDEX idx ON users (id)") ==
             "make_index(\"idx\", indexed_column(&Users::id));");
@@ -303,6 +506,22 @@ TEST_CASE("codegen: UPDATE FROM warning") {
 TEST_CASE("codegen: CREATE TRIGGER - a hex literal too big leaves the trigger ungenerated") {
     auto result = generateFull(
         "CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET x = 0x10000000000000000; END");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+        std::vector<CodegenWarning>{
+            {"CREATE TRIGGER tr uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the "
+             "trigger but refuses every statement that fires it, and C++ has no literal for it, so the trigger is "
+             "not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// A trigger that is left out has no generated code to fail to compile, so the WHEN warnings are
+// held back until the trigger is known to generate: otherwise the same trigger would be reported
+// as both not generated and generated but not compiling. SQLite stores this one and refuses every
+// INSERT on t (checked against sqlite3 3.51.0).
+TEST_CASE("codegen: CREATE TRIGGER - a trigger left out carries no WHEN warning") {
+    auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x IS NULL BEGIN UPDATE t SET x = "
+                               "0x10000000000000000; END");
     REQUIRE(result.code.empty());
     REQUIRE(result.warnings ==
         std::vector<CodegenWarning>{

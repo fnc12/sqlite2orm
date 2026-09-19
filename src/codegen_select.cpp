@@ -755,6 +755,12 @@ namespace sqlite2orm {
             columnPart = "asterisk<" + subStarRow + ">()";
         } else {
             if(selectNode.distinct) {
+                // A trigger's WHEN clause is default-constructed by sqlite_orm, so a subquery
+                // standing in one only compiles while every clause it carries has a default
+                // constructor. `distinct_t`, `where_t`, `order_by_t` and a join that carries an
+                // `on(...)` or a `using_(...)` declare a constructor and no default one; `from_t`,
+                // `limit_t`, a cross or natural join and a named window hold nothing and do.
+                this->context.recordFormWithoutDefaultConstructor("DISTINCT");
                 if(selectNode.columns.size() == 1) {
                     columnPart = "distinct(" +
                                  colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression)) + ")";
@@ -890,10 +896,16 @@ namespace sqlite2orm {
                 break;
             }
             }
+            if(joinItem.leadingJoin != JoinKind::crossJoin &&
+               joinItem.leadingJoin != JoinKind::naturalInnerJoin &&
+               joinItem.leadingJoin != JoinKind::naturalLeftJoin) {
+                this->context.recordFormWithoutDefaultConstructor("JOIN");
+            }
             tailParts.push_back(std::move(joinCode));
         }
 
         if(selectNode.whereClause) {
+            this->context.recordFormWithoutDefaultConstructor("WHERE");
             tailParts.push_back("where(" + expressionCode(*selectNode.whereClause) + ")");
         }
 
@@ -910,6 +922,7 @@ namespace sqlite2orm {
         }
 
         if(!selectNode.orderBy.empty()) {
+            this->context.recordFormWithoutDefaultConstructor("ORDER BY");
             auto formatSubOrderTerm = [&](const OrderByTerm& term) -> std::string {
                 std::string orderCode = "order_by(" + expressionCode(*term.expression) + ")";
                 if(term.direction == SortDirection::asc) {
@@ -995,6 +1008,7 @@ namespace sqlite2orm {
                 return CodeGenResult{
                     {}, std::move(accumulated.decisionPoints), std::move(accumulated.warnings)};
             }
+            this->context.recordFormWithoutDefaultConstructor("a compound SELECT");
             accumulated.code = std::string(compoundSelectApi(compoundNode.operators.at(operatorIndex))) + "(" +
                                accumulated.code + ", " + nextArm.code + ")";
         }

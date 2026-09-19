@@ -66,6 +66,14 @@ namespace sqlite2orm {
          */
         std::vector<std::string> storedHexLiteralsTooBig;
         /**
+         *  The expressions emitted since the last reset whose sqlite_orm type has no default
+         *  constructor, named as SQLite spells them. `make_trigger()` keeps a trigger's WHEN
+         *  expression in an `optional_container`, which default-constructs the expression before
+         *  assigning it, so a WHEN clause built from any of these does not compile at all. The
+         *  trigger generator clears this around the WHEN clause and warns about what it finds.
+         */
+        std::vector<std::string> formsWithoutDefaultConstructor;
+        /**
          *  The tables of the current batch that cannot be mapped at all — a STORED generated
          *  column holding such a hex literal leaves the whole table out, because a column that
          *  lost its `as(...)` would be an ordinary column. sqlite_orm cannot reference a type it
@@ -151,6 +159,9 @@ namespace sqlite2orm {
 
         /** Records a custom function use if its struct name is not already present. */
         void registerCustomFunction(CustomFunctionUse use);
+
+        /** Records a form whose sqlite_orm type has no default constructor, once per spelling. */
+        void recordFormWithoutDefaultConstructor(std::string form);
 
         /**
          *  How many statements of the current batch already declared each result variable

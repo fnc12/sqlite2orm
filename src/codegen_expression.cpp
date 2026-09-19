@@ -543,6 +543,18 @@ namespace sqlite2orm {
                                       "— return type may differ from sqlite");
             }
 
+            // A trigger keeps its WHEN expression in an `optional_container`, which default-constructs
+            // it, so the WHEN clause of a generated trigger only compiles while every sqlite_orm type
+            // in it has a default constructor. `binary_operator` — what the arithmetic, bit and
+            // concatenation operators produce — and the `builtin_function_t` behind the JSON arrows
+            // have none; the `binary_condition` behind a comparison, an AND and an OR does.
+            if(const std::string_view formWithoutDefaultConstructor =
+                   binaryOperatorWithoutDefaultConstructor(binaryOp->binaryOperator);
+               !formWithoutDefaultConstructor.empty()) {
+                this->context.recordFormWithoutDefaultConstructor(
+                    std::string(formWithoutDefaultConstructor));
+            }
+
             std::vector<std::string> binComments;
             appendUniqueStrings(binComments, leftResult.comments);
             appendUniqueStrings(binComments, rightResult.comments);
@@ -734,6 +746,17 @@ namespace sqlite2orm {
                 functionalCode = "sub(0, " + operandResult.code + ")";
             }
 
+            // Neither `negated_condition_t` nor `bitwise_not_t` has a default constructor, and a
+            // negation generated as a subtraction from zero is a `binary_operator`, which has none
+            // either — so none of the three can stand in a trigger's WHEN clause.
+            if(unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+                this->context.recordFormWithoutDefaultConstructor("NOT");
+            } else if(unaryOp->unaryOperator == UnaryOperator::bitwiseNot) {
+                this->context.recordFormWithoutDefaultConstructor("~");
+            } else if(negationAsSubtraction) {
+                this->context.recordFormWithoutDefaultConstructor("unary -");
+            }
+
             std::string chosenUnaryVal = "operator";
             std::string emittedUnary = operatorCode;
             if(policyEquals(this->context.codeGenPolicy, "expr_style", "functional") &&
@@ -767,12 +790,14 @@ namespace sqlite2orm {
             auto operandResult = this->coordinator.generateNode(*isNullNode->operand);
             std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
                                                              *isNullNode->operand, operandResult.comments);
+            this->context.recordFormWithoutDefaultConstructor("IS NULL");
             return CodeGenResult{"is_null(" + operandCode + ")", std::move(operandResult.decisionPoints), {},
                                  {}, std::move(operandResult.comments)};
         } else if(auto* isNotNullNode = dynamic_cast<const IsNotNullNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*isNotNullNode->operand);
             std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
                                                              *isNotNullNode->operand, operandResult.comments);
+            this->context.recordFormWithoutDefaultConstructor("IS NOT NULL");
             return CodeGenResult{"is_not_null(" + operandCode + ")",
                                  std::move(operandResult.decisionPoints), {}, {},
                                  std::move(operandResult.comments)};
@@ -807,6 +832,7 @@ namespace sqlite2orm {
             std::string highCode =
                 groupPredicateArgument(std::move(highResult.code), *betweenNode->high, betweenComments);
 
+            this->context.recordFormWithoutDefaultConstructor("BETWEEN");
             std::string betweenCode = "between(" + operandCode + ", " + lowCode + ", " + highCode + ")";
             std::string code = betweenNode->negated ? "!" + betweenCode : betweenCode;
             return CodeGenResult{code, std::move(decisionPoints), {}, {}, std::move(betweenComments)};
@@ -826,6 +852,7 @@ namespace sqlite2orm {
                 return CodeGenResult{"/* EXISTS (SELECT ...) */", std::move(sub.decisionPoints),
                                      std::move(sub.warnings)};
             }
+            this->context.recordFormWithoutDefaultConstructor("EXISTS");
             return CodeGenResult{"exists(" + sub.code + ")", std::move(sub.decisionPoints),
                                  std::move(sub.warnings)};
         } else if(auto* inNode = dynamic_cast<const InNode*>(&astNode)) {
@@ -901,6 +928,7 @@ namespace sqlite2orm {
                     } else {
                         selectColumnCode = "asterisk<" + cteTypedef + ">()";
                     }
+                    this->context.recordFormWithoutDefaultConstructor("IN");
                     std::string inFunc = inNode->negated ? "not_in" : "in";
                     std::string operandCode = groupPredicateArgument(
                         std::move(operandResult.code), *inNode->operand, operandResult.comments);
@@ -936,6 +964,7 @@ namespace sqlite2orm {
                 }
                 std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
                                                                  *inNode->operand, operandResult.comments);
+                this->context.recordFormWithoutDefaultConstructor("IN");
                 std::string code = inNode->negated ? "not_in(" + operandCode + ", " + sub.code + ")"
                                                    : "in(" + operandCode + ", " + sub.code + ")";
                 return CodeGenResult{code, std::move(decisionPoints), std::move(inSubWarnings), {},
@@ -968,6 +997,7 @@ namespace sqlite2orm {
             // stands where the SQL an AND or an OR serializes into would run into the predicate.
             std::string inOperandCode = groupPredicateArgument(std::move(operandResult.code),
                                                                *inNode->operand, operandResult.comments);
+            this->context.recordFormWithoutDefaultConstructor("IN");
             std::string inCode = "in(" + inOperandCode + ", {" + valuesList + "})";
             if(inNode->negated) {
                 std::string notInCode = "not_in(" + inOperandCode + ", {" + valuesList + "})";
@@ -1005,6 +1035,7 @@ namespace sqlite2orm {
             std::string patternCode =
                 groupPredicateArgument(std::move(patternResult.code), *likeNode->pattern, likeComments);
 
+            this->context.recordFormWithoutDefaultConstructor("LIKE");
             std::string likeCode = "like(" + operandCode + ", " + patternCode;
             if(likeNode->escape) {
                 auto escapeResult = this->coordinator.generateNode(*likeNode->escape);
@@ -1037,6 +1068,7 @@ namespace sqlite2orm {
             std::string patternCode =
                 groupPredicateArgument(std::move(patternResult.code), *globNode->pattern, globComments);
 
+            this->context.recordFormWithoutDefaultConstructor("GLOB");
             std::string globCode = "glob(" + operandCode + ", " + patternCode + ")";
             std::string code = globNode->negated ? "!" + globCode : globCode;
             return CodeGenResult{code, std::move(decisionPoints), {}, {}, std::move(globComments)};
@@ -1077,6 +1109,9 @@ namespace sqlite2orm {
             std::string patternCode =
                 groupPredicateArgument(std::move(patternResult.code), *matchNode->pattern, matchComments);
 
+            // `match_t` is an aggregate holding its two operands, so unlike the other predicates it
+            // default-constructs with them and can stand in a trigger's WHEN clause. A negated MATCH
+            // does not compile at all, which the warning below is about.
             std::string matchCode = "match(" + lhsCode + ", " + patternCode + ")";
             std::string code = matchNode->negated ? "!" + matchCode : matchCode;
             if(matchNode->negated) {
@@ -1207,6 +1242,19 @@ namespace sqlite2orm {
                 }
             }
 
+            // `builtin_function_t` and the `function_call` a user-defined function is generated as
+            // both declare a constructor and no default one, so a trigger's WHEN clause, which
+            // sqlite_orm default-constructs, holds neither. The window functions, `count(*)` and a
+            // function-spelled MATCH are the exceptions — each is generated as an aggregate — and so
+            // are the `filter` and `over` wrappers, which keep only what they are given:
+            // `count_asterisk_t::filter()` unwraps the `where_t` and keeps its expression, so none
+            // of them costs the default constructor on their own. What they carry records itself: an
+            // argument and a FILTER expression through their own emitters, an OVER clause's ORDER BY
+            // through `codegenOverClause`.
+            if(!functionCallHasDefaultConstructor(funcName, funcCall->star)) {
+                this->context.recordFormWithoutDefaultConstructor(std::string(funcCall->name) + "()");
+            }
+
             if(funcCall->filterWhere) {
                 auto filterResult = this->coordinator.generateNode(*funcCall->filterWhere);
                 decisionPoints.insert(decisionPoints.end(),
@@ -1216,6 +1264,13 @@ namespace sqlite2orm {
                                     std::make_move_iterator(filterResult.warnings.begin()),
                                     std::make_move_iterator(filterResult.warnings.end()));
                 baseCode += ".filter(where(" + filterResult.code + "))";
+                if(functionCallFormHasNoFilter(funcName)) {
+                    funcWarnings.push_back(std::string(funcCall->name) +
+                                           "() has no filter() in sqlite_orm: only the aggregate function calls "
+                                           "and count(*) take a FILTER, so the generated code does not compile. "
+                                           "SQLite refuses the same call — FILTER clause may only be used with "
+                                           "aggregate window functions — but stores a trigger or a view holding it");
+                }
             }
             if(funcCall->over) {
                 std::string overArgs = this->codegenOverClause(*funcCall->over, decisionPoints, funcWarnings);
@@ -1317,6 +1372,9 @@ namespace sqlite2orm {
             parts.push_back("partition_by(" + inner + ")");
         }
         if(!overClause.orderBy.empty()) {
+            // `order_by_t` declares a constructor and no default one, and it is the only part of a
+            // window definition that does: `partition_by` and the frame boundaries are aggregates.
+            this->context.recordFormWithoutDefaultConstructor("ORDER BY");
             auto formatOrderTerm = [&](const OrderByTerm& term) -> std::string {
                 auto expressionResult = this->coordinator.generateNode(*term.expression);
                 decisionPoints.insert(decisionPoints.end(),

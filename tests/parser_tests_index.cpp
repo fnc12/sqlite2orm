@@ -43,8 +43,7 @@ TEST_CASE("parser: CREATE INDEX COLLATE ASC DESC order flexible") {
     CreateIndexNode expected(SourceLocation{});
     expected.indexName = "i1";
     expected.tableName = "t";
-    expected.indexedColumns.push_back(
-        IndexColumnSpec{makeNode<ColumnRefNode>("n"), SortDirection::asc, "NOCASE"});
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("n"), SortDirection::asc, "NOCASE"});
 
     auto parseResult = parse("CREATE INDEX i1 ON t (n COLLATE NOCASE ASC)");
     REQUIRE(parseResult);
@@ -55,8 +54,7 @@ TEST_CASE("parser: CREATE INDEX DESC then COLLATE") {
     CreateIndexNode expected(SourceLocation{});
     expected.indexName = "i2";
     expected.tableName = "t";
-    expected.indexedColumns.push_back(
-        IndexColumnSpec{makeNode<ColumnRefNode>("v"), SortDirection::desc, "binary"});
+    expected.indexedColumns.push_back(IndexColumnSpec{makeNode<ColumnRefNode>("v"), SortDirection::desc, "binary"});
 
     auto parseResult = parse("CREATE INDEX i2 ON t (v DESC COLLATE binary)");
     REQUIRE(parseResult);

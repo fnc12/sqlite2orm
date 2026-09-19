@@ -18,8 +18,7 @@ namespace {
     [[nodiscard]] std::filesystem::path makeTempDbPath() {
         static thread_local std::mt19937 gen{std::random_device{}()};
         std::uniform_int_distribution<std::uint64_t> dist{};
-        return std::filesystem::temp_directory_path() /
-               ("sqlite2orm_report_" + std::to_string(dist(gen)) + ".db");
+        return std::filesystem::temp_directory_path() / ("sqlite2orm_report_" + std::to_string(dist(gen)) + ".db");
     }
 
     struct TempDbFile {
@@ -59,9 +58,10 @@ TEST_CASE("reportSqliteSchema: --json reports a codegen error and exits 1") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE q (a INTEGER CHECK (a IS NOT 1));");
     const SchemaReport result = report(file.path, true);
-    REQUIRE(result.out ==
-            R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}]})"
-            "\n");
+    REQUIRE(
+        result.out ==
+        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}]})"
+        "\n");
     REQUIRE(result.err == "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not "
                           "supported in sqlite_orm\n");
     REQUIRE(result.exitCode == 1);
@@ -97,9 +97,10 @@ TEST_CASE("reportSqliteSchema: --json on a schema that generates stays quiet and
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");
     const SchemaReport result = report(file.path, true);
-    REQUIRE(result.out ==
-            R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})"
-            "\n");
+    REQUIRE(
+        result.out ==
+        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})"
+        "\n");
     REQUIRE(result.err.empty());
     REQUIRE(result.exitCode == 0);
 }
@@ -163,7 +164,7 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 }
 )");
     REQUIRE(result.err == "warning: CREATE VIEW `v` did not generate and is not merged into make_storage()\n"
-            "validation [view v]: hex literal too big: -0x8000000000000000 (UnaryOperatorNode)\n");
+                          "validation [view v]: hex literal too big: -0x8000000000000000 (UnaryOperatorNode)\n");
     REQUIRE(result.exitCode == 1);
 }
 
@@ -196,7 +197,8 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
         make_column("id", &T::id, primary_key())));
 }
 )");
-    REQUIRE(result.err == "warning: CREATE VIEW `v` did not generate and is not merged into make_storage()\n"
+    REQUIRE(result.err ==
+            "warning: CREATE VIEW `v` did not generate and is not merged into make_storage()\n"
             "warning: `iv` rests on a view that is not generated and is not merged into make_storage()\n"
             "validation [view v]: unary plus (+expr) is not supported in sqlite_orm (UnaryOperatorNode)\n");
     REQUIRE(result.exitCode == 1);
@@ -232,12 +234,12 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 }
 )");
     REQUIRE(result.err == "warning: CREATE VIEW vq: sqlite_orm views use C++26 reflection (make_view + "
-            "[[= \"…\"_orm_name]]); this code requires C++26 and will not compile under the selected "
-            "C++ standard\n"
-            "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
-            "warning: `vq` rests on a table that is not generated and is not merged into "
-            "make_storage()\n"
-            "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not supported in "
-            "sqlite_orm\n");
+                          "[[= \"…\"_orm_name]]); this code requires C++26 and will not compile under the selected "
+                          "C++ standard\n"
+                          "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
+                          "warning: `vq` rests on a table that is not generated and is not merged into "
+                          "make_storage()\n"
+                          "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not supported in "
+                          "sqlite_orm\n");
     REQUIRE(result.exitCode == 1);
 }

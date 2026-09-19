@@ -46,6 +46,16 @@ namespace {
         "CAST leaves what the inner NOT stands for alone: it is 0, 1 or NULL, and a CAST to INTEGER "
         "keeps all three.";
 
+    // The hint attached to every NOT the generator delimits with a CAST to REAL; asserted on its
+    // own in "codegen: a NOT over a concatenation carries its comment".
+    const std::string kConcatenationCastComment =
+        "A NOT over a concatenation is generated as `not cast<double>(…)`: sqlite_orm's `conc_t` is "
+        "`binary_operator<L, R, conc_string>` and nothing else — neither negatable nor an operator "
+        "argument — so `not (c(&T::a) || \"x\")` does not compile. A concatenation answers TEXT or "
+        "NULL, and SQLite reads the truth of a text value through its real value: `NOT ('0' || '.5')` "
+        "is 0, where `NOT CAST('0' || '.5' AS INTEGER)` is 1. A CAST to REAL parses the text exactly "
+        "as that truth test does, so `NOT x` and `NOT CAST(x AS REAL)` answer alike.";
+
     // The hint attached to every operator spelled as a call because the C++ `||` token would build
     // the other node; asserted on its own in "codegen: an operator spelled as a call carries its
     // comment".
@@ -249,28 +259,42 @@ TEST_CASE("codegen: concatenation") {
     }
     SECTION("chained: (a || b) || c") {
         auto result = generateFull("a || b || c");
-        REQUIRE(result == CodeGenResult{
-            "c(&User::a) || &User::b || &User::c",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                columnRefStyleDp(2, "&User::b"),
-                DecisionPoint{3, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b",
-                    {
-                        Option{"operator_wrap_left", "c(&User::a) || &User::b", "wrap left operand"},
-                        Option{"operator_wrap_right", "&User::a || c(&User::b)", "wrap right operand"},
-                        Option{"functional", "conc(&User::a, &User::b)", "functional style"},
-                        Option{"operator_wrap_both", "c(&User::a) || c(&User::b)", "wrap both operands", true},
-                    }},
-                columnRefStyleDp(4, "&User::c"),
-                DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) || &User::b || &User::c",
-                    {
-                        Option{"operator_wrap_left", "c(&User::a) || &User::b || &User::c", "wrap left operand"},
-                        Option{"operator_wrap_right", "c(&User::a) || &User::b || c(&User::c)", "wrap right operand"},
-                        Option{"functional", "conc(c(&User::a) || &User::b, &User::c)", "functional style"},
-                        Option{"operator_wrap_both", "c(&User::a) || &User::b || c(&User::c)", "wrap both operands", true},
-                    }},
-            }
-        });
+        REQUIRE(
+            result ==
+            CodeGenResult{
+                "c(&User::a) || &User::b || &User::c",
+                {
+                    columnRefStyleDp(1, "&User::a"),
+                    columnRefStyleDp(2, "&User::b"),
+                    DecisionPoint{
+                        3,
+                        "expr_style",
+                        "operator_wrap_left",
+                        "c(&User::a) || &User::b",
+                        {
+                            Option{"operator_wrap_left", "c(&User::a) || &User::b", "wrap left operand"},
+                            Option{"operator_wrap_right", "&User::a || c(&User::b)", "wrap right operand"},
+                            Option{"functional", "conc(&User::a, &User::b)", "functional style"},
+                            Option{"operator_wrap_both", "c(&User::a) || c(&User::b)", "wrap both operands", true},
+                        }},
+                    columnRefStyleDp(4, "&User::c"),
+                    DecisionPoint{
+                        5,
+                        "expr_style",
+                        "operator_wrap_left",
+                        "c(&User::a) || &User::b || &User::c",
+                        {
+                            Option{"operator_wrap_left", "c(&User::a) || &User::b || &User::c", "wrap left operand"},
+                            Option{"operator_wrap_right",
+                                   "c(&User::a) || &User::b || c(&User::c)",
+                                   "wrap right operand"},
+                            Option{"functional", "conc(c(&User::a) || &User::b, &User::c)", "functional style"},
+                            Option{"operator_wrap_both",
+                                   "c(&User::a) || &User::b || c(&User::c)",
+                                   "wrap both operands",
+                                   true},
+                        }},
+                }});
     }
 }
 
@@ -307,16 +331,20 @@ TEST_CASE("codegen: unary minus") {
     }
     SECTION("-a") {
         auto result = generateFull("-a");
-        REQUIRE(result == CodeGenResult{"(c(0) - c(&User::a))",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
-                              {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
-                               Option{"functional", "sub(0, &User::a)", "functional style"}}},
-            },
-            {},
-            {},
-            {kZeroMinusComment}});
+        REQUIRE(result ==
+                CodeGenResult{"(c(0) - c(&User::a))",
+                              {
+                                  columnRefStyleDp(1, "&User::a"),
+                                  DecisionPoint{2,
+                                                "expr_style",
+                                                "operator",
+                                                "(c(0) - c(&User::a))",
+                                                {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                                                 Option{"functional", "sub(0, &User::a)", "functional style"}}},
+                              },
+                              {},
+                              {},
+                              {kZeroMinusComment}});
     }
 }
 
@@ -364,15 +392,13 @@ TEST_CASE("codegen: the sign of INT64_MIN is not folded into the hex literal") {
             std::vector<CodegenWarning>{
                 {"hex literal too big: -0x08000000000000000; SQLite refuses this expression wherever "
                  "it is used, so the generated subtraction from zero does not reproduce it",
-                 SourceLocation{1, 1}, 1}});
+                 SourceLocation{1, 1},
+                 1}});
     // Every neighbouring value stays folded: sqlite3 3.51 gives 9223372036854775807 and 1 for these.
-    REQUIRE(generateFull("-0x8000000000000001") ==
-            CodeGenResult{"-static_cast<int64_t>(0x8000000000000001)", {}});
-    REQUIRE(generateFull("-0xFFFFFFFFFFFFFFFF") ==
-            CodeGenResult{"-static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)", {}});
+    REQUIRE(generateFull("-0x8000000000000001") == CodeGenResult{"-static_cast<int64_t>(0x8000000000000001)", {}});
+    REQUIRE(generateFull("-0xFFFFFFFFFFFFFFFF") == CodeGenResult{"-static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)", {}});
     // The literal on its own is -9223372036854775808 in SQLite and needs no guard.
-    REQUIRE(generateFull("0x8000000000000000") ==
-            CodeGenResult{"static_cast<int64_t>(0x8000000000000000)", {}});
+    REQUIRE(generateFull("0x8000000000000000") == CodeGenResult{"static_cast<int64_t>(0x8000000000000000)", {}});
 }
 
 TEST_CASE("codegen: unary plus is no-op") {
@@ -385,20 +411,27 @@ TEST_CASE("codegen: unary plus is no-op") {
 TEST_CASE("codegen: bitwise not") {
     SECTION("~5") {
         auto result = generateFull("~5");
-        REQUIRE(result == CodeGenResult{"~c(5)", {DecisionPoint{1, "expr_style", "operator", "~c(5)",
-            {Option{"operator", "~c(5)", "operator style"},
-             Option{"functional", "bitwise_not(5)", "functional style"}}
-        }}});
+        REQUIRE(result == CodeGenResult{"~c(5)",
+                                        {DecisionPoint{1,
+                                                       "expr_style",
+                                                       "operator",
+                                                       "~c(5)",
+                                                       {Option{"operator", "~c(5)", "operator style"},
+                                                        Option{"functional", "bitwise_not(5)", "functional style"}}}}});
     }
     SECTION("~a") {
         auto result = generateFull("~a");
-        REQUIRE(result == CodeGenResult{"~c(&User::a)",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "~c(&User::a)",
-                              {Option{"operator", "~c(&User::a)", "operator style"},
-                               Option{"functional", "bitwise_not(&User::a)", "functional style"}}},
-            }});
+        REQUIRE(result ==
+                CodeGenResult{"~c(&User::a)",
+                              {
+                                  columnRefStyleDp(1, "&User::a"),
+                                  DecisionPoint{2,
+                                                "expr_style",
+                                                "operator",
+                                                "~c(&User::a)",
+                                                {Option{"operator", "~c(&User::a)", "operator style"},
+                                                 Option{"functional", "bitwise_not(&User::a)", "functional style"}}},
+                              }});
     }
 }
 
@@ -413,7 +446,11 @@ TEST_CASE("codegen: logical AND") {
         std::vector<DecisionPoint> expectedDps;
         expectedDps.insert(expectedDps.end(), leftEq.decisionPoints.begin(), leftEq.decisionPoints.end());
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
-        expectedDps.push_back(DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) == 1 and c(&User::b) == 2",
+        expectedDps.push_back(DecisionPoint{
+            5,
+            "expr_style",
+            "operator_wrap_left",
+            "c(&User::a) == 1 and c(&User::b) == 2",
             {
                 Option{"operator_wrap_left", "c(&User::a) == 1 and c(&User::b) == 2", "wrap left operand"},
                 Option{"operator_wrap_right", "c(&User::a) == 1 and c(&User::b) == 2", "wrap right operand"},
@@ -428,19 +465,22 @@ TEST_CASE("codegen: logical OR") {
     SECTION("leaf operands") {
         // Neither operand is a condition, so `c(&User::a) or &User::b` would be the concatenation
         // `operator||` and not an OR at all; the call is the only form there.
-        REQUIRE(generateFull("a OR b") == CodeGenResult{
-            "or_(&User::a, &User::b)",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                columnRefStyleDp(2, "&User::b"),
-                DecisionPoint{3, "expr_style", "functional", "or_(&User::a, &User::b)",
-                    {
-                        Option{"functional", "or_(&User::a, &User::b)", "functional style"},
-                    }},
-            },
-            {},
-            {},
-            {kOrTokenCallSpellingComment}});
+        REQUIRE(generateFull("a OR b") ==
+                CodeGenResult{"or_(&User::a, &User::b)",
+                              {
+                                  columnRefStyleDp(1, "&User::a"),
+                                  columnRefStyleDp(2, "&User::b"),
+                                  DecisionPoint{3,
+                                                "expr_style",
+                                                "functional",
+                                                "or_(&User::a, &User::b)",
+                                                {
+                                                    Option{"functional", "or_(&User::a, &User::b)", "functional style"},
+                                                }},
+                              },
+                              {},
+                              {},
+                              {kOrTokenCallSpellingComment}});
     }
     SECTION("compound operands: a = 1 OR b = 2") {
         auto result = generateFull("a = 1 OR b = 2");
@@ -449,7 +489,11 @@ TEST_CASE("codegen: logical OR") {
         std::vector<DecisionPoint> expectedDps;
         expectedDps.insert(expectedDps.end(), leftEq.decisionPoints.begin(), leftEq.decisionPoints.end());
         expectedDps.insert(expectedDps.end(), rightEq.decisionPoints.begin(), rightEq.decisionPoints.end());
-        expectedDps.push_back(DecisionPoint{5, "expr_style", "operator_wrap_left", "c(&User::a) == 1 or c(&User::b) == 2",
+        expectedDps.push_back(DecisionPoint{
+            5,
+            "expr_style",
+            "operator_wrap_left",
+            "c(&User::a) == 1 or c(&User::b) == 2",
             {
                 Option{"operator_wrap_left", "c(&User::a) == 1 or c(&User::b) == 2", "wrap left operand"},
                 Option{"operator_wrap_right", "c(&User::a) == 1 or c(&User::b) == 2", "wrap right operand"},
@@ -528,51 +572,66 @@ TEST_CASE("codegen: an operator spelled as a call carries its comment") {
 TEST_CASE("codegen: logical NOT") {
     SECTION("leaf operand") {
         auto result = generateFull("NOT a");
-        REQUIRE(result == CodeGenResult{"not column<User>(&User::a)",
-            {
-                DecisionPoint{1, "expr_style", "operator", "not column<User>(&User::a)",
-                              {
-                                  Option{"operator", "not column<User>(&User::a)", "operator style"},
-                                  Option{"operator_excl", "!column<User>(&User::a)", "use ! instead of not"},
-                              }},
-            },
-            {},
-            {},
-            {kNotColumnPointerComment}});
+        REQUIRE(result ==
+                CodeGenResult{
+                    "not column<User>(&User::a)",
+                    {
+                        DecisionPoint{1,
+                                      "expr_style",
+                                      "operator",
+                                      "not column<User>(&User::a)",
+                                      {
+                                          Option{"operator", "not column<User>(&User::a)", "operator style"},
+                                          Option{"operator_excl", "!column<User>(&User::a)", "use ! instead of not"},
+                                      }},
+                    },
+                    {},
+                    {},
+                    {kNotColumnPointerComment}});
     }
     SECTION("value operand") {
         auto result = generateFull("NOT 1");
-        REQUIRE(result == CodeGenResult{"not (c(0) + 1)",
-            {
-                DecisionPoint{1, "expr_style", "operator", "not (c(0) + 1)",
+        REQUIRE(result ==
+                CodeGenResult{"not (c(0) + 1)",
                               {
-                                  Option{"operator", "not (c(0) + 1)", "operator style"},
-                                  Option{"operator_excl", "!(c(0) + 1)", "use ! instead of not"},
-                              }},
-            },
-            {},
-            {},
-            {kNotValueAddedToZeroComment}});
+                                  DecisionPoint{1,
+                                                "expr_style",
+                                                "operator",
+                                                "not (c(0) + 1)",
+                                                {
+                                                    Option{"operator", "not (c(0) + 1)", "operator style"},
+                                                    Option{"operator_excl", "!(c(0) + 1)", "use ! instead of not"},
+                                                }},
+                              },
+                              {},
+                              {},
+                              {kNotValueAddedToZeroComment}});
     }
     SECTION("compound operand: NOT -a") {
         auto result = generateFull("NOT -a");
-        REQUIRE(result == CodeGenResult{
-            "not (c(0) - c(&User::a))",
-            {
-                columnRefStyleDp(1, "&User::a"),
-                DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
-                              {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
-                               Option{"functional", "sub(0, &User::a)", "functional style"}}},
-                DecisionPoint{3, "expr_style", "operator", "not (c(0) - c(&User::a))",
-                              {
-                                  Option{"operator", "not (c(0) - c(&User::a))", "operator style"},
-                                  Option{"operator_excl", "!(c(0) - c(&User::a))", "use ! instead of not"},
-                              }},
-            },
-            {},
-            {},
-            {kZeroMinusComment}
-        });
+        REQUIRE(result ==
+                CodeGenResult{
+                    "not (c(0) - c(&User::a))",
+                    {
+                        columnRefStyleDp(1, "&User::a"),
+                        DecisionPoint{2,
+                                      "expr_style",
+                                      "operator",
+                                      "(c(0) - c(&User::a))",
+                                      {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                                       Option{"functional", "sub(0, &User::a)", "functional style"}}},
+                        DecisionPoint{3,
+                                      "expr_style",
+                                      "operator",
+                                      "not (c(0) - c(&User::a))",
+                                      {
+                                          Option{"operator", "not (c(0) - c(&User::a))", "operator style"},
+                                          Option{"operator_excl", "!(c(0) - c(&User::a))", "use ! instead of not"},
+                                      }},
+                    },
+                    {},
+                    {},
+                    {kZeroMinusComment}});
     }
 }
 
@@ -623,14 +682,13 @@ TEST_CASE("codegen: a column under a NOT carries its comment") {
 // did not happen stays off it.
 TEST_CASE("codegen: a SELECT alias under a NOT keeps the form it had") {
     auto result = generateFull("SELECT a AS al FROM users WHERE NOT al;");
-    REQUIRE(result.code ==
-            "struct AlAlias : sqlite_orm::alias_tag {\n"
-            "    static const std::string& get() {\n"
-            "        static const std::string res = \"al\";\n"
-            "        return res;\n"
-            "    }\n"
-            "};\n"
-            "auto rows = storage.select(as<AlAlias>(&Users::a), where(not c(get<AlAlias>())));");
+    REQUIRE(result.code == "struct AlAlias : sqlite_orm::alias_tag {\n"
+                           "    static const std::string& get() {\n"
+                           "        static const std::string res = \"al\";\n"
+                           "        return res;\n"
+                           "    }\n"
+                           "};\n"
+                           "auto rows = storage.select(as<AlAlias>(&Users::a), where(not c(get<AlAlias>())));");
     REQUIRE(result.comments == std::vector<std::string>{});
 }
 
@@ -648,8 +706,7 @@ TEST_CASE("codegen: a value under a NOT is added to zero") {
     REQUIRE(generate("SELECT NOT -2;") == "auto rows = storage.select(not (c(0) + -2));");
     REQUIRE(generate("SELECT NOT x'3132';") ==
             "auto rows = storage.select(not (c(0) + std::vector<char>{'\\x31', '\\x32'}));");
-    REQUIRE(generate("SELECT NOT current_timestamp;") ==
-            "auto rows = storage.select(not c(current_timestamp()));");
+    REQUIRE(generate("SELECT NOT current_timestamp;") == "auto rows = storage.select(not c(current_timestamp()));");
 }
 
 TEST_CASE("codegen: a value under a NOT carries its comment") {
@@ -680,35 +737,102 @@ TEST_CASE("codegen: a NOT over a NOT is delimited by a CAST") {
             "auto rows = storage.select(as_optional(not (between(&Users::a, 1, 9))));");
     REQUIRE(generate("SELECT NOT (a LIKE 'x') FROM users;") ==
             "auto rows = storage.select(as_optional(not (like(&Users::a, \"x\"))));");
-    REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") ==
-            "auto rows = storage.select(not (is_null(&Users::a)));");
+    REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") == "auto rows = storage.select(not (is_null(&Users::a)));");
     REQUIRE(generate("SELECT NOT (a NOT IN (1, 2)) FROM users;") ==
             "auto rows = storage.select(as_optional(not (not_in(&Users::a, {1, 2}))));");
 }
 
 TEST_CASE("codegen: a NOT over a NOT carries its comment") {
     auto result = generateFull("SELECT NOT NOT a FROM users;");
-    REQUIRE(result.comments ==
-            std::vector<std::string>{kNotColumnPointerComment, kNegatedConditionCastComment});
+    REQUIRE(result.comments == std::vector<std::string>{kNotColumnPointerComment, kNegatedConditionCastComment});
+}
+
+// A concatenation carries the same CAST as a NOT does: sqlite_orm's `conc_t` is
+// `binary_operator<L, R, conc_string>` and nothing else — neither negatable nor an operator
+// argument — so `not (c(&Users::a) || "x")` stops at `no match for operator!`. The CAST has to be
+// one to REAL, not the CAST to INTEGER a nested NOT takes: a concatenation answers TEXT or NULL,
+// and SQLite reads the truth of a text value through its real value, so `NOT ('0' || '.5')` is 0
+// where `NOT CAST('0' || '.5' AS INTEGER)` is 1. The values are pinned in
+// "runtime: a NOT over a concatenation returns the value SQLite computes".
+TEST_CASE("codegen: a NOT over a concatenation is delimited by a CAST to REAL") {
+    auto check = [](std::string_view sql, const std::string& code) {
+        auto result = generateFull(sql);
+        REQUIRE(result.code == code);
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    };
+    check("SELECT NOT (a || 'x') FROM users;",
+          "auto rows = storage.select(as_optional(not cast<double>(c(&Users::a) || \"x\")));");
+    check("SELECT NOT ('a' || 'b');", "auto rows = storage.select(not cast<double>(c(\"a\") || \"b\"));");
+    check("SELECT NOT ('a' || 'b' || 'c');",
+          "auto rows = storage.select(not cast<double>(c(\"a\") || \"b\" || \"c\"));");
+    // The call spelling a condition operand takes is the same `conc_t`, and so is the one a
+    // predicate delimited with a CAST keeps.
+    check("SELECT NOT ((a = 1) || 'x') FROM users;",
+          "auto rows = storage.select(as_optional(not cast<double>(conc(c(&Users::a) == 1, \"x\"))));");
+    check("SELECT NOT ((a IS NULL) || 'x') FROM users;",
+          "auto rows = storage.select(not cast<double>(cast<int64_t>(is_null(&Users::a)) || \"x\"));");
+    check("SELECT 1 FROM users WHERE NOT (a || 'x');",
+          "auto rows = storage.select(1, where(not cast<double>(c(&Users::a) || \"x\")));");
+    // A NOT over the NOT keeps the CAST to INTEGER its own operand needs: the inner NOT answers
+    // 0, 1 or NULL, which a CAST to INTEGER holds.
+    check("SELECT NOT NOT (a || 'x') FROM users;",
+          "auto rows = storage.select(as_optional(not cast<int64_t>(not cast<double>(c(&Users::a) || "
+          "\"x\"))));");
+}
+
+// A COLLATE generates its operand and nothing else, so the concatenation under one is the operand
+// the NOT really stands over in the generated code.
+TEST_CASE("codegen: a NOT over a collated concatenation is delimited as well") {
+    auto result = generateFull("SELECT NOT (('a' || 'b') COLLATE NOCASE);");
+    REQUIRE(result.code == "auto rows = storage.select(not cast<double>(c(\"a\") || \"b\"));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
+}
+
+TEST_CASE("codegen: a NOT over a concatenation carries its comment") {
+    auto result = generateFull("SELECT NOT ('a' || 'b');");
+    REQUIRE(result.comments == std::vector<std::string>{kConcatenationCastComment});
+}
+
+// An OR needs nothing: sqlite_orm spells `or` and the concatenation with the same `operator||`, and
+// an OR is generated as the call whenever the operator would pick the `conc_t` — an `or_condition_t`
+// either way, which sqlite_orm does negate. The values are pinned in
+// "runtime: a NOT over an OR returns the value SQLite computes".
+TEST_CASE("codegen: a NOT over an OR is negated as it stands") {
+    auto check = [](std::string_view sql, const std::string& code) {
+        auto result = generateFull(sql);
+        REQUIRE(result.code == code);
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    };
+    check("SELECT NOT (a OR b) FROM users;",
+          "auto rows = storage.select(as_optional(not (or_(&Users::a, &Users::b))));");
+    check("SELECT NOT (1 OR 0);", "auto rows = storage.select(not (or_(1, 0)));");
+    check("SELECT NOT (a = 1 OR b = 2) FROM users;",
+          "auto rows = storage.select(as_optional(not (c(&Users::a) == 1 or c(&Users::b) == 2)));");
 }
 
 TEST_CASE("codegen: double unary minus parenthesized") {
     auto result = generateFull("- -a");
-    REQUIRE(result == CodeGenResult{
-        "(c(0) - (c(0) - c(&User::a)))",
-        {
-            columnRefStyleDp(1, "&User::a"),
-            DecisionPoint{2, "expr_style", "operator", "(c(0) - c(&User::a))",
-                          {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
-                           Option{"functional", "sub(0, &User::a)", "functional style"}}},
-            DecisionPoint{3, "expr_style", "operator", "(c(0) - (c(0) - c(&User::a)))",
-                          {Option{"operator", "(c(0) - (c(0) - c(&User::a)))", "operator style"},
-                           Option{"functional", "sub(0, (c(0) - c(&User::a)))", "functional style"}}},
-        },
-        {},
-        {},
-        {kZeroMinusComment}
-    });
+    REQUIRE(result ==
+            CodeGenResult{"(c(0) - (c(0) - c(&User::a)))",
+                          {
+                              columnRefStyleDp(1, "&User::a"),
+                              DecisionPoint{2,
+                                            "expr_style",
+                                            "operator",
+                                            "(c(0) - c(&User::a))",
+                                            {Option{"operator", "(c(0) - c(&User::a))", "operator style"},
+                                             Option{"functional", "sub(0, &User::a)", "functional style"}}},
+                              DecisionPoint{3,
+                                            "expr_style",
+                                            "operator",
+                                            "(c(0) - (c(0) - c(&User::a)))",
+                                            {Option{"operator", "(c(0) - (c(0) - c(&User::a)))", "operator style"},
+                                             Option{"functional", "sub(0, (c(0) - c(&User::a)))", "functional style"}}},
+                          },
+                          {},
+                          {},
+                          {kZeroMinusComment}});
 }
 
 // sqlite_orm has no working unary minus, so a negation of anything but a numeric constant is
@@ -721,12 +845,9 @@ TEST_CASE("codegen: unary minus over a general operand becomes a subtraction fro
     // `length('abc')` is spelled out in the SQL and SQLite propagates a NULL argument, so the
     // subtraction over it has no NULL to report and keeps the type sqlite_orm gives it.
     REQUIRE(generate("SELECT -length('abc');") == "auto rows = storage.select((c(0) - (length(\"abc\"))));");
-    REQUIRE(generate("SELECT -x'31';") ==
-            "auto rows = storage.select((c(0) - c(std::vector<char>{'\\x31'})));");
-    REQUIRE(generate("SELECT -(SELECT 1);") ==
-            "auto rows = storage.select(as_optional((c(0) - (select(1)))));");
-    REQUIRE(generate("SELECT -a FROM users;") ==
-            "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
+    REQUIRE(generate("SELECT -x'31';") == "auto rows = storage.select((c(0) - c(std::vector<char>{'\\x31'})));");
+    REQUIRE(generate("SELECT -(SELECT 1);") == "auto rows = storage.select(as_optional((c(0) - (select(1)))));");
+    REQUIRE(generate("SELECT -a FROM users;") == "auto rows = storage.select(as_optional((c(0) - c(&Users::a))));");
     REQUIRE(generate("SELECT -(a+1) FROM users;") ==
             "auto rows = storage.select(as_optional((c(0) - (c(&Users::a) + 1))));");
     REQUIRE(generate("SELECT -CAST(a AS INTEGER) FROM users;") ==
@@ -746,8 +867,7 @@ TEST_CASE("codegen: unary minus under the functional expression style") {
     policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
     REQUIRE(generateWithPolicy("SELECT -a FROM users;", policy).code ==
             "auto rows = storage.select(as_optional(sub(0, &Users::a)));");
-    REQUIRE(generateWithPolicy("SELECT -(2+3);", policy).code ==
-            "auto rows = storage.select(sub(0, add(2, 3)));");
+    REQUIRE(generateWithPolicy("SELECT -(2+3);", policy).code == "auto rows = storage.select(sub(0, add(2, 3)));");
 }
 
 // A predicate is the one operand the subtraction cannot carry: sqlite_orm serializes
@@ -762,23 +882,19 @@ TEST_CASE("codegen: unary minus over a predicate warns instead") {
                     {"unary minus over a predicate (" + predicate +
                          ") has no working sqlite_orm form; the generated negation does not reproduce "
                          "what SQLite computes and does not compile",
-                     SourceLocation{1, 8}, 1}});
+                     SourceLocation{1, 8},
+                     1}});
     };
     check("SELECT -(a IN (1,2)) FROM users;", "auto rows = storage.select(-(in(&Users::a, {1, 2})));", "IN");
     check("SELECT -(a BETWEEN 1 AND 9) FROM users;",
-          "auto rows = storage.select(-(between(&Users::a, 1, 9)));", "BETWEEN");
-    check("SELECT -(a LIKE 'x') FROM users;", "auto rows = storage.select(-(like(&Users::a, \"x\")));",
-          "LIKE");
-    check("SELECT -(a GLOB 'x') FROM users;", "auto rows = storage.select(-(glob(&Users::a, \"x\")));",
-          "GLOB");
-    check("SELECT -(a MATCH 'x') FROM users;", "auto rows = storage.select(-(match(&Users::a, \"x\")));",
-          "MATCH");
-    check("SELECT -(a IS NULL) FROM users;", "auto rows = storage.select(-(is_null(&Users::a)));",
-          "IS NULL");
-    check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));",
-          "IS NOT NULL");
-    check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not column<Users>(&Users::a)));",
-          "NOT");
+          "auto rows = storage.select(-(between(&Users::a, 1, 9)));",
+          "BETWEEN");
+    check("SELECT -(a LIKE 'x') FROM users;", "auto rows = storage.select(-(like(&Users::a, \"x\")));", "LIKE");
+    check("SELECT -(a GLOB 'x') FROM users;", "auto rows = storage.select(-(glob(&Users::a, \"x\")));", "GLOB");
+    check("SELECT -(a MATCH 'x') FROM users;", "auto rows = storage.select(-(match(&Users::a, \"x\")));", "MATCH");
+    check("SELECT -(a IS NULL) FROM users;", "auto rows = storage.select(-(is_null(&Users::a)));", "IS NULL");
+    check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));", "IS NOT NULL");
+    check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not column<Users>(&Users::a)));", "NOT");
 }
 
 // sqlite_orm parenthesizes an operand it serializes only when that operand is a binary operator or
@@ -837,8 +953,7 @@ TEST_CASE("codegen: the predicate cast survives the functional expression style"
 }
 
 TEST_CASE("codegen: a predicate cast under an operator carries its comment") {
-    REQUIRE(generateFull("SELECT 1 - (a IS NULL);").comments ==
-            std::vector<std::string>{kPredicateCastComment});
+    REQUIRE(generateFull("SELECT 1 - (a IS NULL);").comments == std::vector<std::string>{kPredicateCastComment});
     REQUIRE(generateFull("SELECT (a IS NULL) AND 1;").comments.empty());
 }
 
@@ -851,27 +966,19 @@ TEST_CASE("codegen: an AND or an OR in a predicate argument is cast to stay one 
     SECTION("every argument slot of every predicate") {
         REQUIRE(generate("(1 OR 0) IS NULL") == "is_null(cast<int64_t>(or_(1, 0)))");
         REQUIRE(generate("(1 OR 0) NOT NULL") == "is_not_null(cast<int64_t>(or_(1, 0)))");
-        REQUIRE(generate("(a OR b) IN (0, 1)") ==
-                "in(cast<int64_t>(or_(&User::a, &User::b)), {0, 1})");
-        REQUIRE(generate("(a OR b) NOT IN (0, 1)") ==
-                "not_in(cast<int64_t>(or_(&User::a, &User::b)), {0, 1})");
-        REQUIRE(generate("(a OR b) BETWEEN 0 AND 1") ==
-                "between(cast<int64_t>(or_(&User::a, &User::b)), 0, 1)");
+        REQUIRE(generate("(a OR b) IN (0, 1)") == "in(cast<int64_t>(or_(&User::a, &User::b)), {0, 1})");
+        REQUIRE(generate("(a OR b) NOT IN (0, 1)") == "not_in(cast<int64_t>(or_(&User::a, &User::b)), {0, 1})");
+        REQUIRE(generate("(a OR b) BETWEEN 0 AND 1") == "between(cast<int64_t>(or_(&User::a, &User::b)), 0, 1)");
         // `between(A, T, T)` deduces one type for both bounds, so these two do not compile — nor
         // did they on master, where the bound was a `conc_t` — but the SQL a bound serializes into
         // runs into the `AND` of the BETWEEN itself, so the CAST belongs there all the same.
         REQUIRE(generate("1 BETWEEN (1 OR 0) AND 3") == "between(1, cast<int64_t>(or_(1, 0)), 3)");
         REQUIRE(generate("1 BETWEEN 0 AND (1 OR 0)") == "between(1, 0, cast<int64_t>(or_(1, 0)))");
-        REQUIRE(generate("(a OR b) LIKE 'x'") ==
-                R"(like(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
-        REQUIRE(generate("'x' LIKE (a OR b)") ==
-                R"(like("x", cast<int64_t>(or_(&User::a, &User::b))))");
-        REQUIRE(generate("(a OR b) NOT LIKE 'x'") ==
-                R"(!like(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
-        REQUIRE(generate("(a OR b) GLOB 'x'") ==
-                R"(glob(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
-        REQUIRE(generate("a MATCH (b OR c)") ==
-                "match(&User::a, cast<int64_t>(or_(&User::b, &User::c)))");
+        REQUIRE(generate("(a OR b) LIKE 'x'") == R"(like(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
+        REQUIRE(generate("'x' LIKE (a OR b)") == R"(like("x", cast<int64_t>(or_(&User::a, &User::b))))");
+        REQUIRE(generate("(a OR b) NOT LIKE 'x'") == R"(!like(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
+        REQUIRE(generate("(a OR b) GLOB 'x'") == R"(glob(cast<int64_t>(or_(&User::a, &User::b)), "x"))");
+        REQUIRE(generate("a MATCH (b OR c)") == "match(&User::a, cast<int64_t>(or_(&User::b, &User::c)))");
     }
     SECTION("an AND is bound the same way") {
         REQUIRE(generate("(1 AND 0) IS NULL") == "is_null(cast<int64_t>(c(1) and 0))");
@@ -925,18 +1032,17 @@ TEST_CASE("codegen: IN") {
 
 TEST_CASE("codegen: NOT IN") {
     REQUIRE(generateFull("a NOT IN (1, 2)") ==
-            CodeGenResult{
-                "not_in(&User::a, {1, 2})",
-                {
-                    columnRefStyleDp(1, "&User::a"),
-                    DecisionPoint{2,
-                                  "negation_style",
-                                  "not_in",
-                                  "not_in(&User::a, {1, 2})",
-                                  {Option{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"},
-                                   Option{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}},
-                },
-                {}});
+            CodeGenResult{"not_in(&User::a, {1, 2})",
+                          {
+                              columnRefStyleDp(1, "&User::a"),
+                              DecisionPoint{2,
+                                            "negation_style",
+                                            "not_in",
+                                            "not_in(&User::a, {1, 2})",
+                                            {Option{"not_in", "not_in(&User::a, {1, 2})", "use not_in()"},
+                                             Option{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}},
+                          },
+                          {}});
 }
 
 TEST_CASE("codegen: NOT IN with the operator_excl negation policy") {
@@ -1092,8 +1198,7 @@ TEST_CASE("codegen: a nested operand keeps the grouping SQL gave it") {
 TEST_CASE("codegen: the functional expression style needs no parentheses") {
     CodeGenPolicy policy;
     policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
-    REQUIRE(generateWithPolicy("SELECT 1 - (2 - 3);", policy).code ==
-            "auto rows = storage.select(sub(1, sub(2, 3)));");
+    REQUIRE(generateWithPolicy("SELECT 1 - (2 - 3);", policy).code == "auto rows = storage.select(sub(1, sub(2, 3)));");
     REQUIRE(generateWithPolicy("SELECT 'a' || 'b' = 'ab';", policy).code ==
             R"(auto rows = storage.select(is_equal(conc("a", "b"), "ab"));)");
 }
@@ -1312,8 +1417,7 @@ TEST_CASE("codegen: prefix - inferred int64_t from a binary arithmetic term") {
 // The same inference answers for BETWEEN, for IN and for the result type of a CASE, so a literal
 // beyond int32 widens the field there too.
 TEST_CASE("codegen: int64_t literal widens BETWEEN, IN and CASE") {
-    REQUIRE(prefixFor("x BETWEEN 3000000000 AND 4000000000") ==
-            "struct User {\n    int64_t x = 0;\n};");
+    REQUIRE(prefixFor("x BETWEEN 3000000000 AND 4000000000") == "struct User {\n    int64_t x = 0;\n};");
     REQUIRE(prefixFor("x IN (3000000000)") == "struct User {\n    int64_t x = 0;\n};");
     REQUIRE(generate("CASE WHEN a > 0 THEN 3000000000 ELSE 0 END") ==
             "case_<int64_t>().when(c(&User::a) > 0, then(3000000000)).else_(0).end()");
@@ -1365,43 +1469,52 @@ TEST_CASE("codegen: prefix - CASE with int return type") {
 }
 
 TEST_CASE("codegen: IS expr returns error") {
-    REQUIRE(generateFull("SELECT 1 IS 2 FROM users;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+    REQUIRE(generateFull("SELECT 1 IS 2 FROM users;") == CodeGenResult{{},
+                                                                       {},
+                                                                       {},
+                                                                       {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                                                                        "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS NOT expr returns error") {
     REQUIRE(generateFull("SELECT 1 IS NOT 2 FROM users;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                           "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS DISTINCT FROM returns error") {
     REQUIRE(generateFull("SELECT a IS DISTINCT FROM b FROM t;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                           "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: IS NOT DISTINCT FROM returns error") {
     REQUIRE(generateFull("SELECT a IS NOT DISTINCT FROM b FROM t;") ==
-        CodeGenResult{{}, {}, {},
-            {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-             "is not supported in sqlite_orm"}});
+            CodeGenResult{{},
+                          {},
+                          {},
+                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                           "is not supported in sqlite_orm"}});
 }
 
 TEST_CASE("codegen: JSON -> operator") {
     REQUIRE(generateFull("SELECT data -> '$.name' FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                      {columnRefStyleDp(1, "&Users::data"),
-                       DecisionPoint{2, "expr_style", "functional",
-                          "json_extract(&Users::data, \"$.name\")",
-                          {Option{"functional",
-                              "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
-                      {"JSON -> / ->> operator is mapped to json_extract() "
-                       "— return type may differ from sqlite"}});
+            CodeGenResult{
+                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
+                {columnRefStyleDp(1, "&Users::data"),
+                 DecisionPoint{2,
+                               "expr_style",
+                               "functional",
+                               "json_extract(&Users::data, \"$.name\")",
+                               {Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
+                {"JSON -> / ->> operator is mapped to json_extract() "
+                 "— return type may differ from sqlite"}});
 }
 
 TEST_CASE("codegen: column_ref_style options list every variant without duplicating the chosen") {
@@ -1416,8 +1529,8 @@ TEST_CASE("codegen: column_ref_style options list every variant without duplicat
         REQUIRE(dp.options[1].value == "column_pointer");
         // The chosen value appears in options exactly once (never duplicated).
         int chosenCount = 0;
-        for(const auto& option : dp.options) {
-            if(option.value == dp.chosenValue) {
+        for (const auto& option: dp.options) {
+            if (option.value == dp.chosenValue) {
                 ++chosenCount;
             }
         }
@@ -1432,37 +1545,39 @@ TEST_CASE("codegen: column_ref_style options list every variant without duplicat
 
 TEST_CASE("codegen: JSON ->> operator") {
     REQUIRE(generateFull("SELECT data ->> '$.name' FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                      {columnRefStyleDp(1, "&Users::data"),
-                       DecisionPoint{2, "expr_style", "functional",
-                          "json_extract(&Users::data, \"$.name\")",
-                          {Option{"functional",
-                              "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
-                      {"JSON -> / ->> operator is mapped to json_extract() "
-                       "— return type may differ from sqlite"}});
+            CodeGenResult{
+                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
+                {columnRefStyleDp(1, "&Users::data"),
+                 DecisionPoint{2,
+                               "expr_style",
+                               "functional",
+                               "json_extract(&Users::data, \"$.name\")",
+                               {Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
+                {"JSON -> / ->> operator is mapped to json_extract() "
+                 "— return type may differ from sqlite"}});
 }
 
 TEST_CASE("codegen: bind parameter anonymous") {
     REQUIRE(generateFull("SELECT ? FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(bindParam1);",
-                      {},
-                      {"bind parameter ? -> C++ variable 'bindParam1'; "
-                       "for prepared statements use storage.prepare() + get<N>(stmt)"}});
+            CodeGenResult{"auto rows = storage.select(bindParam1);",
+                          {},
+                          {"bind parameter ? -> C++ variable 'bindParam1'; "
+                           "for prepared statements use storage.prepare() + get<N>(stmt)"}});
 }
 
 TEST_CASE("codegen: bind parameter named") {
     REQUIRE(generateFull("SELECT :userId FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(userId);",
-                      {},
-                      {"bind parameter :userId -> C++ variable 'userId'; "
-                       "for prepared statements use storage.prepare() + get<N>(stmt)"}});
+            CodeGenResult{"auto rows = storage.select(userId);",
+                          {},
+                          {"bind parameter :userId -> C++ variable 'userId'; "
+                           "for prepared statements use storage.prepare() + get<N>(stmt)"}});
 }
 
 TEST_CASE("codegen: expr COLLATE warning") {
     REQUIRE(generateFull("SELECT name COLLATE NOCASE FROM users;") ==
-        CodeGenResult{"auto rows = storage.select(&Users::name);",
-                      {columnRefStyleDp(1, "&Users::name")},
-                      {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
+            CodeGenResult{"auto rows = storage.select(&Users::name);",
+                          {columnRefStyleDp(1, "&Users::name")},
+                          {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
 }
 
 // The COLLATE above is dropped, and the operand it stood over has to come out exactly as it would
@@ -1475,15 +1590,13 @@ TEST_CASE("codegen: a dropped COLLATE leaves the operand it stood over as it was
     REQUIRE(generate("SELECT ('a' COLLATE NOCASE) || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
     REQUIRE(generate("SELECT 'a' || ('b' COLLATE NOCASE);") == "auto rows = storage.select(c(\"a\") || \"b\");");
     REQUIRE(generate("SELECT 'a' || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
-    REQUIRE(generate("SELECT (a COLLATE BINARY) + 1;") ==
-            "auto rows = storage.select(as_optional(c(&User::a) + 1));");
+    REQUIRE(generate("SELECT (a COLLATE BINARY) + 1;") == "auto rows = storage.select(as_optional(c(&User::a) + 1));");
     REQUIRE(generate("SELECT a + (a COLLATE BINARY);") ==
             "auto rows = storage.select(as_optional(c(&User::a) + &User::a));");
     REQUIRE(generate("SELECT a + 1;") == "auto rows = storage.select(as_optional(c(&User::a) + 1));");
     // The CAST around the whole column is the int64 widening of
     // "codegen: a bitwise result column is cast to an int64_t", which the COLLATE is inside of.
-    REQUIRE(generate("SELECT ~('a' COLLATE NOCASE);") ==
-            "auto rows = storage.select(cast<int64_t>(~c(\"a\")));");
+    REQUIRE(generate("SELECT ~('a' COLLATE NOCASE);") == "auto rows = storage.select(cast<int64_t>(~c(\"a\")));");
 }
 
 // The grouping the generated operand needs is the grouping of the node under the COLLATE, and the
@@ -1503,8 +1616,7 @@ TEST_CASE("codegen: a COLLATE'd operand keeps the grouping and the field of what
 // a dropped COLLATE, so `(a COLLATE NOCASE) LIKE 'x%'` has to reach the same field `a LIKE 'x%'`
 // does; it used to leave `a` an `int` the pattern is never compared against.
 TEST_CASE("codegen: a column under a dropped COLLATE is still the operand of the predicate") {
-    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) BETWEEN 'x' AND 'y';") ==
-            "struct User {\n    std::string a;\n};");
+    REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) BETWEEN 'x' AND 'y';") == "struct User {\n    std::string a;\n};");
     REQUIRE(prefixFor("SELECT a BETWEEN 'x' AND 'y';") == "struct User {\n    std::string a;\n};");
     REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) IN ('x', 'y');") == "struct User {\n    std::string a;\n};");
     REQUIRE(prefixFor("SELECT (a COLLATE NOCASE) LIKE 'x%';") == "struct User {\n    std::string a;\n};");
@@ -1528,16 +1640,15 @@ TEST_CASE("codegen: an argument under a dropped COLLATE keeps its name and type"
             "storage.create_scalar_function<Myfunc>();\n"
             "\n"
             "auto rows = storage.select(func<Myfunc>(&Users::a));");
-    REQUIRE(generate("SELECT myfunc(a) FROM users;") ==
-            "struct Myfunc {\n"
-            "    // TODO: implement this user-defined scalar function\n"
-            "    int operator()(int a) const { return {}; }\n"
-            "    static const char *name() { return \"myfunc\"; }\n"
-            "};\n"
-            "\n"
-            "storage.create_scalar_function<Myfunc>();\n"
-            "\n"
-            "auto rows = storage.select(func<Myfunc>(&Users::a));");
+    REQUIRE(generate("SELECT myfunc(a) FROM users;") == "struct Myfunc {\n"
+                                                        "    // TODO: implement this user-defined scalar function\n"
+                                                        "    int operator()(int a) const { return {}; }\n"
+                                                        "    static const char *name() { return \"myfunc\"; }\n"
+                                                        "};\n"
+                                                        "\n"
+                                                        "storage.create_scalar_function<Myfunc>();\n"
+                                                        "\n"
+                                                        "auto rows = storage.select(func<Myfunc>(&Users::a));");
 }
 
 // SQLite's parser folds a minus into the literal it stands over through parentheses but not through
@@ -1562,7 +1673,8 @@ TEST_CASE("codegen: a minus over a COLLATE is a negation, not a folded sign") {
                                "types `+`, `-`, `*`, `/` and `%` as `double`, so an INTEGER result past "
                                "2^53 comes back rounded (9223372036854775807 reads back as "
                                "9223372036854775808)",
-                               SourceLocation{1, 8}, 1}});
+                               SourceLocation{1, 8},
+                               1}});
 }
 
 // A predicate under the COLLATE is still a predicate sqlite_orm serializes without parentheses, so
@@ -1571,19 +1683,20 @@ TEST_CASE("codegen: a minus over a COLLATE is a negation, not a folded sign") {
 TEST_CASE("codegen: a minus over a predicate under a COLLATE warns as the bare predicate does") {
     auto result = generateFull("SELECT -((a IS NULL) COLLATE BINARY);");
     REQUIRE(result.code == "auto rows = storage.select(-(is_null(&User::a)));");
-    REQUIRE(result.warnings ==
-            std::vector<CodegenWarning>{
-                "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen",
-                CodegenWarning{"unary minus over a predicate (IS NULL) has no working sqlite_orm "
-                               "form; the generated negation does not reproduce what SQLite "
-                               "computes and does not compile",
-                               SourceLocation{1, 8}, 1}});
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   "COLLATE BINARY on expressions is not directly supported in sqlite_orm codegen",
+                                   CodegenWarning{"unary minus over a predicate (IS NULL) has no working sqlite_orm "
+                                                  "form; the generated negation does not reproduce what SQLite "
+                                                  "computes and does not compile",
+                                                  SourceLocation{1, 8},
+                                                  1}});
 }
 
 namespace {
     const sqlite2orm::DecisionPoint* findDp(const sqlite2orm::CodeGenResult& result, std::string_view category) {
-        for(const auto& dp : result.decisionPoints) {
-            if(dp.category == category) return &dp;
+        for (const auto& dp: result.decisionPoints) {
+            if (dp.category == category)
+                return &dp;
         }
         return nullptr;
     }

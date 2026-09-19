@@ -57,16 +57,19 @@ namespace {
         std::vector<AstNodePointer> arms;
         arms.push_back(selectIntegerOne());
         auto second = std::make_unique<SelectNode>(SourceLocation{});
-        second->columns = {SelectColumn{
-            makeSharedNode<BinaryOperatorNode>(BinaryOperator::add, makeNode<ColumnRefNode>("x"),
-                                                 makeNode<IntegerLiteralNode>("1")),
-            ""}};
+        second->columns = {SelectColumn{makeSharedNode<BinaryOperatorNode>(BinaryOperator::add,
+                                                                           makeNode<ColumnRefNode>("x"),
+                                                                           makeNode<IntegerLiteralNode>("1")),
+                                        ""}};
         second->fromClause = fromOne("cnt");
-        second->whereClause = makeSharedNode<BinaryOperatorNode>(
-            BinaryOperator::lessThan, makeNode<ColumnRefNode>("x"), makeNode<IntegerLiteralNode>("3"));
+        second->whereClause = makeSharedNode<BinaryOperatorNode>(BinaryOperator::lessThan,
+                                                                 makeNode<ColumnRefNode>("x"),
+                                                                 makeNode<IntegerLiteralNode>("3"));
         arms.push_back(std::move(second));
         return std::make_unique<CompoundSelectNode>(
-            std::move(arms), std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll}, SourceLocation{});
+            std::move(arms),
+            std::vector<CompoundSelectOperator>{CompoundSelectOperator::unionAll},
+            SourceLocation{});
     }
 
     AstNodePointer selectXFromCnt() {

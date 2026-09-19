@@ -21,34 +21,34 @@ namespace sqlite2orm {
         bindParameter,
 
         // Operators
-        plus,            // +
-        minus,           // -
-        star,            // *
-        slash,           // /
-        percent,         // %
-        pipe2,           // ||
-        eq,              // =
-        eq2,             // ==
-        ne,              // !=
-        ltGt,            // <>
-        lt,              // <
-        le,              // <=
-        gt,              // >
-        ge,              // >=
-        ampersand,       // &
-        pipe,            // |
-        tilde,           // ~
-        shiftLeft,       // <<
-        shiftRight,      // >>
-        arrow,           // ->
-        arrow2,          // ->>
+        plus,  // +
+        minus,  // -
+        star,  // *
+        slash,  // /
+        percent,  // %
+        pipe2,  // ||
+        eq,  // =
+        eq2,  // ==
+        ne,  // !=
+        ltGt,  // <>
+        lt,  // <
+        le,  // <=
+        gt,  // >
+        ge,  // >=
+        ampersand,  // &
+        pipe,  // |
+        tilde,  // ~
+        shiftLeft,  // <<
+        shiftRight,  // >>
+        arrow,  // ->
+        arrow2,  // ->>
 
         // Punctuation
-        leftParen,       // (
-        rightParen,      // )
-        comma,           // ,
-        dot,             // .
-        semicolon,       // ;
+        leftParen,  // (
+        rightParen,  // )
+        comma,  // ,
+        dot,  // .
+        semicolon,  // ;
 
         // Keywords (alphabetical)
         kwAbort,
@@ -213,6 +213,19 @@ namespace sqlite2orm {
         size_t column = 1;
 
         bool operator==(const SourceLocation&) const = default;
+    };
+
+    /**
+     *  A stretch of the SQL something was parsed from: where it starts and the text it covers. The
+     *  text points into the very SQL the tokens were made from, so it names the characters a
+     *  diagnostic about that something underlines rather than a spelling built for the message.
+     *  Empty for anything no parse recorded a span for, a node a test builds by hand among them.
+     */
+    struct SourceSpan {
+        SourceLocation location;
+        std::string_view text;
+
+        bool operator==(const SourceSpan&) const = default;
     };
 
     struct Token {

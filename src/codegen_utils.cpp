@@ -778,6 +778,11 @@ namespace sqlite2orm {
         return foldedSigns > 1 && integerLiteralExceedsInt64(integerLiteral->value);
     }
 
+    size_t underlineLengthOf(std::string_view sourceText) {
+        const size_t lineBreak = sourceText.find('\n');
+        return lineBreak == std::string_view::npos ? sourceText.size() : lineBreak;
+    }
+
     std::string numericLiteralSqlText(const AstNode& value) {
         std::size_t foldedSigns = 0;
         const std::string_view text = numericLiteralText(*withoutFoldedSigns(value, foldedSigns));
@@ -795,7 +800,7 @@ namespace sqlite2orm {
             return CodegenWarning{std::move(message)};
         }
         SourceLocation location = literal.location;
-        size_t length = text.size();
+        size_t length = underlineLengthOf(text);
         // The minus signs the message quotes along with the digits stand in front of the literal,
         // so the underline starts at the value rather than at the token it ends with.
         if(value.location.line == location.line && value.location.column < location.column) {
@@ -1742,25 +1747,25 @@ namespace sqlite2orm {
     std::optional<PragmaValue> pragmaValue(const AstNode& valueNode) {
         if(const auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&valueNode)) {
             return PragmaValue{std::string(integerLiteral->value), std::string(integerLiteral->value),
-                               integerLiteral->location, integerLiteral->value.size()};
+                               integerLiteral->location, underlineLengthOf(integerLiteral->value)};
         }
         if(const auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&valueNode)) {
             return PragmaValue{std::string(realLiteral->value), std::string(realLiteral->value),
-                               realLiteral->location, realLiteral->value.size()};
+                               realLiteral->location, underlineLengthOf(realLiteral->value)};
         }
         if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
             // `ON` is a bool literal too, and it is shorter than the `true` the message spells
             // back, so the underline is measured on the keyword the user wrote.
             const std::string written = boolLiteral->value ? "true" : "false";
-            return PragmaValue{written, written, boolLiteral->location, boolLiteral->spelling.size()};
+            return PragmaValue{written, written, boolLiteral->location, underlineLengthOf(boolLiteral->spelling)};
         }
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value),
-                               stringLiteral->location, stringLiteral->value.size()};
+                               stringLiteral->location, underlineLengthOf(stringLiteral->value)};
         }
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName),
-                               columnRef->location, columnRef->columnName.size()};
+                               columnRef->location, underlineLengthOf(columnRef->columnName)};
         }
         if(const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
             // `CURRENT_DATE` and its two siblings are names to a PRAGMA — SQLite's `nmnum` rule
@@ -1770,7 +1775,7 @@ namespace sqlite2orm {
                                         : currentDatetime->kind == CurrentDatetimeKind::time
                                             ? "current_time"
                                             : "current_timestamp";
-            return PragmaValue{written, written, currentDatetime->location, written.size()};
+            return PragmaValue{written, written, currentDatetime->location, underlineLengthOf(written)};
         }
         if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             const bool numericOperand =

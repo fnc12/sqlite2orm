@@ -214,6 +214,13 @@ namespace sqlite2orm {
      */
     ValueStorageClass fieldTypeStorageClass(std::string_view cppType);
     /**
+     *  Characters of `sourceText` a warning anchored at its first character underlines. A consumer
+     *  draws the underline from the warning's location along a single line, so a span written
+     *  across lines — a quoted name or a string literal holding a newline, a pair of keywords split
+     *  by one — is underlined up to the end of the line it starts on and no further.
+     */
+    size_t underlineLengthOf(std::string_view sourceText);
+    /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.
      */
@@ -364,7 +371,8 @@ namespace sqlite2orm {
         SourceLocation location;
         /**
          *  Characters the value occupies from `location`: the value as written, its quotes and
-         *  its minus sign included, which `ON` spells shorter than `text` reads it back as.
+         *  its minus sign included, which `ON` spells shorter than `text` reads it back as, and
+         *  no further than the end of the line it starts on (see `underlineLengthOf`).
          */
         size_t length = 0;
     };

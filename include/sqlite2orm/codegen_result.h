@@ -19,7 +19,13 @@ namespace sqlite2orm {
         std::string message;
         /** Start of the relevant SQL token; `length` characters from here should be underlined. */
         std::optional<SourceLocation> location;
-        /** Number of characters to underline from `location` (0 when unknown). */
+        /**
+         *  Number of characters to underline from `location` (0 when unknown). The span stays on
+         *  the line `location` names: a token written across lines — a quoted name or a string
+         *  literal holding a newline, keywords split by one — is underlined up to the end of that
+         *  line only, so a consumer drawing `length` characters from `location` within the line
+         *  never runs past its end.
+         */
         size_t length = 0;
 
         CodegenWarning() = default;

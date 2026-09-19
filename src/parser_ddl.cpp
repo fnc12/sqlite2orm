@@ -7,6 +7,21 @@ namespace sqlite2orm {
     DdlParser::DdlParser(Parser& parser, TokenStream& tokenStream)
         : parser(parser), tokenStream(tokenStream) {}
 
+    namespace {
+
+        /**
+         *  The source text from the first character of `first` through the last one of `last`. Both
+         *  tokens come from the same SQL and their values point into it, so the span covers them
+         *  together with whatever was written between them.
+         */
+        std::string_view sourceSpan(const Token& first, const Token& last) {
+            return std::string_view(first.value.data(),
+                                    static_cast<size_t>(last.value.data() + last.value.size() -
+                                                        first.value.data()));
+        }
+
+    }  // namespace
+
     std::string DdlParser::parseColumnTypeName() {
         std::string typeName;
         int parenthesisDepth = 0;
@@ -248,7 +263,8 @@ namespace sqlite2orm {
 
     AstNodePointer DdlParser::parseCreate() {
         if(!check(TokenType::kwCreate)) return nullptr;
-        auto location = current().location;
+        const Token createToken = current();
+        auto location = createToken.location;
         advanceToken();
 
         if(match(TokenType::kwTemp)) {
@@ -257,8 +273,9 @@ namespace sqlite2orm {
                 return parseCreateTriggerAfterKeyword(location, true);
             }
             if(check(TokenType::kwView)) {
+                const std::string_view headerText = sourceSpan(createToken, current());
                 advanceToken();
-                return parseCreateViewTail(location);
+                return parseCreateViewTail(location, headerText);
             }
             if(match(TokenType::kwVirtual)) {
                 if(!match(TokenType::kwTable)) return nullptr;
@@ -273,8 +290,9 @@ namespace sqlite2orm {
                 return parseCreateTriggerAfterKeyword(location, true);
             }
             if(check(TokenType::kwView)) {
+                const std::string_view headerText = sourceSpan(createToken, current());
                 advanceToken();
-                return parseCreateViewTail(location);
+                return parseCreateViewTail(location, headerText);
             }
             if(match(TokenType::kwVirtual)) {
                 if(!match(TokenType::kwTable)) return nullptr;
@@ -301,14 +319,15 @@ namespace sqlite2orm {
             return parseCreateVirtualTableTail(location, false);
         }
         if(check(TokenType::kwView)) {
+            const std::string_view headerText = sourceSpan(createToken, current());
             advanceToken();
-            return parseCreateViewTail(location);
+            return parseCreateViewTail(location, headerText);
         }
         if(!match(TokenType::kwTable)) return nullptr;
         return parseCreateTableTail(location);
     }
 
-    AstNodePointer DdlParser::parseCreateViewTail(SourceLocation location) {
+    AstNodePointer DdlParser::parseCreateViewTail(SourceLocation location, std::string_view headerText) {
         bool ifNotExists = false;
         if(check(TokenType::kwIf)) {
             advanceToken();
@@ -338,7 +357,7 @@ namespace sqlite2orm {
         if(!selectAst) return nullptr;
 
         return std::make_unique<CreateViewNode>(location, ifNotExists, std::move(viewSchemaName), std::move(viewName),
-                                                  std::move(columnNames), std::move(selectAst));
+                                                  std::move(columnNames), std::move(selectAst), headerText);
     }
 
     AstNodePointer DdlParser::parseCreateTableTail(SourceLocation location) {

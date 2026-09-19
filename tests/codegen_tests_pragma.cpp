@@ -273,6 +273,30 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = a double-quoted 256 warns about 
                           {}});
 }
 
+// SQLite takes a newline inside a quoted value the way it takes any other character — `PRAGMA
+// user_version = 'a<newline>b'` sets 0 on 3.45.1 and on 3.51.0 — so the value spans two lines while
+// the underline a consumer draws from the warning's location runs along one. It stops at the end of
+// the line the value starts on rather than past it.
+TEST_CASE("codegen: PRAGMA user_version = a string literal written across two lines underlines its first line") {
+    REQUIRE(generateFull("PRAGMA user_version = 'a\nb';") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = 'a\nb': SQLite reads a PRAGMA value as a 32-bit "
+                                          "integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 23}, 2}},
+                          {}});
+}
+
+TEST_CASE("codegen: PRAGMA recursive_triggers = a quoted name written across two lines underlines its first line") {
+    REQUIRE(generateFull("PRAGMA recursive_triggers = \"a\nb\";") ==
+            CodeGenResult{"storage.pragma.recursive_triggers(false);",
+                          {},
+                          {CodegenWarning{"PRAGMA recursive_triggers = \"a\nb\": SQLite reads this as false; spell it "
+                                          "0/1, TRUE/FALSE or ON/OFF instead",
+                                          SourceLocation{1, 29}, 2}},
+                          {}});
+}
+
 TEST_CASE("codegen: PRAGMA recursive_triggers = NULL is an error, not silence") {
     REQUIRE(generateFull("PRAGMA recursive_triggers = NULL;") ==
             CodeGenResult{"",

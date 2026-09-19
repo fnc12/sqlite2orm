@@ -12,6 +12,7 @@ if(NOT TARGET SQLite::SQLite3)
 endif()
 
 include(FetchContent)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmGitRevision.cmake")
 message(STATUS "[sqlite2orm] Fetching fmt…")
 FetchContent_Declare(
     fmt
@@ -95,10 +96,19 @@ if(SQLITE2ORM_BUILD_TESTS)
     # The runtime tests compile the generated code against these headers, so following the moving
     # `dev` branch made the same commit of this repository pass or fail depending on when the
     # checkout was populated, and the failures read like a bug in whatever was under test. Bump the
-    # revision deliberately, together with the one README.md quotes. A commit hash rules out
-    # GIT_SHALLOW, which CMake accepts only for branch and tag names.
-    set(SQLITE2ORM_SQLITE_ORM_REVISION "eb77998ef5e27350b25977b061e46e202742ecc8"
+    # revision deliberately, together with the ones README.md and
+    # tests/sqlite_orm_revision_tests.cpp quote. A commit hash rules out GIT_SHALLOW, which CMake
+    # accepts only for branch and tag names.
+    set(SQLITE2ORM_SQLITE_ORM_PINNED_REVISION "eb77998ef5e27350b25977b061e46e202742ecc8")
+    set(SQLITE2ORM_SQLITE_ORM_REVISION "${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}"
         CACHE STRING "Revision of fnc12/sqlite_orm the runtime tests compile against")
+    # The revision is a cache entry, so a tree configured once against another one keeps it and the
+    # guard below can then only skip. A tree whose guard is off should say so out loud.
+    if(NOT SQLITE2ORM_SQLITE_ORM_REVISION STREQUAL "${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}")
+        message(STATUS "[sqlite2orm] This tree is configured against sqlite_orm "
+                       "${SQLITE2ORM_SQLITE_ORM_REVISION}, not the pinned "
+                       "${SQLITE2ORM_SQLITE_ORM_PINNED_REVISION}: the revision guard is off here.")
+    endif()
     message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (${SQLITE2ORM_SQLITE_ORM_REVISION})...")
     FetchContent_Declare(
         sqlite_orm_headers
@@ -111,14 +121,8 @@ if(SQLITE2ORM_BUILD_TESTS)
     # A build tree configured before the pin keeps whatever it populated back then, and only a
     # reconfigure moves it; report the revision the tests really see instead of leaving a stale
     # checkout to surface as a compile error inside a generated program.
-    set(sqlite2orm_sqlite_orm_head "")
-    if(SQLITE2ORM_GIT_EXECUTABLE)
-        execute_process(
-            COMMAND "${SQLITE2ORM_GIT_EXECUTABLE}" -C "${sqlite_orm_headers_SOURCE_DIR}" rev-parse HEAD
-            OUTPUT_VARIABLE sqlite2orm_sqlite_orm_head
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_QUIET)
-    endif()
+    sqlite2orm_git_revision_of(
+        "${sqlite_orm_headers_SOURCE_DIR}" "${SQLITE2ORM_GIT_EXECUTABLE}" sqlite2orm_sqlite_orm_head)
 
     enable_testing()
     add_executable(sqlite2orm_tests
@@ -171,6 +175,8 @@ if(SQLITE2ORM_BUILD_TESTS)
         SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE="${sqlite_orm_headers_SOURCE_DIR}/include"
         SQLITE2ORM_TEST_SQLITE_ORM_REVISION="${SQLITE2ORM_SQLITE_ORM_REVISION}"
         SQLITE2ORM_TEST_SQLITE_ORM_HEAD="${sqlite2orm_sqlite_orm_head}"
+        SQLITE2ORM_TEST_SQLITE_ORM_SOURCE_DIR="${sqlite_orm_headers_SOURCE_DIR}"
+        SQLITE2ORM_TEST_SQLITE_ORM_SOURCE_OVERRIDE="${FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS}"
         SQLITE2ORM_TEST_SQLITE3_LINK="${sqlite2orm_test_sqlite3_link}"
         SQLITE2ORM_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)
@@ -183,6 +189,12 @@ if(SQLITE2ORM_BUILD_TESTS)
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/git_worktree_guard.sh"
                         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/git-worktree-guard.sh"
                         "${SQLITE2ORM_GIT_EXECUTABLE}")
+            add_test(
+                NAME sqlite2orm_tests_git_revision_of
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_git_revision_test.sh"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmGitRevision.cmake"
+                        "${SQLITE2ORM_GIT_EXECUTABLE}"
+                        "${CMAKE_COMMAND}")
         endif()
     endif()
 

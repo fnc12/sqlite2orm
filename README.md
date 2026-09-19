@@ -85,9 +85,10 @@ See [examples/](examples/) for more: programmatic API, custom policies, database
 The runtime tests compile the generated code against sqlite_orm headers that `FetchContent`
 pulls at the revision above, not at the tip of `dev`. `dev` moves, and a checkout populated a
 few days earlier used to fail those tests in a way that looked like a bug in whatever was under
-test. Bump the revision in `CMakeLists.txt` deliberately, together with the one quoted here —
-`sqlite2orm_tests` checks that the two agree, and that the headers in `build/_deps` are really
-the pinned ones.
+test. A bump spells the revision out in three files — `CMakeLists.txt`, the table row above and
+`tests/sqlite_orm_revision_tests.cpp` (`pinnedRevision` and two expected literals) — and
+`sqlite2orm_tests` checks that all of them agree, and that the headers in `build/_deps` are
+really the pinned ones.
 
 A build tree keeps the headers it populated until it reconfigures, which is how a moving `dev`
 stayed invisible to it; a bump edits `CMakeLists.txt`, so the next build picks it up on its own.
@@ -96,6 +97,12 @@ To try the tests against the tip of `dev`:
 ```bash
 cmake -S . -B build -DSQLITE2ORM_SQLITE_ORM_REVISION=dev
 ```
+
+`SQLITE2ORM_SQLITE_ORM_REVISION` is a cache entry, so a tree configured this way stays aimed at
+`dev` until it is configured back or thrown away; while it is, the revision check only skips and
+configuring says so. A tree pointed at a checkout of its own with
+`FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS` is not moved by `cmake` at all — check that
+directory out at the pinned revision yourself.
 
 ## Code style
 

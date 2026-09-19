@@ -294,3 +294,79 @@ TEST_CASE("codegen: every generated placeholder is funnelled through unsupported
     std::sort(found.begin(), found.end());
     REQUIRE(found == expected);
 }
+
+// A bare `*` is a result list of its own in sqlite_orm — `get_all<T>()`, or `asterisk<T>()` in a
+// subquery — so a `*` standing next to other result columns has no form there, while SQLite runs
+// it (`SELECT *, a FROM t` on 3.51.0 answers with every column of `t` and then `a` again). The `*`
+// is parsed as a result column carrying no expression of its own, so the SELECT it sits in is what
+// the warning underlines.
+TEST_CASE("codegen: a `*` next to other result columns is placeheld and the SELECT underlined") {
+    const std::string message = "a `*` result column next to other result columns is not mapped to "
+                                "sqlite_orm codegen";
+    REQUIRE(generateFull("SELECT *, a FROM t") ==
+            CodeGenResult{"auto rows = storage.select(columns(/* * among other result columns */, &T::a));",
+                          {columnRefStyleDp(1, "&T::a")},
+                          {CodegenWarning{message, SourceLocation{1, 1}, 18}}});
+    REQUIRE(generateFull("SELECT a, * FROM t") ==
+            CodeGenResult{"auto rows = storage.select(columns(&T::a, /* * among other result columns */));",
+                          {columnRefStyleDp(1, "&T::a")},
+                          {CodegenWarning{message, SourceLocation{1, 1}, 18}}});
+    REQUIRE(generateFull("SELECT count(*), * FROM t") ==
+            CodeGenResult{
+                "auto rows = storage.select(columns(count<T>(), /* * among other result columns */));",
+                {},
+                {CodegenWarning{message, SourceLocation{1, 1}, 25}}});
+    REQUIRE(generateFull("SELECT t.*, * FROM t") ==
+            CodeGenResult{
+                "auto rows = storage.select(columns(asterisk<T>(), /* * among other result columns */));",
+                {},
+                {CodegenWarning{message, SourceLocation{1, 1}, 20}}});
+    REQUIRE(generateFull("SELECT DISTINCT *, a FROM t") ==
+            CodeGenResult{
+                "auto rows = storage.select(distinct(columns(/* * among other result columns */, &T::a)));",
+                {columnRefStyleDp(1, "&T::a")},
+                {CodegenWarning{message, SourceLocation{1, 1}, 27}}});
+    // One warning for a result list holding two of them, underlined at the SELECT all the same.
+    REQUIRE(generateFull("SELECT *, a, * FROM t") ==
+            CodeGenResult{"auto rows = storage.select(columns(/* * among other result columns */, &T::a, "
+                          "/* * among other result columns */));",
+                          {columnRefStyleDp(1, "&T::a")},
+                          {CodegenWarning{message, SourceLocation{1, 1}, 21}}});
+    // The underline stops at the end of the line the SELECT starts on.
+    REQUIRE(generateFull("SELECT *,\na FROM t") ==
+            CodeGenResult{"auto rows = storage.select(columns(/* * among other result columns */, &T::a));",
+                          {columnRefStyleDp(1, "&T::a")},
+                          {CodegenWarning{message, SourceLocation{1, 1}, 9}}});
+}
+
+// The same result list inside a subquery: `asterisk<T>()` is the form for a subquery that selects
+// a `*` and nothing else, so a `*` next to other columns leaves the subquery unmapped and the
+// placeholder standing for it — the scalar subquery, the IN one, the SELECT a CREATE VIEW rests on
+// or a trigger body statement — is what the code shows. Both the subquery and what it stands in
+// are underlined, innermost first.
+TEST_CASE("codegen: a subquery selecting a `*` next to other columns is left unmapped") {
+    const std::string message = "a `*` result column next to other result columns is not mapped to "
+                                "sqlite_orm select(...)";
+    REQUIRE(generateFull("SELECT (SELECT *, a FROM t)") ==
+            CodeGenResult{"auto rows = storage.select(/* (SELECT ...) */);",
+                          {},
+                          {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 8}, 20},
+                           CodegenWarning{message, SourceLocation{1, 9}, 18}}});
+    REQUIRE(generateFull("SELECT a FROM t WHERE b IN (SELECT *, c FROM u)") ==
+            CodeGenResult{"auto rows = storage.select(&T::a, where(/* IN (SELECT ...) */));",
+                          {columnRefStyleDp(1, "&T::a"), columnRefStyleDp(2, "&T::b")},
+                          {CodegenWarning{message, SourceLocation{1, 29}, 18},
+                           CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 23}, 25}}});
+    REQUIRE(generateFull("CREATE VIEW v AS SELECT *, a FROM t") ==
+            CodeGenResult{"/* CREATE VIEW v — not supported for sqlite_orm */",
+                          {},
+                          {CodegenWarning{message, SourceLocation{1, 18}, 18},
+                           CodegenWarning{"CREATE VIEW v: SELECT is not supported for sqlite_orm "
+                                          "code generation"}}});
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t; END") ==
+            CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin());",
+                          {},
+                          {CodegenWarning{message, SourceLocation{1, 43}, 18}}});
+}

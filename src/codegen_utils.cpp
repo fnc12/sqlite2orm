@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <span>
@@ -1393,6 +1395,16 @@ namespace sqlite2orm {
                                                     "likely", "max", "min", "nullif", "sum", "unlikely"});
         }
 
+        /**
+         *  Whether `+`, `-` or `*` over the operands of `binaryOperator` can answer NULL although
+         *  neither operand is one. SQLite computes in doubles as soon as a REAL takes part and has
+         *  no storage class for the NaN that `Inf - Inf`, `Inf + -Inf` and `0 * Inf` run into, so
+         *  it stores that one as NULL: `SELECT typeof(0 * (1e300 * 1e300))` is null. Every other
+         *  double a computation reaches — an overflow to an infinity of its own, an INTEGER past
+         *  the int64 range — stays a REAL. Defined further down, where the bounds it reads live.
+         */
+        bool arithmeticMayOverflowToNull(const BinaryOperatorNode& binaryOperator);
+
     }  // namespace
 
     bool expressionMayBeNull(const AstNode& astNode) {
@@ -1421,6 +1433,14 @@ namespace sqlite2orm {
             case BinaryOperator::modulo:
                 // `1 / 0` and `1 % 0` are NULL in SQLite, however plain the operands are.
                 return true;
+            case BinaryOperator::add:
+            case BinaryOperator::subtract:
+            case BinaryOperator::multiply:
+                // A NaN is the one value SQLite has no storage class for, so it stores one as
+                // NULL: `1e300 * 1e300 - 1e300 * 1e300` and `0 * (1e300 * 1e300)` are NULL over
+                // operands that are none.
+                return expressionMayBeNull(*binaryOp->lhs) || expressionMayBeNull(*binaryOp->rhs) ||
+                       arithmeticMayOverflowToNull(*binaryOp);
             default:
                 return expressionMayBeNull(*binaryOp->lhs) || expressionMayBeNull(*binaryOp->rhs);
             }
@@ -1638,6 +1658,139 @@ namespace sqlite2orm {
             return unboundedBound;
         }
 
+        /**
+         *  The double SQLite computes with for a numeric literal, the signs folded in front of it
+         *  applied, and nothing for any other node. A decimal literal past the int64 range is a
+         *  REAL to SQLite and reaches an infinity of its own — a `1` followed by 400 zeros answers
+         *  Inf — so the text is read rather than the int64 the literal does not hold. A string and
+         *  a blob literal are left out: SQLite reads a number out of their bytes by a rule of its
+         *  own, where `'9e999' + 0` is Inf while `x'41' + 0` is 0.
+         */
+        std::optional<double> numericLiteralDoubleValue(const AstNode& astNode) {
+            std::size_t foldedSigns = 0;
+            const AstNode& literal = *withoutFoldedSigns(astNode, foldedSigns);
+            const double sign = foldedSigns % 2 == 0 ? 1.0 : -1.0;
+            if(auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&literal)) {
+                // SQLite spells TRUE and FALSE as the integers 1 and 0.
+                return sign * (boolLiteral->value ? 1.0 : 0.0);
+            }
+            // This one folds the signs in itself, which is why it is handed the node as it came.
+            if(const std::optional<std::int64_t> integer = integerLiteralInt64Value(astNode)) {
+                return static_cast<double>(*integer);
+            }
+            const std::string_view text = numericLiteralText(literal);
+            if(text.empty() || isHexadecimalIntegerLiteral(text)) {
+                // A hex literal past the int64 range is refused before codegen, so the value
+                // above is the only one it has; anything else here is not a number at all.
+                return std::nullopt;
+            }
+            std::string digits;
+            digits.reserve(text.size());
+            for(char character: text) {
+                // The `_` separators SQLite allows between digits carry no value.
+                if(character != '_') {
+                    digits += character;
+                }
+            }
+            return sign * std::strtod(digits.c_str(), nullptr);
+        }
+
+        /**
+         *  Whether SQLite answers `astNode` with an INTEGER or a NULL whatever its operands hold,
+         *  which makes every value it carries a finite double. A comparison, a logical operator
+         *  and a predicate answer 0, 1 or NULL, and the bitwise operators cast their operands to
+         *  an INTEGER first: `~1e300` is the int64 minimum rather than an infinity.
+         */
+        bool expressionAnswersIntegerOrNull(const AstNode& astNode) {
+            if(auto* collate = dynamic_cast<const CollateNode*>(&astNode)) {
+                // COLLATE decides how a value compares, not what the value is.
+                return expressionAnswersIntegerOrNull(*collate->operand);
+            }
+            if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
+                switch(unaryOperator->unaryOperator) {
+                case UnaryOperator::bitwiseNot:
+                case UnaryOperator::logicalNot:
+                    return true;
+                case UnaryOperator::plus:
+                case UnaryOperator::minus:
+                    // A sign keeps the storage class of the value it stands on.
+                    return expressionAnswersIntegerOrNull(*unaryOperator->operand);
+                }
+                return false;
+            }
+            if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+                switch(binaryOperator->binaryOperator) {
+                case BinaryOperator::logicalOr:
+                case BinaryOperator::logicalAnd:
+                case BinaryOperator::equals:
+                case BinaryOperator::notEquals:
+                case BinaryOperator::lessThan:
+                case BinaryOperator::lessOrEqual:
+                case BinaryOperator::greaterThan:
+                case BinaryOperator::greaterOrEqual:
+                case BinaryOperator::isOp:
+                case BinaryOperator::isNot:
+                case BinaryOperator::isDistinctFrom:
+                case BinaryOperator::isNotDistinctFrom:
+                case BinaryOperator::bitwiseAnd:
+                case BinaryOperator::bitwiseOr:
+                case BinaryOperator::shiftLeft:
+                case BinaryOperator::shiftRight:
+                    return true;
+                default:
+                    return false;
+                }
+            }
+            return dynamic_cast<const IsNullNode*>(&astNode) || dynamic_cast<const IsNotNullNode*>(&astNode) ||
+                   dynamic_cast<const BetweenNode*>(&astNode) || dynamic_cast<const ExistsNode*>(&astNode) ||
+                   dynamic_cast<const InNode*>(&astNode) || dynamic_cast<const LikeNode*>(&astNode) ||
+                   dynamic_cast<const GlobNode*>(&astNode) || dynamic_cast<const MatchNode*>(&astNode);
+        }
+
+        /**
+         *  Whether SQLite can answer `astNode` with an infinite REAL, the operand every NaN an
+         *  arithmetic operator runs into is built out of. Conservative the way the rest of this
+         *  file is: a value the SQL no longer spells out counts as one.
+         */
+        bool expressionMayBeInfinite(const AstNode& astNode) {
+            if(const std::optional<double> value = numericLiteralDoubleValue(astNode)) {
+                return !std::isfinite(*value);
+            }
+            if(dynamic_cast<const CurrentDatetimeLiteralNode*>(&astNode)) {
+                // These answer a timestamp, and an arithmetic operator reads a number off the
+                // front of its text: `CURRENT_DATE + 0` is the year.
+                return false;
+            }
+            if(expressionAnswersIntegerOrNull(astNode)) {
+                return false;
+            }
+            if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
+                switch(binaryOperator->binaryOperator) {
+                case BinaryOperator::divide:
+                case BinaryOperator::modulo:
+                    // The bound below is the dividend, which holds while SQLite divides integers
+                    // and not once it divides doubles: `5 / 1e-320` is Inf. Both answer NULL over
+                    // a zero divisor anyway, so an operand of theirs never reaches this question.
+                    return true;
+                default:
+                    break;
+                }
+            }
+            // An INTEGER SQLite answers is a finite double whatever its magnitude, and one it
+            // cannot hold it answers as a REAL, which is where an overflow to an infinity starts.
+            return !isBounded(integerMagnitudeBound(astNode));
+        }
+
+        /**
+         *  Whether SQLite can answer `astNode` with a zero, the other operand `0 * Inf` needs.
+         *  Only a numeric literal rules it out: a string and a blob read back as 0 as soon as
+         *  their bytes do not start with a number, which is why `x'41' * (1e300 * 1e300)` is NULL.
+         */
+        bool expressionMayBeZero(const AstNode& astNode) {
+            const std::optional<double> value = numericLiteralDoubleValue(astNode);
+            return !value || *value == 0.0;
+        }
+
         /** An arithmetic operator node and the SQL token it is spelled with. */
         struct ArithmeticOperatorNode {
             const AstNode* node = nullptr;
@@ -1679,6 +1832,24 @@ namespace sqlite2orm {
                 }
             }
             return {};
+        }
+
+        bool arithmeticMayOverflowToNull(const BinaryOperatorNode& binaryOperator) {
+            const AstNode& lhs = *binaryOperator.lhs;
+            const AstNode& rhs = *binaryOperator.rhs;
+            switch(binaryOperator.binaryOperator) {
+            case BinaryOperator::add:
+            case BinaryOperator::subtract:
+                // Two infinities that cancel: `1e300 * 1e300 - 1e300 * 1e300` is NULL, and so is
+                // `-(1e300 * 1e300) + 1e300 * 1e300`.
+                return expressionMayBeInfinite(lhs) && expressionMayBeInfinite(rhs);
+            case BinaryOperator::multiply:
+                // An infinity times a zero: `0 * (1e300 * 1e300)`.
+                return (expressionMayBeInfinite(lhs) && expressionMayBeZero(rhs)) ||
+                       (expressionMayBeZero(lhs) && expressionMayBeInfinite(rhs));
+            default:
+                return false;
+            }
         }
 
     }  // namespace

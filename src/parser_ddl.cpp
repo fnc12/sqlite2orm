@@ -594,22 +594,24 @@ namespace sqlite2orm {
     }
 
     AstNodePointer DdlParser::parseTriggerBodyStatement() {
+        // A body statement is never reached through Parser::parse, so its span is recorded here.
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
+        AstNodePointer statement;
         if(check(TokenType::kwSelect)) {
-            return this->parser.parseSelect();
+            statement = this->parser.parseSelect();
+        } else if(check(TokenType::kwInsert)) {
+            statement = this->parser.parseInsertStatement(false);
+        } else if(check(TokenType::kwReplace) && peekToken(1).type == TokenType::kwInto) {
+            statement = this->parser.parseInsertStatement(true);
+        } else if(check(TokenType::kwUpdate)) {
+            statement = this->parser.parseUpdateStatement();
+        } else if(check(TokenType::kwDelete)) {
+            statement = this->parser.parseDeleteStatement();
         }
-        if(check(TokenType::kwInsert)) {
-            return this->parser.parseInsertStatement(false);
+        if(statement) {
+            statement->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
         }
-        if(check(TokenType::kwReplace) && peekToken(1).type == TokenType::kwInto) {
-            return this->parser.parseInsertStatement(true);
-        }
-        if(check(TokenType::kwUpdate)) {
-            return this->parser.parseUpdateStatement();
-        }
-        if(check(TokenType::kwDelete)) {
-            return this->parser.parseDeleteStatement();
-        }
-        return nullptr;
+        return statement;
     }
 
     bool DdlParser::parseIndexColumnSpec(IndexColumnSpec& out) {

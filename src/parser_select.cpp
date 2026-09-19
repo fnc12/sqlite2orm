@@ -134,16 +134,21 @@ namespace sqlite2orm {
     }
 
     AstNodePointer SelectParser::parseCompoundSelectCore() {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
+        AstNodePointer core;
         if(check(TokenType::kwSelect)) {
-            return parseSelectCore();
+            core = parseSelectCore();
+        } else if(check(TokenType::kwValues)) {
+            core = this->parser.parseValuesStatement();
         }
-        if(check(TokenType::kwValues)) {
-            return this->parser.parseValuesStatement();
+        if(core) {
+            core->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
         }
-        return nullptr;
+        return core;
     }
 
     AstNodePointer SelectParser::parseSelectCompoundBody() {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
         AstNodePointer firstCore = parseCompoundSelectCore();
         if(!firstCore) {
             return nullptr;
@@ -180,11 +185,14 @@ namespace sqlite2orm {
         if(compoundOperators.empty()) {
             return std::move(selectCores.at(0));
         }
-        return std::make_unique<CompoundSelectNode>(std::move(selectCores), std::move(compoundOperators),
-                                                    compoundLocation);
+        auto compoundSelect = std::make_unique<CompoundSelectNode>(
+            std::move(selectCores), std::move(compoundOperators), compoundLocation);
+        compoundSelect->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        return compoundSelect;
     }
 
     AstNodePointer SelectParser::parseSelect() {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
         SourceLocation withLocation = current().location;
         std::optional<WithClause> withClause;
         if(check(TokenType::kwWith)) {
@@ -266,7 +274,9 @@ namespace sqlite2orm {
         if(!withClause) {
             return body;
         }
-        return std::make_unique<WithQueryNode>(std::move(*withClause), std::move(body), withLocation);
+        auto withQuery = std::make_unique<WithQueryNode>(std::move(*withClause), std::move(body), withLocation);
+        withQuery->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        return withQuery;
     }
 
     SelectColumn SelectParser::parseSelectResultColumn() {

@@ -32,6 +32,9 @@ namespace sqlite2orm {
         bool isFunctionNameStart() const;
 
       private:
+        /** `parsePrimary` without the source span it records on what it returns. */
+        AstNodePointer parsePrimaryCore();
+
         Parser& parser;
         TokenStream& tokenStream;
 

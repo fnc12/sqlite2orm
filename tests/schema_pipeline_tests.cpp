@@ -819,13 +819,16 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
 // the check existed, `WHEN NEW.a IS NULL` and `WHEN NOT NEW.a` generated silently and failed here
 // with `use of deleted function optional_container<...>::optional_container()`. A count(*) with a
 // FILTER or an OVER is the other side of that: `count_asterisk_t::filter()` unwraps the `where_t`
-// and `over_t` is an aggregate, so those compile and warning about them would be wrong. SQLite
-// stores all seven triggers below and fires them (checked against sqlite3 3.51.0).
+// and `over_t` is an aggregate, so those compile and warning about them would be wrong. An OR is
+// here because it holds only while it is spelled `or_(...)`: the `||` token it used to be generated
+// with reads as a concatenation, and `conc_t` has no default constructor. SQLite stores all seven
+// triggers below and fires them (checked against sqlite3 3.51.0).
 TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile") {
     const auto results = processMultiSql(
         "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
         "CREATE TRIGGER tr_cmp AFTER INSERT ON t WHEN NEW.a = 0 BEGIN DELETE FROM t; END;\n"
         "CREATE TRIGGER tr_and AFTER INSERT ON t WHEN NEW.a > 0 AND NEW.b = 'x' BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_or AFTER INSERT ON t WHEN NEW.a OR NEW.b BEGIN DELETE FROM t; END;\n"
         "CREATE TRIGGER tr_cast AFTER INSERT ON t WHEN CAST(NEW.a AS INTEGER) > 0 BEGIN DELETE FROM t; END;\n"
         "CREATE TRIGGER tr_sub AFTER INSERT ON t WHEN NEW.a = (SELECT a FROM t) BEGIN DELETE FROM t; END;\n"
         "CREATE TRIGGER tr_filter AFTER INSERT ON t WHEN NEW.a = (SELECT count(*) FILTER (WHERE a > 0) FROM t) "

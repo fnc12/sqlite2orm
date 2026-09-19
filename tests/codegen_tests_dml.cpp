@@ -244,6 +244,18 @@ TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm cannot default-con
                      "which default-constructs the expression before assigning it, so the generated trigger does "
                      "not compile"}});
     }
+    SECTION("a concatenation, the half of the || token that is not an OR") {
+        const auto result =
+            generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.y || 'a' BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::y)) || "
+                               "\"a\").begin(remove_all<T>()));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"CREATE TRIGGER tr uses || in its WHEN clause, a form sqlite_orm gives no default "
+                     "constructor: make_trigger() keeps a trigger's WHEN expression in an optional_container, "
+                     "which default-constructs the expression before assigning it, so the generated trigger does "
+                     "not compile"}});
+    }
     SECTION("a subquery is read clause by clause") {
         const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT y FROM t "
                                          "WHERE y = 'a') BEGIN DELETE FROM t; END");
@@ -261,7 +273,8 @@ TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm cannot default-con
 // The comparisons, AND and OR all produce a `binary_condition`, which declares a default
 // constructor, and a CAST, a CASE and a subquery over a bare FROM hold only what they are given —
 // so these WHEN clauses carry no warning and do compile (see the compile test in
-// schema_pipeline_tests.cpp).
+// schema_pipeline_tests.cpp). An OR only holds since it is spelled `or_(...)`: the `||` token it
+// used to be generated with reads as a concatenation, whose `conc_t` has no default constructor.
 TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm can default-construct is not warned about") {
     SECTION("a comparison") {
         const auto result =
@@ -275,6 +288,13 @@ TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm can default-constr
             "CREATE TRIGGER tr AFTER INSERT ON t WHEN CAST(NEW.x AS INTEGER) > 0 BEGIN DELETE FROM t; END");
         REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(cast<int64_t>(new_(&T::x)) > "
                                "0).begin(remove_all<T>()));");
+        REQUIRE(result.warnings.empty());
+    }
+    SECTION("an OR, which is spelled or_() because the || token would read as a concatenation") {
+        const auto result = generateFull(
+            "CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x OR NEW.y BEGIN DELETE FROM t; END");
+        REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(or_(new_(&T::x), "
+                               "new_(&T::y))).begin(remove_all<T>()));");
         REQUIRE(result.warnings.empty());
     }
     SECTION("MATCH, whose match_t is an aggregate holding its two operands") {

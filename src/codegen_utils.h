@@ -382,7 +382,10 @@ namespace sqlite2orm {
      *  spelled out in the SQL — a literal, or an operator, a predicate or a CAST over such operands
      *  — is ruled out, and everything SQLite computes at runtime counts as nullable. `/` and `%`
      *  count whatever their operands are, because SQLite answers a division by zero with NULL
-     *  rather than an error. A call is ruled out only for the built-ins that answer NULL for no
+     *  rather than an error, and `+`, `-` and `*` count once the double SQLite computes them in
+     *  can run into a NaN — the one value it has no storage class for, and stores as NULL:
+     *  `0 * (1e300 * 1e300)` and `1e300 * 1e300 - 1e300 * 1e300` are NULL over operands that are
+     *  none. A call is ruled out only for the built-ins that answer NULL for no
      *  reason other than a NULL argument; every other one — `nullif`, `date`, `unicode`, `sign`,
      *  `substr`, `printf`, `json_extract`, the math functions, and an aggregate over an empty
      *  rowset — counts as nullable whatever its arguments hold. `iif` propagates for its

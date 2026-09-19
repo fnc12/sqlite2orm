@@ -718,11 +718,12 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
 // * 1e300))` and `SELECT typeof(1e300 * 1e300 - 1e300 * 1e300)` are both null in sqlite3 3.51 —
 // however spelled out their operands are, the way `1 / 0` is. sqlite_orm types the arithmetic
 // operators `double`, so that row used to reach the caller as 0. It takes an infinity to reach a
-// NaN, and only a value the SQL no longer spells out, or one a computation can overflow into,
-// counts as one: an INTEGER answer is finite whatever its magnitude, and a finite number spelled
-// out stays finite, so `1e300 * 1e300` (Inf, a REAL SQLite carries), `0 * 1e300`, `1.5 + 2.5`,
-// `(1 + 2) * 0` and a zero times a comparison or a bitwise result are left plain. Values checked in
-// "runtime: an arithmetic result column that overflows into a NaN reads the NULL back".
+// NaN, and only a value the SQL no longer spells out, one a computation can overflow into, or a
+// decimal literal whose own text runs past the double range, counts as one: an INTEGER answer is
+// finite whatever its magnitude, and a finite number spelled out stays finite, so `1e300 * 1e300`
+// (Inf, a REAL SQLite carries), `9e999`, `0 * 1e300`, `1.5 + 2.5`, `(1 + 2) * 0` and a zero times a
+// comparison or a bitwise result are left plain. Values checked in "runtime: an arithmetic result
+// column that overflows into a NaN reads the NULL back".
 TEST_CASE("codegen: an arithmetic result column that can overflow into a NaN is widened") {
     REQUIRE(generate("SELECT 0 * (1e300 * 1e300);") ==
             "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));");
@@ -740,7 +741,23 @@ TEST_CASE("codegen: an arithmetic result column that can overflow into a NaN is 
     // bytes of `x'41'` read back as 0, so this column is NULL too.
     REQUIRE(generate("SELECT x'41' * (1e300 * 1e300);") ==
             "auto rows = storage.select(as_optional(c(std::vector<char>{'\\x41'}) * (c(1e300) * 1e300)));");
+    // A decimal literal whose exponent runs past the double range is an infinity of its own, and
+    // it is read out of the literal's text rather than out of an int64 it does not fit, so these
+    // pin the text-to-double path the two cells above reach through a magnitude bound instead.
+    REQUIRE(generate("SELECT 9e999 - 9e999;") == "auto rows = storage.select(as_optional(c(9e999) - 9e999));");
+    REQUIRE(generate("SELECT 0 * 9e999;") == "auto rows = storage.select(as_optional(c(0) * 9e999));");
+    REQUIRE(generate("SELECT 1.0e400 - 1.0e400;") == "auto rows = storage.select(as_optional(c(1.0e400) - 1.0e400));");
+    REQUIRE(generate("SELECT -9e999 + 9e999;") == "auto rows = storage.select(as_optional(c(-9e999) + 9e999));");
+    // COLLATE decides how a value compares, not what the value is, so the literal under one is
+    // read as the literal it is: a zero next to an infinity still reaches the NaN, a one does not.
+    REQUIRE(generate("SELECT (0 COLLATE BINARY) * (1e300 * 1e300);") ==
+            "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));");
+    REQUIRE(generate("SELECT 0 * (9e999 COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional(c(0) * 9e999));");
+    REQUIRE(generate("SELECT (1 COLLATE BINARY) * (1e300 * 1e300);") ==
+            "auto rows = storage.select(c(1) * (c(1e300) * 1e300));");
     REQUIRE(generate("SELECT 1e300 * 1e300;") == "auto rows = storage.select(c(1e300) * 1e300);");
+    REQUIRE(generate("SELECT 9e999;") == "auto rows = storage.select(9e999);");
     REQUIRE(generate("SELECT 0 * 1e300;") == "auto rows = storage.select(c(0) * 1e300);");
     REQUIRE(generate("SELECT 1.5 + 2.5;") == "auto rows = storage.select(c(1.5) + 2.5);");
     REQUIRE(generate("SELECT (1 + 2) * 0;") == "auto rows = storage.select((c(1) + 2) * 0);");

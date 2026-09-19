@@ -8,6 +8,13 @@ namespace sqlite2orm {
 
     struct AstNode {
         SourceLocation location;
+        /**
+         *  The SQL this node was parsed from, recorded by the parser that built it. `location` is
+         *  the token a node is *named* by — the operator of a binary expression, say — while the
+         *  span covers everything the node stands for, which is what a diagnostic about the node
+         *  underlines.
+         */
+        SourceSpan sourceSpan;
 
         virtual ~AstNode() = default;
         AstNode() = default;

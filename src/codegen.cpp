@@ -282,7 +282,14 @@ namespace sqlite2orm {
             return this->ddlCodeGenerator->generateCreateView(*createView);
         }
 
-        return CodeGenResult{"/* unsupported node */", {}, {}};
+        // ALTER TABLE, ANALYZE, ATTACH, DETACH, EXPLAIN and REINDEX end up here: sqlite_orm has no
+        // form for any of them, so the statement generates a placeholder and says so. None of them
+        // reaches codegen through `processSql`, though — the validator refuses them first, and the
+        // consumer is shown that error instead — so this placeholder and its underline are what a
+        // generator asking another for a node sees. The same goes for the derived-FROM and the
+        // `IN <table>` placeholders.
+        return unsupportedPlaceholder("unsupported node", "this statement is not mapped to sqlite_orm codegen",
+                                      astNode);
     }
 
     CodeGenResult CodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode) {

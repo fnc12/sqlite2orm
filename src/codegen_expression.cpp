@@ -364,10 +364,13 @@ namespace sqlite2orm {
                binaryOp->binaryOperator == BinaryOperator::isNot ||
                binaryOp->binaryOperator == BinaryOperator::isDistinctFrom ||
                binaryOp->binaryOperator == BinaryOperator::isNotDistinctFrom) {
-                this->context.accumulatedErrors.push_back(
-                    "binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                    "is not supported in sqlite_orm");
-                return CodeGenResult{"/* unsupported IS expression */"};
+                std::string message = "binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                                      "is not supported in sqlite_orm";
+                this->context.accumulatedErrors.push_back(message);
+                // The error already stops the whole statement from being generated, but the
+                // placeholder goes through the same funnel as every other one: what stands in the
+                // code says where it came from, whichever channel carries it out.
+                return unsupportedPlaceholder("unsupported IS expression", std::move(message), *binaryOp);
             }
             auto leftResult = this->coordinator.generateNode(*binaryOp->lhs);
             auto rightResult = this->coordinator.generateNode(*binaryOp->rhs);
@@ -853,18 +856,26 @@ namespace sqlite2orm {
         } else if(auto* subqueryNode = dynamic_cast<const SubqueryNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*subqueryNode->select);
             if(sub.code.empty()) {
-                sub.warnings.insert(sub.warnings.begin(),
-                                    "scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen");
-                return CodeGenResult{"/* (SELECT ...) */", std::move(sub.decisionPoints), std::move(sub.warnings)};
+                auto placeholder = unsupportedPlaceholder(
+                    "(SELECT ...)", "scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                    *subqueryNode);
+                placeholder.decisionPoints = std::move(sub.decisionPoints);
+                placeholder.warnings.insert(placeholder.warnings.end(),
+                                            std::make_move_iterator(sub.warnings.begin()),
+                                            std::make_move_iterator(sub.warnings.end()));
+                return placeholder;
             }
             return CodeGenResult{sub.code, std::move(sub.decisionPoints), std::move(sub.warnings)};
         } else if(auto* existsNode = dynamic_cast<const ExistsNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*existsNode->select);
             if(sub.code.empty()) {
-                sub.warnings.insert(sub.warnings.begin(),
-                                    "EXISTS (SELECT ...) is not mapped to sqlite_orm codegen");
-                return CodeGenResult{"/* EXISTS (SELECT ...) */", std::move(sub.decisionPoints),
-                                     std::move(sub.warnings)};
+                auto placeholder = unsupportedPlaceholder(
+                    "EXISTS (SELECT ...)", "EXISTS (SELECT ...) is not mapped to sqlite_orm codegen", *existsNode);
+                placeholder.decisionPoints = std::move(sub.decisionPoints);
+                placeholder.warnings.insert(placeholder.warnings.end(),
+                                            std::make_move_iterator(sub.warnings.begin()),
+                                            std::make_move_iterator(sub.warnings.end()));
+                return placeholder;
             }
             this->context.recordFormWithoutDefaultConstructor("EXISTS");
             return CodeGenResult{"exists(" + sub.code + ")", std::move(sub.decisionPoints),
@@ -952,10 +963,12 @@ namespace sqlite2orm {
                                          std::move(operandResult.warnings), {},
                                          std::move(operandResult.comments)};
                 }
-                operandResult.warnings.push_back("IN table-name is not supported in sqlite_orm codegen");
-                return CodeGenResult{"/* " + operandResult.code + " IN " + inNode->tableName + " */",
-                                     std::move(operandResult.decisionPoints),
-                                     std::move(operandResult.warnings)};
+                CodeGenResult carried;
+                carried.decisionPoints = std::move(operandResult.decisionPoints);
+                carried.warnings = std::move(operandResult.warnings);
+                return unsupportedPlaceholder(operandResult.code + " IN " + inNode->tableName,
+                                              "IN table-name is not supported in sqlite_orm codegen", *inNode,
+                                              std::move(carried));
             }
             if(inNode->subquerySelect) {
                 auto operandResult = this->coordinator.generateNode(*inNode->operand);
@@ -972,9 +985,12 @@ namespace sqlite2orm {
                                      std::make_move_iterator(sub.warnings.begin()),
                                      std::make_move_iterator(sub.warnings.end()));
                 if(sub.code.empty()) {
-                    inSubWarnings.push_back("IN (SELECT ...) is not mapped to sqlite_orm codegen");
-                    return CodeGenResult{"/* IN (SELECT ...) */", std::move(decisionPoints),
-                                         std::move(inSubWarnings)};
+                    CodeGenResult carried;
+                    carried.decisionPoints = std::move(decisionPoints);
+                    carried.warnings = std::move(inSubWarnings);
+                    return unsupportedPlaceholder("IN (SELECT ...)",
+                                                  "IN (SELECT ...) is not mapped to sqlite_orm codegen", *inNode,
+                                                  std::move(carried));
                 }
                 std::string operandCode = groupPredicateArgument(std::move(operandResult.code),
                                                                  *inNode->operand, operandResult.comments);
@@ -1177,6 +1193,10 @@ namespace sqlite2orm {
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if(auto* bindParam = dynamic_cast<const BindParameterNode*>(&astNode)) {
             std::string paramStr(bindParam->value);
+            auto bindParameterMessage = [&paramStr](const std::string& variable) {
+                return "bind parameter " + paramStr + " -> C++ variable '" + variable +
+                       "'; for prepared statements use storage.prepare() + get<N>(stmt)";
+            };
             std::string cppVar;
             if(paramStr.size() > 1 && (paramStr[0] == ':' || paramStr[0] == '@' || paramStr[0] == '$')) {
                 cppVar = toCppIdentifier(paramStr.substr(1));
@@ -1185,11 +1205,11 @@ namespace sqlite2orm {
             } else if(paramStr.size() > 1 && paramStr[0] == '?') {
                 cppVar = "bindParam" + paramStr.substr(1);
             } else {
-                cppVar = "/* " + paramStr + " */";
+                // A marker with nothing behind it — a lone `:`, which SQLite refuses outright —
+                // names no variable, so a placeholder stands where the value would have gone.
+                return unsupportedPlaceholder(paramStr, bindParameterMessage, *bindParam);
             }
-            return CodeGenResult{cppVar, {},
-                                 {"bind parameter " + paramStr + " -> C++ variable '" + cppVar +
-                                  "'; for prepared statements use storage.prepare() + get<N>(stmt)"}};
+            return CodeGenResult{cppVar, {}, {bindParameterMessage(cppVar)}};
         } else if(auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*collateNode->operand);
             operandResult.warnings.push_back("COLLATE " + collateNode->collationName +

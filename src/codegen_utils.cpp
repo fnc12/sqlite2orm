@@ -1889,12 +1889,39 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
+    namespace {
+
+        /**
+         *  The name a keyword PRAGMA value reads as. SQLite's `nmnum` rule falls `ON`, `TRUE`,
+         *  `FALSE` and `CURRENT_DATE` and its siblings back to a bare name, and the PRAGMA's reader
+         *  gets those very letters — so `PRAGMA integrity_check(on)` looks a table called `on` up,
+         *  it does not pass a boolean on.
+         */
+        std::optional<std::string> pragmaKeywordValueName(const AstNode& valueNode) {
+            if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
+                return std::string(boolLiteral->spelling);
+            }
+            if(const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
+                switch(currentDatetime->kind) {
+                    case CurrentDatetimeKind::date: return std::string{"current_date"};
+                    case CurrentDatetimeKind::time: return std::string{"current_time"};
+                    default:                        return std::string{"current_timestamp"};
+                }
+            }
+            return std::nullopt;
+        }
+
+    }  // namespace
+
     std::optional<std::string> pragmaTableNameLiteral(const AstNode& valueNode) {
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return sqlStringToCpp(stringLiteral->value);
         }
         if(const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             return identifierToCppStringLiteral(columnRef->columnName);
+        }
+        if(auto keywordName = pragmaKeywordValueName(valueNode)) {
+            return identifierToCppStringLiteral(*keywordName);
         }
         return std::nullopt;
     }
@@ -2014,12 +2041,6 @@ namespace sqlite2orm {
             return PragmaValue{std::string(realLiteral->value), std::string(realLiteral->value),
                                realLiteral->location, underlineLengthOf(realLiteral->value)};
         }
-        if(const auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&valueNode)) {
-            // `ON` is a bool literal too, and it is shorter than the `true` the message spells
-            // back, so the underline is measured on the keyword the user wrote.
-            const std::string written = boolLiteral->value ? "true" : "false";
-            return PragmaValue{written, written, boolLiteral->location, underlineLengthOf(boolLiteral->spelling)};
-        }
         if(const auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&valueNode)) {
             return PragmaValue{sqlStringLiteralText(stringLiteral->value), std::string(stringLiteral->value),
                                stringLiteral->location, underlineLengthOf(stringLiteral->value)};
@@ -2028,15 +2049,10 @@ namespace sqlite2orm {
             return PragmaValue{stripIdentifierQuotes(columnRef->columnName), std::string(columnRef->columnName),
                                columnRef->location, underlineLengthOf(columnRef->columnName)};
         }
-        if(const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
-            // `CURRENT_DATE` and its two siblings are names to a PRAGMA — SQLite's `nmnum` rule
-            // falls them back to an identifier, and the reader gets those very letters — so the
-            // value is whatever that text reads as, not today's date.
-            const std::string written = currentDatetime->kind == CurrentDatetimeKind::date ? "current_date"
-                                        : currentDatetime->kind == CurrentDatetimeKind::time
-                                            ? "current_time"
-                                            : "current_timestamp";
-            return PragmaValue{written, written, currentDatetime->location, underlineLengthOf(written)};
+        if(auto keywordName = pragmaKeywordValueName(valueNode)) {
+            // A keyword here is a name, not the literal it looks like: `TRUE` is the four letters
+            // the reader gets and `CURRENT_DATE` is not today's date.
+            return PragmaValue{*keywordName, *keywordName, valueNode.location, underlineLengthOf(*keywordName)};
         }
         if(const auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&valueNode)) {
             const bool numericOperand =

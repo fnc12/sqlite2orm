@@ -1137,3 +1137,47 @@ TEST_CASE("generateSqliteSchemaHeader: nothing that names a virtual table is mer
     REQUIRE(header.errors.empty());
     requireCompiles(header.code);
 }
+
+// A trigger body statement with no sqlite_orm form is reachable from an ordinary database, not only
+// from `-e`: SQLite stores `SELECT *, a FROM t` as a trigger step and runs it, while sqlite_orm's
+// `asterisk<T>()` is the form for a result list that is a `*` and nothing else. The step that
+// cannot be generated is a placeholder inside `begin(...)`, so the reader of the header sees which
+// step did not come through instead of a body silently short of one. Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a trigger step with no sqlite_orm form is placeheld in the body") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER, b TEXT);"
+            "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code ==
+            "#pragma once\n\n"
+            "#include <sqlite_orm/sqlite_orm.h>\n"
+            "#include <cstdint>\n"
+            "#include <optional>\n"
+            "#include <string>\n"
+            "#include <vector>\n\n"
+            "struct T {\n"
+            "    std::optional<int64_t> a;\n"
+            "    std::optional<std::string> b;\n"
+            "};\n\n\n"
+            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+            "    using namespace sqlite_orm;\n"
+            "    return make_storage(db_path,\n"
+            "        make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a),\n"
+            "        make_column(\"b\", &T::b)),\n"
+            "        make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
+            "/* trigger step not mapped to sqlite_orm */)));\n"
+            "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"a `*` result column next to other result columns is not mapped to sqlite_orm select(...)",
+                 SourceLocation{1, 60}, 18},
+                {"a statement in the trigger body is not mapped to sqlite_orm codegen", SourceLocation{1, 60}, 18}});
+    REQUIRE(header.errors.empty());
+}

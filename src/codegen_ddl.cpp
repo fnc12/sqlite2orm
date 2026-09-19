@@ -379,15 +379,21 @@ namespace sqlite2orm {
                                          literal + ");",
                                      {},
                                      std::move(warnings)};
-            case DropObjectKind::view:
-                warnings.push_back(
+            case DropObjectKind::view: {
+                CodeGenResult carried;
+                carried.warnings = std::move(warnings);
+                return unsupportedPlaceholder(
+                    "DROP VIEW: not supported as storage.drop_* in sqlite_orm",
                     "DROP VIEW is not supported as a sqlite_orm storage method; sqlite_orm sync_schema() applies "
-                    "to mapped tables/indexes/triggers, not views");
-                return CodeGenResult{"/* DROP VIEW: not supported as storage.drop_* in sqlite_orm */",
-                                     {},
-                                     std::move(warnings)};
-            default:
-                return CodeGenResult{"/* DROP */", {}, std::move(warnings)};
+                    "to mapped tables/indexes/triggers, not views",
+                    node, std::move(carried));
+            }
+            default: {
+                CodeGenResult carried;
+                carried.warnings = std::move(warnings);
+                return unsupportedPlaceholder("DROP", "this DROP statement is not mapped to sqlite_orm codegen",
+                                              node, std::move(carried));
+            }
         }
     }
 
@@ -415,27 +421,38 @@ namespace sqlite2orm {
         std::string nameLiteral = identifierToCppStringLiteral(node.tableName);
         std::string structName = toStructName(node.tableName);
 
-        auto allSimpleColumnRefs = [&]() -> bool {
+        // The first module argument sqlite_orm's using_*() forms have no place for, i.e. the one a
+        // warning about unmapped arguments points at; null when every argument is a plain column.
+        auto firstArgumentThatIsNoColumnRef = [&]() -> const AstNode* {
             for(const auto& moduleArgument : node.moduleArguments) {
                 if(!dynamic_cast<const ColumnRefNode*>(moduleArgument.get())) {
-                    return false;
+                    return moduleArgument.get();
                 }
             }
-            return true;
+            return nullptr;
+        };
+        // Whatever was collected before the statement turned out to be unmappable, moved out of the
+        // two vectors: exactly one of the branches below reaches this, on its way out.
+        auto carriedParts = [](std::vector<DecisionPoint>& collectedDecisionPoints,
+                               std::vector<CodegenWarning>& collectedWarnings) {
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(collectedDecisionPoints);
+            carried.warnings = std::move(collectedWarnings);
+            return carried;
         };
 
         if(moduleLower == "fts5") {
             if(node.moduleArguments.empty()) {
-                warnings.push_back("FTS5 requires at least one column argument for sqlite_orm::using_fts5()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: fts5 (no columns) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: fts5 (no columns)",
+                    "FTS5 requires at least one column argument for sqlite_orm::using_fts5()", node,
+                    carriedParts(decisionPoints, warnings));
             }
-            if(!allSimpleColumnRefs()) {
-                warnings.push_back(
-                    "FTS5 module arguments that are not plain column names cannot be mapped to "
-                    "sqlite_orm::using_fts5()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: fts5 (unmapped arguments) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+            if(const AstNode* unmapped = firstArgumentThatIsNoColumnRef()) {
+                return unsupportedPlaceholder("CREATE VIRTUAL TABLE: fts5 (unmapped arguments)",
+                                              "FTS5 module arguments that are not plain column names cannot be "
+                                              "mapped to sqlite_orm::using_fts5()",
+                                              *unmapped, carriedParts(decisionPoints, warnings));
             }
             std::string code = "struct " + structName + " {\n";
             for(const auto& moduleArgument : node.moduleArguments) {
@@ -472,18 +489,18 @@ namespace sqlite2orm {
         if(moduleLower == "rtree" || moduleLower == "rtree_i32") {
             const size_t moduleArgumentsCount = node.moduleArguments.size();
             if(moduleArgumentsCount < 3 || moduleArgumentsCount > 11 || (moduleArgumentsCount % 2 == 0)) {
-                warnings.push_back(
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: rtree (invalid column count)",
                     "RTREE virtual table for sqlite_orm needs 3, 5, 7, 9, or 11 simple column identifiers (id + "
-                    "min/max pairs)");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: rtree (invalid column count) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                    "min/max pairs)",
+                    node, carriedParts(decisionPoints, warnings));
             }
-            if(!allSimpleColumnRefs()) {
-                warnings.push_back(
+            if(const AstNode* unmapped = firstArgumentThatIsNoColumnRef()) {
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: rtree (unmapped arguments)",
                     "RTREE module arguments that are not plain column names cannot be mapped to sqlite_orm "
-                    "using_rtree() / using_rtree_i32()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: rtree (unmapped arguments) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                    "using_rtree() / using_rtree_i32()",
+                    *unmapped, carriedParts(decisionPoints, warnings));
             }
             const bool isInt32 = (moduleLower == "rtree_i32");
             std::string code = "struct " + structName + " {\n";
@@ -528,11 +545,11 @@ namespace sqlite2orm {
 
         if(moduleLower == "generate_series") {
             if(!node.moduleArguments.empty()) {
-                warnings.push_back(
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: generate_series (unmapped arguments)",
                     "generate_series module arguments are not mapped to sqlite_orm; expected empty argument list "
-                    "for make_virtual_table<generate_series>(..., internal::using_generate_series())");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: generate_series (unmapped arguments) */",
-                                     std::move(decisionPoints), std::move(warnings)};
+                    "for make_virtual_table<generate_series>(..., internal::using_generate_series())",
+                    *node.moduleArguments.front(), carriedParts(decisionPoints, warnings));
             }
             std::string code = "auto " + this->context.statementVariableName("vtab") + " = make_virtual_table<generate_series>(" + nameLiteral +
                                ", internal::using_generate_series());\n";
@@ -541,10 +558,10 @@ namespace sqlite2orm {
 
         if(moduleLower == "dbstat") {
             if(node.moduleArguments.size() > 1) {
-                warnings.push_back(
-                    "dbstat accepts at most one optional schema string argument for sqlite_orm::using_dbstat()");
-                return CodeGenResult{"/* CREATE VIRTUAL TABLE: dbstat (too many arguments) */", std::move(decisionPoints),
-                                     std::move(warnings)};
+                return unsupportedPlaceholder(
+                    "CREATE VIRTUAL TABLE: dbstat (too many arguments)",
+                    "dbstat accepts at most one optional schema string argument for sqlite_orm::using_dbstat()",
+                    *node.moduleArguments.at(1), carriedParts(decisionPoints, warnings));
             }
             if(node.moduleArguments.empty()) {
                 std::string code =
@@ -556,15 +573,16 @@ namespace sqlite2orm {
                                    sqlStringToCpp(stringLiteral->value) + "));\n";
                 return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
             }
-            warnings.push_back(
-                "dbstat optional argument should be a SQL string literal for sqlite_orm::using_dbstat(\"...\")");
-            return CodeGenResult{"/* CREATE VIRTUAL TABLE: dbstat (unmapped argument) */", std::move(decisionPoints),
-                                 std::move(warnings)};
+            return unsupportedPlaceholder(
+                "CREATE VIRTUAL TABLE: dbstat (unmapped argument)",
+                "dbstat optional argument should be a SQL string literal for sqlite_orm::using_dbstat(\"...\")",
+                *node.moduleArguments.front(), carriedParts(decisionPoints, warnings));
         }
 
-        warnings.push_back("virtual table module \"" + std::string(node.moduleName) +
-                           "\" has no sqlite_orm mapping in sqlite2orm codegen");
-        return CodeGenResult{"/* CREATE VIRTUAL TABLE: unknown module */", std::move(decisionPoints), std::move(warnings)};
+        return unsupportedPlaceholder("CREATE VIRTUAL TABLE: unknown module",
+                                      "virtual table module \"" + std::string(node.moduleName) +
+                                          "\" has no sqlite_orm mapping in sqlite2orm codegen",
+                                      node, carriedParts(decisionPoints, warnings));
     }
 
     namespace {

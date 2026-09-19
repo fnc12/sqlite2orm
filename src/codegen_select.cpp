@@ -13,11 +13,15 @@ namespace sqlite2orm {
         auto inner = this->tryCodegenCompoundSelectSubexpression(compoundNode);
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if(inner.code.empty()) {
-            compoundWarnings.insert(compoundWarnings.begin(),
-                                    "compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
-                                    "codegen");
-            return CodeGenResult{"/* compound SELECT */", std::move(inner.decisionPoints),
-                                 std::move(compoundWarnings)};
+            auto placeholder = unsupportedPlaceholder("compound SELECT",
+                                                      "compound SELECT (UNION / INTERSECT / EXCEPT) is not "
+                                                      "mapped to sqlite_orm codegen",
+                                                      compoundNode);
+            placeholder.decisionPoints = std::move(inner.decisionPoints);
+            placeholder.warnings.insert(placeholder.warnings.end(),
+                                        std::make_move_iterator(compoundWarnings.begin()),
+                                        std::make_move_iterator(compoundWarnings.end()));
+            return placeholder;
         }
         return CodeGenResult{"auto " + this->context.statementVariableName("rows") + " = storage.select(" +
                                  inner.code + ");",
@@ -33,9 +37,12 @@ namespace sqlite2orm {
         this->context.withOuterSelect = false;
         for(const auto& fromItem : selectNode.fromClause) {
             if(fromItem.table.derivedSelect) {
-                selectWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
-                return CodeGenResult{"/* SELECT with derived FROM */", std::move(selectDecisionPoints),
-                                     std::move(selectWarnings)};
+                CodeGenResult carried;
+                carried.decisionPoints = std::move(selectDecisionPoints);
+                carried.warnings = std::move(selectWarnings);
+                return unsupportedPlaceholder("SELECT with derived FROM",
+                                              "subselect in FROM is not supported in sqlite_orm codegen",
+                                              *fromItem.table.derivedSelect, std::move(carried));
             }
         }
         this->context.fromTableAliasToStructName.clear();
@@ -182,6 +189,18 @@ namespace sqlite2orm {
             // truncating the REAL they answer with. Warnings dedupe by message, so several columns
             // computed with the same operator report once, anchored at the first of them.
             auto resultColumnCode = [&](const SelectColumn& column) -> std::string {
+                if(!column.expression) {
+                    // A bare `*` standing next to other result columns: SQLite runs it, and the
+                    // parser leaves it as a column with no expression of its own, so the whole
+                    // SELECT is what the warning underlines.
+                    auto starPlaceholder =
+                        unsupportedPlaceholder("* among other result columns",
+                                               "a `*` result column next to other result columns is not "
+                                               "mapped to sqlite_orm codegen",
+                                               selectNode);
+                    appendUniqueWarnings(selectWarnings, starPlaceholder.warnings);
+                    return starPlaceholder.code;
+                }
                 auto colCode = expressionCode(*column.expression);
                 if(selectResultNeedsIntegerCast(*column.expression)) {
                     colCode = "cast<int64_t>(" + colCode + ")";
@@ -754,6 +773,18 @@ namespace sqlite2orm {
                                                 : this->context.structName;
             columnPart = "asterisk<" + subStarRow + ">()";
         } else {
+            // `asterisk<T>()` is the form for a result list that is a `*` and nothing else, so a
+            // `*` standing next to other columns leaves the subquery unmapped; the caller places
+            // the placeholder and underlines the subquery it stands for.
+            for(const auto& column : selectNode.columns) {
+                if(!column.expression) {
+                    subWarnings.push_back(
+                        sourceSpanWarning("a `*` result column next to other result columns is not mapped "
+                                          "to sqlite_orm select(...)",
+                                          selectNode));
+                    return CodeGenResult{{}, std::move(subDecisionPoints), std::move(subWarnings)};
+                }
+            }
             if(selectNode.distinct) {
                 // A trigger's WHEN clause is default-constructed by sqlite_orm, so a subquery
                 // standing in one only compiles while every clause it carries has a default

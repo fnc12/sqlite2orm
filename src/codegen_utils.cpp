@@ -339,6 +339,14 @@ namespace sqlite2orm {
         "INTEGER or a NULL whatever its operands hold, and a CAST to INTEGER keeps both, typeof "
         "included, so the CAST widens the C++ type and leaves the value alone.";
 
+    const std::string kCommentOrTokenCallSpelling =
+        "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
+        "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
+        "the OR condition only when one of them is a condition (a comparison, AND, OR, IN, BETWEEN, "
+        "LIKE, GLOB, IS [NOT] NULL, EXISTS or NOT) and the concatenation otherwise. So `1 OR 0` "
+        "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
+        "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
+
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
         "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
@@ -461,7 +469,8 @@ namespace sqlite2orm {
             case BinaryOperator::bitwiseAnd:         return 11;
             case BinaryOperator::bitwiseOr:          return 13;
             case BinaryOperator::logicalAnd:         return 14;
-            // `or` and `||` are the same C++ token; sqlite_orm reads the latter as a concatenation.
+            // `or` and `||` are the same C++ token, which is also why the operator spelling is not
+            // always the operator that was written — see `binaryOperatorNeedsCallSpelling`.
             case BinaryOperator::logicalOr:
             case BinaryOperator::concatenate:        return 15;
             // json_extract() is a call, and an IS operator never reaches an emitted operator at all.
@@ -550,7 +559,9 @@ namespace sqlite2orm {
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
         const AstNode& generatedNode = generatedOperandNode(astNode);
         if(auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
-            if(policyEquals(policy, "expr_style", "functional")) {
+            // An operator the C++ `||` token would misread is generated as a call whatever the
+            // policy asks for, and a call is a primary.
+            if(policyEquals(policy, "expr_style", "functional") || binaryOperatorNeedsCallSpelling(*binaryOp)) {
                 return kCppPrecedencePrimary;
             }
             return cppOperatorPrecedence(binaryOp->binaryOperator);
@@ -971,6 +982,87 @@ namespace sqlite2orm {
             }
         }
         return {};
+    }
+
+    bool generatesSqliteOrmCondition(const AstNode& astNode) {
+        // A COLLATE and a unary plus generate their operand and nothing else, so the sqlite_orm
+        // node standing here is the one the operand generates.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if(auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            switch(binaryOperator->binaryOperator) {
+            case BinaryOperator::equals:
+            case BinaryOperator::notEquals:
+            case BinaryOperator::lessThan:
+            case BinaryOperator::lessOrEqual:
+            case BinaryOperator::greaterThan:
+            case BinaryOperator::greaterOrEqual:
+            case BinaryOperator::logicalAnd:
+                // A comparison is a `binary_condition`, `&&` an `and_condition_t`.
+                return true;
+            case BinaryOperator::logicalOr:
+                // An OR is an `or_condition_t` either way: `or_()` builds one whatever its operands
+                // are, and the `or` spelling is only generated when one of them is a condition.
+                return true;
+            default:
+                // The arithmetic, bitwise and concatenation operators build a `binary_operator`,
+                // the JSON arrows a `json_extract()` call, and an IS never reaches codegen.
+                return false;
+            }
+        }
+        if(auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            // `not x` is a `negated_condition_t`; a negation generates a subtraction from zero and
+            // `~x` a `bitwise_not_t`, neither of them a condition.
+            return unaryOperator->unaryOperator == UnaryOperator::logicalNot;
+        }
+        // MATCH is the one predicate missing here on purpose: `match_t` derives from nothing, so
+        // sqlite_orm does not count it as a condition either.
+        return dynamic_cast<const InNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const BetweenNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const LikeNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const GlobNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const IsNullNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const IsNotNullNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const ExistsNode*>(&generatedNode) != nullptr;
+    }
+
+    bool binaryOperatorNeedsCallSpelling(const BinaryOperatorNode& binaryOperatorNode) {
+        switch(binaryOperatorNode.binaryOperator) {
+        case BinaryOperator::logicalOr:
+            // `operator||` builds the `or_condition_t` only when one of its operands is a condition.
+            if(!generatesSqliteOrmCondition(*binaryOperatorNode.lhs) &&
+               !generatesSqliteOrmCondition(*binaryOperatorNode.rhs)) {
+                return true;
+            }
+            break;
+        case BinaryOperator::concatenate: {
+            // …and the `conc_t` only when neither of them is. `||` binds tighter than every other
+            // SQL operator, so a predicate operand is delimited with a CAST already — it is the
+            // grouping the serialized SQL needs — and a `cast_t` is not a condition any more. What
+            // is left is the conditions sqlite_orm serializes as one term of their own: the
+            // comparisons, AND, OR and EXISTS.
+            auto operandStaysCondition = [](const AstNode& operand) {
+                return generatesSqliteOrmCondition(operand) &&
+                       serializedSqlPrecedence(operand) == kSqlPrecedenceTerm;
+            };
+            if(operandStaysCondition(*binaryOperatorNode.lhs) || operandStaysCondition(*binaryOperatorNode.rhs)) {
+                return true;
+            }
+            break;
+        }
+        default:
+            return false;
+        }
+        // An operand spelled as a call of the same operator takes the rest of the chain with it, so
+        // that one chain is spelled one way throughout: `1 OR 0 OR a = 1` comes out as
+        // `or_(or_(1, 0), c(&User::a) == 1)` rather than as `or_(1, 0) or c(&User::a) == 1`.
+        auto operandNeedsCallSpelling = [&](const AstNode& operand) {
+            auto* binaryOperand = dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(operand));
+            return binaryOperand != nullptr &&
+                   binaryOperand->binaryOperator == binaryOperatorNode.binaryOperator &&
+                   binaryOperatorNeedsCallSpelling(*binaryOperand);
+        };
+        return operandNeedsCallSpelling(*binaryOperatorNode.lhs) ||
+               operandNeedsCallSpelling(*binaryOperatorNode.rhs);
     }
 
     NegationForm negationFormFor(const AstNode& operand) {

@@ -52,6 +52,7 @@ namespace sqlite2orm {
     extern const std::string kCommentNotValueAddedToZero;
     extern const std::string kCommentNegatedConditionCast;
     extern const std::string kCommentBitwiseResultCast;
+    extern const std::string kCommentOrTokenCallSpelling;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -62,6 +63,22 @@ namespace sqlite2orm {
 
     std::string_view binaryOperatorString(BinaryOperator binaryOperator);
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator);
+
+    /**
+     *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
+     *  `internal::condition_t`: a comparison, AND, OR, IN, BETWEEN, LIKE, GLOB, IS [NOT] NULL,
+     *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.
+     */
+    bool generatesSqliteOrmCondition(const AstNode& astNode);
+    /**
+     *  True when the node has to be generated as a call — `or_(…)` or `conc(…)` — because the C++
+     *  token `||` would build the other sqlite_orm node than the SQL operator stands for. C++
+     *  spells `or` and the concatenation alike, and sqlite_orm's two `operator||` overloads pick
+     *  between `or_condition_t` and `conc_t` by the operands: an OR over operands that are not
+     *  conditions comes out a concatenation, and a concatenation over an operand that is one comes
+     *  out an OR. The call form names the node it builds, so it says which operator was written.
+     */
+    bool binaryOperatorNeedsCallSpelling(const BinaryOperatorNode& binaryOperatorNode);
 
     /** Precedence of code that is one C++ term already, so no operator around it can regroup it. */
     inline constexpr int kCppPrecedencePrimary = 0;

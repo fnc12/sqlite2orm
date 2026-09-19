@@ -483,18 +483,34 @@ namespace sqlite2orm {
                 chosenExprVal = "functional";
                 emittedExpr = functionalCode;
             }
+            // C++ spells a logical OR and a concatenation with the same token, `||`, and
+            // sqlite_orm's two `operator||` overloads pick between the `or_condition_t` and the
+            // `conc_t` by the operands: the OR only when one of them is a condition, the
+            // concatenation only when neither is. So `SELECT 1 OR 0` spelled `c(1) or 0` runs as
+            // `SELECT 1 || 0` and answers '10', and `SELECT (a = 1) || 'x'` spelled
+            // `c(&User::a) == 1 || "x"` runs as `SELECT (a = 1) OR 'x'`. `or_()` and `conc()` name
+            // the node they build, so the call is the only form offered where the operator
+            // spelling would not be the operator that was written.
+            const bool needsCallSpelling = binaryOperatorNeedsCallSpelling(*binaryOp);
+            if(needsCallSpelling) {
+                chosenExprVal = "functional";
+                emittedExpr = functionalCode;
+            }
 
             // options lists every variant (the chosen one included); the consumer decides how to
             // present the selection.
-            decisionPoints.push_back(DecisionPoint{
-                this->context.nextDecisionPointId++,
-                "expr_style",
-                chosenExprVal,
-                emittedExpr,
-                {Option{"operator_wrap_left", wrapLeftCode, "wrap left operand"},
-                 Option{"operator_wrap_right", wrapRightCode, "wrap right operand"},
-                 Option{"functional", functionalCode, "functional style"},
-                 Option{"operator_wrap_both", wrapBothCode, "wrap both operands", true}}});
+            std::vector<Option> exprStyleOptions;
+            if(needsCallSpelling) {
+                exprStyleOptions.push_back(Option{"functional", functionalCode, "functional style"});
+            } else {
+                exprStyleOptions.push_back(Option{"operator_wrap_left", wrapLeftCode, "wrap left operand"});
+                exprStyleOptions.push_back(Option{"operator_wrap_right", wrapRightCode, "wrap right operand"});
+                exprStyleOptions.push_back(Option{"functional", functionalCode, "functional style"});
+                exprStyleOptions.push_back(Option{"operator_wrap_both", wrapBothCode, "wrap both operands", true});
+            }
+            decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++, "expr_style",
+                                                   chosenExprVal, emittedExpr,
+                                                   std::move(exprStyleOptions)});
 
             std::vector<CodegenWarning> binWarnings;
             binWarnings.insert(binWarnings.end(),
@@ -515,6 +531,9 @@ namespace sqlite2orm {
             appendUniqueStrings(binComments, rightResult.comments);
             if(castsPredicateOperand) {
                 appendUniqueString(binComments, kCommentPredicateGroupingCast);
+            }
+            if(needsCallSpelling) {
+                appendUniqueString(binComments, kCommentOrTokenCallSpelling);
             }
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings), {},
                                  std::move(binComments)};

@@ -46,6 +46,17 @@ namespace {
         "CAST leaves what the inner NOT stands for alone: it is 0, 1 or NULL, and a CAST to INTEGER "
         "keeps all three.";
 
+    // The hint attached to every operator spelled as a call because the C++ `||` token would build
+    // the other node; asserted on its own in "codegen: an operator spelled as a call carries its
+    // comment".
+    const std::string kOrTokenCallSpellingComment =
+        "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
+        "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
+        "the OR condition only when one of them is a condition (a comparison, AND, OR, IN, BETWEEN, "
+        "LIKE, GLOB, IS [NOT] NULL, EXISTS or NOT) and the concatenation otherwise. So `1 OR 0` "
+        "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
+        "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
+
 }  // namespace
 
 TEST_CASE("codegen: integer literal") {
@@ -400,7 +411,21 @@ TEST_CASE("codegen: logical AND") {
 
 TEST_CASE("codegen: logical OR") {
     SECTION("leaf operands") {
-        REQUIRE(generateFull("a OR b") == expectedBinaryLeaf("&User::a", "&User::b", " or ", "or_"));
+        // Neither operand is a condition, so `c(&User::a) or &User::b` would be the concatenation
+        // `operator||` and not an OR at all; the call is the only form there.
+        REQUIRE(generateFull("a OR b") == CodeGenResult{
+            "or_(&User::a, &User::b)",
+            {
+                columnRefStyleDp(1, "&User::a"),
+                columnRefStyleDp(2, "&User::b"),
+                DecisionPoint{3, "expr_style", "functional", "or_(&User::a, &User::b)",
+                    {
+                        Option{"functional", "or_(&User::a, &User::b)", "functional style"},
+                    }},
+            },
+            {},
+            {},
+            {kOrTokenCallSpellingComment}});
     }
     SECTION("compound operands: a = 1 OR b = 2") {
         auto result = generateFull("a = 1 OR b = 2");
@@ -418,6 +443,65 @@ TEST_CASE("codegen: logical OR") {
             }});
         REQUIRE(result == CodeGenResult{"c(&User::a) == 1 or c(&User::b) == 2", std::move(expectedDps)});
     }
+}
+
+// C++ spells a logical OR and a concatenation with the same token, `||`, and sqlite_orm's two
+// `operator||` overloads pick between the `or_condition_t` and the `conc_t` by the operands: the OR
+// only when one of them is a condition, the concatenation only when neither is. `or_()` and
+// `conc()` name the node they build, so the call is the form for every operator the token would
+// misread. The values each form answers with are pinned in "runtime: an OR and a concatenation
+// return the values SQLite computes".
+TEST_CASE("codegen: an operator the C++ `||` token misreads is spelled as a call") {
+    SECTION("an OR over operands that are not conditions") {
+        // `c(1) or 0` is `1 || 0`, which SQLite answers with '10' where `1 OR 0` is 1.
+        REQUIRE(generate("1 OR 0") == "or_(1, 0)");
+        REQUIRE(generate("a OR 0") == "or_(&User::a, 0)");
+        REQUIRE(generate("a OR b") == "or_(&User::a, &User::b)");
+        REQUIRE(generate("-(1 OR 0)") == "(c(0) - (or_(1, 0)))");
+        // `match_t` is the one predicate sqlite_orm does not class as a condition.
+        REQUIRE(generate("a MATCH 'x' OR b") == R"(or_(match(&User::a, "x"), &User::b))");
+    }
+    SECTION("an OR with a condition among its operands") {
+        REQUIRE(generate("a = 1 OR b") == "c(&User::a) == 1 or &User::b");
+        REQUIRE(generate("a OR b = 1") == "c(&User::a) or c(&User::b) == 1");
+        REQUIRE(generate("a AND b OR c") == "c(&User::a) and &User::b or &User::c");
+        REQUIRE(generate("(a IS NULL) OR b") == "is_null(&User::a) or &User::b");
+        REQUIRE(generate("a IN (1, 2) OR b") == "in(&User::a, {1, 2}) or &User::b");
+        REQUIRE(generate("a BETWEEN 1 AND 9 OR b") == "between(&User::a, 1, 9) or &User::b");
+        REQUIRE(generate("a LIKE 'x' OR b") == R"(like(&User::a, "x") or &User::b)");
+        REQUIRE(generate("NOT a OR b") == "not column<User>(&User::a) or &User::b");
+    }
+    SECTION("an operand spelled as a call takes the chain with it") {
+        REQUIRE(generate("1 OR 0 OR 1") == "or_(or_(1, 0), 1)");
+        REQUIRE(generate("1 OR 0 OR a = 1") == "or_(or_(1, 0), c(&User::a) == 1)");
+        // The chain that starts with a condition keeps the operator spelling throughout.
+        REQUIRE(generate("a = 1 OR b OR c") == "c(&User::a) == 1 or &User::b or &User::c");
+    }
+    SECTION("a concatenation over a condition") {
+        // `c(&User::a) == 1 || "x"` is `(a = 1) OR 'x'`, where the concatenation is '1x'.
+        REQUIRE(generate("(a = 1) || 'x'") == R"(conc(c(&User::a) == 1, "x"))");
+        REQUIRE(generate("'x' || (a = 1)") == R"(conc("x", c(&User::a) == 1))");
+        REQUIRE(generate("(1 OR 0) || 'x'") == R"(conc(or_(1, 0), "x"))");
+        REQUIRE(generate("'a' || (a = 1) || 'c'") == R"(conc(conc("a", c(&User::a) == 1), "c"))");
+        REQUIRE(generate("EXISTS(SELECT 1) || 'x'") == R"(conc(exists(select(1)), "x"))");
+    }
+    SECTION("a concatenation over operands that are not conditions") {
+        REQUIRE(generate("a || b") == "c(&User::a) || &User::b");
+        REQUIRE(generate("'a' || 'b'") == R"(c("a") || "b")");
+        REQUIRE(generate("a || b || c") == "c(&User::a) || &User::b || &User::c");
+        // A predicate is delimited with a CAST already, and a `cast_t` is not a condition, so the
+        // operator spelling is the concatenation it reads as.
+        REQUIRE(generate("(a IS NULL) || 'x'") == R"(cast<int64_t>(is_null(&User::a)) || "x")");
+        REQUIRE(generate("(a IN (1, 2)) || 'x'") == R"(cast<int64_t>(in(&User::a, {1, 2})) || "x")");
+        REQUIRE(generate("(NOT a) || 'x'") == R"(cast<int64_t>(not column<User>(&User::a)) || "x")");
+    }
+}
+
+TEST_CASE("codegen: an operator spelled as a call carries its comment") {
+    REQUIRE(generateFull("1 OR 0").comments == std::vector<std::string>{kOrTokenCallSpellingComment});
+    REQUIRE(generateFull("(a = 1) || 'x'").comments == std::vector<std::string>{kOrTokenCallSpellingComment});
+    REQUIRE(generateFull("a = 1 OR b").comments.empty());
+    REQUIRE(generateFull("a || b").comments.empty());
 }
 
 TEST_CASE("codegen: logical NOT") {
@@ -896,7 +980,7 @@ TEST_CASE("codegen: a nested operand keeps the grouping SQL gave it") {
         REQUIRE(generate("1 << (2 << 3)") == "c(1) << (c(2) << 3)");
         REQUIRE(generate("a - (a - 1)") == "c(&User::a) - (c(&User::a) - 1)");
         REQUIRE(generate("1 - (0 - a)") == "c(1) - (c(0) - &User::a)");
-        REQUIRE(generate("1 AND (2 OR 3)") == "c(1) and (c(2) or 3)");
+        REQUIRE(generate("1 AND (2 OR 3)") == "c(1) and or_(2, 3)");
     }
     SECTION("left operand C++ binds looser than SQL does") {
         // SQL groups `4 & 2 < 3` as `(4 & 2) < 3` and is 1; C++ binds `<` tighter than `&`.

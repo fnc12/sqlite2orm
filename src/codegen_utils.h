@@ -346,19 +346,27 @@ namespace sqlite2orm {
 
     /**
      *  Whether SQLite can answer `astNode` with NULL. Conservative: only a node whose value is
-     *  spelled out in the SQL — a literal, or an operator over such operands — is ruled out, and
-     *  everything SQLite computes at runtime counts as nullable. `/` and `%` count whatever their
-     *  operands are, because SQLite answers a division by zero with NULL rather than an error.
+     *  spelled out in the SQL — a literal, or an operator, a predicate or a CAST over such operands
+     *  — is ruled out, and everything SQLite computes at runtime counts as nullable. `/` and `%`
+     *  count whatever their operands are, because SQLite answers a division by zero with NULL
+     *  rather than an error. A call is ruled out only for the built-ins that answer NULL for no
+     *  reason other than a NULL argument; every other one — `nullif`, `date`, `unicode`, `sign`,
+     *  `substr`, `printf`, `json_extract`, the math functions, and an aggregate over an empty
+     *  rowset — counts as nullable whatever its arguments hold. `iif` propagates for its
+     *  three-argument form alone: the `iif(X, Y)` SQLite 3.48 added is `iif(X, Y, NULL)`, NULL
+     *  whenever X is false.
      */
     bool expressionMayBeNull(const AstNode& astNode);
     /**
      *  Whether a SELECT result column has to be generated as `as_optional(...)` for a NULL row to
      *  survive the round trip. sqlite_orm types a binary operator by the operator alone — `double`
-     *  for the arithmetic ones, `std::string` for `||`, `bool` for a comparison — none of which can
-     *  hold a NULL, so such a row is read back as 0 / "" / false. `as_optional` leaves the SQL
-     *  untouched and yields `std::optional<T>` instead. Every other expression sqlite_orm already
-     *  types nullably where it has to (a column carries its field's type, `abs(...)` is a
-     *  `std::unique_ptr`, NULL itself is a `std::nullptr_t`).
+     *  for the arithmetic ones, `std::string` for `||`, `bool` for a comparison —, a BETWEEN, an
+     *  IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for, and a built-in function
+     *  call the return type that function declares. None of those can hold a NULL, so such a row
+     *  is read back as 0 / "" / false. `as_optional` leaves the SQL untouched and yields
+     *  `std::optional<T>` instead. Every other expression sqlite_orm already types nullably where
+     *  it has to (a column carries its field's type, `abs(...)` is a `std::unique_ptr`, `max(...)`
+     *  and `coalesce(...)` carry the type of an argument, NULL itself is a `std::nullptr_t`).
      */
     bool selectResultNeedsAsOptional(const AstNode& astNode);
     /**

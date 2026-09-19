@@ -1659,3 +1659,29 @@ TEST_CASE("codegen: the sixteen-digit hex literals around the boundary still gen
     REQUIRE(generate("0xFFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)");
     REQUIRE(generate("0x0000FFFFFFFFFFFFFFFF") == "static_cast<int64_t>(0x0000FFFFFFFFFFFFFFFF)");
 }
+
+// A comment explains why the generator picked the form it did, and a consumer reads it from the
+// statement it belongs to — `statements[].comments` of `--db --json`, `comments` of the generated
+// header. Every clause there is generates expressions, not only a SELECT's result column, so a
+// comment recorded while generating a CHECK, a column DEFAULT, a generated column, an index, a
+// trigger's WHEN or any DML clause belongs to that statement just the same.
+TEST_CASE("codegen: an expression's comment reaches the statement whose body generated it") {
+    const std::vector<std::string> predicateCastOnly{kPredicateCastComment};
+
+    REQUIRE(generateFull("CREATE TABLE q (a INTEGER, b TEXT, CHECK(1 - (b LIKE 'x')));").comments ==
+            predicateCastOnly);
+    REQUIRE(generateFull("CREATE TABLE q (a INTEGER DEFAULT (1 - (0 LIKE 'x')));").comments ==
+            predicateCastOnly);
+    REQUIRE(generateFull("CREATE TABLE q (a INTEGER, b AS (1 - (a LIKE 'x')));").comments ==
+            predicateCastOnly);
+    REQUIRE(generateFull("CREATE INDEX i ON t (1 - (b LIKE 'x'));").comments == predicateCastOnly);
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN 1 - (new.b LIKE 'x') BEGIN SELECT 1; END;")
+                .comments == predicateCastOnly);
+    REQUIRE(generateFull("INSERT INTO t (a) VALUES (1 - (0 LIKE 'x'));").comments == predicateCastOnly);
+    REQUIRE(generateFull("UPDATE t SET a = 1 - (b LIKE 'x');").comments == predicateCastOnly);
+    REQUIRE(generateFull("DELETE FROM t WHERE 1 - (b LIKE 'x');").comments == predicateCastOnly);
+    REQUIRE(generateFull("WITH c AS (SELECT 1 - (b LIKE 'x') AS z FROM t) SELECT z FROM c;").comments ==
+            predicateCastOnly);
+    REQUIRE(generateFull("SELECT * FROM t WHERE a IN (SELECT 1 - (b LIKE 'x') FROM t);").comments ==
+            predicateCastOnly);
+}

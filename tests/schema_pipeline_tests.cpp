@@ -1455,10 +1455,11 @@ TEST_CASE("generateSqliteSchemaHeader: a view over an FTS5 table is left out wit
 
 // A trigger body statement with no sqlite_orm form is reachable from an ordinary database, not only
 // from `-e`: SQLite stores `SELECT *, a FROM t` as a trigger step and runs it, while sqlite_orm's
-// `asterisk<T>()` is the form for a result list that is a `*` and nothing else. The step that
-// cannot be generated is a placeholder inside `begin(...)`, so the reader of the header sees which
-// step did not come through instead of a body silently short of one. Checked against sqlite3 3.51.
-TEST_CASE("generateSqliteSchemaHeader: a trigger step with no sqlite_orm form is placeheld in the body") {
+// `asterisk<T>()` is the form for a result list that is a `*` and nothing else. A placeholder
+// standing for the step would be a comment inside `begin(...)`, which is not C++ — the header was
+// handed out at exit 0 and did not compile — so the trigger is left out of make_storage() whole and
+// the warnings are what name the step. Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a trigger step with no sqlite_orm form drops the trigger") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path,
             "CREATE TABLE t (a INTEGER, b TEXT);"
@@ -1484,15 +1485,64 @@ TEST_CASE("generateSqliteSchemaHeader: a trigger step with no sqlite_orm form is
                            "    return make_storage(db_path,\n"
                            "        make_table(\"t\",\n"
                            "        make_column(\"a\", &T::a),\n"
-                           "        make_column(\"b\", &T::b)),\n"
-                           "        make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
-                           "/* trigger step not mapped to sqlite_orm */)));\n"
+                           "        make_column(\"b\", &T::b)));\n"
                            "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
                 {"a `*` result column next to other result columns is not mapped to sqlite_orm select(...)",
                  SourceLocation{1, 60},
                  18},
-                {"a statement in the trigger body is not mapped to sqlite_orm codegen", SourceLocation{1, 60}, 18}});
+                {"a statement in the trigger body is not mapped to sqlite_orm codegen", SourceLocation{1, 60}, 18},
+                {"a construct in this statement is not mapped to sqlite_orm, so the statement is not generated"},
+                {"CREATE TRIGGER `tr` is not merged into make_storage()"}});
     REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// The card's own schema: a trigger WHEN clause holding a scalar subquery that carries a GROUP BY.
+// SQLite stores the trigger and fires it (checked against sqlite3 3.51), sqlite_orm has no form for
+// the subquery, and the placeholder standing for it used to be emitted straight into
+// `.when(c(new_(&T::a)) == /* (SELECT ...) */)` — a header offered at exit 0 that g++ refuses with
+// `expected primary-expression before ')' token`. The trigger is left out of make_storage() instead.
+TEST_CASE("generateSqliteSchemaHeader: a trigger WHEN clause with an unmapped subquery drops the trigger") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER);"
+            "CREATE TABLE t2 (a INTEGER);"
+            "CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.a = (SELECT a FROM t2 GROUP BY a) "
+            "BEGIN DELETE FROM t; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n"
+                           "struct T2 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)),\n"
+                           "        make_table(\"t2\",\n"
+                           "        make_column(\"a\", &T2::a)));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 50}, 29},
+                {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"},
+                {"a construct in this statement is not mapped to sqlite_orm, so the statement is not generated"},
+                {"CREATE TRIGGER `tr` is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
 }

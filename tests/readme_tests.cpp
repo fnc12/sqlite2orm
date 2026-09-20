@@ -1,27 +1,15 @@
+#include "source_file_text.hpp"
+
 #include <catch2/catch_all.hpp>
 
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
-#include <string_view>
 
 namespace {
 
-    [[nodiscard]] std::string readReadme() {
-        const std::filesystem::path path = std::filesystem::path{SQLITE2ORM_TEST_SOURCE_DIR} / "README.md";
-        std::ifstream stream{path, std::ios::binary};
-        REQUIRE(stream.is_open());
-        return std::string{std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
-    }
+    using source_file_test_helpers::countOccurrences;
 
-    [[nodiscard]] std::size_t countOccurrences(std::string_view haystack, std::string_view needle) {
-        std::size_t count = 0;
-        for (std::size_t pos = haystack.find(needle); pos != std::string_view::npos;
-             pos = haystack.find(needle, pos + needle.size())) {
-            ++count;
-        }
-        return count;
+    [[nodiscard]] std::string readReadme() {
+        return source_file_test_helpers::readSourceFile("README.md");
     }
 }
 

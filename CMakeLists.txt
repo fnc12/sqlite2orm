@@ -12,6 +12,9 @@ if(NOT TARGET SQLite::SQLite3)
 endif()
 
 include(FetchContent)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmGitRevision.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmHeadersCheckoutRef.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmHeadersRevisionNote.cmake")
 message(STATUS "[sqlite2orm] Fetching fmt…")
 FetchContent_Declare(
     fmt
@@ -90,15 +93,58 @@ if(SQLITE2ORM_BUILD_TESTS)
     FetchContent_MakeAvailable(Catch2)
     message(STATUS "[sqlite2orm] Catch2 ready.")
 
-    message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (dev)...")
+    find_program(SQLITE2ORM_GIT_EXECUTABLE git)
+    # find_program answers `<var>-NOTFOUND`, which if() reads as false but everything else reads as
+    # a path; the layers below are handed an empty string instead, so "there is no git here" is the
+    # same value in cmake, in the note and in the test that skips over it.
+    set(sqlite2orm_git_executable "")
+    if(SQLITE2ORM_GIT_EXECUTABLE)
+        set(sqlite2orm_git_executable "${SQLITE2ORM_GIT_EXECUTABLE}")
+    endif()
+
+    # The runtime tests compile the generated code against these headers, so following the moving
+    # `dev` branch made the same commit of this repository pass or fail depending on when the
+    # checkout was populated, and the failures read like a bug in whatever was under test. The
+    # revision lives in its own module, together with the rule that decides which one a tree uses;
+    # a commit hash rules out GIT_SHALLOW, which CMake accepts only for branch and tag names.
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmPinnedRevision.cmake")
+    set(sqlite2orm_sqlite_orm_repository "https://github.com/fnc12/sqlite_orm.git")
+
+    # A tree that follows a branch instead of the pin has to say which ref that is: a checkout
+    # populated at a commit hash holds no local branches, and the bare name README names is one
+    # sqlite_orm also spells as a top-level directory, so the update step's `git checkout` refuses
+    # it as ambiguous. The pinned hash goes through untouched.
+    sqlite2orm_headers_checkout_ref(
+        "${SQLITE2ORM_SQLITE_ORM_REVISION}" "${sqlite2orm_sqlite_orm_repository}"
+        "${sqlite2orm_git_executable}" sqlite2orm_sqlite_orm_checkout_ref)
+    message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (${sqlite2orm_sqlite_orm_checkout_ref})...")
     FetchContent_Declare(
         sqlite_orm_headers
-        GIT_REPOSITORY https://github.com/fnc12/sqlite_orm.git
-        GIT_TAG dev
-        GIT_SHALLOW TRUE
+        GIT_REPOSITORY ${sqlite2orm_sqlite_orm_repository}
+        GIT_TAG ${sqlite2orm_sqlite_orm_checkout_ref}
     )
     FetchContent_Populate(sqlite_orm_headers)
     message(STATUS "[sqlite2orm] sqlite_orm headers ready.")
+
+    # A build tree configured before the pin keeps whatever it populated back then, and only a
+    # reconfigure moves it; report the revision the tests really see instead of leaving a stale
+    # checkout to surface as a compile error inside a generated program.
+    sqlite2orm_git_revision_of(
+        "${sqlite_orm_headers_SOURCE_DIR}" "${sqlite2orm_git_executable}" sqlite2orm_sqlite_orm_head)
+
+    # Headers that are not a checkout at all -- and a machine that has no git to ask -- leave the
+    # guard with nothing to compare, and it can then only skip: say so here, or the pin quietly
+    # stops holding for the trees that most need it. Repopulating a dependency takes removing the
+    # sub-build that stamps the clone step as done, so the note is handed that directory too;
+    # FETCHCONTENT_BASE_DIR is where FetchContent puts both.
+    sqlite2orm_headers_revision_note(
+        "${sqlite_orm_headers_SOURCE_DIR}" "${FETCHCONTENT_BASE_DIR}/sqlite_orm_headers-subbuild"
+        "${FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS}" "${sqlite2orm_git_executable}"
+        "${SQLITE2ORM_SQLITE_ORM_REVISION}" "${sqlite2orm_sqlite_orm_head}"
+        sqlite2orm_sqlite_orm_headers_note)
+    if(sqlite2orm_sqlite_orm_headers_note)
+        message(STATUS "[sqlite2orm] ${sqlite2orm_sqlite_orm_headers_note}")
+    endif()
 
     enable_testing()
     add_executable(sqlite2orm_tests
@@ -137,6 +183,8 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/schema_pipeline_tests.cpp
         tests/schema_report_tests.cpp
         tests/readme_tests.cpp
+        tests/source_file_text.cpp
+        tests/sqlite_orm_revision_tests.cpp
         tests/temp_build_dir.cpp
     )
     # A probe that runs the generated code needs the same libsqlite3 the library links, which is not
@@ -148,20 +196,46 @@ if(SQLITE2ORM_BUILD_TESTS)
     endif()
     target_compile_definitions(sqlite2orm_tests PRIVATE
         SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE="${sqlite_orm_headers_SOURCE_DIR}/include"
+        SQLITE2ORM_TEST_SQLITE_ORM_REVISION="${SQLITE2ORM_SQLITE_ORM_REVISION}"
+        SQLITE2ORM_TEST_SQLITE_ORM_HEAD="${sqlite2orm_sqlite_orm_head}"
+        SQLITE2ORM_TEST_SQLITE_ORM_SOURCE_DIR="${sqlite_orm_headers_SOURCE_DIR}"
+        SQLITE2ORM_TEST_SQLITE_ORM_SOURCE_OVERRIDE="${FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS}"
+        SQLITE2ORM_TEST_GIT_EXECUTABLE="${sqlite2orm_git_executable}"
         SQLITE2ORM_TEST_SQLITE3_LINK="${sqlite2orm_test_sqlite3_link}"
         SQLITE2ORM_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)
     add_test(NAME sqlite2orm_tests COMMAND sqlite2orm_tests)
 
     if(UNIX)
-        find_program(SQLITE2ORM_GIT_EXECUTABLE git)
         if(SQLITE2ORM_GIT_EXECUTABLE)
             add_test(
                 NAME sqlite2orm_tests_worktree_guard
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/git_worktree_guard.sh"
                         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/git-worktree-guard.sh"
                         "${SQLITE2ORM_GIT_EXECUTABLE}")
+            add_test(
+                NAME sqlite2orm_tests_git_revision_of
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_git_revision_test.sh"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmGitRevision.cmake"
+                        "${SQLITE2ORM_GIT_EXECUTABLE}"
+                        "${CMAKE_COMMAND}")
+            add_test(
+                NAME sqlite2orm_tests_headers_checkout_ref
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_headers_checkout_ref_test.sh"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmHeadersCheckoutRef.cmake"
+                        "${SQLITE2ORM_GIT_EXECUTABLE}"
+                        "${CMAKE_COMMAND}")
         endif()
+        add_test(
+            NAME sqlite2orm_tests_pinned_revision
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_pinned_revision_test.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmPinnedRevision.cmake"
+                    "${CMAKE_COMMAND}")
+        add_test(
+            NAME sqlite2orm_tests_headers_revision_note
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_headers_revision_note_test.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmHeadersRevisionNote.cmake"
+                    "${CMAKE_COMMAND}")
     endif()
 
     if(SQLITE2ORM_BUILD_CLI)

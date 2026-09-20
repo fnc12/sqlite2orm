@@ -78,6 +78,52 @@ See [examples/](examples/) for more: programmatic API, custom policies, database
 | `SQLITE2ORM_BUILD_CLI` | `ON` | Build the `sqlite2orm` CLI tool |
 | `SQLITE2ORM_BUILD_TESTS` | `ON` | Build unit tests (fetches Catch2 and sqlite_orm headers) |
 | `SQLITE2ORM_BUILD_EXAMPLES` | `OFF` | Build example programs |
+| `SQLITE2ORM_SQLITE_ORM_REVISION` | `eb77998ef5e27350b25977b061e46e202742ecc8` | Revision of `fnc12/sqlite_orm` the runtime tests compile against |
+
+### Pinned sqlite_orm revision
+
+The runtime tests compile the generated code against sqlite_orm headers that `FetchContent`
+pulls at the revision above, not at the tip of `dev`. `dev` moves, and a checkout populated a
+few days earlier used to fail those tests in a way that looked like a bug in whatever was under
+test. A bump spells the revision out in three files — `cmake/SqliteOrmPinnedRevision.cmake`, the
+table row above and `tests/sqlite_orm_revision_tests.cpp` (`pinnedRevision` and two expected
+literals) — and `sqlite2orm_tests` checks that all of them agree, and that the headers in
+`build/_deps` are really the pinned ones.
+
+A build tree keeps the headers it populated until it reconfigures, which is how a moving `dev`
+stayed invisible to it; a bump edits `cmake/SqliteOrmPinnedRevision.cmake`, and a tree that never
+named a revision of its own picks it up on its next configure. To try the tests against the tip of
+`dev`:
+
+```bash
+cmake -S . -B build -DSQLITE2ORM_SQLITE_ORM_REVISION=dev
+```
+
+A branch is checked out as `origin/<branch>`, which the build works out by asking the remote: a
+tree populated at the pinned hash holds no local branch of its own, and `git checkout dev` inside a
+sqlite_orm checkout — which keeps a top-level `dev/` directory — is ambiguous between the two.
+Tags and commit hashes are taken as they are written.
+
+Naming the revision on the command line is what puts it in the cache, and a tree configured that
+way keeps it — bumps included — until
+
+```bash
+cmake -U SQLITE2ORM_SQLITE_ORM_REVISION -S . -B build
+```
+
+puts it back on the pin. While a tree is aimed elsewhere the revision check only skips, and
+configuring says so. A tree pointed at a checkout of its own with
+`FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS` is not moved by `cmake` at all — check that
+directory out at the pinned revision yourself.
+
+Headers that are not a `git` checkout — a tree copied out of another build, a directory an
+override points at — hold no revision to compare, and neither does any tree on a machine with no
+`git` to ask, so the check can only skip over them. Configuring reports both cases, and says which
+of the two it met, because headers of an unknown age are exactly how the failures this pin exists
+to stop get blamed on the change under test. A populated dependency that is no longer a checkout
+is put back by removing its `-subbuild` directory and configuring again with
+`FETCHCONTENT_FULLY_DISCONNECTED` off — that is the step that clones it; removing the headers
+themselves leaves the sub-build stamped as done and nothing repopulates.
 
 ## Code style
 

@@ -191,6 +191,22 @@ namespace sqlite2orm {
     std::string blobToCpp(std::string_view blobLiteral);
     /** SQL numeric literal to C++: SQLite's `_` digit separators become C++'s `'` (1_000 -> 1'000). */
     std::string numericLiteralToCpp(std::string_view numericLiteral);
+    /**
+     *  The value C++ has no floating literal for: SQLite answers a literal past the range of a
+     *  double with an Inf, while [lex.fcon] makes the same spelling ill-formed in C++, where gcc
+     *  and clang warn (`floating constant exceeds range of 'double'`) and a consumer building the
+     *  generated code with `-Werror` gets an error. The generated header takes `<limits>` along
+     *  with this, which is why the emitter tells the context it was spelled.
+     */
+    inline constexpr std::string_view kInfinityCppExpression = "std::numeric_limits<double>::infinity()";
+    /** Whether codegen spells `numericLiteral` as `kInfinityCppExpression` rather than as itself. */
+    bool numericLiteralGeneratesInfinity(std::string_view numericLiteral);
+    /**
+     *  SQL real literal to C++, as the value SQLite reads it as: a literal past the range of a
+     *  double becomes an infinity, one too small for a double the zero it rounds to, and every
+     *  other one keeps the spelling it was written with.
+     */
+    std::string realLiteralToCpp(std::string_view realLiteral);
     /** Same for an integer literal, whose leading zeros C++ would read as an octal prefix (`010` is 10 in SQLite, 8 in C++). */
     std::string integerLiteralToCpp(std::string_view integerLiteral);
     /**

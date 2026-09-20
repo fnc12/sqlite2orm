@@ -87,6 +87,13 @@ namespace sqlite2orm {
          */
         std::vector<std::string> storedHexLiteralsTooBig;
         /**
+         *  Set once an emitter has written `std::numeric_limits<double>::infinity()` for a literal
+         *  C++ has no floating literal for. The type of the node does not say it — `9e999` and
+         *  `1e300` are both real literals — so the emitter answers here, and the generator of a
+         *  whole header reads it to take `<limits>` along.
+         */
+        bool spelledInfinity = false;
+        /**
          *  The expressions emitted since the last reset whose sqlite_orm type has no default
          *  constructor, named as SQLite spells them. `make_trigger()` keeps a trigger's WHEN
          *  expression in an `optional_container`, which default-constructs the expression before

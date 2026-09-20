@@ -1401,3 +1401,35 @@ TEST_CASE("runtime: a JSON arrow reads back the array index it is written with")
     REQUIRE(selectedValues(statements, "std::string", R"CPP(R"([10,20,30])")CPP") ==
             std::vector<std::string>{"20", "30", "20", "10", "NULL", "20"});
 }
+
+// sqlite_orm types `case_<R>` as R, and the inference that picks R — the type of the first
+// branch's result — never names a nullable type, so a CASE that answers NULL reached the caller as
+// 0. Both NULLs a CASE has are run here: a branch result that is one, and no branch matching with
+// no ELSE written. Expected rows checked against sqlite3 3.51 over `users(a INTEGER)` holding one
+// row, NULL first and 7 second; on master the first five columns are generated without the
+// `as_optional` around them, and every NULL below reaches the caller as 0 there.
+TEST_CASE("runtime: a CASE result column that can be NULL reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN 1 THEN NULL ELSE 0 END;"),
+        generate("SELECT CASE WHEN 1 THEN NULL END;"),
+        generate("SELECT CASE WHEN 0 THEN 1 END;"),
+        generate("SELECT CASE WHEN 1 THEN a ELSE 0 END;"),
+        generate("SELECT CASE a WHEN 7 THEN 1 END;"),
+        generate("SELECT CASE WHEN 1 THEN 2 ELSE 3 END;"),
+        generate("SELECT CASE WHEN a THEN 4 ELSE 5 END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(case_<int>().when(1, then(nullptr)).else_(0).end()));",
+                "auto rows = storage.select(as_optional(case_<int>().when(1, then(nullptr)).end()));",
+                "auto rows = storage.select(as_optional(case_<int>().when(0, then(1)).end()));",
+                "auto rows = storage.select(as_optional(case_<int>().when(1, then(&User::a)).else_(0).end()));",
+                "auto rows = storage.select(as_optional(case_<int>(&User::a).when(7, then(1)).end()));",
+                "auto rows = storage.select(case_<int>().when(1, then(2)).else_(3).end());",
+                "auto rows = storage.select(case_<int>().when(&User::a, then(4)).else_(5).end());",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "2", "5"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "7", "1", "2", "4"});
+}

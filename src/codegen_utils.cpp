@@ -2097,6 +2097,26 @@ namespace sqlite2orm {
             // A CAST changes the type of a value, never whether it is one: `CAST(NULL AS TEXT)` is NULL.
             return expressionMayBeNull(*cast->operand);
         }
+        if (auto* caseExpression = dynamic_cast<const CaseNode*>(&astNode)) {
+            // A CASE answers the result of the branch it takes, the ELSE result where no branch
+            // does, and a NULL where neither is there: `SELECT CASE WHEN 0 THEN 1 END` is NULL. The
+            // operand and the conditions pick the branch rather than fill it, so a NULL among them
+            // only takes no branch — `CASE NULL WHEN 1 THEN 2 ELSE 3 END` and
+            // `CASE WHEN NULL THEN 2 ELSE 3 END` are both 3 — and neither is asked here.
+            if (!caseExpression->elseResult) {
+                // Whether a branch always matches is not asked: it would take evaluating what
+                // SQLite makes of a condition — `'1'` is true and `'x'` is false — and getting
+                // that wrong the other way leaves a NULL narrow again, while a `CASE WHEN 1 THEN 2
+                // END` widened for nothing carries an `std::optional` that is always engaged.
+                return true;
+            }
+            for (const CaseBranch& branch: caseExpression->branches) {
+                if (expressionMayBeNull(*branch.result)) {
+                    return true;
+                }
+            }
+            return expressionMayBeNull(*caseExpression->elseResult);
+        }
         if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&astNode)) {
             return functionCallMayBeNull(*functionCall);
         }
@@ -2592,6 +2612,14 @@ namespace sqlite2orm {
         if (dynamic_cast<const CastNode*>(&generatedNode)) {
             // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
             // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
+            return expressionMayBeNull(generatedNode);
+        }
+        if (dynamic_cast<const CaseNode*>(&generatedNode)) {
+            // `case_t<R, …>` is typed R, and R is the type inferred for the first branch's result —
+            // `int` for a branch holding a NULL — so a CASE that answers NULL was read back as 0:
+            // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
+            // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
+            // NULL. The inference never names a nullable type, so nothing here is already widened.
             return expressionMayBeNull(generatedNode);
         }
         if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {

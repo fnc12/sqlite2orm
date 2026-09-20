@@ -617,7 +617,7 @@ share one result type — so it needs a decision taken across the branches at on
 - [x] json_array(value1, ...)
 - [x] json_array_length(json)
 - [x] json_array_length(json, path)
-- [x] json_extract(json, path, ...)
+- [x] json_extract(json, path, ...) → `json_extract<std::string>(…)`: sqlite_orm declares the call with a result type parameter that has no default, so a call generated without one does not compile. JSON_EXTRACT over one path answers the value at it, of whatever storage class the JSON holds, and `std::string` reads every one of them back as its text — reported on a result column; over two paths or more it answers the JSON array of what it found, which is text anyway
 - [x] json_insert(json, path, value, ...)
 - [x] json_object(label1, value1, ...)
 - [x] json_patch(json1, json2)
@@ -627,15 +627,15 @@ share one result type — so it needs a decision taken across the branches at on
 - [x] json_type(json)
 - [x] json_type(json, path)
 - [x] json_valid(json)
-- [x] json_quote(value)
+- [x] json_quote(value) → `json_quote<std::string>(…)`: the same result type parameter with no default, and text is what JSON_QUOTE always answers
 - [x] json_group_array(value)
 - [x] json_group_object(name, value)
 - [x] json_each(json)
 - [x] json_each(json, path)
 - [x] json_tree(json)
 - [x] json_tree(json, path)
-- [x] `->` operator → `json_extract(lhs, rhs)` (codegen warning: return type may differ)
-- [x] `->>` operator → `json_extract(lhs, rhs)` (codegen warning: return type may differ)
+- [x] `->` operator → `json_extract<std::string>(lhs, rhs)` (codegen warning: JSON_EXTRACT answers the SQL value at the path where `->` answers the JSON text of it — `'{"a":"s"}' -> '$.a'` is `"s"` in SQLite and `s` here; sqlite_orm has no form for the operator)
+- [x] `->>` operator → `json_extract<std::string>(lhs, rhs)`, which SQLite answers value for value and storage class for storage class
 
 ---
 

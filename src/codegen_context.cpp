@@ -252,6 +252,13 @@ namespace sqlite2orm {
         this->comments.emplace_back(comment);
     }
 
+    void CodeGeneratorContext::recordEmittedTableType(std::string typeName) {
+        if (typeName.empty()) {
+            return;
+        }
+        this->emittedTableTypes.insert(std::move(typeName));
+    }
+
     size_t CodeGeneratorContext::commentMark() const {
         return this->comments.size();
     }

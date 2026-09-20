@@ -915,16 +915,51 @@ namespace sqlite2orm {
                                   std::make_move_iterator(highResult.decisionPoints.begin()),
                                   std::make_move_iterator(highResult.decisionPoints.end()));
 
+            auto warnings = std::move(operandResult.warnings);
+            appendUniqueWarnings(warnings, lowResult.warnings);
+            appendUniqueWarnings(warnings, highResult.warnings);
+
             std::string operandCode =
                 groupPredicateArgument(std::move(operandResult.code), *betweenNode->operand, this->context);
             std::string lowCode = groupPredicateArgument(std::move(lowResult.code), *betweenNode->low, this->context);
             std::string highCode =
                 groupPredicateArgument(std::move(highResult.code), *betweenNode->high, this->context);
 
+            // sqlite_orm deduces one `T` from both bounds of `between(A, T, T)`, so bounds
+            // generated as different C++ types do not compile — and SQLite takes the SQL either
+            // way, `a BETWEEN 1 AND 3000000000` as readily as `a BETWEEN 1 AND 'x'`.
+            switch (betweenBoundsForm(*betweenNode->low, *betweenNode->high)) {
+                case BetweenBoundsForm::asWritten:
+                    break;
+                case BetweenBoundsForm::widenedToInt64: {
+                    // Only a bound the generated code already casts carries the type `int64_t`
+                    // itself; a constant past the `int` range is typed by its magnitude, as the
+                    // `long` that is not the `long long` an `int64_t` is on macOS. So every bound
+                    // but that one is cast, rather than the narrower of the two.
+                    const auto widened = [](const AstNode& bound, std::string code) {
+                        return generatedValueCppType(bound) == GeneratedValueCppType::integer64Cast
+                                   ? code
+                                   : "static_cast<int64_t>(" + code + ")";
+                    };
+                    lowCode = widened(*betweenNode->low, std::move(lowCode));
+                    highCode = widened(*betweenNode->high, std::move(highCode));
+                    this->context.recordComment(kCommentBetweenBoundsWidened);
+                    break;
+                }
+                case BetweenBoundsForm::noCommonType:
+                    warnings.push_back(sourceSpanWarning(
+                        "sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and " +
+                            betweenBoundTypeDescription(*betweenNode->low) + " next to " +
+                            betweenBoundTypeDescription(*betweenNode->high) +
+                            " is not one type, so the generated code does not compile",
+                        *betweenNode));
+                    break;
+            }
+
             this->context.recordFormWithoutDefaultConstructor("BETWEEN");
             std::string betweenCode = "between(" + operandCode + ", " + lowCode + ", " + highCode + ")";
             std::string code = betweenNode->negated ? "!" + betweenCode : betweenCode;
-            return CodeGenResult{code, std::move(decisionPoints)};
+            return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
         } else if (auto* subqueryNode = dynamic_cast<const SubqueryNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*subqueryNode->select);
             if (sub.code.empty()) {

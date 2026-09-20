@@ -94,6 +94,50 @@ namespace {
     }
 
     /**
+     *  Syntax-checks the generated select statements with `int64_t` naming `int64Spelling`, and
+     *  returns the compiler's exit status. Which type `int64_t` is differs by platform — a `long`
+     *  where the tests run, a `long long` on macOS — and so does the type C++ gives a 64-bit
+     *  constant, so a pair of bounds that deduces one `T` here can be two types there. The alias
+     *  stands in for the platform: the generated code names `int64_t` unqualified, and inside the
+     *  namespace that name is whichever of the two types the probe asks for.
+     */
+    int compilesWithInt64Spelled(const std::vector<std::string>& selectStatements, std::string_view int64Spelling) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <optional>\n"
+                   "\n"
+                   "struct User {\n"
+                   "    long long a{};\n"
+                   "};\n"
+                   "\n"
+                   "namespace probe {\n"
+                   "    using int64_t = "
+                << int64Spelling
+                << ";\n"
+                   "    using namespace sqlite_orm;\n"
+                   "\n";
+        for (std::size_t index = 0; index < selectStatements.size(); ++index) {
+            program << "    void statement" << index
+                    << "() {\n"
+                       "        auto storage = make_storage(\"\", make_table(\"users\", make_column(\"a\", "
+                       "&User::a)));\n"
+                       "        "
+                    << selectStatements[index]
+                    << "\n"
+                       "        (void)rows;\n"
+                       "    }\n";
+        }
+        program << "}  // namespace probe\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand() << " -fsyntax-only -w " << cpppath.string() << " > /dev/null 2>&1";
+        return TempBuildDir::run(cmd.str());
+    }
+
+    /**
      *  Builds a program around the generated INSERT statements for a one-column `t` table whose
      *  field is `std::optional<fieldType>`, or a bare `fieldType` for the NOT NULL column
      *  `nullable` stands for, compiles and links it against sqlite_orm, runs it and returns
@@ -1194,6 +1238,61 @@ TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads 
             });
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "inf", "inf", "0", "4"});
+}
+
+// sqlite_orm's `between(A, T, T)` deduces one C++ type from both bounds, so an `int` bound next to
+// a 64-bit one did not compile at all — `between(&User::a, 1, 3000000000)` is the `no matching
+// function` this test would have failed to build on. The `int64_t` cast that gives them one type
+// has to leave the values alone, and a TEXT column is where that is visible: SQLite applies the
+// column's affinity to a bound with none of its own, and '1' compares against the text '1' an
+// INTEGER bound becomes rather than against the '1.0' a REAL one would. Every value here is what
+// sqlite3 3.45.1 and 3.51 answer for the same SQL.
+//
+// Casting the narrower bound alone is not enough, which only a platform where `int64_t` is a
+// `long long` shows: a 64-bit constant is a `long` there, and `3000000000` next to
+// `static_cast<int64_t>(1)` is two types again. So the cast goes on both, and the
+// `3000000000 AND 0xFFFFFFFF` pair is the one where neither bound is an `int` and the two are
+// still not one type. The two hex pairs at the end run the line the width of a signed hex bound
+// is read off: `0x100000000` is not an `int` and takes the cast next to one, and is the type a
+// 64-bit decimal constant is, so next to that one it is left alone and still has to build.
+TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite computes them") {
+    const std::vector<std::string> statements{
+        generate("SELECT a BETWEEN 1 AND 3000000000;"),
+        generate("SELECT a BETWEEN 3000000000 AND 4000000000;"),
+        generate("SELECT a BETWEEN 1 AND TRUE;"),
+        generate("SELECT a BETWEEN 1 AND 0xFFFFFFFF;"),
+        generate("SELECT a BETWEEN -1 AND 3000000000;"),
+        generate("SELECT a BETWEEN 3000000000 AND 0xFFFFFFFF;"),
+        generate("SELECT a BETWEEN 1 AND 0x100000000;"),
+        generate("SELECT a BETWEEN 0x100000000 AND 3000000000;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(3000000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, 3000000000, 4000000000)));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(true))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(0xFFFFFFFF))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(-1), "
+                "static_cast<int64_t>(3000000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(3000000000), "
+                "static_cast<int64_t>(0xFFFFFFFF))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(0x100000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, 0x100000000, 3000000000)));",
+            });
+    REQUIRE(selectedValues(statements, "int64_t", "2147483648") ==
+            std::vector<std::string>{"1", "0", "0", "1", "1", "0", "1", "0"});
+    REQUIRE(selectedValues(statements, "std::string", "\"1\"") ==
+            std::vector<std::string>{"1", "0", "1", "1", "1", "0", "1", "0"});
+    // Building these once says nothing about the platform the tests do not run on, and this is
+    // the bug: the cast the generator used to put on the narrower bound alone builds here, where
+    // an `int64_t` is a `long` and so is `3000000000`, and does not build where an `int64_t` is a
+    // `long long`. Both spellings have to compile, whichever one this platform uses itself.
+    REQUIRE(compilesWithInt64Spelled(statements, "long") == 0);
+    REQUIRE(compilesWithInt64Spelled(statements, "long long") == 0);
 }
 
 // sqlite_orm's `json_extract` and `json_quote` take the type the row is read back into as a

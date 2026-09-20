@@ -1135,6 +1135,140 @@ TEST_CASE("codegen: NOT BETWEEN") {
     REQUIRE(generate("a NOT BETWEEN 1 AND 10") == "!between(&User::a, 1, 10)");
 }
 
+// sqlite_orm's `between(A, T, T)` deduces one `T` from both bounds, and C++ types an integer
+// constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a 64-bit
+// constant and does not compile — while sqlite3 3.45.1 and 3.51 both take the SQL and answer 1.
+// The cast gives the two bounds one type; the values it carries are pinned in
+// "runtime: BETWEEN bounds of two integer widths read back as SQLite computes them".
+TEST_CASE("codegen: BETWEEN bounds of two integer widths are widened to one") {
+    // The cast goes on both bounds rather than on the narrower one: a 64-bit constant is given
+    // the first of `long` and `long long` it fits in, which is the `long` that is not the
+    // `long long` an `int64_t` is on macOS, so casting only the `int` leaves two types behind.
+    REQUIRE(generate("a BETWEEN 1 AND 3000000000") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(3000000000))");
+    REQUIRE(generate("a BETWEEN 3000000000 AND 1") ==
+            "between(&User::a, static_cast<int64_t>(3000000000), static_cast<int64_t>(1))");
+    REQUIRE(generate("a BETWEEN -1 AND 3000000000") ==
+            "between(&User::a, static_cast<int64_t>(-1), static_cast<int64_t>(3000000000))");
+    REQUIRE(generate("a NOT BETWEEN 1 AND 3000000000") ==
+            "!between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(3000000000))");
+    // TRUE is the integer 1 for SQLite, so a `bool` bound widens with the rest of them.
+    REQUIRE(generate("a BETWEEN 1 AND TRUE") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(true))");
+    // A hex literal C++ would make unsigned already carries the cast that types it, and the other
+    // bound joins it there rather than taking a second cast of its own.
+    REQUIRE(generate("a BETWEEN 1 AND 0xFFFFFFFF") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(0xFFFFFFFF))");
+    // A 64-bit constant and a cast hex literal are 64 bits wide both, and still two types: the
+    // `long` of the one is not the `int64_t` of the other wherever `int64_t` is a `long long`.
+    REQUIRE(generate("a BETWEEN 3000000000 AND 0xFFFFFFFF") ==
+            "between(&User::a, static_cast<int64_t>(3000000000), static_cast<int64_t>(0xFFFFFFFF))");
+    // A hex literal that stays signed is typed by its digits rather than by a cast, and nine
+    // significant digits is where it stops being an `int`, so both sides of that line are pinned
+    // here: `0x100000000` next to an `int` is two types and takes the cast…
+    REQUIRE(generate("a BETWEEN 1 AND 0x100000000") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(0x100000000))");
+    // …while next to a 64-bit decimal constant it is the same type already — both are the first
+    // of `long` and `long long` that holds them — so that pair is left alone.
+    REQUIRE(generate("a BETWEEN 0x100000000 AND 3000000000") == "between(&User::a, 0x100000000, 3000000000)");
+    // Bounds that are one type already are left as written, whichever type that is.
+    REQUIRE(generate("a BETWEEN 1 AND 10") == "between(&User::a, 1, 10)");
+    REQUIRE(generate("a BETWEEN 1 AND 0x7FFFFFFF") == "between(&User::a, 1, 0x7FFFFFFF)");
+    REQUIRE(generate("a BETWEEN 3000000000 AND 4000000000") == "between(&User::a, 3000000000, 4000000000)");
+    REQUIRE(generate("a BETWEEN 0xFFFFFFFF AND 0xFFFFFFFF") ==
+            "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), static_cast<int64_t>(0xFFFFFFFF))");
+}
+
+// Two bounds with no C++ type to widen to have no working form at all: `between(A, T, T)` takes
+// one type, and an integer next to a text, a real, a NULL, a blob, a column pointer or an
+// expression node is two. SQLite takes every one of these (`SELECT 1 BETWEEN 1 AND 'x'` answers 1
+// on 3.45.1 and on 3.51), so the statement is generated and the warning says what the code does.
+TEST_CASE("codegen: BETWEEN bounds with no common C++ type warn") {
+    const auto boundsWarning = [](const std::string& low, const std::string& high, size_t length) {
+        return std::vector<CodegenWarning>{
+            {"sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and " + low +
+                 " next to " + high + " is not one type, so the generated code does not compile",
+             SourceLocation{1, 1},
+             length}};
+    };
+    auto result = generateFull("a BETWEEN 1 AND 'x'");
+    REQUIRE(result.code == "between(&User::a, 1, \"x\")");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a `const char*`", 19));
+
+    result = generateFull("a BETWEEN 1 AND 2.5");
+    REQUIRE(result.code == "between(&User::a, 1, 2.5)");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a `double`", 19));
+
+    result = generateFull("a BETWEEN NULL AND 1");
+    REQUIRE(result.code == "between(&User::a, nullptr, 1)");
+    REQUIRE(result.warnings == boundsWarning("a `std::nullptr_t`", "an `int`", 20));
+
+    result = generateFull("a BETWEEN x'41' AND 1");
+    REQUIRE(result.code == "between(&User::a, std::vector<char>{'\\x41'}, 1)");
+    REQUIRE(result.warnings == boundsWarning("a `std::vector<char>`", "an `int`", 21));
+
+    result = generateFull("a BETWEEN b AND 3");
+    REQUIRE(result.code == "between(&User::a, &User::b, 3)");
+    REQUIRE(result.warnings == boundsWarning("a pointer to a column", "an `int`", 17));
+
+    result = generateFull("a BETWEEN 1 AND abs(b)");
+    REQUIRE(result.code == "between(&User::a, 1, abs(&User::b))");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a sqlite_orm expression", 22));
+
+    // A pointer to a member is none of the node types sqlite_orm builds an expression out of,
+    // whichever column and whichever expression the two bounds stand for.
+    result = generateFull("a BETWEEN b AND abs(b)");
+    REQUIRE(result.code == "between(&User::a, &User::b, abs(&User::b))");
+    REQUIRE(result.warnings == boundsWarning("a pointer to a column", "a sqlite_orm expression", 22));
+
+    // A decimal literal past the int64 range is a REAL for SQLite and a `double` here, so it is
+    // the integer bound beside it that has nothing to meet.
+    result = generateFull("a BETWEEN 1 AND 99999999999999999999");
+    REQUIRE(result.code == "between(&User::a, 1, 99999999999999999999.0)");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a `double`", 36));
+
+    // The two 64-bit integer types are named apart, because they are two types: a constant past
+    // the `int` range is given the first of `long` and `long long` it fits in, while the cast a
+    // hex literal carries names `int64_t` itself.
+    result = generateFull("a BETWEEN 3000000000 AND 2.5");
+    REQUIRE(result.code == "between(&User::a, 3000000000, 2.5)");
+    REQUIRE(result.warnings == boundsWarning("a 64-bit integer constant", "a `double`", 28));
+
+    result = generateFull("a BETWEEN 0xFFFFFFFF AND 'x'");
+    REQUIRE(result.code == "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), \"x\")");
+    REQUIRE(result.warnings == boundsWarning("an `int64_t`", "a `const char*`", 28));
+}
+
+// Bounds whose type this cannot know are left alone rather than warned about: two columns are
+// typed by the schema and two expression nodes by what they are built over — `abs(&User::a)` and
+// `abs(&User::b)` are the same type when the two columns are — and a bind parameter is typed by
+// the caller, who declares `bindParam1` himself.
+TEST_CASE("codegen: BETWEEN bounds this cannot type are left as written") {
+    REQUIRE(generateFull("a BETWEEN b AND b").warnings.empty());
+    REQUIRE(generateFull("a BETWEEN b AND c").warnings.empty());
+    REQUIRE(generateFull("a BETWEEN abs(b) AND abs(c)").warnings.empty());
+    REQUIRE(generateFull("a BETWEEN 'x' AND 'y'").warnings.empty());
+    REQUIRE(generate("a BETWEEN 1 AND ?") == "between(&User::a, 1, bindParam1)");
+    REQUIRE(generateFull("a BETWEEN 1 AND ?").warnings ==
+            std::vector<CodegenWarning>{"bind parameter ? -> C++ variable 'bindParam1'; for prepared statements use "
+                                        "storage.prepare() + get<N>(stmt)"});
+}
+
+// What a bound generates warns for itself too, and that warning used to be dropped on the way out
+// of the BETWEEN: the three operands were generated and only their code was kept.
+TEST_CASE("codegen: a warning from a BETWEEN operand reaches the caller") {
+    auto result = generateFull("a BETWEEN (1 COLLATE BINARY) AND 3");
+    REQUIRE(result.code == "between(&User::a, 1, 3)");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE BINARY on expressions is not directly supported in sqlite_orm "
+                                        "codegen"});
+    result = generateFull("(a COLLATE NOCASE) BETWEEN 1 AND 3");
+    REQUIRE(result.code == "between(&User::a, 1, 3)");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE NOCASE on expressions is not directly supported in sqlite_orm "
+                                        "codegen"});
+}
+
 TEST_CASE("codegen: IN") {
     REQUIRE(generateFull("a IN (1, 2, 3)") ==
             CodeGenResult{"in(&User::a, {1, 2, 3})", {columnRefStyleDp(1, "&User::a")}, {}});

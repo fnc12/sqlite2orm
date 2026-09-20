@@ -410,6 +410,16 @@ namespace sqlite2orm {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentBetweenBoundsWidened =
+        "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
+        "constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a "
+        "64-bit constant and does not compile. The cast goes on every bound that is not already "
+        "an `int64_t`, rather than on the narrower one: the type a 64-bit constant is given is "
+        "`long` where an `int64_t` is a `long long`, and the two are distinct types even where "
+        "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
+        "signed 64-bit number anyway, TRUE and FALSE among them.";
+
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
         "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
@@ -1595,6 +1605,142 @@ namespace sqlite2orm {
                dynamic_cast<const NullLiteralNode*>(&generatedNode) ||
                dynamic_cast<const BoolLiteralNode*>(&generatedNode) ||
                dynamic_cast<const BlobLiteralNode*>(&generatedNode);
+    }
+
+    namespace {
+
+        /** The C++ type `integerLiteralToCpp` spells an integer literal with. */
+        GeneratedValueCppType integerLiteralCppType(std::string_view integerLiteral) {
+            if (isHexadecimalIntegerLiteral(integerLiteral)) {
+                // The two spans C++ would make unsigned are spelled `static_cast<int64_t>(…)`.
+                // Of the rest, everything past `0xFFFFFFFF` — nine significant digits on — is a
+                // `long` there, and an eight-digit literal that stayed signed fits an `int`.
+                if (hexLiteralIsUnsignedInCpp(integerLiteral)) {
+                    return GeneratedValueCppType::integer64Cast;
+                }
+                return significantDigits(integerLiteral.substr(2)).size() <= 8
+                           ? GeneratedValueCppType::integer32
+                           : GeneratedValueCppType::integer64Literal;
+            }
+            const std::string digits = significantDigits(integerLiteral);
+            // A decimal literal past the int64 range is a REAL for SQLite and is spelled with a
+            // `.0`, so it is a `double` here as well.
+            if (integerLiteralExceedsInt64(digits)) {
+                return GeneratedValueCppType::real;
+            }
+            return integerLiteralExceedsInt32(digits) ? GeneratedValueCppType::integer64Literal
+                                                      : GeneratedValueCppType::integer32;
+        }
+
+        bool isIntegerCppType(GeneratedValueCppType type) {
+            // A `bool` is one of these: SQLite's TRUE is the integer 1, and the cast that widens
+            // the constant carries that value unchanged.
+            return type == GeneratedValueCppType::integer32 || type == GeneratedValueCppType::integer64Literal ||
+                   type == GeneratedValueCppType::integer64Cast || type == GeneratedValueCppType::boolean;
+        }
+
+        /** True for a node generated as a `bindParamN` variable, whose type the caller declares. */
+        bool generatesBindParameter(const AstNode& astNode) {
+            return dynamic_cast<const BindParameterNode*>(&generatedOperandNode(astNode)) != nullptr;
+        }
+
+        /** True for a node generated as a pointer to a member — `&User::a`, or the `column<T>()` of it. */
+        bool generatesColumnPointer(const AstNode& astNode) {
+            const AstNode& generatedNode = generatedOperandNode(astNode);
+            return dynamic_cast<const ColumnRefNode*>(&generatedNode) ||
+                   dynamic_cast<const QualifiedColumnRefNode*>(&generatedNode) ||
+                   dynamic_cast<const NewRefNode*>(&generatedNode) || dynamic_cast<const OldRefNode*>(&generatedNode) ||
+                   dynamic_cast<const ExcludedRefNode*>(&generatedNode);
+        }
+
+    }  // namespace
+
+    std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode) {
+        if (!generatesBoundValue(astNode)) {
+            return std::nullopt;
+        }
+        // A sign SQLite folds into a literal is spelled in front of the C++ constant and leaves
+        // the type of that constant alone: `-2147483648` is the 64-bit `2147483648` negated,
+        // not an `int`, so the width follows the magnitude the literal is written with.
+        std::size_t foldedSigns = 0;
+        const AstNode* value = withoutFoldedSigns(generatedOperandNode(astNode), foldedSigns);
+        if (auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(value)) {
+            return integerLiteralCppType(integerLiteral->value);
+        }
+        if (dynamic_cast<const RealLiteralNode*>(value)) {
+            return GeneratedValueCppType::real;
+        }
+        if (dynamic_cast<const StringLiteralNode*>(value)) {
+            return GeneratedValueCppType::text;
+        }
+        if (dynamic_cast<const BoolLiteralNode*>(value)) {
+            return GeneratedValueCppType::boolean;
+        }
+        if (dynamic_cast<const BlobLiteralNode*>(value)) {
+            return GeneratedValueCppType::blob;
+        }
+        if (dynamic_cast<const NullLiteralNode*>(value)) {
+            return GeneratedValueCppType::null;
+        }
+        return std::nullopt;
+    }
+
+    BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high) {
+        const std::optional<GeneratedValueCppType> lowType = generatedValueCppType(low);
+        const std::optional<GeneratedValueCppType> highType = generatedValueCppType(high);
+        if (lowType && highType) {
+            if (*lowType == *highType) {
+                return BetweenBoundsForm::asWritten;
+            }
+            // Two integer constants of different types are the one case with a type to widen to:
+            // every INTEGER SQLite carries fits an int64, and a value bound as one is the value
+            // bound as an `int` or as a `bool` — same storage class, same number.
+            return isIntegerCppType(*lowType) && isIntegerCppType(*highType) ? BetweenBoundsForm::widenedToInt64
+                                                                             : BetweenBoundsForm::noCommonType;
+        }
+        // The bind parameter is typed by the caller, who declares `bindParamN` himself, so nothing
+        // said about the other bound rules its type out.
+        if (generatesBindParameter(low) || generatesBindParameter(high)) {
+            return BetweenBoundsForm::asWritten;
+        }
+        if (!lowType && !highType) {
+            // A pointer to a member is never one of the node types sqlite_orm builds from an
+            // expression, so those two never meet. Two columns, on the other hand, are typed by
+            // the schema and two expression nodes by what they are built over, and neither is
+            // known here — `abs(&User::a)` and `abs(&User::b)` are the same type when the two
+            // columns are.
+            return generatesColumnPointer(low) != generatesColumnPointer(high) ? BetweenBoundsForm::noCommonType
+                                                                               : BetweenBoundsForm::asWritten;
+        }
+        // One bound is a constant and the other names something sqlite_orm serializes — a column
+        // pointer, an expression node — and no constant shares a type with one of those.
+        return BetweenBoundsForm::noCommonType;
+    }
+
+    std::string betweenBoundTypeDescription(const AstNode& bound) {
+        const std::optional<GeneratedValueCppType> type = generatedValueCppType(bound);
+        if (!type) {
+            return generatesColumnPointer(bound) ? "a pointer to a column" : "a sqlite_orm expression";
+        }
+        switch (*type) {
+            case GeneratedValueCppType::integer32:
+                return "an `int`";
+            case GeneratedValueCppType::integer64Literal:
+                return "a 64-bit integer constant";
+            case GeneratedValueCppType::integer64Cast:
+                return "an `int64_t`";
+            case GeneratedValueCppType::boolean:
+                return "a `bool`";
+            case GeneratedValueCppType::real:
+                return "a `double`";
+            case GeneratedValueCppType::text:
+                return "a `const char*`";
+            case GeneratedValueCppType::blob:
+                return "a `std::vector<char>`";
+            case GeneratedValueCppType::null:
+                return "a `std::nullptr_t`";
+        }
+        return "a sqlite_orm expression";
     }
 
     bool generatesNegatedCondition(const AstNode& astNode) {

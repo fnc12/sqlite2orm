@@ -541,3 +541,54 @@ TEST_CASE("codegen: a trigger step with no sqlite_orm form is placeheld and unde
                           {CodegenWarning{starMessage, SourceLocation{2, 1}, 9},
                            CodegenWarning{kTriggerStepMessage, SourceLocation{2, 1}, 9}}});
 }
+
+// A WITH nests the outer statement's code inside `storage.with(cte…, <outer>)`, which turns a
+// placeholder standing for the whole outer statement — a comment line of its own, which compiles —
+// into a comment where C++ expects an expression. `INSERT … SELECT` whose SELECT has no sqlite_orm
+// form is exactly that: `storage.with(cte<cte_0>().as(select(&T::a)), /* INSERT ... SELECT: … */);`
+// was handed out at exit 0, and g++ answers `expected primary-expression before ')' token`. The
+// wrap is given up instead and the plain DML — the placeholder line — is what the statement
+// generates. Every input here is prepared by sqlite3 3.51.
+TEST_CASE("codegen: a WITH does not wrap a placeholder standing for its outer statement") {
+    const std::string insertSelectPlaceholder = "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */";
+    const std::string unwrappedMessage =
+        "WITH … DML: outer statement codegen could not be wrapped in storage.with(); emitted plain DML";
+    const std::string insertReadsMessage = "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen";
+
+    REQUIRE(generateFull("WITH c AS (SELECT a FROM t) INSERT INTO u SELECT a FROM t GROUP BY a") ==
+            CodeGenResult{insertSelectPlaceholder,
+                          {columnRefStyleDp(1, "&T::a")},
+                          {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
+                           CodegenWarning{insertReadsMessage, SourceLocation{1, 43}, 26},
+                           unwrappedMessage}});
+    REQUIRE(generateFull("WITH RECURSIVE c(x) AS (SELECT 1) INSERT INTO u SELECT *, a FROM t") ==
+            CodeGenResult{insertSelectPlaceholder,
+                          {},
+                          {CodegenWarning{"a `*` result column next to other result columns is not mapped to "
+                                          "sqlite_orm select(...)",
+                                          SourceLocation{1, 49},
+                                          18},
+                           CodegenWarning{insertReadsMessage, SourceLocation{1, 49}, 18},
+                           unwrappedMessage}});
+
+    // The outer SELECT branch nests its argument the same way. `extractStorageSelectArgument`
+    // happens to turn a placeholder down today, which makes this safe by accident; the journal is
+    // what makes it safe by construction, and the fallback it lands in is the one below.
+    REQUIRE(generateFull("WITH c AS (SELECT a FROM t) SELECT a FROM t UNION SELECT a FROM t GROUP BY a") ==
+            CodeGenResult{"/* compound SELECT */",
+                          {columnRefStyleDp(1, "&T::a"), columnRefStyleDp(2, "&T::a")},
+                          {CodegenWarning{"compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to "
+                                          "sqlite_orm codegen",
+                                          SourceLocation{1, 29},
+                                          48},
+                           "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
+                           "WITH: outer SELECT is not in the expected `auto rows = storage.select(...);` form; "
+                           "emitted as plain outer codegen"}});
+
+    // A WITH whose outer statement generates is untouched: the wrap is given up only for a
+    // placeholder, not for every DML that a CTE stands in front of.
+    REQUIRE(generate("WITH c AS (SELECT a FROM t) INSERT INTO u SELECT a FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "storage.with(cte<cte_0>().as(select(&T::a)), insert(into<U>(), select(column<cte_0>(&T::a))));");
+}

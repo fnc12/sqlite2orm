@@ -242,6 +242,14 @@ namespace sqlite2orm {
         bool placeheldInExpressionSince(size_t mark) const;
 
         /**
+         *  Whether a placeholder standing for a whole statement was produced past `mark`. Such a
+         *  placeholder is a comment line of its own and compiles where a statement stands — and
+         *  only there, so whoever is about to nest the code holding it inside something larger
+         *  asks this first and gives the nesting up.
+         */
+        bool placeheldAsStatementSince(size_t mark) const;
+
+        /**
          *  Drops what was placeheld past `mark`, leaving the earlier placeholders in place. A
          *  generator that throws away what it generated drops them along with the code that held
          *  them, exactly as it drops the comments recorded for it.

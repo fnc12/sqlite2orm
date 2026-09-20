@@ -299,6 +299,15 @@ namespace sqlite2orm {
         return false;
     }
 
+    bool CodeGeneratorContext::placeheldAsStatementSince(size_t mark) const {
+        for (size_t index = mark; index < this->generatedPlaceholders.size(); ++index) {
+            if (this->generatedPlaceholders[index] == PlaceholderSlot::statement) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void CodeGeneratorContext::discardPlaceholdersSince(size_t mark) {
         if (mark < this->generatedPlaceholders.size()) {
             this->generatedPlaceholders.erase(this->generatedPlaceholders.begin() + static_cast<std::ptrdiff_t>(mark),

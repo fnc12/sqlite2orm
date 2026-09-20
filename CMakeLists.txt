@@ -93,6 +93,13 @@ if(SQLITE2ORM_BUILD_TESTS)
     message(STATUS "[sqlite2orm] Catch2 ready.")
 
     find_program(SQLITE2ORM_GIT_EXECUTABLE git)
+    # find_program answers `<var>-NOTFOUND`, which if() reads as false but everything else reads as
+    # a path; the layers below are handed an empty string instead, so "there is no git here" is the
+    # same value in cmake, in the note and in the test that skips over it.
+    set(sqlite2orm_git_executable "")
+    if(SQLITE2ORM_GIT_EXECUTABLE)
+        set(sqlite2orm_git_executable "${SQLITE2ORM_GIT_EXECUTABLE}")
+    endif()
 
     # The runtime tests compile the generated code against these headers, so following the moving
     # `dev` branch made the same commit of this repository pass or fail depending on when the
@@ -113,12 +120,16 @@ if(SQLITE2ORM_BUILD_TESTS)
     # reconfigure moves it; report the revision the tests really see instead of leaving a stale
     # checkout to surface as a compile error inside a generated program.
     sqlite2orm_git_revision_of(
-        "${sqlite_orm_headers_SOURCE_DIR}" "${SQLITE2ORM_GIT_EXECUTABLE}" sqlite2orm_sqlite_orm_head)
+        "${sqlite_orm_headers_SOURCE_DIR}" "${sqlite2orm_git_executable}" sqlite2orm_sqlite_orm_head)
 
-    # Headers that are not a checkout at all leave the guard with nothing to compare, and it can
-    # then only skip: say so here, or the pin quietly stops holding for the trees that most need it.
+    # Headers that are not a checkout at all -- and a machine that has no git to ask -- leave the
+    # guard with nothing to compare, and it can then only skip: say so here, or the pin quietly
+    # stops holding for the trees that most need it. Repopulating a dependency takes removing the
+    # sub-build that stamps the clone step as done, so the note is handed that directory too;
+    # FETCHCONTENT_BASE_DIR is where FetchContent puts both.
     sqlite2orm_headers_revision_note(
-        "${sqlite_orm_headers_SOURCE_DIR}" "${FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS}"
+        "${sqlite_orm_headers_SOURCE_DIR}" "${FETCHCONTENT_BASE_DIR}/sqlite_orm_headers-subbuild"
+        "${FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS}" "${sqlite2orm_git_executable}"
         "${SQLITE2ORM_SQLITE_ORM_REVISION}" "${sqlite2orm_sqlite_orm_head}"
         sqlite2orm_sqlite_orm_headers_note)
     if(sqlite2orm_sqlite_orm_headers_note)
@@ -178,6 +189,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         SQLITE2ORM_TEST_SQLITE_ORM_HEAD="${sqlite2orm_sqlite_orm_head}"
         SQLITE2ORM_TEST_SQLITE_ORM_SOURCE_DIR="${sqlite_orm_headers_SOURCE_DIR}"
         SQLITE2ORM_TEST_SQLITE_ORM_SOURCE_OVERRIDE="${FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS}"
+        SQLITE2ORM_TEST_GIT_EXECUTABLE="${sqlite2orm_git_executable}"
         SQLITE2ORM_TEST_SQLITE3_LINK="${sqlite2orm_test_sqlite3_link}"
         SQLITE2ORM_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)

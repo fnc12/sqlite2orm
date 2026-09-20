@@ -112,9 +112,13 @@ configuring says so. A tree pointed at a checkout of its own with
 directory out at the pinned revision yourself.
 
 Headers that are not a `git` checkout — a tree copied out of another build, a directory an
-override points at — hold no revision to compare, so the check can only skip over them.
-Configuring reports that case as well, because headers of an unknown age are exactly how the
-failures this pin exists to stop get blamed on the change under test.
+override points at — hold no revision to compare, and neither does any tree on a machine with no
+`git` to ask, so the check can only skip over them. Configuring reports both cases, and says which
+of the two it met, because headers of an unknown age are exactly how the failures this pin exists
+to stop get blamed on the change under test. A populated dependency that is no longer a checkout
+is put back by removing its `-subbuild` directory and configuring again with
+`FETCHCONTENT_FULLY_DISCONNECTED` off — that is the step that clones it; removing the headers
+themselves leaves the sub-build stamped as done and nothing repopulates.
 
 ## Code style
 

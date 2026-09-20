@@ -46,6 +46,20 @@ namespace {
         return "the headers in " + std::string{sourceDirectory} + " are stale; re-run cmake to move them to " +
                std::string{configuredRevision};
     }
+
+    // An empty revision is the answer for headers that are not a checkout and for a machine that
+    // has no git to ask, and the two want different things done about them. Reporting the first
+    // one that fits tells a reader whose configure simply had no git that their checkout is not
+    // one, which is the kind of wrong turn this whole guard exists to spare them.
+    [[nodiscard]] std::string unknownRevisionReason(std::string_view sourceDirectory, std::string_view gitExecutable) {
+        if (gitExecutable.empty()) {
+            return "no git executable was found when this build was configured, so nothing could read the revision "
+                   "of the headers in " +
+                   std::string{sourceDirectory};
+        }
+        return "the headers in " + std::string{sourceDirectory} +
+               " are not a git checkout, so their revision is unknown";
+    }
 }
 
 // sqlite_orm's `dev` branch moves, and the runtime tests compile the generated code against it, so
@@ -112,11 +126,23 @@ TEST_CASE("a mismatch under a source override names the override") {
 }
 
 TEST_CASE("a mismatch in a populated dependency asks for a reconfigure") {
-    REQUIRE(staleHeadersMessage("/work/build/_deps/sqlite_orm_headers-src",
+    REQUIRE(staleHeadersMessage("/tmp/build/_deps/sqlite_orm_headers-src",
                                 "",
                                 "eb77998ef5e27350b25977b061e46e202742ecc8") ==
-            "the headers in /work/build/_deps/sqlite_orm_headers-src are stale; re-run cmake to "
+            "the headers in /tmp/build/_deps/sqlite_orm_headers-src are stale; re-run cmake to "
             "move them to eb77998ef5e27350b25977b061e46e202742ecc8");
+}
+
+TEST_CASE("headers that are not a checkout are reported as such") {
+    REQUIRE(unknownRevisionReason("/tmp/build/_deps/sqlite_orm_headers-src", "/usr/bin/git") ==
+            "the headers in /tmp/build/_deps/sqlite_orm_headers-src are not a git checkout, so "
+            "their revision is unknown");
+}
+
+TEST_CASE("a configure without git says so instead of blaming the headers") {
+    REQUIRE(unknownRevisionReason("/tmp/build/_deps/sqlite_orm_headers-src", "") ==
+            "no git executable was found when this build was configured, so nothing could read "
+            "the revision of the headers in /tmp/build/_deps/sqlite_orm_headers-src");
 }
 
 // A build tree keeps the headers it populated, and one pointed at a checkout of its own
@@ -131,12 +157,12 @@ TEST_CASE("the sqlite_orm headers under test are the pinned revision") {
     if (configuredRevision != pinnedRevision) {
         SKIP("this build was configured against sqlite_orm " + std::string{configuredRevision});
     }
-    // Only a checkout can be asked what revision it holds, and a directory that is not one is not
-    // evidence of anything: reporting the commit of the repository above it would blame sqlite_orm
-    // for a sqlite2orm sha.
+    // Only a checkout can be asked what revision it holds, and only where there is a git to ask
+    // with; a directory that is not one is not evidence of anything, and reporting the commit of
+    // the repository above it would blame sqlite_orm for a sqlite2orm sha. Which of the two left
+    // the answer empty decides what the reader should do, so the skip says which one it was.
     if (populatedRevision.empty()) {
-        SKIP("the headers in " + std::string{sourceDirectory} +
-             " are not a git checkout, so their revision is unknown");
+        SKIP(unknownRevisionReason(sourceDirectory, SQLITE2ORM_TEST_GIT_EXECUTABLE));
     }
     INFO(staleHeadersMessage(sourceDirectory, sourceOverride, configuredRevision));
     REQUIRE(populatedRevision == configuredRevision);

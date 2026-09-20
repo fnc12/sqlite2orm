@@ -2627,6 +2627,152 @@ namespace sqlite2orm {
         return lower == "on" || lower == "yes" || lower == "true";
     }
 
+    namespace {
+
+        /** SQLite's `sqlite3Isspace()`, the characters `sqlite3Atoi64()` skips past. */
+        bool isSqliteSpace(char character) {
+            return character == ' ' || character == '\t' || character == '\n' || character == '\v' ||
+                   character == '\f' || character == '\r';
+        }
+
+        /**
+         *  The prefix `sqlite3DecOrHexToI64()` hands on to `sqlite3Atoi64()`: what
+         *  `strspn(z, "+- \n\t0123456789")` spans, plus the one character behind it. So the number
+         *  is read from a text that stops at the first character none of those are, and `\v`, `\f`
+         *  and `\r` are such characters even though `sqlite3Isspace()` calls them spaces.
+         */
+        std::string_view sqliteNumberPrefix(std::string_view text) {
+            constexpr std::string_view spanned = "+- \n\t0123456789";
+            size_t length = 0;
+            while (length < text.size() && spanned.find(text[length]) != std::string_view::npos) {
+                ++length;
+            }
+            if (length < text.size()) {
+                ++length;
+            }
+            return text.substr(0, length);
+        }
+
+        /**
+         *  SQLite's `sqlite3DecOrHexToI64()`: a `0x` prefix reads the rest as hexadecimal, and
+         *  everything else goes through `sqlite3Atoi64()` over `sqliteNumberPrefix()`, which skips
+         *  leading spaces, takes a sign and then digits, and tolerates only spaces behind them.
+         *  Nullopt where SQLite refuses the text — anything but digits behind the number, or a
+         *  magnitude past the int64 range. The prefix is what makes the two ends differ: a `\v` in
+         *  front of the digits cuts them away and leaves nothing to read, while one behind them is
+         *  the trailing space `sqlite3Atoi64()` tolerates and everything past it goes unread, so
+         *  `'<VT>12'` is refused and `'12<VT>abc'` reads as 12 where `'12abc'` is refused.
+         */
+        std::optional<std::int64_t> sqliteDecOrHexToInt64(std::string_view text) {
+            if (text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+                size_t index = 2;
+                while (index < text.size() && text[index] == '0') {
+                    ++index;
+                }
+                std::uint64_t value = 0;
+                size_t digitCount = 0;
+                for (; index < text.size() && isHexDigit(text[index]); ++index, ++digitCount) {
+                    value = value * 16 + static_cast<std::uint64_t>(hexDigitValue(text[index]));
+                }
+                // Sixteen significant digits are an int64's worth; a seventeenth, or anything that
+                // is no hexadecimal digit at all, and SQLite refuses the value rather than cut it.
+                if (index < text.size() || digitCount > 16) {
+                    return std::nullopt;
+                }
+                return static_cast<std::int64_t>(value);
+            }
+            text = sqliteNumberPrefix(text);
+            size_t index = 0;
+            while (index < text.size() && isSqliteSpace(text[index])) {
+                ++index;
+            }
+            bool negated = false;
+            if (index < text.size() && (text[index] == '-' || text[index] == '+')) {
+                negated = text[index] == '-';
+                ++index;
+            }
+            const size_t zerosStart = index;
+            while (index < text.size() && text[index] == '0') {
+                ++index;
+            }
+            std::uint64_t value = 0;
+            bool overflowed = false;
+            size_t digitCount = 0;
+            for (; index < text.size() && isDigit(text[index]); ++index, ++digitCount) {
+                const std::uint64_t digit = static_cast<std::uint64_t>(text[index] - '0');
+                if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) {
+                    overflowed = true;
+                }
+                value = value * 10 + digit;
+            }
+            // `0` alone is a number even though it carries no digit past the zeros that were
+            // skipped, while an empty text, a lone sign and trailing letters are all refused.
+            if (digitCount == 0 && index == zerosStart) {
+                return std::nullopt;
+            }
+            while (index < text.size() && isSqliteSpace(text[index])) {
+                ++index;
+            }
+            if (index < text.size()) {
+                return std::nullopt;
+            }
+            const std::uint64_t magnitudeLimit = negated ? 9223372036854775808ull : 9223372036854775807ull;
+            if (overflowed || value > magnitudeLimit) {
+                return std::nullopt;
+            }
+            // Negated through the unsigned two's complement, so that the one magnitude an int64
+            // reaches only under a sign — `-9223372036854775808` — does not overflow on its way.
+            return negated ? static_cast<std::int64_t>(~value + 1u) : static_cast<std::int64_t>(value);
+        }
+
+    }  // namespace
+
+    std::int32_t sqlitePragmaSafetyLevel(std::string_view valueText) {
+        if (!valueText.empty() && isDigit(valueText.front())) {
+            // `getSafetyLevel()` answers a u8, so everything above the low byte of the int32 goes:
+            // `= 260` is the 4 that `= 4` is, and `= 256` the 0 that `= 0` is.
+            return sqlitePragmaInt32(valueText).value_or(0) & 0xFF;
+        }
+        const std::string lower = toLowerAscii(valueText);
+        if (lower == "off" || lower == "no" || lower == "false") {
+            return 0;
+        }
+        if (lower == "on" || lower == "yes" || lower == "true") {
+            return 1;
+        }
+        if (lower == "full") {
+            return 2;
+        }
+        if (lower == "extra") {
+            return 3;
+        }
+        return 1;
+    }
+
+    std::int32_t sqlitePragmaAutoVacuum(std::string_view valueText) {
+        const std::string lower = toLowerAscii(valueText);
+        if (lower == "none") {
+            return 0;
+        }
+        if (lower == "full") {
+            return 1;
+        }
+        if (lower == "incremental") {
+            return 2;
+        }
+        const std::int32_t value = sqlitePragmaInt32(valueText).value_or(0);
+        return (value >= 0 && value <= 2) ? value : 0;
+    }
+
+    std::int64_t sqlitePragmaMaxPageCount(std::string_view valueText) {
+        const std::int64_t value = sqliteDecOrHexToInt64(valueText).value_or(0);
+        if (value < 0) {
+            return 0;
+        }
+        constexpr std::int64_t limit = 0xfffffffe;
+        return value > limit ? limit : value;
+    }
+
     bool isCanonicalPragmaBooleanText(std::string_view valueText) {
         if (valueText == "0" || valueText == "1") {
             return true;

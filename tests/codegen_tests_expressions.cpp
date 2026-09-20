@@ -1091,8 +1091,17 @@ TEST_CASE("codegen: BETWEEN bounds of two integer widths are widened to one") {
     // `long` of the one is not the `int64_t` of the other wherever `int64_t` is a `long long`.
     REQUIRE(generate("a BETWEEN 3000000000 AND 0xFFFFFFFF") ==
             "between(&User::a, static_cast<int64_t>(3000000000), static_cast<int64_t>(0xFFFFFFFF))");
+    // A hex literal that stays signed is typed by its digits rather than by a cast, and nine
+    // significant digits is where it stops being an `int`, so both sides of that line are pinned
+    // here: `0x100000000` next to an `int` is two types and takes the cast…
+    REQUIRE(generate("a BETWEEN 1 AND 0x100000000") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(0x100000000))");
+    // …while next to a 64-bit decimal constant it is the same type already — both are the first
+    // of `long` and `long long` that holds them — so that pair is left alone.
+    REQUIRE(generate("a BETWEEN 0x100000000 AND 3000000000") == "between(&User::a, 0x100000000, 3000000000)");
     // Bounds that are one type already are left as written, whichever type that is.
     REQUIRE(generate("a BETWEEN 1 AND 10") == "between(&User::a, 1, 10)");
+    REQUIRE(generate("a BETWEEN 1 AND 0x7FFFFFFF") == "between(&User::a, 1, 0x7FFFFFFF)");
     REQUIRE(generate("a BETWEEN 3000000000 AND 4000000000") == "between(&User::a, 3000000000, 4000000000)");
     REQUIRE(generate("a BETWEEN 0xFFFFFFFF AND 0xFFFFFFFF") ==
             "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), static_cast<int64_t>(0xFFFFFFFF))");

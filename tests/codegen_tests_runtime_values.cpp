@@ -1245,8 +1245,11 @@ TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads 
 //
 // Casting the narrower bound alone is not enough, which only a platform where `int64_t` is a
 // `long long` shows: a 64-bit constant is a `long` there, and `3000000000` next to
-// `static_cast<int64_t>(1)` is two types again. So the cast goes on both, and the last pair here
-// is the one where neither bound is an `int` and the two are still not one type.
+// `static_cast<int64_t>(1)` is two types again. So the cast goes on both, and the
+// `3000000000 AND 0xFFFFFFFF` pair is the one where neither bound is an `int` and the two are
+// still not one type. The two hex pairs at the end run the line the width of a signed hex bound
+// is read off: `0x100000000` is not an `int` and takes the cast next to one, and is the type a
+// 64-bit decimal constant is, so next to that one it is left alone and still has to build.
 TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite computes them") {
     const std::vector<std::string> statements{
         generate("SELECT a BETWEEN 1 AND 3000000000;"),
@@ -1255,6 +1258,8 @@ TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite com
         generate("SELECT a BETWEEN 1 AND 0xFFFFFFFF;"),
         generate("SELECT a BETWEEN -1 AND 3000000000;"),
         generate("SELECT a BETWEEN 3000000000 AND 0xFFFFFFFF;"),
+        generate("SELECT a BETWEEN 1 AND 0x100000000;"),
+        generate("SELECT a BETWEEN 0x100000000 AND 3000000000;"),
     };
     REQUIRE(statements ==
             std::vector<std::string>{
@@ -1269,11 +1274,14 @@ TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite com
                 "static_cast<int64_t>(3000000000))));",
                 "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(3000000000), "
                 "static_cast<int64_t>(0xFFFFFFFF))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(0x100000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, 0x100000000, 3000000000)));",
             });
     REQUIRE(selectedValues(statements, "int64_t", "2147483648") ==
-            std::vector<std::string>{"1", "0", "0", "1", "1", "0"});
+            std::vector<std::string>{"1", "0", "0", "1", "1", "0", "1", "0"});
     REQUIRE(selectedValues(statements, "std::string", "\"1\"") ==
-            std::vector<std::string>{"1", "0", "1", "1", "1", "0"});
+            std::vector<std::string>{"1", "0", "1", "1", "1", "0", "1", "0"});
     // Building these once says nothing about the platform the tests do not run on, and this is
     // the bug: the cast the generator used to put on the narrower bound alone builds here, where
     // an `int64_t` is a `long` and so is `3000000000`, and does not build where an `int64_t` is a

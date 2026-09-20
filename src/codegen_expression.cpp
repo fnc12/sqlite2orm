@@ -43,9 +43,15 @@ namespace sqlite2orm {
                 }
                 return CodeGenResult{{}, {}};
             }
+            if (numericLiteralGeneratesInfinity(integerLiteral->value)) {
+                this->context.spelledInfinity = true;
+            }
             return CodeGenResult{integerLiteralToCpp(integerLiteral->value), {}};
         } else if (auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&astNode)) {
-            return CodeGenResult{numericLiteralToCpp(realLiteral->value), {}};
+            if (numericLiteralGeneratesInfinity(realLiteral->value)) {
+                this->context.spelledInfinity = true;
+            }
+            return CodeGenResult{realLiteralToCpp(realLiteral->value), {}};
         } else if (auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&astNode)) {
             return CodeGenResult{sqlStringToCpp(stringLiteral->value), {}};
         } else if (dynamic_cast<const NullLiteralNode*>(&astNode)) {

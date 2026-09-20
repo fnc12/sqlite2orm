@@ -470,6 +470,163 @@ TEST_CASE("codegen: a function outside the fixed-arity forms keeps generating wi
     REQUIRE(wrongArityBuiltin.warnings == std::vector<CodegenWarning>{});
 }
 
+// The same `filter()` sqlite_orm withholds from the window functions is missing from every other
+// form that is not an aggregate function call: a scalar function, a MATCH in its function
+// spelling, the argument-less `count()` and the `func<…>()` a user-defined function is written as
+// all carry none. SQLite refuses a FILTER on a built-in non-aggregate too — with the diagnostic
+// each warning quotes, checked against sqlite3 3.51.0 — but stores a trigger or a view holding
+// one, so the code is generated with a warning rather than left out.
+TEST_CASE("codegen: a FILTER over a scalar function warns") {
+    const auto result = generateFull("SELECT upper(name) FILTER (WHERE id > 0) FROM users;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(upper(&Users::name).filter(where(c(&Users::id) > "
+                           "0))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"upper() has no filter() in sqlite_orm: only the aggregate function calls and count(*) take a "
+                 "FILTER, so the generated code does not compile. SQLite refuses the same call — FILTER may not "
+                 "be used with non-aggregate upper() — but stores a trigger or a view holding it"}});
+}
+
+TEST_CASE("codegen: a FILTER over a scalar function under an OVER quotes the window diagnostic") {
+    const auto result = generateFull("SELECT upper(name) FILTER (WHERE id > 0) OVER () FROM users;");
+    REQUIRE(result.code == "auto rows = storage.select(upper(&Users::name).filter(where(c(&Users::id) > 0)).over());");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"upper() has no filter() in sqlite_orm: only the aggregate function calls and count(*) take a "
+                 "FILTER, so the generated code does not compile. SQLite refuses the same call — upper() may not "
+                 "be used as a window function — but stores a trigger or a view holding it"}});
+}
+
+TEST_CASE("codegen: a FILTER over a window function without an OVER warns") {
+    const auto result = generateFull("SELECT row_number() FILTER (WHERE id > 0) FROM users;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(row_number().filter(where(c(&Users::id) > 0))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"row_number() has no filter() in sqlite_orm: only the aggregate function calls and count(*) take "
+                 "a FILTER, so the generated code does not compile. SQLite refuses the same call — misuse of "
+                 "window function row_number() — but stores a trigger or a view holding it"}});
+}
+
+TEST_CASE("codegen: a FILTER over a function-spelled MATCH warns") {
+    const auto result = generateFull("SELECT match(name, 'x') FILTER (WHERE id > 0) FROM users;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(match(&Users::name, \"x\").filter(where("
+                           "c(&Users::id) > 0))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"match() has no filter() in sqlite_orm: only the aggregate function calls and count(*) take a "
+                 "FILTER, so the generated code does not compile. SQLite refuses the same call — FILTER may not "
+                 "be used with non-aggregate match() — but stores a trigger or a view holding it"}});
+}
+
+// MAX and MIN are the aggregates in their one-argument form alone: sqlite_orm picks the scalar
+// overload from a second argument on, and SQLite makes the same split.
+TEST_CASE("codegen: a FILTER over MAX warns for its scalar form only") {
+    SECTION("aggregate form") {
+        const auto result = generateFull("SELECT max(id) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(max(&Users::id).filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("scalar form") {
+        const auto result = generateFull("SELECT max(id, size) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code ==
+                "auto rows = storage.select(max(&Users::id, &Users::size).filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"max() has no filter() in sqlite_orm: only the aggregate function calls and count(*) take a "
+                     "FILTER, so the generated code does not compile. SQLite refuses the same call — FILTER may "
+                     "not be used with non-aggregate max() — but stores a trigger or a view holding it"}});
+    }
+}
+
+// `count(*)` is generated as `count_asterisk_t`, which takes a FILTER; the argument-less `count()`
+// SQLite counts the same rows with comes out a `count_asterisk_without_type`, which holds nothing
+// at all. The SQL is well formed either way, so the warning says so.
+TEST_CASE("codegen: a FILTER over the argument-less count() warns, over count(*) it does not") {
+    SECTION("count(*)") {
+        const auto result = generateFull("SELECT count(*) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(count<Users>().filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("count()") {
+        const auto result = generateFull("SELECT count() FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(count().filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"count() has no filter() in sqlite_orm: only the aggregate function calls and count(*) take "
+                     "a FILTER, so the generated code does not compile. SQLite takes the same call — count() "
+                     "counts the rows count(*) does — so the SQL is well formed and the generated code alone is "
+                     "not"}});
+    }
+}
+
+// A user-defined function is written as a `func<…>()` call, which sqlite_orm gives no `filter()`
+// whatever the function is registered as — so unlike the built-in non-aggregates, the SQL itself
+// may be perfectly well formed.
+TEST_CASE("codegen: a FILTER over a user-defined function warns") {
+    const auto result = generateFull("SELECT myagg(id) FILTER (WHERE id > 0) FROM users;");
+    REQUIRE(result.code == "struct Myagg {\n"
+                           "    // TODO: implement this user-defined scalar function\n"
+                           "    int operator()(int id) const { return {}; }\n"
+                           "    static const char *name() { return \"myagg\"; }\n"
+                           "};\n"
+                           "\n"
+                           "storage.create_scalar_function<Myagg>();\n"
+                           "\n"
+                           "auto rows = storage.select(func<Myagg>(&Users::id).filter(where(c(&Users::id) > 0)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"myagg() has no filter() in sqlite_orm: only the aggregate function calls and count(*) take a "
+                 "FILTER, so the generated code does not compile. SQLite takes a FILTER over a user-defined "
+                 "aggregate function, so the SQL may well be fine while the func<Myagg>() call standing for "
+                 "myagg() is not"}});
+}
+
+// Every built-in aggregate sqlite_orm declares as a `builtin_aggregate_function_t` carries a
+// `filter()`, so these generate with nothing to warn about.
+TEST_CASE("codegen: a FILTER over a built-in aggregate call warns of nothing") {
+    SECTION("sum") {
+        const auto result = generateFull("SELECT sum(id) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(sum(&Users::id).filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("avg") {
+        const auto result = generateFull("SELECT avg(id) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code ==
+                "auto rows = storage.select(as_optional(avg(&Users::id).filter(where(c(&Users::id) > 0))));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("total") {
+        const auto result = generateFull("SELECT total(id) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(total(&Users::id).filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("group_concat") {
+        const auto result = generateFull("SELECT group_concat(name) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(as_optional(group_concat(&Users::name).filter(where("
+                               "c(&Users::id) > 0))));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("json_group_array") {
+        const auto result = generateFull("SELECT json_group_array(name) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code ==
+                "auto rows = storage.select(json_group_array(&Users::name).filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("count over DISTINCT") {
+        const auto result = generateFull("SELECT count(DISTINCT id) FILTER (WHERE id > 0) FROM users;");
+        REQUIRE(result.code ==
+                "auto rows = storage.select(count(distinct(&Users::id)).filter(where(c(&Users::id) > 0)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+}
+
 TEST_CASE("codegen: WINDOW clause maps to window(...) on select") {
     REQUIRE(generate("SELECT row_number() OVER w FROM users WINDOW w AS (ORDER BY id);") ==
             "auto rows = storage.select(row_number().over(window_ref(\"w\")), "

@@ -33,6 +33,10 @@ namespace sqlite2orm {
     /** C++ variable name for the RAII guard of a savepoint (`sp 1` -> `sp_1_savepoint`). */
     std::string savepointGuardVariableName(std::string_view savepointName);
     std::string sqlStringToCpp(std::string_view sqlString);
+    /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
+    std::string sqlStringLiteralText(std::string_view literal);
+    /** `text` as a C++ string literal, quotes included. */
+    std::string cppStringLiteral(std::string_view text);
 
     std::string stripColumnAliasQuotes(std::string_view alias);
     bool isBuiltinColalias(std::string_view stripped);
@@ -68,6 +72,7 @@ namespace sqlite2orm {
     extern const std::string kCommentBitwiseResultCast;
     extern const std::string kCommentOrTokenCallSpelling;
     extern const std::string kCommentAndOrPredicateArgumentCast;
+    extern const std::string kCommentBetweenBoundsWidened;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -100,12 +105,74 @@ namespace sqlite2orm {
 
     /**
      *  True when a call of `lowerFunctionName` is generated as a form sqlite_orm gives no
-     *  `filter()`: the window functions and a MATCH in its function spelling hold their arguments
-     *  and an `over()` and nothing else, while `count(*)` and the aggregate function calls do have
-     *  one. SQLite refuses a FILTER on the same calls — `FILTER clause may only be used with
-     *  aggregate window functions` — but stores a trigger or a view that holds one.
+     *  `filter()`. sqlite_orm declares one on `count_asterisk_t` and on the built-in aggregate
+     *  function calls alone, so a scalar function, a window function, a MATCH in its function
+     *  spelling and a user-defined function — written as a `func<…>()` call — all carry none.
+     *  Three names are answered by what the call holds rather than by the name: `count(*)`, which
+     *  the generator writes as `count<T>()`, is the one star with a `filter()` — hence
+     *  `generatedAsCountAsterisk`, false for the same star over no FROM clause — while the
+     *  argument-less `count()` is a `count_asterisk_without_type`, which has none, and MAX and MIN
+     *  are the aggregates in their one-argument form only, `argumentCount` telling the two apart.
      */
-    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName);
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName,
+                                     size_t argumentCount,
+                                     bool generatedAsCountAsterisk);
+
+    /**
+     *  The warning a FILTER over a call `functionCallFormHasNoFilter` answers true for carries.
+     *  `functionName` is spelled as the SQL writes it, which is how SQLite echoes a function name
+     *  in the diagnostics quoted here — checked against sqlite3 3.51.0, which refuses such a call
+     *  at prepare yet stores a trigger or a view holding one. Which diagnostic it is follows from
+     *  the call: a window function is `misuse of window function name()` on its own and `FILTER
+     *  clause may only be used with aggregate window functions` under an OVER, every other
+     *  non-aggregate `FILTER may not be used with non-aggregate name()` and `name() may not be
+     *  used as a window function`. The two forms SQLite does take — the argument-less `count()`
+     *  and a `userDefinedFunction` registered as an aggregate — say so instead: there the
+     *  generated code alone is at fault.
+     */
+    std::string
+    filterOnCallWithoutFilterWarning(std::string_view functionName, bool hasOverClause, bool userDefinedFunction);
+
+    /**
+     *  The result type a generated call of `lowerFunctionName` spells between angle brackets —
+     *  `"<std::string>"` — and an empty view for a call that spells none. `json_extract` and
+     *  `json_quote` are the two sqlite_orm builtins declared with a result type parameter that has
+     *  no default (`template<class R, class X, class... Args> json_extract(X, Args...)`), so a call
+     *  generated without one does not compile at all: JSON_EXTRACT answers a value of whatever
+     *  storage class the JSON holds, and there is nothing in the arguments to deduce that from.
+     *  `std::string` is the type that reads every storage class back — sqlite_orm reads it through
+     *  `sqlite3_column_text`, which renders an INTEGER or a REAL as its text — and the only one
+     *  JSON_QUOTE ever answers.
+     */
+    std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName);
+
+    /** `"->"`, `"->>"` or an empty view for any other operator — the text a JSON arrow is written as. */
+    std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator);
+
+    /**
+     *  What a `->` generated as a JSON_EXTRACT call answers that `->` does not, underlined at
+     *  `location`. sqlite_orm has no form for the operator itself.
+     */
+    CodegenWarning jsonTextArrowWarning(SourceLocation location);
+
+    /**
+     *  The report a JSON arrow carries whose path operand `jsonArrowPathExpansion` cannot expand,
+     *  underlined at the operator.
+     */
+    CodegenWarning jsonArrowPathNotExpandedWarning(const BinaryOperatorNode& arrow);
+
+    /**
+     *  The JSON path `X -> P` and `X ->> P` look P up under, for a P the operand spells out, and
+     *  nullopt for every other operand. The operators take an abbreviated path the JSON_EXTRACT
+     *  call they are generated as does not: SQLite expands an INTEGER operand into `$[N]` (and a
+     *  negative one into `$[#-N]`, counted from the right of the array), a text one starting with
+     *  `$` into itself, one of nothing but ASCII letters, digits and `_` into `$.label`, one
+     *  wrapped in brackets into `$[…]`, and every other one into `$."label"` — so
+     *  `'{"x":5}' ->> 'x'` is 5 while `json_extract('{"x":5}', 'x')` is the error `bad JSON path`.
+     *  Read off sqlite3 3.51 (`jsonExtractFunc`); an operand SQLite reads as a REAL or a BLOB is
+     *  left unexpanded, along with every operand that is not a literal at all.
+     */
+    std::optional<std::string> jsonArrowPathExpansion(const AstNode& pathOperand);
 
     /**
      *  The warning a call of `lowerFunctionName` earns when it is written with an argument count
@@ -206,6 +273,22 @@ namespace sqlite2orm {
     std::string blobToCpp(std::string_view blobLiteral);
     /** SQL numeric literal to C++: SQLite's `_` digit separators become C++'s `'` (1_000 -> 1'000). */
     std::string numericLiteralToCpp(std::string_view numericLiteral);
+    /**
+     *  The value C++ has no floating literal for: SQLite answers a literal past the range of a
+     *  double with an Inf, while [lex.fcon] makes the same spelling ill-formed in C++, where gcc
+     *  and clang warn (`floating constant exceeds range of 'double'`) and a consumer building the
+     *  generated code with `-Werror` gets an error. The generated header takes `<limits>` along
+     *  with this, which is why the emitter tells the context it was spelled.
+     */
+    inline constexpr std::string_view kInfinityCppExpression = "std::numeric_limits<double>::infinity()";
+    /** Whether codegen spells `numericLiteral` as `kInfinityCppExpression` rather than as itself. */
+    bool numericLiteralGeneratesInfinity(std::string_view numericLiteral);
+    /**
+     *  SQL real literal to C++, as the value SQLite reads it as: a literal past the range of a
+     *  double becomes an infinity, one too small for a double the zero it rounds to, and every
+     *  other one keeps the spelling it was written with.
+     */
+    std::string realLiteralToCpp(std::string_view realLiteral);
     /** Same for an integer literal, whose leading zeros C++ would read as an octal prefix (`010` is 10 in SQLite, 8 in C++). */
     std::string integerLiteralToCpp(std::string_view integerLiteral);
     /**
@@ -408,6 +491,53 @@ namespace sqlite2orm {
      *  names something (a column, NEW/OLD, a function call) and is serialized into the SQL itself.
      */
     bool generatesBoundValue(const AstNode& astNode);
+    /** The C++ type of the value a node generated as a bound value is spelled with. */
+    enum class GeneratedValueCppType {
+        /** `1`, `0xFF` — a constant an `int` holds. */
+        integer32,
+        /**
+         *  `3000000000` — a constant past the `int` range, which C++ gives the first of `long` and
+         *  `long long` it fits in. Which of the two that is differs by platform, and the two are
+         *  distinct types wherever both are 64 bits wide, so this is not `int64_t`.
+         */
+        integer64Literal,
+        /** `static_cast<int64_t>(0xFFFFFFFF)` — a constant the generated code already types. */
+        integer64Cast,
+        /** `true` / `false`. */
+        boolean,
+        /** `2.5`, and the `99999999999999999999.0` an integer literal past the int64 range becomes. */
+        real,
+        /** A string literal, which decays to a `const char*` wherever a type is deduced from it. */
+        text,
+        /** `std::vector<char>{…}`. */
+        blob,
+        /** The `nullptr` a NULL literal becomes. */
+        null,
+    };
+    /**
+     *  The C++ type the code generated for `astNode` has, for the nodes `generatesBoundValue`
+     *  answers for; `std::nullopt` for every other node, whose type only the compiler knows.
+     *  Integers come in three types because C++ types a constant by its magnitude rather than by
+     *  the column it is compared against: `1` is an `int` and `3000000000` a 64-bit integer that
+     *  is still not the `int64_t` a hex literal is already cast to.
+     */
+    std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode);
+    /**
+     *  How the two bounds of a BETWEEN have to be spelled. sqlite_orm's `between(A, T, T)` deduces
+     *  ONE `T` from both of them, so bounds generated as different C++ types do not compile at all.
+     */
+    enum class BetweenBoundsForm {
+        /** Both bounds generate the one type already, or nothing here can tell that they do not. */
+        asWritten,
+        /** Integer bounds of different types, which a cast on each of them gives the one type. */
+        widenedToInt64,
+        /** Types with nothing to widen to; codegen warns, and the generated code does not compile. */
+        noCommonType,
+    };
+    /** The shape the bounds of a BETWEEN are generated in — the single home of that rule. */
+    BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high);
+    /** How a BETWEEN bound is named in the warning about the two types, e.g. "an `int`". */
+    std::string betweenBoundTypeDescription(const AstNode& bound);
     /**
      *  True for a node generated as sqlite_orm's `negated_condition_t`: a logical NOT, and the
      *  `!predicate` spelling a negated BETWEEN, LIKE, GLOB or MATCH takes. sqlite_orm classifies
@@ -479,6 +609,19 @@ namespace sqlite2orm {
      *  or a NULL whenever an operand is one.
      */
     std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode);
+    /**
+     *  The warning a SELECT result column read back through a JSON_EXTRACT call over a single path
+     *  carries — a `->>` and a `json_extract(X, P)` written as a call alike — and nullopt for
+     *  every other column. What SQLite answers there is the value at the path, of whatever storage
+     *  class the JSON holds; sqlite_orm deduces no result type for the call, and the one generated
+     *  for it (see `functionCallResultTypeArgument`) reads every storage class back as its text.
+     *  JSON_EXTRACT over two paths or more answers the JSON array of what it found, which is text
+     *  whatever the JSON holds, so that form is left alone. `->` is left alone too: it answers the
+     *  JSON text of the value rather than the value, so it is a text itself and a `std::string`
+     *  costs it nothing — where the call it is generated as differs from it is what
+     *  `jsonTextArrowWarning` already reports, at the same two characters.
+     */
+    std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode);
     /**
      *  The report for a unary plus that stands over a column reference on one side of a comparison,
      *  if `astNode` is one. A unary plus is an identity for the value, which is why codegen emits

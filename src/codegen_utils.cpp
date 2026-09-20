@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <initializer_list>
 #include <limits>
+#include <span>
 
 namespace sqlite2orm {
 
@@ -145,15 +146,27 @@ namespace sqlite2orm {
         return result;
     }
 
-    std::string sqlStringToCpp(std::string_view sqlString) {
-        auto content = sqlString.substr(1, sqlString.size() - 2);
-        std::string result = "\"";
+    std::string sqlStringLiteralText(std::string_view literal) {
+        if (literal.size() < 2) {
+            return std::string(literal);
+        }
+        const char quote = literal.front();
+        const std::string_view content = literal.substr(1, literal.size() - 2);
+        std::string result;
+        result.reserve(content.size());
         for (size_t index = 0; index < content.size(); ++index) {
-            char character = content[index];
-            if (character == '\'' && index + 1 < content.size() && content[index + 1] == '\'') {
-                result += '\'';
+            if (content[index] == quote && index + 1 < content.size() && content[index + 1] == quote) {
                 ++index;
-            } else if (character == '\\') {
+            }
+            result += content[index];
+        }
+        return result;
+    }
+
+    std::string cppStringLiteral(std::string_view text) {
+        std::string result = "\"";
+        for (const char character: text) {
+            if (character == '\\') {
                 result += "\\\\";
             } else if (character == '"') {
                 result += "\\\"";
@@ -169,6 +182,10 @@ namespace sqlite2orm {
         }
         result += '"';
         return result;
+    }
+
+    std::string sqlStringToCpp(std::string_view sqlString) {
+        return cppStringLiteral(sqlStringLiteralText(sqlString));
     }
 
     std::string stripColumnAliasQuotes(std::string_view alias) {
@@ -393,6 +410,16 @@ namespace sqlite2orm {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentBetweenBoundsWidened =
+        "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
+        "constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a "
+        "64-bit constant and does not compile. The cast goes on every bound that is not already "
+        "an `int64_t`, rather than on the narrower one: the type a 64-bit constant is given is "
+        "`long` where an `int64_t` is a `long long`, and the two are distinct types even where "
+        "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
+        "signed 64-bit number anyway, TRUE and FALSE among them.";
+
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
         "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
@@ -577,6 +604,19 @@ namespace sqlite2orm {
             {"match", 2, 2},
         }};
 
+        // The built-in aggregate functions sqlite_orm declares as a `builtin_aggregate_function_t`,
+        // the form carrying `filter()`. COUNT, MAX and MIN are aggregates too, but which form a
+        // call of them is generated as follows from its arguments rather than from its name, so
+        // `functionCallFormHasNoFilter` answers those three on its own.
+        constexpr std::array<std::string_view, 6> kFilterableAggregateFunctions{{
+            "avg",
+            "group_concat",
+            "json_group_array",
+            "json_group_object",
+            "sum",
+            "total",
+        }};
+
         const FixedArityForm* fixedArityForm(std::string_view lowerFunctionName) {
             auto found = std::find_if(kFixedArityForms.begin(),
                                       kFixedArityForms.end(),
@@ -598,6 +638,17 @@ namespace sqlite2orm {
             }
             return std::to_string(form.minimumArgumentCount) + " to " + argumentCountText(form.maximumArgumentCount);
         }
+
+        bool nameIsIn(std::string_view name, std::span<const std::string_view> names) {
+            return std::find(names.begin(), names.end(), name) != names.end();
+        }
+
+        /** Whether SQLite reads a call of `lowerFunctionName` as a window function. */
+        bool isWindowFunction(std::string_view lowerFunctionName) {
+            // The fixed-arity forms are the eleven window functions and MATCH, the one of them
+            // SQLite reads as an operator rather than as a window function.
+            return fixedArityForm(lowerFunctionName) != nullptr && lowerFunctionName != "match";
+        }
     }
 
     bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
@@ -611,8 +662,90 @@ namespace sqlite2orm {
         return form != nullptr;
     }
 
-    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName) {
-        return fixedArityForm(lowerFunctionName) != nullptr;
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName,
+                                     size_t argumentCount,
+                                     bool generatedAsCountAsterisk) {
+        if (generatedAsCountAsterisk) {
+            return false;
+        }
+        if (lowerFunctionName == "count") {
+            // `count(X)` is the aggregate; the argument-less `count()` SQLite counts every row of
+            // the group with is generated as a `count_asterisk_without_type`, which holds nothing
+            // and carries no `filter()`.
+            return argumentCount == 0;
+        }
+        if (lowerFunctionName == "max" || lowerFunctionName == "min") {
+            // MAX(X) and MIN(X) are the aggregates; from a second argument on sqlite_orm picks the
+            // scalar overload, the same split SQLite makes — `FILTER may not be used with
+            // non-aggregate max()`.
+            return argumentCount >= 2;
+        }
+        return !nameIsIn(lowerFunctionName, kFilterableAggregateFunctions);
+    }
+
+    std::string
+    filterOnCallWithoutFilterWarning(std::string_view functionName, bool hasOverClause, bool userDefinedFunction) {
+        const std::string name(functionName);
+        const std::string preamble = name + "() has no filter() in sqlite_orm: only the aggregate function calls and "
+                                            "count(*) take a FILTER, so the generated code does not compile. ";
+        if (userDefinedFunction) {
+            return preamble +
+                   "SQLite takes a FILTER over a user-defined aggregate function, so the SQL may well be fine "
+                   "while the func<" +
+                   toStructName(functionName) + ">() call standing for " + name + "() is not";
+        }
+        const std::string lowerName = toLowerAscii(functionName);
+        if (lowerName == "count") {
+            // The only COUNT generated without a `filter()` is the argument-less one, which SQLite
+            // takes as readily as the star it counts the same rows as.
+            return preamble + "SQLite takes the same call — count() counts the rows count(*) does — so the SQL is well "
+                              "formed and the generated code alone is not";
+        }
+        std::string refusal;
+        if (isWindowFunction(lowerName)) {
+            refusal = hasOverClause ? "FILTER clause may only be used with aggregate window functions"
+                                    : "misuse of window function " + name + "()";
+        } else {
+            refusal = hasOverClause ? name + "() may not be used as a window function"
+                                    : "FILTER may not be used with non-aggregate " + name + "()";
+        }
+        return preamble + "SQLite refuses the same call — " + refusal + " — but stores a trigger or a view holding it";
+    }
+
+    std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName) {
+        if (lowerFunctionName == "json_extract" || lowerFunctionName == "json_quote") {
+            return "<std::string>";
+        }
+        return {};
+    }
+
+    std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator) {
+        switch (binaryOperator) {
+            case BinaryOperator::jsonArrow:
+                return "->";
+            case BinaryOperator::jsonArrow2:
+                return "->>";
+            default:
+                return {};
+        }
+    }
+
+    CodegenWarning jsonTextArrowWarning(SourceLocation location) {
+        return CodegenWarning{"`->` is generated as a JSON_EXTRACT call, which answers the SQL value at the path "
+                              "where `->` answers the JSON text of that value: a string comes back unquoted, and "
+                              "`true`, `false` and `null` come back as 1, 0 and NULL. sqlite_orm has no form for the "
+                              "operator itself",
+                              location,
+                              underlineLengthOf("->")};
+    }
+
+    CodegenWarning jsonArrowPathNotExpandedWarning(const BinaryOperatorNode& arrow) {
+        return CodegenWarning{"the path operand of a JSON arrow is not a text or an integer literal, so the `$` path "
+                              "SQLite expands it into cannot be spelled out here: the JSON_EXTRACT call the operator "
+                              "is generated as takes the operand as written, and SQLite refuses a path that does not "
+                              "start with `$` with `bad JSON path`",
+                              arrow.location,
+                              underlineLengthOf(jsonArrowOperatorText(arrow.binaryOperator))};
     }
 
     std::optional<CodegenWarning> functionCallArityWarning(const FunctionCallNode& functionCall,
@@ -679,6 +812,9 @@ namespace sqlite2orm {
             case BinaryOperator::isDistinctFrom:
             case BinaryOperator::isNotDistinctFrom:
                 return {};
+            // Both arrows are read back through the same call, which spells the result type
+            // `functionCallResultTypeArgument` names for it and looks up the path
+            // `jsonArrowPathExpansion` expands their right operand into.
             case BinaryOperator::jsonArrow:
                 return "json_extract";
             case BinaryOperator::jsonArrow2:
@@ -945,6 +1081,67 @@ namespace sqlite2orm {
         bool hexLiteralIsUnsignedInCpp(std::string_view integerLiteral) {
             const std::string digits = significantDigits(integerLiteral.substr(2));
             return (digits.size() == 8 || digits.size() == 16) && digits.front() >= '8';
+        }
+
+        // The decimal text SQLite renders the value of an integer literal as, which is what its
+        // JSON path expansion is built from: a hexadecimal literal is a signed 64-bit integer
+        // there, `0xFFFFFFFFFFFFFFFF` wrapping around to -1, and a folded minus sign negates the
+        // magnitude the digits spell. The caller keeps a literal past the int64 range out: SQLite
+        // reads that one as a REAL, and a REAL is no array index.
+        std::string integerLiteralDecimalText(std::string_view integerLiteral, bool negated) {
+            const bool hexadecimal = isHexadecimalIntegerLiteral(integerLiteral);
+            const std::string digits = significantDigits(integerLiteral.substr(hexadecimal ? 2 : 0));
+            std::uint64_t magnitude = 0;
+            for (const char digit: digits) {
+                magnitude = magnitude * (hexadecimal ? 16 : 10) + static_cast<std::uint64_t>(hexDigitValue(digit));
+            }
+            const std::int64_t value =
+                negated ? static_cast<std::int64_t>(~magnitude + 1) : static_cast<std::int64_t>(magnitude);
+            return std::to_string(value);
+        }
+
+        /**
+         *  The double the text of a decimal literal reads as, which is what SQLite computes with
+         *  and what a C++ compiler makes of the same spelling.
+         *
+         *  `std::strtod` reads the radix character of the current `LC_NUMERIC`, which a host
+         *  embedding this library leaves wherever its own startup put it, so the `.` SQLite spells
+         *  a literal with is rewritten to whatever that locale expects. Without it a locale that
+         *  separates with a comma stops the parse at the `.`, and `1.0e400` reads back as a finite
+         *  1 — the answer the callers here rest on not getting. Overflowing to an infinity is
+         *  `strtod`'s own answer and the one they ask about; a stream extraction would report a
+         *  failure and the largest finite double instead.
+         */
+        double decimalLiteralDoubleValue(std::string_view decimalLiteral) {
+            const std::string_view radix = std::localeconv()->decimal_point;
+            std::string digits;
+            digits.reserve(decimalLiteral.size());
+            for (char character: decimalLiteral) {
+                // The `_` separators SQLite allows between digits carry no value.
+                if (character == '_') {
+                    continue;
+                }
+                if (character == '.') {
+                    digits += radix;
+                } else {
+                    digits += character;
+                }
+            }
+            return std::strtod(digits.c_str(), nullptr);
+        }
+
+        // Whether the significand of a literal names a value of its own: `1e-400` underflows to a
+        // zero and `0.0e999` is written as one, and only the first of the two is a rounded value.
+        bool significandIsNonZero(std::string_view decimalLiteral) {
+            for (char character: decimalLiteral) {
+                if (character == 'e' || character == 'E') {
+                    break;
+                }
+                if (isDigit(character) && character != '0') {
+                    return true;
+                }
+            }
+            return false;
         }
 
     }  // namespace
@@ -1246,6 +1443,26 @@ namespace sqlite2orm {
         return digits.size() > limit.size() || (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
+    bool numericLiteralGeneratesInfinity(std::string_view numericLiteral) {
+        // SQLite reads every hex literal as a signed 64-bit integer and refuses a seventeenth
+        // digit, so no value of one is ever past the range of a double.
+        return !isHexadecimalIntegerLiteral(numericLiteral) && std::isinf(decimalLiteralDoubleValue(numericLiteral));
+    }
+
+    std::string realLiteralToCpp(std::string_view realLiteral) {
+        if (numericLiteralGeneratesInfinity(realLiteral)) {
+            return std::string(kInfinityCppExpression);
+        }
+        // A value too small for a double rounds to a zero, which is the value SQLite reads as
+        // well — `SELECT 1e-400` answers 0.0 — and which C++ warns about in the same breath as an
+        // overflow (`floating constant truncated to zero`). A literal written as a zero keeps its
+        // own spelling: there is nothing rounded about it.
+        if (decimalLiteralDoubleValue(realLiteral) == 0.0 && significandIsNonZero(realLiteral)) {
+            return "0.0";
+        }
+        return numericLiteralToCpp(realLiteral);
+    }
+
     std::string integerLiteralToCpp(std::string_view integerLiteral) {
         // A hexadecimal literal denotes the same number in both languages, but a decimal one with
         // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not
@@ -1273,9 +1490,64 @@ namespace sqlite2orm {
         // unsigned constant, and `99999999999999999999` does not fit in any integer type at all,
         // so the fractional part turns it into the double SQLite computes.
         if (integerLiteralExceedsInt64(significant)) {
+            // Far enough past the int64 range the double runs out too — a 1 followed by 309 zeros
+            // is an Inf to SQLite — and C++ has no literal for that value either.
+            if (numericLiteralGeneratesInfinity(significant)) {
+                return std::string(kInfinityCppExpression);
+            }
             return numericLiteralToCpp(significant) + ".0";
         }
         return numericLiteralToCpp(significant);
+    }
+
+    std::optional<std::string> jsonArrowPathExpansion(const AstNode& pathOperand) {
+        // A COLLATE and a unary plus stand for the value under them, which is the value the
+        // operator expands.
+        const AstNode& written = generatedOperandNode(pathOperand);
+        if (auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&written)) {
+            const std::string label = sqlStringLiteralText(stringLiteral->value);
+            if (!label.empty() && label.front() == '$') {
+                return label;
+            }
+            // A label of nothing but ASCII letters, digits and `_` needs no quoting, and an empty
+            // one takes this branch as well: `$.` is what SQLite builds for it, and what it then
+            // refuses as a bad JSON path — as it refuses the bare `''` the operator was written
+            // with, only naming the other of the two in the message.
+            const bool unquotable = std::all_of(label.begin(), label.end(), [](char character) {
+                return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'z') ||
+                       (character >= 'A' && character <= 'Z') || character == '_';
+            });
+            if (unquotable) {
+                return "$." + label;
+            }
+            if (label.size() >= 3 && label.front() == '[' && label.back() == ']') {
+                return "$" + label;
+            }
+            // The label goes in quoted and unescaped, exactly as SQLite pastes it in, so a label
+            // holding a quote of its own builds the same path here as it does there.
+            return "$.\"" + label + "\"";
+        }
+        if (auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&written)) {
+            // `TRUE` and `FALSE` are the integers 1 and 0, and an integer is an array index.
+            return boolLiteral->value ? "$[1]" : "$[0]";
+        }
+        std::size_t foldedSigns = 0;
+        const AstNode& signless = *withoutFoldedSigns(written, foldedSigns);
+        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&signless);
+        if (integerLiteral == nullptr) {
+            return std::nullopt;
+        }
+        const bool negated = foldedSigns % 2 != 0;
+        // Past the int64 range the literal is a REAL for SQLite, which expands as a label rather
+        // than as an index, spelled the way SQLite renders a REAL as text. That rendering is not
+        // reproduced here, so the operand is left to the caller to report.
+        if (integerLiteralExceedsInt64(integerLiteral->value, negated) ||
+            hexLiteralExceedsInt64(integerLiteral->value)) {
+            return std::nullopt;
+        }
+        const std::string decimal = integerLiteralDecimalText(integerLiteral->value, negated);
+        // SQLite counts a negative index from the right of the array, which `$[#-N]` spells.
+        return "$[" + std::string(decimal.front() == '-' ? "#" : "") + decimal + "]";
     }
 
     bool isNumericLiteral(const AstNode& astNode) {
@@ -1451,6 +1723,142 @@ namespace sqlite2orm {
                dynamic_cast<const NullLiteralNode*>(&generatedNode) ||
                dynamic_cast<const BoolLiteralNode*>(&generatedNode) ||
                dynamic_cast<const BlobLiteralNode*>(&generatedNode);
+    }
+
+    namespace {
+
+        /** The C++ type `integerLiteralToCpp` spells an integer literal with. */
+        GeneratedValueCppType integerLiteralCppType(std::string_view integerLiteral) {
+            if (isHexadecimalIntegerLiteral(integerLiteral)) {
+                // The two spans C++ would make unsigned are spelled `static_cast<int64_t>(…)`.
+                // Of the rest, everything past `0xFFFFFFFF` — nine significant digits on — is a
+                // `long` there, and an eight-digit literal that stayed signed fits an `int`.
+                if (hexLiteralIsUnsignedInCpp(integerLiteral)) {
+                    return GeneratedValueCppType::integer64Cast;
+                }
+                return significantDigits(integerLiteral.substr(2)).size() <= 8
+                           ? GeneratedValueCppType::integer32
+                           : GeneratedValueCppType::integer64Literal;
+            }
+            const std::string digits = significantDigits(integerLiteral);
+            // A decimal literal past the int64 range is a REAL for SQLite and is spelled with a
+            // `.0`, so it is a `double` here as well.
+            if (integerLiteralExceedsInt64(digits)) {
+                return GeneratedValueCppType::real;
+            }
+            return integerLiteralExceedsInt32(digits) ? GeneratedValueCppType::integer64Literal
+                                                      : GeneratedValueCppType::integer32;
+        }
+
+        bool isIntegerCppType(GeneratedValueCppType type) {
+            // A `bool` is one of these: SQLite's TRUE is the integer 1, and the cast that widens
+            // the constant carries that value unchanged.
+            return type == GeneratedValueCppType::integer32 || type == GeneratedValueCppType::integer64Literal ||
+                   type == GeneratedValueCppType::integer64Cast || type == GeneratedValueCppType::boolean;
+        }
+
+        /** True for a node generated as a `bindParamN` variable, whose type the caller declares. */
+        bool generatesBindParameter(const AstNode& astNode) {
+            return dynamic_cast<const BindParameterNode*>(&generatedOperandNode(astNode)) != nullptr;
+        }
+
+        /** True for a node generated as a pointer to a member — `&User::a`, or the `column<T>()` of it. */
+        bool generatesColumnPointer(const AstNode& astNode) {
+            const AstNode& generatedNode = generatedOperandNode(astNode);
+            return dynamic_cast<const ColumnRefNode*>(&generatedNode) ||
+                   dynamic_cast<const QualifiedColumnRefNode*>(&generatedNode) ||
+                   dynamic_cast<const NewRefNode*>(&generatedNode) || dynamic_cast<const OldRefNode*>(&generatedNode) ||
+                   dynamic_cast<const ExcludedRefNode*>(&generatedNode);
+        }
+
+    }  // namespace
+
+    std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode) {
+        if (!generatesBoundValue(astNode)) {
+            return std::nullopt;
+        }
+        // A sign SQLite folds into a literal is spelled in front of the C++ constant and leaves
+        // the type of that constant alone: `-2147483648` is the 64-bit `2147483648` negated,
+        // not an `int`, so the width follows the magnitude the literal is written with.
+        std::size_t foldedSigns = 0;
+        const AstNode* value = withoutFoldedSigns(generatedOperandNode(astNode), foldedSigns);
+        if (auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(value)) {
+            return integerLiteralCppType(integerLiteral->value);
+        }
+        if (dynamic_cast<const RealLiteralNode*>(value)) {
+            return GeneratedValueCppType::real;
+        }
+        if (dynamic_cast<const StringLiteralNode*>(value)) {
+            return GeneratedValueCppType::text;
+        }
+        if (dynamic_cast<const BoolLiteralNode*>(value)) {
+            return GeneratedValueCppType::boolean;
+        }
+        if (dynamic_cast<const BlobLiteralNode*>(value)) {
+            return GeneratedValueCppType::blob;
+        }
+        if (dynamic_cast<const NullLiteralNode*>(value)) {
+            return GeneratedValueCppType::null;
+        }
+        return std::nullopt;
+    }
+
+    BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high) {
+        const std::optional<GeneratedValueCppType> lowType = generatedValueCppType(low);
+        const std::optional<GeneratedValueCppType> highType = generatedValueCppType(high);
+        if (lowType && highType) {
+            if (*lowType == *highType) {
+                return BetweenBoundsForm::asWritten;
+            }
+            // Two integer constants of different types are the one case with a type to widen to:
+            // every INTEGER SQLite carries fits an int64, and a value bound as one is the value
+            // bound as an `int` or as a `bool` — same storage class, same number.
+            return isIntegerCppType(*lowType) && isIntegerCppType(*highType) ? BetweenBoundsForm::widenedToInt64
+                                                                             : BetweenBoundsForm::noCommonType;
+        }
+        // The bind parameter is typed by the caller, who declares `bindParamN` himself, so nothing
+        // said about the other bound rules its type out.
+        if (generatesBindParameter(low) || generatesBindParameter(high)) {
+            return BetweenBoundsForm::asWritten;
+        }
+        if (!lowType && !highType) {
+            // A pointer to a member is never one of the node types sqlite_orm builds from an
+            // expression, so those two never meet. Two columns, on the other hand, are typed by
+            // the schema and two expression nodes by what they are built over, and neither is
+            // known here — `abs(&User::a)` and `abs(&User::b)` are the same type when the two
+            // columns are.
+            return generatesColumnPointer(low) != generatesColumnPointer(high) ? BetweenBoundsForm::noCommonType
+                                                                               : BetweenBoundsForm::asWritten;
+        }
+        // One bound is a constant and the other names something sqlite_orm serializes — a column
+        // pointer, an expression node — and no constant shares a type with one of those.
+        return BetweenBoundsForm::noCommonType;
+    }
+
+    std::string betweenBoundTypeDescription(const AstNode& bound) {
+        const std::optional<GeneratedValueCppType> type = generatedValueCppType(bound);
+        if (!type) {
+            return generatesColumnPointer(bound) ? "a pointer to a column" : "a sqlite_orm expression";
+        }
+        switch (*type) {
+            case GeneratedValueCppType::integer32:
+                return "an `int`";
+            case GeneratedValueCppType::integer64Literal:
+                return "a 64-bit integer constant";
+            case GeneratedValueCppType::integer64Cast:
+                return "an `int64_t`";
+            case GeneratedValueCppType::boolean:
+                return "a `bool`";
+            case GeneratedValueCppType::real:
+                return "a `double`";
+            case GeneratedValueCppType::text:
+                return "a `const char*`";
+            case GeneratedValueCppType::blob:
+                return "a `std::vector<char>`";
+            case GeneratedValueCppType::null:
+                return "a `std::nullptr_t`";
+        }
+        return "a sqlite_orm expression";
     }
 
     bool generatesNegatedCondition(const AstNode& astNode) {
@@ -1681,6 +2089,13 @@ namespace sqlite2orm {
                 case BinaryOperator::divide:
                 case BinaryOperator::modulo:
                     // `1 / 0` and `1 % 0` are NULL in SQLite, however plain the operands are.
+                    return true;
+                case BinaryOperator::jsonArrow:
+                case BinaryOperator::jsonArrow2:
+                    // A path the JSON does not hold answers NULL over operands that are none:
+                    // `'{"a":1}' -> '$.zz'` and `'{"a":1}' ->> '$.zz'` are both NULL. The
+                    // JSON_EXTRACT call both are generated as answers NULL for a JSON null at
+                    // the path as well.
                     return true;
                 case BinaryOperator::add:
                 case BinaryOperator::subtract:
@@ -1942,28 +2357,7 @@ namespace sqlite2orm {
                 // above is the only one it has; anything else here is not a number at all.
                 return std::nullopt;
             }
-            // `std::strtod` reads the radix character of the current `LC_NUMERIC`, which a host
-            // embedding this library leaves wherever its own startup put it, so the `.` SQLite
-            // spells a literal with is rewritten to whatever that locale expects. Without it a
-            // locale that separates with a comma stops the parse at the `.`, and `1.0e400` reads
-            // back as a finite 1, which is the answer this predicate rests on not getting.
-            const std::string_view radix = std::localeconv()->decimal_point;
-            std::string digits;
-            digits.reserve(text.size());
-            for (char character: text) {
-                // The `_` separators SQLite allows between digits carry no value.
-                if (character == '_') {
-                    continue;
-                }
-                if (character == '.') {
-                    digits += radix;
-                } else {
-                    digits += character;
-                }
-            }
-            // Overflowing to an infinity is `strtod`'s own answer and the one the caller asks
-            // about; a stream extraction would report a failure and the largest finite double.
-            return sign * std::strtod(digits.c_str(), nullptr);
+            return sign * decimalLiteralDoubleValue(text);
         }
 
         /**
@@ -2167,6 +2561,47 @@ namespace sqlite2orm {
                               underlineLengthOf(arithmetic.operatorText)};
     }
 
+    std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the call the row is
+        // read back through is the one the operand under them comes out as.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        // The written text the warning underlines: the arrow operator a node is located at, or the
+        // name a call was written under. Both are the source text as written, quoted in neither.
+        std::string_view writtenText;
+        SourceLocation location;
+        if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            // `->>` is a call over the one path it was written with, and answers the very value
+            // that call does. `->` answers the JSON text of that value — always a text, whatever
+            // the JSON holds — so a `std::string` loses nothing of what `->` itself answers, and
+            // what it does lose is what `->` and the call differ by, which `jsonTextArrowWarning`
+            // already reports at these same two characters.
+            if (binaryOp->binaryOperator != BinaryOperator::jsonArrow2) {
+                return std::nullopt;
+            }
+            writtenText = jsonArrowOperatorText(binaryOp->binaryOperator);
+            location = binaryOp->location;
+        } else if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            if (functionCall->star || toLowerAscii(functionCall->name) != "json_extract") {
+                return std::nullopt;
+            }
+            // The first argument is the JSON itself, every other one a path into it.
+            if (functionCall->arguments.size() != 2) {
+                return std::nullopt;
+            }
+            writtenText = functionCall->name;
+            location = functionCall->location;
+        } else {
+            return std::nullopt;
+        }
+        return CodegenWarning{"result column taken from JSON_EXTRACT over one path comes back as text: "
+                              "SQLite answers the value at the path, of whatever storage class the JSON holds, and "
+                              "sqlite_orm deduces no result type for the call, so it is generated as "
+                              "`json_extract<std::string>(…)` — a JSON number comes back as its digits. Spell the "
+                              "result type the value at the path has where it is known",
+                              location,
+                              underlineLengthOf(writtenText)};
+    }
+
     bool selectResultNeedsAsOptional(const AstNode& astNode) {
         // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
         // the result column comes out as — and with it the type the row is read back into — is the
@@ -2178,12 +2613,13 @@ namespace sqlite2orm {
                 case BinaryOperator::isNot:
                 case BinaryOperator::isDistinctFrom:
                 case BinaryOperator::isNotDistinctFrom:
-                case BinaryOperator::jsonArrow:
-                case BinaryOperator::jsonArrow2:
-                    // Not generated as a C++ binary operator: the first four never reach codegen (the
-                    // validator rejects them), the JSON arrows become a json_extract() call.
+                    // Not generated as a C++ binary operator, and never reaching codegen at all:
+                    // the validator rejects the IS family.
                     return false;
                 default:
+                    // The JSON arrows are generated as a `json_extract<std::string>()` call, whose
+                    // result type is as much the type the row is read back into as an operator's
+                    // is, and a `std::string` reads a NULL back as an empty string.
                     return expressionMayBeNull(generatedNode);
             }
         }
@@ -2444,28 +2880,6 @@ namespace sqlite2orm {
         }
         return std::nullopt;
     }
-
-    namespace {
-
-        /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
-        std::string sqlStringLiteralText(std::string_view literal) {
-            if (literal.size() < 2) {
-                return std::string(literal);
-            }
-            const char quote = literal.front();
-            const std::string_view content = literal.substr(1, literal.size() - 2);
-            std::string result;
-            result.reserve(content.size());
-            for (size_t index = 0; index < content.size(); ++index) {
-                if (content[index] == quote && index + 1 < content.size() && content[index + 1] == quote) {
-                    ++index;
-                }
-                result += content[index];
-            }
-            return result;
-        }
-
-    }  // namespace
 
     std::optional<std::int32_t> sqlitePragmaInt32(std::string_view valueText) {
         // `sqlite3GetInt32()` takes the sign off first and only then looks for a `0x` prefix, so a

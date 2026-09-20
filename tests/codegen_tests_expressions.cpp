@@ -581,14 +581,10 @@ TEST_CASE("codegen: an operator the C++ `||` token misreads is spelled as a call
         REQUIRE(generate("a OR 0") == "or_(&User::a, 0)");
         REQUIRE(generate("a OR b") == "or_(&User::a, &User::b)");
         REQUIRE(generate("-(1 OR 0)") == "(c(0) - (or_(1, 0)))");
-        // `match_t` is the one predicate sqlite_orm does not class as a condition. The call names
-        // the OR that was written, but it does not compile either: `match_t` derives from nothing
-        // at all, so `or_()` does not accept it as an operand either: the call is the OR that was
-        // written, but it does not compile — `or_() arguments must be bindable values or
-        // sqlite_orm-recognized operands`. Neither did the operator spelling it replaces, which
-        // had no `operator||` to pick at all, so this is what the form looks like and not a form
-        // that works yet.
-        REQUIRE(generate("a MATCH 'x' OR b") == R"(or_(match(&User::a, "x"), &User::b))");
+        // `match_t` is the one predicate sqlite_orm does not class as a condition, and it is not
+        // an operand `or_()` accepts either — it derives from nothing at all. The call hands it
+        // over `c()`-wrapped, which is what makes it one; the OR built is the same either way.
+        REQUIRE(generate("a MATCH 'x' OR b") == R"(or_(c(match(&User::a, "x")), &User::b))");
     }
     SECTION("an OR with a condition among its operands") {
         REQUIRE(generate("a = 1 OR b") == "c(&User::a) == 1 or &User::b");

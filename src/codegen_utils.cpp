@@ -394,6 +394,18 @@ namespace sqlite2orm {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentAndOrQuotedOperand =
+        "An operand of an AND or an OR that sqlite_orm does not recognize is generated as "
+        "`c(operand)`: `or_()` and `and_()` assert that both arguments are bindable values or "
+        "operands sqlite_orm knows, and `operator&&` is declared only where one of the operands "
+        "is a condition or an operator argument. A MATCH, a CURRENT_DATE / CURRENT_TIME / "
+        "CURRENT_TIMESTAMP, a window call and a FILTERed aggregate are none of those, and a pair "
+        "like `a + 1 AND a + 2` is neither, so `b MATCH 'x' OR b MATCH 'y'` and `a + 1 AND a + 2` "
+        "would not compile at all. `c()` hands the expression over as it stands: `or_()`, `and_()` "
+        "and `operator&&` all unwrap the `quoted_expression_t` back to the expression it holds, so "
+        "the condition built — and the SQL it serializes to — is the one the bare operand would "
+        "have built.";
+
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
         "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
@@ -571,6 +583,21 @@ namespace sqlite2orm {
 
         bool nameIsIn(std::string_view name, std::span<const std::string_view> names) {
             return std::find(names.begin(), names.end(), name) != names.end();
+        }
+
+        /**
+         *  Whether the call generates one of the types sqlite_orm keeps out of its operand traits:
+         *  a window function, each generated as an aggregate of its own, and a MATCH in its
+         *  function spelling, generated as `match_t`. A `filter()` and an `over()` wrap whatever
+         *  they are called on into a `filtered_aggregate_function_t` and an `over_t`, which are
+         *  out of them too.
+         */
+        bool functionCallGeneratesUnrecognizedOperand(const FunctionCallNode& functionCall) {
+            if (functionCall.over != nullptr || functionCall.filterWhere != nullptr) {
+                return true;
+            }
+            const std::string lowerName = toLowerAscii(functionCall.name);
+            return nameIsIn(lowerName, kNullaryWindowFunctions) || nameIsIn(lowerName, kArgumentTakingAggregateForms);
         }
     }
 
@@ -1385,6 +1412,40 @@ namespace sqlite2orm {
                dynamic_cast<const IsNullNode*>(&generatedNode) != nullptr ||
                dynamic_cast<const IsNotNullNode*>(&generatedNode) != nullptr ||
                dynamic_cast<const ExistsNode*>(&generatedNode) != nullptr;
+    }
+
+    bool generatesSqliteOrmOperatorArgument(const AstNode& astNode) {
+        // A COLLATE and a unary plus generate their operand and nothing else, so the sqlite_orm
+        // node standing here is the one the operand generates.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            return !functionCallGeneratesUnrecognizedOperand(*functionCall);
+        }
+        if (auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            // The JSON arrows are generated as a `json_extract()` call, a built-in function like
+            // any other; every other operator builds a `binary_operator` or a `binary_condition`.
+            return binaryOperator->binaryOperator == BinaryOperator::jsonArrow ||
+                   binaryOperator->binaryOperator == BinaryOperator::jsonArrow2;
+        }
+        return dynamic_cast<const CastNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const CaseNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const NewRefNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const OldRefNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const ExcludedRefNode*>(&generatedNode) != nullptr;
+    }
+
+    bool generatesSqliteOrmOperandOrBindable(const AstNode& astNode) {
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            return !functionCallGeneratesUnrecognizedOperand(*functionCall);
+        }
+        // `match_t` derives from nothing, and the CURRENT_* literals are generated as
+        // `current_date()` / `current_time()` / `current_timestamp()`, types of their own that no
+        // operand trait names. Everything else the expression generator emits is a member
+        // pointer, a bindable value, an arithmetic or bitwise operator, a concatenation, a
+        // condition, an operator argument, a scalar subquery or a compound operator.
+        return dynamic_cast<const MatchNode*>(&generatedNode) == nullptr &&
+               dynamic_cast<const CurrentDatetimeLiteralNode*>(&generatedNode) == nullptr;
     }
 
     bool binaryOperatorNeedsCallSpelling(const BinaryOperatorNode& binaryOperatorNode) {

@@ -187,6 +187,23 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT integer beyond int64") {
                       "        make_column(\"x\", &T::x, default_value(99999999999999999999.0))));");
 }
 
+// A DEFAULT reaches C++ as a literal like any other, so the value C++ has no literal for is
+// spelled the same way here: SQLite keeps `DEFAULT 9e999` and hands out an Inf, and the generated
+// code says so without a `-Woverflow` on the way. Checked against sqlite3 3.51.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT real past the double range") {
+    auto result = generate("CREATE TABLE t (x REAL DEFAULT 9e999, y REAL CHECK (y < 1e400))");
+    REQUIRE(result ==
+            "struct T {\n"
+            "    std::optional<double> x;\n"
+            "    std::optional<double> y;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"x\", &T::x, default_value(std::numeric_limits<double>::infinity())),\n"
+            "        make_column(\"y\", &T::y, check(c(&T::y) < std::numeric_limits<double>::infinity()))));");
+}
+
 // SQLite wraps a hex default around inside the int64, so this one is -1, not 18446744073709551615.
 TEST_CASE("codegen: CREATE TABLE - DEFAULT hexadecimal past the int64 range") {
     auto result = generate("CREATE TABLE t (x INTEGER DEFAULT 0xFFFFFFFFFFFFFFFF)");

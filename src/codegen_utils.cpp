@@ -972,6 +972,50 @@ namespace sqlite2orm {
             return std::to_string(value);
         }
 
+        /**
+         *  The double the text of a decimal literal reads as, which is what SQLite computes with
+         *  and what a C++ compiler makes of the same spelling.
+         *
+         *  `std::strtod` reads the radix character of the current `LC_NUMERIC`, which a host
+         *  embedding this library leaves wherever its own startup put it, so the `.` SQLite spells
+         *  a literal with is rewritten to whatever that locale expects. Without it a locale that
+         *  separates with a comma stops the parse at the `.`, and `1.0e400` reads back as a finite
+         *  1 — the answer the callers here rest on not getting. Overflowing to an infinity is
+         *  `strtod`'s own answer and the one they ask about; a stream extraction would report a
+         *  failure and the largest finite double instead.
+         */
+        double decimalLiteralDoubleValue(std::string_view decimalLiteral) {
+            const std::string_view radix = std::localeconv()->decimal_point;
+            std::string digits;
+            digits.reserve(decimalLiteral.size());
+            for (char character: decimalLiteral) {
+                // The `_` separators SQLite allows between digits carry no value.
+                if (character == '_') {
+                    continue;
+                }
+                if (character == '.') {
+                    digits += radix;
+                } else {
+                    digits += character;
+                }
+            }
+            return std::strtod(digits.c_str(), nullptr);
+        }
+
+        // Whether the significand of a literal names a value of its own: `1e-400` underflows to a
+        // zero and `0.0e999` is written as one, and only the first of the two is a rounded value.
+        bool significandIsNonZero(std::string_view decimalLiteral) {
+            for (char character: decimalLiteral) {
+                if (character == 'e' || character == 'E') {
+                    break;
+                }
+                if (isDigit(character) && character != '0') {
+                    return true;
+                }
+            }
+            return false;
+        }
+
     }  // namespace
 
     bool isHexadecimalIntegerLiteral(std::string_view integerLiteral) {
@@ -1271,6 +1315,26 @@ namespace sqlite2orm {
         return digits.size() > limit.size() || (digits.size() == limit.size() && std::string_view(digits) > limit);
     }
 
+    bool numericLiteralGeneratesInfinity(std::string_view numericLiteral) {
+        // SQLite reads every hex literal as a signed 64-bit integer and refuses a seventeenth
+        // digit, so no value of one is ever past the range of a double.
+        return !isHexadecimalIntegerLiteral(numericLiteral) && std::isinf(decimalLiteralDoubleValue(numericLiteral));
+    }
+
+    std::string realLiteralToCpp(std::string_view realLiteral) {
+        if (numericLiteralGeneratesInfinity(realLiteral)) {
+            return std::string(kInfinityCppExpression);
+        }
+        // A value too small for a double rounds to a zero, which is the value SQLite reads as
+        // well — `SELECT 1e-400` answers 0.0 — and which C++ warns about in the same breath as an
+        // overflow (`floating constant truncated to zero`). A literal written as a zero keeps its
+        // own spelling: there is nothing rounded about it.
+        if (decimalLiteralDoubleValue(realLiteral) == 0.0 && significandIsNonZero(realLiteral)) {
+            return "0.0";
+        }
+        return numericLiteralToCpp(realLiteral);
+    }
+
     std::string integerLiteralToCpp(std::string_view integerLiteral) {
         // A hexadecimal literal denotes the same number in both languages, but a decimal one with
         // leading zeros does not: SQLite reads `010` as 10, C++ as octal 8, and `0009` does not
@@ -1298,6 +1362,11 @@ namespace sqlite2orm {
         // unsigned constant, and `99999999999999999999` does not fit in any integer type at all,
         // so the fractional part turns it into the double SQLite computes.
         if (integerLiteralExceedsInt64(significant)) {
+            // Far enough past the int64 range the double runs out too — a 1 followed by 309 zeros
+            // is an Inf to SQLite — and C++ has no literal for that value either.
+            if (numericLiteralGeneratesInfinity(significant)) {
+                return std::string(kInfinityCppExpression);
+            }
             return numericLiteralToCpp(significant) + ".0";
         }
         return numericLiteralToCpp(significant);
@@ -2024,28 +2093,7 @@ namespace sqlite2orm {
                 // above is the only one it has; anything else here is not a number at all.
                 return std::nullopt;
             }
-            // `std::strtod` reads the radix character of the current `LC_NUMERIC`, which a host
-            // embedding this library leaves wherever its own startup put it, so the `.` SQLite
-            // spells a literal with is rewritten to whatever that locale expects. Without it a
-            // locale that separates with a comma stops the parse at the `.`, and `1.0e400` reads
-            // back as a finite 1, which is the answer this predicate rests on not getting.
-            const std::string_view radix = std::localeconv()->decimal_point;
-            std::string digits;
-            digits.reserve(text.size());
-            for (char character: text) {
-                // The `_` separators SQLite allows between digits carry no value.
-                if (character == '_') {
-                    continue;
-                }
-                if (character == '.') {
-                    digits += radix;
-                } else {
-                    digits += character;
-                }
-            }
-            // Overflowing to an infinity is `strtod`'s own answer and the one the caller asks
-            // about; a stream extraction would report a failure and the largest finite double.
-            return sign * std::strtod(digits.c_str(), nullptr);
+            return sign * decimalLiteralDoubleValue(text);
         }
 
         /**

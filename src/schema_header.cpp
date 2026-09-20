@@ -313,13 +313,11 @@ namespace sqlite2orm {
 
             const std::vector<const CreateTableNode*> sortedTables = topoSortTables(tableNodes);
 
+            // The includes stand in front of everything the header holds, but whether `<limits>`
+            // is among them is only known once it is all generated: a literal past the range of a
+            // double is spelled `std::numeric_limits<double>::infinity()`. So the body is built
+            // first and the prologue is put in front of it at the end.
             std::ostringstream oss;
-            oss << "#pragma once\n\n"
-                   "#include <sqlite_orm/sqlite_orm.h>\n"
-                   "#include <cstdint>\n"
-                   "#include <optional>\n"
-                   "#include <string>\n"
-                   "#include <vector>\n\n";
 
             // The struct declarations are collected apart from the rest of the header because what
             // has to stand in front of them is only known once they are all generated: a reflected
@@ -568,9 +566,19 @@ namespace sqlite2orm {
                 }
             }
 
+            std::string prologue = "#pragma once\n\n"
+                                   "#include <sqlite_orm/sqlite_orm.h>\n"
+                                   "#include <cstdint>\n";
+            if (gen.context().spelledInfinity) {
+                prologue += "#include <limits>\n";
+            }
+            prologue += "#include <optional>\n"
+                        "#include <string>\n"
+                        "#include <vector>\n\n";
+
             ungeneratableTables = gen.context().ungeneratableTables;
             ungeneratableViews = gen.context().ungeneratableViews;
-            return CodeGenResult{oss.str(),
+            return CodeGenResult{prologue + oss.str(),
                                  std::move(allDecisionPoints),
                                  std::move(allWarnings),
                                  {},

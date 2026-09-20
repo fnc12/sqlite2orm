@@ -191,6 +191,53 @@ TEST_CASE("codegen: integer literal beyond int64 becomes a double") {
     REQUIRE(generate("SELECT 9223372036854775808;") == "auto rows = storage.select(9223372036854775808.0);");
 }
 
+// A literal past the range of a double is an Inf to SQLite — `SELECT 9e999` answers Inf — while
+// [lex.fcon] makes the same spelling ill-formed in C++: g++ 13.3 warns `floating constant exceeds
+// range of 'double'` under `-Woverflow`, which a consumer building the generated code with
+// `-Werror` reads as an error. `std::numeric_limits<double>::infinity()` is that value spelled in
+// a way C++ accepts. The largest finite double keeps its own spelling. Checked against sqlite3 3.51.
+TEST_CASE("codegen: real literal past the double range becomes an infinity") {
+    REQUIRE(generate("9e999") == "std::numeric_limits<double>::infinity()");
+    REQUIRE(generate("1e309") == "std::numeric_limits<double>::infinity()");
+    REQUIRE(generate("1.0e400") == "std::numeric_limits<double>::infinity()");
+    REQUIRE(generate("1.7976931348623159e308") == "std::numeric_limits<double>::infinity()");
+    REQUIRE(generate("9e99_9") == "std::numeric_limits<double>::infinity()");
+    REQUIRE(generate("1.7976931348623157e308") == "1.7976931348623157e308");
+    REQUIRE(generate("1e308") == "1e308");
+    REQUIRE(generate("SELECT 9e999;") == "auto rows = storage.select(std::numeric_limits<double>::infinity());");
+    // The sign stands on the value, and a minus in front of an infinity is one C++ spells too.
+    REQUIRE(generate("SELECT -9e999;") == "auto rows = storage.select(-std::numeric_limits<double>::infinity());");
+}
+
+// A decimal integer far enough past the int64 range runs out of double as well: a 1 followed by
+// 309 zeros is an Inf to SQLite, so the `.0` that carries the rest of the range cannot carry this
+// one. One zero less and the value is 1.0e+308, which a double holds.
+TEST_CASE("codegen: integer literal past the double range becomes an infinity") {
+    REQUIRE(generate(std::string("1") + std::string(309, '0')) == "std::numeric_limits<double>::infinity()");
+    REQUIRE(generate(std::string(310, '9')) == "std::numeric_limits<double>::infinity()");
+    REQUIRE(generate(std::string("1") + std::string(308, '0')) == "1" + std::string(308, '0') + ".0");
+}
+
+// The other end of the range warns the same way: g++ 13.3 answers `1e-400` with `floating constant
+// truncated to zero`. The zero it is truncated to is the value SQLite reads as well — `SELECT
+// 1e-400` answers 0.0 — so the generated literal is that zero. A subnormal is a value a double
+// still holds, and a literal written as a zero was never rounded to one, so both keep their
+// spelling. What the value is, is read the way a compiler reads it: `2.5e-324` rounds up to the
+// smallest subnormal rather than down to a zero, and g++ takes that spelling without a word.
+// Checked against sqlite3 3.51.
+TEST_CASE("codegen: real literal below the double range becomes a zero") {
+    REQUIRE(generate("1e-400") == "0.0");
+    REQUIRE(generate("1e-500") == "0.0");
+    REQUIRE(generate("1e-330") == "0.0");
+    REQUIRE(generate("1e-40_0") == "0.0");
+    REQUIRE(generate("4.9e-324") == "4.9e-324");
+    REQUIRE(generate("1e-320") == "1e-320");
+    REQUIRE(generate("0.0e999") == "0.0e999");
+    REQUIRE(generate("0.0") == "0.0");
+    REQUIRE(generate("0.000") == "0.000");
+    REQUIRE(generate("SELECT 1e-400;") == "auto rows = storage.select(0.0);");
+}
+
 // SQLite wraps a hex literal around into a signed 64-bit integer, so `0xFFFFFFFFFFFFFFFF` is -1
 // and `0x8000000000000000` is -9223372036854775808. C++ gives the same spelling the unsigned type
 // it fits in, where it would mean 18446744073709551615, so the cast brings the value back.

@@ -23,6 +23,7 @@ namespace {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <iostream>\n"
+                   "#include <limits>\n"
                    "#include <memory>\n"
                    "#include <optional>\n"
                    "\n"
@@ -1161,7 +1162,9 @@ TEST_CASE("runtime: a sign folded through a unary plus keeps the whole int64") {
 // libsqlite3 3.45.1 answers, the version this project links. `9e999` is an infinity the literal's
 // own text carries, the shape the magnitude bound above it cannot answer for. The last four are the
 // counter-check: an infinity of its own is a REAL SQLite carries back as it is, and arithmetic that
-// cannot reach one is left plain and reads back as it always did.
+// cannot reach one is left plain and reads back as it always did. C++ has no literal for the value
+// `9e999` names, so it reaches the generated code as `std::numeric_limits<double>::infinity()`,
+// which is what these rows run.
 TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads the NULL back") {
     const std::vector<std::string> statements{
         generate("SELECT 0 * (1e300 * 1e300);"),
@@ -1175,18 +1178,20 @@ TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads 
         generate("SELECT 0 * 1e300;"),
         generate("SELECT 1.5 + 2.5;"),
     };
-    REQUIRE(statements == std::vector<std::string>{
-                              "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));",
-                              "auto rows = storage.select(as_optional(c(0.0) * (c(1e300) * 1e300)));",
-                              "auto rows = storage.select(as_optional(c(1e300) * 1e300 - c(1e300) * 1e300));",
-                              "auto rows = storage.select(as_optional(c(1e300) * 1e300 / (c(1e300) * 1e300)));",
-                              "auto rows = storage.select(as_optional(c(9e999) - 9e999));",
-                              "auto rows = storage.select(as_optional(c(0) * 9e999));",
-                              "auto rows = storage.select(c(1e300) * 1e300);",
-                              "auto rows = storage.select(9e999);",
-                              "auto rows = storage.select(c(0) * 1e300);",
-                              "auto rows = storage.select(c(1.5) + 2.5);",
-                          });
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));",
+                "auto rows = storage.select(as_optional(c(0.0) * (c(1e300) * 1e300)));",
+                "auto rows = storage.select(as_optional(c(1e300) * 1e300 - c(1e300) * 1e300));",
+                "auto rows = storage.select(as_optional(c(1e300) * 1e300 / (c(1e300) * 1e300)));",
+                "auto rows = storage.select(as_optional(c(std::numeric_limits<double>::infinity()) - "
+                "std::numeric_limits<double>::infinity()));",
+                "auto rows = storage.select(as_optional(c(0) * std::numeric_limits<double>::infinity()));",
+                "auto rows = storage.select(c(1e300) * 1e300);",
+                "auto rows = storage.select(std::numeric_limits<double>::infinity());",
+                "auto rows = storage.select(c(0) * 1e300);",
+                "auto rows = storage.select(c(1.5) + 2.5);",
+            });
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "inf", "inf", "0", "4"});
 }

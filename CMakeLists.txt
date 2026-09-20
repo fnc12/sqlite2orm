@@ -176,6 +176,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/codegen_tests_pragma.cpp
         tests/codegen_tests_placeholders.cpp
         tests/codegen_tests_savepoint.cpp
+        tests/corpus_tests.cpp
         tests/validator_tests.cpp
         tests/process_tests.cpp
         tests/ast_lifetime_tests.cpp
@@ -205,6 +206,16 @@ if(SQLITE2ORM_BUILD_TESTS)
         SQLITE2ORM_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(sqlite2orm_tests PRIVATE sqlite2orm_lib Catch2::Catch2WithMain)
     add_test(NAME sqlite2orm_tests COMMAND sqlite2orm_tests)
+
+    # The corpus cases are hidden (`[.corpus]`), so the run above skips them: each compiles, links
+    # and runs a program around a whole generated schema, and the set grows with every schema worth
+    # watching. They get a test of their own, which can then be run -- or left out -- by name.
+    #
+    # The name keeps the `sqlite2orm_tests` prefix on purpose: CI selects the unit tests with
+    # `-R "sqlite2orm_tests|sqlite2orm_cli"`, so the corpus runs on every pull request without a
+    # job of its own. It costs seconds against that job's minutes; give it a job when it no longer
+    # does, and rename it then, since a job selecting it would no longer want the prefix.
+    add_test(NAME sqlite2orm_tests_corpus COMMAND sqlite2orm_tests "[corpus]")
 
     if(UNIX)
         if(SQLITE2ORM_GIT_EXECUTABLE)

@@ -167,7 +167,12 @@ TEST_CASE("a configure without git says so instead of blaming the headers") {
 // (FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS) keeps whatever sits there. Saying so here costs one
 // assertion; leaving it unsaid costs a round of blaming the change under test for a compile error
 // inside a generated program.
-TEST_CASE("the sqlite_orm headers under test are the pinned revision") {
+//
+// The revision compared is the one cmake read after populating the headers, so this is what the
+// tree was configured with and not necessarily what it holds right now: a checkout moved by hand
+// after that configure is invisible here until the next one. Everything that moves the headers as
+// part of a build goes through a configure, which is what makes the snapshot worth having.
+TEST_CASE("the sqlite_orm headers this build was configured with were the pinned revision") {
     const std::string_view configuredRevision = SQLITE2ORM_TEST_SQLITE_ORM_REVISION;
     const std::string_view populatedRevision = SQLITE2ORM_TEST_SQLITE_ORM_HEAD;
     const std::string_view sourceDirectory = SQLITE2ORM_TEST_SQLITE_ORM_SOURCE_DIR;

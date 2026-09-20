@@ -29,7 +29,9 @@ note_of() {
 }
 
 pinned="eb77998ef5e27350b25977b061e46e202742ecc8"
-git="/usr/bin/git"
+# The note only ever asks whether a git was found, never runs one, so a stand-in says more here
+# than a path that would read like the answer depends on which git this machine has.
+git="a-git-was-found"
 # A directory that is there but holds no .git is the case a copied header tree lands in; one that
 # is not there at all is what removing a populated dependency leaves behind, and the note tells
 # them apart rather than reporting the first cause that fits.

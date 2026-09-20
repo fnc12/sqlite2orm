@@ -1,12 +1,15 @@
 #include <sqlite2orm/schema_header.h>
 
 #include <sqlite2orm/ast.h>
+#include <sqlite2orm/token_stream.h>
+#include <sqlite2orm/tokenizer.h>
 
 #include "codegen_context.h"
 #include "codegen_utils.h"
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <optional>
 #include <queue>
 #include <set>
@@ -121,10 +124,136 @@ namespace sqlite2orm {
             return ordered;
         }
 
-        /** The DDL keyword behind a `sqlite_master` type, for a warning that reads like the SQL. */
-        std::string_view createStatementLabel(std::string_view masterType) {
+        /**
+         *  The suffixes FTS5 gives the tables it keeps its index in. SQLite decides that a table
+         *  belongs to a module by its name alone: `sqlite3ShadowTableName()` cuts the name at its
+         *  LAST underscore, looks the part in front up as a virtual table and asks that module's
+         *  `xShadowName` about the part behind, which for FTS5 is this list, compared without
+         *  regard to case.
+         */
+        constexpr std::string_view fts5ShadowTableSuffixes[] = {"config", "content", "data", "docsize", "idx"};
+
+        /**
+         *  Whether SQLite keeps this name for itself. Every name spelled `sqlite_...` belongs to
+         *  the engine — `sqlite_sequence` behind AUTOINCREMENT and `sqlite_stat1` behind ANALYZE
+         *  are the two an ordinary database hands out — and no schema of a user's own can hold
+         *  one: sqlite3 3.51 answers `CREATE TABLE "sqlite_foo"(x)` with "object name reserved for
+         *  internal use" whatever the case and the quoting, and refuses an index, a view and a
+         *  trigger under such a name just as flatly. A storage holding one could therefore never
+         *  create it — sync_schema() would stop right there — and writing to `sqlite_sequence`
+         *  through it would take the bookkeeping of every AUTOINCREMENT key with it.
+         */
+        [[nodiscard]] bool isReservedSqliteName(std::string_view name) {
+            return normalizeSqlIdentifier(name).rfind("sqlite_", 0) == 0;
+        }
+
+        /**
+         *  The module behind a `sqlite_master` row when that row is a `CREATE VIRTUAL TABLE`, and
+         *  nothing for any other statement. It is read off the tokens rather than off the AST
+         *  because an AST is only there for a statement the whole pipeline carried through, and
+         *  ordinary FTS5 DDL does not get that far: `CREATE VIRTUAL TABLE mail USING fts5(subject,
+         *  sender UNINDEXED)` names a column option FTS5 documents, SQLite hands module arguments
+         *  to the module verbatim instead of parsing them, and this parser reads them as
+         *  expressions, so the statement fails to parse — as another one fails to validate or to
+         *  generate. Losing the module name there would lose the shadow tables behind it with it,
+         *  which is the whole of the symptom. Only the tokenizer ever cuts the text.
+         */
+        [[nodiscard]] std::optional<std::string> virtualTableModuleName(std::string_view sql) {
+            std::vector<Token> tokens;
+            try {
+                tokens = Tokenizer{}.tokenize(sql);
+            } catch (const TokenizeError&) {
+                return std::nullopt;
+            }
+            TokenStream stream;
+            stream.reset(std::move(tokens));
+            if (!stream.match(TokenType::kwCreate)) {
+                return std::nullopt;
+            }
+            if (stream.check(TokenType::kwTemp) || stream.check(TokenType::kwTemporary)) {
+                stream.advanceToken();
+            }
+            if (!stream.match(TokenType::kwVirtual) || !stream.match(TokenType::kwTable)) {
+                return std::nullopt;
+            }
+            if (stream.check(TokenType::kwIf)) {
+                stream.advanceToken();
+                if (!stream.match(TokenType::kwNot) || !stream.match(TokenType::kwExists)) {
+                    return std::nullopt;
+                }
+            }
+            if (!stream.isColumnNameToken()) {
+                return std::nullopt;
+            }
+            stream.advanceToken();
+            if (stream.match(TokenType::dot)) {
+                if (!stream.isColumnNameToken()) {
+                    return std::nullopt;
+                }
+                stream.advanceToken();
+            }
+            if (!stream.match(TokenType::kwUsing) || !stream.isColumnNameToken()) {
+                return std::nullopt;
+            }
+            return normalizeSqlIdentifier(stream.current().value);
+        }
+
+        /**
+         *  The tables FTS5 keeps its own index in, keyed by their normalized name and mapped to the
+         *  virtual table they belong to. They are ordinary `CREATE TABLE` rows of `sqlite_master`
+         *  and nothing in their SQL says whose they are, so the whole schema is needed to tell them
+         *  apart from a table of the same shape a user wrote. A schema holding no FTS5 table at all
+         *  is answered after one pass over the rows.
+         */
+        [[nodiscard]] std::unordered_map<std::string, std::string>
+        fts5ShadowTables(const ProcessSqliteSchemaResult& schema) {
+            std::unordered_map<std::string, std::string> fts5TableNames;
+            std::vector<const SchemaStatementMeta*> plainTables;
+            for (const SchemaStatementResult& statementResult: schema.statements) {
+                if (statementResult.meta.type != "table") {
+                    continue;
+                }
+                const std::optional<std::string> moduleName = virtualTableModuleName(statementResult.meta.sql);
+                if (!moduleName) {
+                    plainTables.push_back(&statementResult.meta);
+                } else if (*moduleName == "fts5") {
+                    fts5TableNames.emplace(normalizeSqlIdentifier(statementResult.meta.name),
+                                           normTableName(statementResult.meta.name));
+                }
+            }
+
+            std::unordered_map<std::string, std::string> shadowTables;
+            if (fts5TableNames.empty()) {
+                return shadowTables;
+            }
+            for (const SchemaStatementMeta* meta: plainTables) {
+                const std::string normalizedName = normalizeSqlIdentifier(meta->name);
+                const size_t lastUnderscore = normalizedName.rfind('_');
+                if (lastUnderscore == std::string::npos) {
+                    continue;
+                }
+                const std::string_view suffix = std::string_view{normalizedName}.substr(lastUnderscore + 1);
+                if (std::find(std::begin(fts5ShadowTableSuffixes), std::end(fts5ShadowTableSuffixes), suffix) ==
+                    std::end(fts5ShadowTableSuffixes)) {
+                    continue;
+                }
+                const auto virtualTable = fts5TableNames.find(normalizedName.substr(0, lastUnderscore));
+                if (virtualTable != fts5TableNames.end()) {
+                    shadowTables.emplace(normalizedName, virtualTable->second);
+                }
+            }
+            return shadowTables;
+        }
+
+        /**
+         *  The DDL keyword behind a `sqlite_master` row, for a warning that reads like the SQL that
+         *  is in the database. `sqlite_master` files a virtual table under the type `table` like
+         *  any other, so the SQL is what tells the two apart.
+         */
+        std::string_view createStatementLabel(const SchemaStatementMeta& meta) {
+            const std::string_view masterType = meta.type;
             if (masterType == "table") {
-                return "CREATE TABLE";
+                return virtualTableModuleName(meta.sql) ? "CREATE VIRTUAL TABLE" : "CREATE TABLE";
             }
             if (masterType == "view") {
                 return "CREATE VIEW";
@@ -156,6 +285,7 @@ namespace sqlite2orm {
          */
         CodeGenResult generateHeaderPass(const ProcessSqliteSchemaResult& schema,
                                          const CodeGenPolicy* policy,
+                                         const std::unordered_map<std::string, std::string>& shadowTables,
                                          std::set<std::string>& ungeneratableTables,
                                          std::set<std::string>& ungeneratableViews) {
             CodeGenerator gen;
@@ -163,9 +293,16 @@ namespace sqlite2orm {
             gen.context().ungeneratableTables = ungeneratableTables;
             gen.context().ungeneratableViews = ungeneratableViews;
 
+            // Whether SQLite, not sqlite_orm, owns what a row created: its own `sqlite_...` object
+            // or a table a module keeps its index in. Either way the row is left out of the storage
+            // before anything is generated, and the name gets no C++ type.
+            const auto sqliteOwnsStatement = [&shadowTables](const SchemaStatementMeta& meta) {
+                return isReservedSqliteName(meta.name) || shadowTables.count(normalizeSqlIdentifier(meta.name)) != 0;
+            };
+
             std::vector<const CreateTableNode*> tableNodes;
             for (const SchemaStatementResult& statementResult: schema.statements) {
-                if (!statementResult.pipeline.ok()) {
+                if (!statementResult.pipeline.ok() || sqliteOwnsStatement(statementResult.meta)) {
                     continue;
                 }
                 if (const auto* createTable = dynamic_cast<const CreateTableNode*>(
@@ -197,6 +334,14 @@ namespace sqlite2orm {
             std::vector<CodegenWarning> allWarnings;
             std::vector<std::string> allComments;
 
+            const auto markNameOfStatement = [&gen](const SchemaStatementMeta& meta) {
+                if (meta.type == "view") {
+                    gen.context().markUngeneratableView(meta.name);
+                } else if (meta.type == "table") {
+                    gen.context().markUngeneratableTable(meta.name);
+                }
+            };
+
             // A statement the pipeline could not carry through — a parse error, a rule sqlite_orm has
             // no spelling for, a codegen error — is left out of the storage instead of taking the whole
             // schema with it. SQLite only compiles a view or trigger body when it is used, so it stores
@@ -206,6 +351,31 @@ namespace sqlite2orm {
             // ungeneratable table has none, so it is marked here — before anything is generated — and
             // the existing funnel drops whatever rests on it.
             for (const SchemaStatementResult& statementResult: schema.statements) {
+                // What SQLite owns is decided before what this pipeline could do with it: a
+                // reserved `sqlite_...` object and a table a module keeps its index in are left out
+                // whether or not they parsed, and saying they "did not generate" would name the
+                // wrong reason for a row that generates perfectly well.
+                if (isReservedSqliteName(statementResult.meta.name)) {
+                    markNameOfStatement(statementResult.meta);
+                    allWarnings.push_back(std::string(createStatementLabel(statementResult.meta)) + " `" +
+                                          statementResult.meta.name +
+                                          "` is reserved for SQLite's own use and is not merged into "
+                                          "make_storage()");
+                    continue;
+                }
+                // A table FTS5 keeps its index in is the module's own storage: writing to it
+                // through a storage corrupts the index, and sync_schema() would go around the
+                // module. It is left out of make_storage() exactly as the virtual table it
+                // belongs to is, and its name gets no C++ type either, so whatever rests on it
+                // goes with it.
+                const auto shadowTable = shadowTables.find(normalizeSqlIdentifier(statementResult.meta.name));
+                if (shadowTable != shadowTables.end()) {
+                    gen.context().markUngeneratableTable(statementResult.meta.name);
+                    allWarnings.push_back("CREATE TABLE `" + statementResult.meta.name +
+                                          "` is an internal FTS5 table of virtual table `" + shadowTable->second +
+                                          "` and is not merged into make_storage()");
+                    continue;
+                }
                 if (statementResult.pipeline.ok()) {
                     // A virtual table is never merged into make_storage() either — sqlite_orm spells
                     // it `make_virtual_table`, which no storage of a plain schema holds — so its name
@@ -217,12 +387,8 @@ namespace sqlite2orm {
                     }
                     continue;
                 }
-                if (statementResult.meta.type == "view") {
-                    gen.context().markUngeneratableView(statementResult.meta.name);
-                } else if (statementResult.meta.type == "table") {
-                    gen.context().markUngeneratableTable(statementResult.meta.name);
-                }
-                allWarnings.push_back(std::string(createStatementLabel(statementResult.meta.type)) + " `" +
+                markNameOfStatement(statementResult.meta);
+                allWarnings.push_back(std::string(createStatementLabel(statementResult.meta)) + " `" +
                                       statementResult.meta.name +
                                       "` did not generate and is not merged into make_storage()");
             }
@@ -256,7 +422,7 @@ namespace sqlite2orm {
             // selecting from it go with it. SQLite creates nothing before the view it names, so a
             // dropped view is always marked before anything resting on it is generated.
             for (const SchemaStatementResult& statementResult: schema.statements) {
-                if (!statementResult.pipeline.ok()) {
+                if (!statementResult.pipeline.ok() || sqliteOwnsStatement(statementResult.meta)) {
                     continue;
                 }
                 const AstNode* root = statementResult.pipeline.parseResult.astNodePointer.get();
@@ -423,9 +589,13 @@ namespace sqlite2orm {
         // statements, so this settles; a schema with nothing left out is generated exactly once.
         std::set<std::string> ungeneratableTables;
         std::set<std::string> ungeneratableViews;
+        // Which tables FTS5 owns is read from the schema, not from what a pass generated, so it is
+        // the same answer every pass and is worked out once.
+        const std::unordered_map<std::string, std::string> shadowTables = fts5ShadowTables(schema);
         for (;;) {
             const size_t knownBefore = ungeneratableTables.size();
-            CodeGenResult result = generateHeaderPass(schema, policy, ungeneratableTables, ungeneratableViews);
+            CodeGenResult result =
+                generateHeaderPass(schema, policy, shadowTables, ungeneratableTables, ungeneratableViews);
             if (ungeneratableTables.size() == knownBefore) {
                 return result;
             }

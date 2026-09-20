@@ -840,12 +840,14 @@ TEST_CASE("codegen: a string PRAGMA value reaches the reader of a PRAGMA that ha
                                           7}},
                           {}});
     // `sqlite3DecOrHexToI64()` reads the whole text, hexadecimal included, and the limit tops out
-    // at 0xfffffffe.
+    // at 0xfffffffe — which is past the `int` sqlite_orm's setter takes, so the call that would
+    // carry it is the one generated below instead.
     REQUIRE(generateFull("PRAGMA max_page_count = '0xFFFFFFFF';") ==
-            CodeGenResult{"storage.pragma.max_page_count(4294967294);",
+            CodeGenResult{"/* PRAGMA max_page_count */",
                           {},
                           {CodegenWarning{"PRAGMA max_page_count = '0xFFFFFFFF': SQLite reads a PRAGMA value as "
-                                          "text, so it sets 4294967294",
+                                          "text, so it sets 4294967294, which sqlite_orm's max_page_count(int) "
+                                          "cannot pass on",
                                           SourceLocation{1, 25},
                                           12}},
                           {}});
@@ -899,6 +901,60 @@ TEST_CASE("codegen: a vertical tab bounds a max_page_count value where a blank d
                                           "it sets 1",
                                           SourceLocation{1, 22},
                                           5}},
+                          {}});
+}
+
+// sqlite_orm declares every one of these setters as taking an `int`, and `max_page_count` is the
+// one reader here that reaches past that range: it clamps at 0xfffffffe, so the upper half of the
+// limits SQLite accepts cannot be asked for through the setter at all. Naming the number in the
+// warning and generating a call that narrows it silently would be a diagnostic the code
+// contradicts, so the statement generates nothing and the warning says why. Every number below is
+// what sqlite3 3.51.0 sets the limit to for the SQL beside it.
+TEST_CASE("codegen: a max_page_count past an int32 generates no call at all") {
+    REQUIRE(generateFull("PRAGMA max_page_count = '2147483647';") ==
+            CodeGenResult{"storage.pragma.max_page_count(2147483647);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '2147483647': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 2147483647",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '2147483648';") ==
+            CodeGenResult{"/* PRAGMA max_page_count */",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '2147483648': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 2147483648, which sqlite_orm's max_page_count(int) "
+                                          "cannot pass on",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+    // Clamped down to 0xfffffffe, and still past an int32.
+    REQUIRE(generateFull("PRAGMA max_page_count = '4294967295';") ==
+            CodeGenResult{"/* PRAGMA max_page_count */",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '4294967295': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 4294967294, which sqlite_orm's max_page_count(int) "
+                                          "cannot pass on",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+    // The two readers that answer a small number of their own never reach here: `getSafetyLevel()`
+    // returns a u8 and `getAutoVacuum()` clamps to 0..2, so both keep generating their call.
+    REQUIRE(generateFull("PRAGMA synchronous = '4294967295';") ==
+            CodeGenResult{"storage.pragma.synchronous(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = '4294967295': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 0",
+                                          SourceLocation{1, 22},
+                                          12}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA auto_vacuum = '4294967295';") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA auto_vacuum = '4294967295': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 0",
+                                          SourceLocation{1, 22},
+                                          12}},
                           {}});
 }
 
@@ -1428,11 +1484,16 @@ TEST_CASE("codegen: a generated name PRAGMA value sets what SQLite sets") {
                                generateCall("PRAGMA auto_vacuum = ON;"),
                            }) == std::vector<std::string>{"1", "2", "0"});
     // The name `max_page_count` refuses leaves the 1000 in place, while the string it reads as a
-    // number sets it.
+    // number sets it. The last two are the edge of the `int` the setter takes: 2147483647 lands,
+    // and the limit past it generates a placeholder instead of a call, so the 1000 stays — which
+    // is the whole point of generating no call, because a call narrowing 2147483648 to an `int`
+    // compiles without a word from the compiler and then sets nothing either way.
     REQUIRE(pragmaSettings("max_page_count",
                            1000,
                            {
                                generateCall("PRAGMA max_page_count = full;"),
                                generateCall("PRAGMA max_page_count = '12';"),
-                           }) == std::vector<std::string>{"1000", "12"});
+                               generateCall("PRAGMA max_page_count = '2147483647';"),
+                               generateCall("PRAGMA max_page_count = '2147483648';"),
+                           }) == std::vector<std::string>{"1000", "12", "2147483647", "1000"});
 }

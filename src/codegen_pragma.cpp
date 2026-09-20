@@ -5,6 +5,9 @@
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
+#include <cstdint>
+#include <limits>
+
 namespace sqlite2orm {
 
     namespace {
@@ -50,6 +53,19 @@ namespace sqlite2orm {
             std::size_t foldedSigns = 0;
             const AstNode* literal = withoutFoldedSigns(valueNode, foldedSigns);
             return literal != nullptr && dynamic_cast<const IntegerLiteralNode*>(literal) != nullptr;
+        }
+
+        /**
+         *  Whether the number a PRAGMA's reader answers reaches sqlite_orm's setter unchanged.
+         *  Every one of those setters is declared as taking an `int` — `void max_page_count(int)` —
+         *  so a value past that range never gets there: the narrowing at the call is silent, and
+         *  the limit the program ends up asking for is not the one SQLite reads. `max_page_count`
+         *  is the only one of these readers that reaches past an int32 at all, clamping at
+         *  0xfffffffe, so the upper half of the limits SQLite accepts has no call to go out in.
+         */
+        bool pragmaSetterTakes(std::int64_t readValue) {
+            return readValue >= std::numeric_limits<std::int32_t>::min() &&
+                   readValue <= std::numeric_limits<std::int32_t>::max();
         }
 
     }  // namespace
@@ -207,11 +223,21 @@ namespace sqlite2orm {
                                                                        : sqlitePragmaMaxPageCount(value->text);
                 const std::string prefix =
                     "PRAGMA " + name + " = " + value->sqlText + ": SQLite reads a PRAGMA value as text, so ";
-                warnings.push_back(
-                    pragmaValueWarning(name == "max_page_count" && readValue == 0
-                                           ? prefix + "this one leaves the limit alone and only reports it"
-                                           : prefix + "it sets " + std::to_string(readValue),
-                                       *value));
+                if (name == "max_page_count" && readValue == 0) {
+                    warnings.push_back(
+                        pragmaValueWarning(prefix + "this one leaves the limit alone and only reports it", *value));
+                    return CodeGenResult{"storage.pragma." + name + "(0);", {}, std::move(warnings)};
+                }
+                // Naming the number in the warning and then handing it to a setter that cannot
+                // hold it would be a diagnostic the generated code contradicts, so the statement
+                // generates nothing at all rather than a call that silently sets something else.
+                if (!pragmaSetterTakes(readValue)) {
+                    warnings.push_back(pragmaValueWarning(prefix + "it sets " + std::to_string(readValue) +
+                                                              ", which sqlite_orm's " + name + "(int) cannot pass on",
+                                                          *value));
+                    return CodeGenResult{"/* PRAGMA " + name + " */", {}, std::move(warnings)};
+                }
+                warnings.push_back(pragmaValueWarning(prefix + "it sets " + std::to_string(readValue), *value));
                 return CodeGenResult{"storage.pragma." + name + "(" + std::to_string(readValue) + ");",
                                      {},
                                      std::move(warnings)};

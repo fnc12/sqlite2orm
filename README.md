@@ -125,6 +125,25 @@ is put back by removing its `-subbuild` directory and configuring again with
 `FETCHCONTENT_FULLY_DISCONNECTED` off — that is the step that clones it; removing the headers
 themselves leaves the sub-build stamped as done and nothing repopulates.
 
+## The corpus of live schemas
+
+`tests/corpus/` holds real schemas — Chinook, Northwind and two taken from sqlite_orm's own test
+suite — each next to the seed rows the tests run it with, and each naming where it came from and
+under what licence. `tests/corpus_tests.cpp` runs the whole product path on every one of them:
+build a database from the schema, generate the storage header for it, generate the code for a set
+of queries, compile and link the lot against sqlite_orm, run it, and require that every row equals
+both the literal written in the test and what SQLite itself answers on the same database. A query
+the generator gets wrong today is pinned as `knownBad` with the card that tracks it, so the corpus
+stays usable while the bug waits and goes red the day it is fixed.
+
+Compiling and linking a program per schema costs seconds apiece, and the corpus grows with every
+schema worth watching, so these cases are hidden from the default run and have a ctest name — and
+a CI job — of their own:
+
+```bash
+ctest --test-dir build -R sqlite2orm_corpus
+```
+
 ## Code style
 
 The tree is formatted with **clang-format 19** using the `.clang-format` copied from

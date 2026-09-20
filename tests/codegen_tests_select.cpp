@@ -285,16 +285,17 @@ TEST_CASE("codegen: warnings from a subquery LIMIT expression reach the statemen
                           {"COLLATE NOCASE on expressions is not directly supported in sqlite_orm codegen"}});
 }
 
-// `limit()` with an empty argument list does not compile, so the unmapped subquery has to be said
-// out loud instead of being emitted as clean-looking code with nothing on stderr.
+// `limit()` with an empty argument list does not compile, and neither does the placeholder that
+// stands for the subquery, so the statement is left out whole and the warnings are what say why.
 TEST_CASE("codegen: an unmapped subquery in LIMIT is warned about") {
     REQUIRE(generateFull("SELECT name FROM users LIMIT (SELECT a FROM users GROUP BY a)") ==
-            CodeGenResult{"auto rows = storage.select(&Users::name, limit(/* (SELECT ...) */));",
-                          {columnRefStyleDp(1, "&Users::name")},
+            CodeGenResult{{},
+                          {},
                           {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
                                           SourceLocation{1, 30},
                                           32},
-                           "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
+                           "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
+                           kStatementNotGenerated}});
 }
 
 TEST_CASE("codegen: SELECT with GROUP BY") {

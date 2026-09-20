@@ -1943,27 +1943,39 @@ TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") 
     REQUIRE(compound.comments == std::vector<std::string>{});
 
     // The operand of an IN is generated before its subquery turns out not to be mapped, and the
-    // placeholder replaces the whole predicate, the operand included.
+    // placeholder replaces the whole predicate, the operand included. The placeholder stands in an
+    // expression slot, so the statement goes with it and the comment has nothing left to explain.
     const CodeGenResult inOperand = generateFull("SELECT b FROM t WHERE -a IN (SELECT b FROM t GROUP BY b);");
-    REQUIRE(inOperand.code == "auto rows = storage.select(&T::b, where(/* IN (SELECT ...) */));");
+    REQUIRE(inOperand.code.empty());
     REQUIRE(inOperand.comments == std::vector<std::string>{});
 
-    // What the statement generated around the thrown-away fragment keeps the comments it recorded.
+    // The statement around such a placeholder goes the same way, comments and all — what the
+    // generators hand each other still carries them, which is the channel the entry point below is.
     const CodeGenResult aroundPlaceholder =
         generateFull("SELECT 1 - (b LIKE 'x') FROM t WHERE a IN (SELECT -a FROM t UNION SELECT -a FROM t GROUP BY a);");
-    REQUIRE(aroundPlaceholder.code ==
-            "auto rows = storage.select(as_optional(c(1) - cast<int64_t>(like(&T::b, \"x\"))), "
-            "where(/* IN (SELECT ...) */));");
-    REQUIRE(aroundPlaceholder.comments == std::vector<std::string>{kPredicateCastComment});
+    REQUIRE(aroundPlaceholder.code.empty());
+    REQUIRE(aroundPlaceholder.comments == std::vector<std::string>{});
+
+    Tokenizer tokenizer;
+    Parser parser;
+    auto parseResult = parser.parse(
+        tokenizer.tokenize("SELECT 1 - (b LIKE 'x') FROM t WHERE a IN (SELECT -a FROM t UNION SELECT -a FROM t "
+                           "GROUP BY a);"));
+    REQUIRE(parseResult);
+    CodeGenerator nodeGenerator;
+    const CodeGenResult node = nodeGenerator.generateNode(*parseResult.astNodePointer);
+    REQUIRE(node.code == "auto rows = storage.select(as_optional(c(1) - cast<int64_t>(like(&T::b, \"x\"))), "
+                         "where(/* IN (SELECT ...) */));");
+    REQUIRE(node.comments == std::vector<std::string>{kPredicateCastComment});
 
     // The same comment on both sides of the line: the negation of the trigger's WHEN clause is
     // generated and keeps it, and the negation of the step that is replaced by a placeholder does
-    // not — a thrown-away fragment loses its own comments and no more than those.
+    // not — a thrown-away fragment loses its own comments and no more than those. The trigger the
+    // two stand in holds a placeholder in a `begin(...)` argument, so it is not generated at all.
     const CodeGenResult triggerWhen = generateFull(
         "CREATE TRIGGER tr AFTER INSERT ON t WHEN -a BEGIN SELECT -a FROM t UNION SELECT a FROM t GROUP BY a; END;");
-    REQUIRE(triggerWhen.code == "make_trigger(\"tr\", after().insert().on<T>().when((c(0) - c(&T::a)))"
-                                ".begin(/* trigger step not mapped to sqlite_orm */));");
-    REQUIRE(triggerWhen.comments == std::vector<std::string>{kZeroMinusComment});
+    REQUIRE(triggerWhen.code.empty());
+    REQUIRE(triggerWhen.comments == std::vector<std::string>{});
 
     // The two DDL statements reach their placeholder by another road: the clauses around the one
     // that gives the statement up generate and record as usual, and the parts producer then hands

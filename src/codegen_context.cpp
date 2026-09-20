@@ -256,6 +256,10 @@ namespace sqlite2orm {
         return this->comments.size();
     }
 
+    GenerationMarks CodeGeneratorContext::mark() const {
+        return GenerationMarks{this->commentMark(), this->placeholderMark()};
+    }
+
     std::vector<std::string> CodeGeneratorContext::commentsRecordedSince(size_t mark) const {
         // A take in between leaves fewer than `mark` behind: the statement the comments belong to
         // has carried them off already, so there is nothing left for this node to report.
@@ -275,6 +279,43 @@ namespace sqlite2orm {
     void CodeGeneratorContext::discardCommentsSince(size_t mark) {
         if (mark < this->comments.size()) {
             this->comments.erase(this->comments.begin() + static_cast<std::ptrdiff_t>(mark), this->comments.end());
+        }
+    }
+
+    void CodeGeneratorContext::recordPlaceholder(PlaceholderSlot slot) {
+        this->generatedPlaceholders.push_back(slot);
+    }
+
+    size_t CodeGeneratorContext::placeholderMark() const {
+        return this->generatedPlaceholders.size();
+    }
+
+    bool CodeGeneratorContext::placeheldSince(size_t mark) const {
+        return mark < this->generatedPlaceholders.size();
+    }
+
+    bool CodeGeneratorContext::placeheldInExpressionSince(size_t mark) const {
+        for (size_t index = mark; index < this->generatedPlaceholders.size(); ++index) {
+            if (this->generatedPlaceholders[index] == PlaceholderSlot::expression) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool CodeGeneratorContext::placeheldAsStatementSince(size_t mark) const {
+        for (size_t index = mark; index < this->generatedPlaceholders.size(); ++index) {
+            if (this->generatedPlaceholders[index] == PlaceholderSlot::statement) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void CodeGeneratorContext::discardPlaceholdersSince(size_t mark) {
+        if (mark < this->generatedPlaceholders.size()) {
+            this->generatedPlaceholders.erase(this->generatedPlaceholders.begin() + static_cast<std::ptrdiff_t>(mark),
+                                              this->generatedPlaceholders.end());
         }
     }
 
@@ -314,6 +355,7 @@ namespace sqlite2orm {
         this->formsWithoutDefaultConstructor.clear();
         this->customFunctions.clear();
         this->comments.clear();
+        this->generatedPlaceholders.clear();
     }
 
 }  // namespace sqlite2orm

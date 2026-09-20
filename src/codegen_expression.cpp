@@ -390,7 +390,10 @@ namespace sqlite2orm {
                 // The error already stops the whole statement from being generated, but the
                 // placeholder goes through the same funnel as every other one: what stands in the
                 // code says where it came from, whichever channel carries it out.
-                return unsupportedPlaceholder("unsupported IS expression", std::move(message), *binaryOp);
+                return unsupportedPlaceholder(this->context,
+                                              "unsupported IS expression",
+                                              std::move(message),
+                                              *binaryOp);
             }
             auto leftResult = this->coordinator.generateNode(*binaryOp->lhs);
             auto rightResult = this->coordinator.generateNode(*binaryOp->rhs);
@@ -894,7 +897,8 @@ namespace sqlite2orm {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*subqueryNode->select);
             if (sub.code.empty()) {
                 auto placeholder =
-                    unsupportedPlaceholder("(SELECT ...)",
+                    unsupportedPlaceholder(this->context,
+                                           "(SELECT ...)",
                                            "scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
                                            *subqueryNode);
                 placeholder.decisionPoints = std::move(sub.decisionPoints);
@@ -907,7 +911,8 @@ namespace sqlite2orm {
         } else if (auto* existsNode = dynamic_cast<const ExistsNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*existsNode->select);
             if (sub.code.empty()) {
-                auto placeholder = unsupportedPlaceholder("EXISTS (SELECT ...)",
+                auto placeholder = unsupportedPlaceholder(this->context,
+                                                          "EXISTS (SELECT ...)",
                                                           "EXISTS (SELECT ...) is not mapped to sqlite_orm codegen",
                                                           *existsNode);
                 placeholder.decisionPoints = std::move(sub.decisionPoints);
@@ -1004,7 +1009,8 @@ namespace sqlite2orm {
                 carried.decisionPoints = std::move(operandResult.decisionPoints);
                 carried.warnings = std::move(operandResult.warnings);
                 this->context.discardCommentsSince(inCommentMark);
-                return unsupportedPlaceholder(operandResult.code + " IN " + inNode->tableName,
+                return unsupportedPlaceholder(this->context,
+                                              operandResult.code + " IN " + inNode->tableName,
                                               "IN table-name is not supported in sqlite_orm codegen",
                                               *inNode,
                                               std::move(carried));
@@ -1028,7 +1034,8 @@ namespace sqlite2orm {
                     carried.decisionPoints = std::move(decisionPoints);
                     carried.warnings = std::move(inSubWarnings);
                     this->context.discardCommentsSince(inCommentMark);
-                    return unsupportedPlaceholder("IN (SELECT ...)",
+                    return unsupportedPlaceholder(this->context,
+                                                  "IN (SELECT ...)",
                                                   "IN (SELECT ...) is not mapped to sqlite_orm codegen",
                                                   *inNode,
                                                   std::move(carried));
@@ -1240,7 +1247,7 @@ namespace sqlite2orm {
             } else {
                 // A marker with nothing behind it — a lone `:`, which SQLite refuses outright —
                 // names no variable, so a placeholder stands where the value would have gone.
-                return unsupportedPlaceholder(paramStr, bindParameterMessage, *bindParam);
+                return unsupportedPlaceholder(this->context, paramStr, bindParameterMessage, *bindParam);
             }
             return CodeGenResult{cppVar, {}, {bindParameterMessage(cppVar)}};
         } else if (auto* collateNode = dynamic_cast<const CollateNode*>(&astNode)) {

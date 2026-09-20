@@ -12,6 +12,13 @@ using namespace sqlite2orm;
 
 namespace codegen_test_helpers {
 
+    /**
+     *  What a statement whose code would hold a placeholder standing in an expression slot warns
+     *  instead of handing out a header that cannot be built.
+     */
+    inline const std::string kStatementNotGenerated =
+        "a construct in this statement is not mapped to sqlite_orm, so the statement is not generated";
+
     std::string generate(std::string_view sql);
     CodeGenResult generateFull(std::string_view sql);
     /**

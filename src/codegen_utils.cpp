@@ -977,7 +977,7 @@ namespace sqlite2orm {
 
     size_t underlineLengthOf(std::string_view sourceText) {
         const size_t lineBreak = sourceText.find('\n');
-        return lineBreak == std::string_view::npos ? sourceText.size() : lineBreak;
+        return utf8CharacterCount(lineBreak == std::string_view::npos ? sourceText : sourceText.substr(0, lineBreak));
     }
 
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
@@ -2098,7 +2098,9 @@ namespace sqlite2orm {
                    "`double`, so an INTEGER result past 2^53 comes back rounded (9223372036854775807 "
                    "reads back as 9223372036854775808)";
         // The operator token is what its node is located at, and it is what the message names.
-        return CodegenWarning{std::move(message), arithmetic.node->location, arithmetic.operatorText.size()};
+        return CodegenWarning{std::move(message),
+                              arithmetic.node->location,
+                              underlineLengthOf(arithmetic.operatorText)};
     }
 
     bool selectResultNeedsAsOptional(const AstNode& astNode) {

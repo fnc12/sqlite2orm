@@ -17,14 +17,24 @@ namespace sqlite2orm {
      */
     struct CodegenWarning {
         std::string message;
-        /** Start of the relevant SQL token; `length` characters from here should be underlined. */
+        /**
+         *  Start of the relevant SQL token; `length` characters from here should be underlined.
+         *  `column` counts characters, not bytes, so a consumer holding the SQL as text underlines
+         *  from it directly — see `length`.
+         */
         std::optional<SourceLocation> location;
         /**
-         *  Number of characters to underline from `location` (0 when unknown). The span stays on
-         *  the line `location` names: a token written across lines — a quoted name or a string
-         *  literal holding a newline, keywords split by one — is underlined up to the end of that
-         *  line only, so a consumer drawing `length` characters from `location` within the line
-         *  never runs past its end.
+         *  Number of characters to underline from `location` (0 when unknown). A character is a
+         *  UTF-8 one: `«ü»` is three characters wherever it stands, both in this length and in the
+         *  column of `location`, so SQL that is not all ASCII — SQLite takes non-ASCII in bare
+         *  identifiers as readily as in quoted names and string literals — underlines the same
+         *  text a consumer measuring characters expects. Whoever indexes the SQL by byte instead
+         *  has to convert.
+         *
+         *  The span stays on the line `location` names: a token written across lines — a quoted
+         *  name or a string literal holding a newline, keywords split by one — is underlined up to
+         *  the end of that line only, so a consumer drawing `length` characters from `location`
+         *  within the line never runs past its end.
          */
         size_t length = 0;
 

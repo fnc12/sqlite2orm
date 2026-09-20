@@ -1069,18 +1069,29 @@ TEST_CASE("codegen: NOT BETWEEN") {
 // The cast gives the two bounds one type; the values it carries are pinned in
 // "runtime: BETWEEN bounds of two integer widths read back as SQLite computes them".
 TEST_CASE("codegen: BETWEEN bounds of two integer widths are widened to one") {
-    REQUIRE(generate("a BETWEEN 1 AND 3000000000") == "between(&User::a, static_cast<int64_t>(1), 3000000000)");
-    REQUIRE(generate("a BETWEEN 3000000000 AND 1") == "between(&User::a, 3000000000, static_cast<int64_t>(1))");
-    REQUIRE(generate("a BETWEEN -1 AND 3000000000") == "between(&User::a, static_cast<int64_t>(-1), 3000000000)");
-    REQUIRE(generate("a NOT BETWEEN 1 AND 3000000000") == "!between(&User::a, static_cast<int64_t>(1), 3000000000)");
+    // The cast goes on both bounds rather than on the narrower one: a 64-bit constant is given
+    // the first of `long` and `long long` it fits in, which is the `long` that is not the
+    // `long long` an `int64_t` is on macOS, so casting only the `int` leaves two types behind.
+    REQUIRE(generate("a BETWEEN 1 AND 3000000000") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(3000000000))");
+    REQUIRE(generate("a BETWEEN 3000000000 AND 1") ==
+            "between(&User::a, static_cast<int64_t>(3000000000), static_cast<int64_t>(1))");
+    REQUIRE(generate("a BETWEEN -1 AND 3000000000") ==
+            "between(&User::a, static_cast<int64_t>(-1), static_cast<int64_t>(3000000000))");
+    REQUIRE(generate("a NOT BETWEEN 1 AND 3000000000") ==
+            "!between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(3000000000))");
     // TRUE is the integer 1 for SQLite, so a `bool` bound widens with the rest of them.
     REQUIRE(generate("a BETWEEN 1 AND TRUE") ==
             "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(true))");
     // A hex literal C++ would make unsigned already carries the cast that types it, and the other
-    // bound joins it there.
+    // bound joins it there rather than taking a second cast of its own.
     REQUIRE(generate("a BETWEEN 1 AND 0xFFFFFFFF") ==
             "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(0xFFFFFFFF))");
-    // Bounds that are one type already are left as written, whichever width that type is.
+    // A 64-bit constant and a cast hex literal are 64 bits wide both, and still two types: the
+    // `long` of the one is not the `int64_t` of the other wherever `int64_t` is a `long long`.
+    REQUIRE(generate("a BETWEEN 3000000000 AND 0xFFFFFFFF") ==
+            "between(&User::a, static_cast<int64_t>(3000000000), static_cast<int64_t>(0xFFFFFFFF))");
+    // Bounds that are one type already are left as written, whichever type that is.
     REQUIRE(generate("a BETWEEN 1 AND 10") == "between(&User::a, 1, 10)");
     REQUIRE(generate("a BETWEEN 3000000000 AND 4000000000") == "between(&User::a, 3000000000, 4000000000)");
     REQUIRE(generate("a BETWEEN 0xFFFFFFFF AND 0xFFFFFFFF") ==
@@ -1134,6 +1145,17 @@ TEST_CASE("codegen: BETWEEN bounds with no common C++ type warn") {
     result = generateFull("a BETWEEN 1 AND 99999999999999999999");
     REQUIRE(result.code == "between(&User::a, 1, 99999999999999999999.0)");
     REQUIRE(result.warnings == boundsWarning("an `int`", "a `double`", 36));
+
+    // The two 64-bit integer types are named apart, because they are two types: a constant past
+    // the `int` range is given the first of `long` and `long long` it fits in, while the cast a
+    // hex literal carries names `int64_t` itself.
+    result = generateFull("a BETWEEN 3000000000 AND 2.5");
+    REQUIRE(result.code == "between(&User::a, 3000000000, 2.5)");
+    REQUIRE(result.warnings == boundsWarning("a 64-bit integer constant", "a `double`", 28));
+
+    result = generateFull("a BETWEEN 0xFFFFFFFF AND 'x'");
+    REQUIRE(result.code == "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), \"x\")");
+    REQUIRE(result.warnings == boundsWarning("an `int64_t`", "a `const char*`", 28));
 }
 
 // Bounds whose type this cannot know are left alone rather than warned about: two columns are

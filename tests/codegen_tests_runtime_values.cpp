@@ -1198,6 +1198,11 @@ TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads 
 // column's affinity to a bound with none of its own, and '1' compares against the text '1' an
 // INTEGER bound becomes rather than against the '1.0' a REAL one would. Every value here is what
 // sqlite3 3.45.1 and 3.51 answer for the same SQL.
+//
+// Casting the narrower bound alone is not enough, which only a platform where `int64_t` is a
+// `long long` shows: a 64-bit constant is a `long` there, and `3000000000` next to
+// `static_cast<int64_t>(1)` is two types again. So the cast goes on both, and the last pair here
+// is the one where neither bound is an `int` and the two are still not one type.
 TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite computes them") {
     const std::vector<std::string> statements{
         generate("SELECT a BETWEEN 1 AND 3000000000;"),
@@ -1205,17 +1210,24 @@ TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite com
         generate("SELECT a BETWEEN 1 AND TRUE;"),
         generate("SELECT a BETWEEN 1 AND 0xFFFFFFFF;"),
         generate("SELECT a BETWEEN -1 AND 3000000000;"),
+        generate("SELECT a BETWEEN 3000000000 AND 0xFFFFFFFF;"),
     };
     REQUIRE(statements ==
             std::vector<std::string>{
-                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), 3000000000)));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(3000000000))));",
                 "auto rows = storage.select(as_optional(between(&User::a, 3000000000, 4000000000)));",
                 "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
                 "static_cast<int64_t>(true))));",
                 "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
                 "static_cast<int64_t>(0xFFFFFFFF))));",
-                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(-1), 3000000000)));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(-1), "
+                "static_cast<int64_t>(3000000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(3000000000), "
+                "static_cast<int64_t>(0xFFFFFFFF))));",
             });
-    REQUIRE(selectedValues(statements, "int64_t", "2147483648") == std::vector<std::string>{"1", "0", "0", "1", "1"});
-    REQUIRE(selectedValues(statements, "std::string", "\"1\"") == std::vector<std::string>{"1", "0", "1", "1", "1"});
+    REQUIRE(selectedValues(statements, "int64_t", "2147483648") ==
+            std::vector<std::string>{"1", "0", "0", "1", "1", "0"});
+    REQUIRE(selectedValues(statements, "std::string", "\"1\"") ==
+            std::vector<std::string>{"1", "0", "1", "1", "1", "0"});
 }

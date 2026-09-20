@@ -900,8 +900,12 @@ namespace sqlite2orm {
                 case BetweenBoundsForm::asWritten:
                     break;
                 case BetweenBoundsForm::widenedToInt64: {
+                    // Only a bound the generated code already casts carries the type `int64_t`
+                    // itself; a constant past the `int` range is typed by its magnitude, as the
+                    // `long` that is not the `long long` an `int64_t` is on macOS. So every bound
+                    // but that one is cast, rather than the narrower of the two.
                     const auto widened = [](const AstNode& bound, std::string code) {
-                        return generatedValueCppType(bound) == GeneratedValueCppType::integer64
+                        return generatedValueCppType(bound) == GeneratedValueCppType::integer64Cast
                                    ? code
                                    : "static_cast<int64_t>(" + code + ")";
                     };

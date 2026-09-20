@@ -398,8 +398,14 @@ namespace sqlite2orm {
     enum class GeneratedValueCppType {
         /** `1`, `0xFF` — a constant an `int` holds. */
         integer32,
-        /** `3000000000`, `static_cast<int64_t>(0xFFFFFFFF)` — a constant that needs 64 bits. */
-        integer64,
+        /**
+         *  `3000000000` — a constant past the `int` range, which C++ gives the first of `long` and
+         *  `long long` it fits in. Which of the two that is differs by platform, and the two are
+         *  distinct types wherever both are 64 bits wide, so this is not `int64_t`.
+         */
+        integer64Literal,
+        /** `static_cast<int64_t>(0xFFFFFFFF)` — a constant the generated code already types. */
+        integer64Cast,
         /** `true` / `false`. */
         boolean,
         /** `2.5`, and the `99999999999999999999.0` an integer literal past the int64 range becomes. */
@@ -414,8 +420,9 @@ namespace sqlite2orm {
     /**
      *  The C++ type the code generated for `astNode` has, for the nodes `generatesBoundValue`
      *  answers for; `std::nullopt` for every other node, whose type only the compiler knows.
-     *  Integers come in two widths because C++ types a constant by its magnitude rather than by
-     *  the column it is compared against: `1` is an `int` and `3000000000` a 64-bit integer.
+     *  Integers come in three types because C++ types a constant by its magnitude rather than by
+     *  the column it is compared against: `1` is an `int` and `3000000000` a 64-bit integer that
+     *  is still not the `int64_t` a hex literal is already cast to.
      */
     std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode);
     /**
@@ -425,7 +432,7 @@ namespace sqlite2orm {
     enum class BetweenBoundsForm {
         /** Both bounds generate the one type already, or nothing here can tell that they do not. */
         asWritten,
-        /** Integer bounds of different widths, which a cast on each of them widens to one type. */
+        /** Integer bounds of different types, which a cast on each of them gives the one type. */
         widenedToInt64,
         /** Types with nothing to widen to; codegen warns, and the generated code does not compile. */
         noCommonType,

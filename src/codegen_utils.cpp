@@ -398,9 +398,11 @@ namespace sqlite2orm {
         "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
         "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
         "constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a "
-        "64-bit constant and does not compile. The cast gives both the one type and leaves the "
-        "values alone — SQLite carries every INTEGER as a signed 64-bit number anyway, TRUE and "
-        "FALSE among them.";
+        "64-bit constant and does not compile. The cast goes on every bound that is not already "
+        "an `int64_t`, rather than on the narrower one: the type a 64-bit constant is given is "
+        "`long` where an `int64_t` is a `long long`, and the two are distinct types even where "
+        "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
+        "signed 64-bit number anyway, TRUE and FALSE among them.";
 
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
@@ -1423,10 +1425,11 @@ namespace sqlite2orm {
                 // Of the rest, everything past `0xFFFFFFFF` — nine significant digits on — is a
                 // `long` there, and an eight-digit literal that stayed signed fits an `int`.
                 if (hexLiteralIsUnsignedInCpp(integerLiteral)) {
-                    return GeneratedValueCppType::integer64;
+                    return GeneratedValueCppType::integer64Cast;
                 }
-                return significantDigits(integerLiteral.substr(2)).size() <= 8 ? GeneratedValueCppType::integer32
-                                                                               : GeneratedValueCppType::integer64;
+                return significantDigits(integerLiteral.substr(2)).size() <= 8
+                           ? GeneratedValueCppType::integer32
+                           : GeneratedValueCppType::integer64Literal;
             }
             const std::string digits = significantDigits(integerLiteral);
             // A decimal literal past the int64 range is a REAL for SQLite and is spelled with a
@@ -1434,15 +1437,15 @@ namespace sqlite2orm {
             if (integerLiteralExceedsInt64(digits)) {
                 return GeneratedValueCppType::real;
             }
-            return integerLiteralExceedsInt32(digits) ? GeneratedValueCppType::integer64
+            return integerLiteralExceedsInt32(digits) ? GeneratedValueCppType::integer64Literal
                                                       : GeneratedValueCppType::integer32;
         }
 
         bool isIntegerCppType(GeneratedValueCppType type) {
             // A `bool` is one of these: SQLite's TRUE is the integer 1, and the cast that widens
             // the constant carries that value unchanged.
-            return type == GeneratedValueCppType::integer32 || type == GeneratedValueCppType::integer64 ||
-                   type == GeneratedValueCppType::boolean;
+            return type == GeneratedValueCppType::integer32 || type == GeneratedValueCppType::integer64Literal ||
+                   type == GeneratedValueCppType::integer64Cast || type == GeneratedValueCppType::boolean;
         }
 
         /** True for a node generated as a `bindParamN` variable, whose type the caller declares. */
@@ -1498,7 +1501,7 @@ namespace sqlite2orm {
             if (*lowType == *highType) {
                 return BetweenBoundsForm::asWritten;
             }
-            // Two integer constants of different widths are the one case with a type to widen to:
+            // Two integer constants of different types are the one case with a type to widen to:
             // every INTEGER SQLite carries fits an int64, and a value bound as one is the value
             // bound as an `int` or as a `bool` — same storage class, same number.
             return isIntegerCppType(*lowType) && isIntegerCppType(*highType) ? BetweenBoundsForm::widenedToInt64
@@ -1531,7 +1534,9 @@ namespace sqlite2orm {
         switch (*type) {
             case GeneratedValueCppType::integer32:
                 return "an `int`";
-            case GeneratedValueCppType::integer64:
+            case GeneratedValueCppType::integer64Literal:
+                return "a 64-bit integer constant";
+            case GeneratedValueCppType::integer64Cast:
                 return "an `int64_t`";
             case GeneratedValueCppType::boolean:
                 return "a `bool`";

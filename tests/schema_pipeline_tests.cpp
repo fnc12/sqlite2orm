@@ -1033,7 +1033,16 @@ TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C+
 // Checked against sqlite3 3.51.
 TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelled as an infinity") {
     TempDbFile file{makeTempDbPath()};
-    execSql(file.path, "CREATE TABLE inf_t (a REAL DEFAULT 9e999, b REAL DEFAULT 1e-400, c REAL CHECK (c < 1e309));");
+    // The two statements after the one holding the infinity are there on purpose: `<limits>` is
+    // taken along by a flag the emitter sets, which is read once the whole schema is generated, so
+    // it has to outlive the `resetForGeneration()` a later statement starts with. The trigger is
+    // what makes that discriminating — a table is generated through `createTableParts()`, which
+    // does not reset, while an index and a trigger go through `CodeGenerator::generate()`, which
+    // does. Reset the flag there and this header loses its include, as a real schema would.
+    execSql(file.path,
+            "CREATE TABLE inf_t (a REAL DEFAULT 9e999, b REAL DEFAULT 1e-400, c REAL CHECK (c < 1e309));"
+            "CREATE TABLE tail_t (t TEXT);"
+            "CREATE TRIGGER tail_tr AFTER INSERT ON tail_t BEGIN INSERT INTO tail_t (t) VALUES ('x'); END;");
 
     SqliteSchemaReader reader(file.path.string());
     const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
@@ -1051,6 +1060,9 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
                                              "    std::optional<double> a;\n"
                                              "    std::optional<double> b;\n"
                                              "    std::optional<double> c;\n"
+                                             "};\n\n"
+                                             "struct TailT {\n"
+                                             "    std::optional<std::string> t;\n"
                                              "};\n\n\n"
                                              "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                                              "    using namespace sqlite_orm;\n"
@@ -1060,7 +1072,12 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
                                              "default_value(std::numeric_limits<double>::infinity())),\n"
                                              "        make_column(\"b\", &InfT::b, default_value(0.0)),\n"
                                              "        make_column(\"c\", &InfT::c, "
-                                             "check(c(&InfT::c) < std::numeric_limits<double>::infinity()))));\n"
+                                             "check(c(&InfT::c) < std::numeric_limits<double>::infinity()))),\n"
+                                             "        make_table(\"tail_t\",\n"
+                                             "        make_column(\"t\", &TailT::t)),\n"
+                                             "        make_trigger(\"tail_tr\", "
+                                             "after().insert().on<TailT>().begin(insert(into<TailT>(), "
+                                             "columns(&TailT::t), values(std::make_tuple(\"x\"))))));\n"
                                              "}\n"),
                                  {},
                                  {}};

@@ -91,6 +91,9 @@ namespace sqlite2orm {
          *  C++ has no floating literal for. The type of the node does not say it — `9e999` and
          *  `1e300` are both real literals — so the emitter answers here, and the generator of a
          *  whole header reads it to take `<limits>` along.
+         *  Unlike the fields around it this one outlives `resetForGeneration()` on purpose: the
+         *  header is read once every statement of a schema has been generated, so clearing it per
+         *  statement would drop the include of every schema whose infinity is not in the last one.
          */
         bool spelledInfinity = false;
         /**
@@ -329,6 +332,10 @@ namespace sqlite2orm {
         std::string inferTypeFromNode(const AstNode& node) const;
         std::string generatePrefix() const;
 
+        /**
+         *  Clears what one statement records for the next one. `spelledInfinity` is left alone:
+         *  it answers a reader that runs once the whole schema is generated — see the field.
+         */
         void resetForGeneration();
     };
 

@@ -591,5 +591,25 @@ namespace sqlite2orm {
     bool sqlitePragmaBoolean(std::string_view valueText);
     /** Whether `valueText` is one of the boolean spellings SQLite documents (`0`/`1`, `ON`/`OFF`, …). */
     bool isCanonicalPragmaBooleanText(std::string_view valueText);
+    /**
+     *  SQLite's `getSafetyLevel(z, 0, 1)`, which is how a value reaches `PRAGMA synchronous`: a text
+     *  starting with a digit is `sqlite3Atoi()` cut to the low byte the function returns, the names
+     *  `off`/`no`/`false` are 0, `on`/`yes`/`true` are 1, `full` is 2 and `extra` is 3, and anything
+     *  else — a name it does not know included — is the PRAGMA's default 1.
+     */
+    std::int32_t sqlitePragmaSafetyLevel(std::string_view valueText);
+    /**
+     *  SQLite's `getAutoVacuum()`, which is how a value reaches `PRAGMA auto_vacuum`: the names
+     *  `none`/`full`/`incremental` are 0/1/2, and everything else is `sqlite3Atoi()` when that lands
+     *  in 0..2 and 0 when it does not.
+     */
+    std::int32_t sqlitePragmaAutoVacuum(std::string_view valueText);
+    /**
+     *  What `PRAGMA max_page_count = <valueText>` sets the limit to: `sqlite3DecOrHexToI64()` over
+     *  the whole text, clamped to 0..0xfffffffe. Zero for a text it refuses — a name, `'12abc'`,
+     *  one past the int64 range — and zero means "leave the limit alone and just report it", which
+     *  is what SQLite does with such a value.
+     */
+    std::int64_t sqlitePragmaMaxPageCount(std::string_view valueText);
 
 }  // namespace sqlite2orm

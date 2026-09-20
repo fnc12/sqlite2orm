@@ -1066,6 +1066,68 @@ TEST_CASE("parser: JSON ->> operator") {
                                          {}));
 }
 
+// SQLite's grammar puts `||`, `->` and `->>` on one left-associative level (`%left CONCAT PTR`),
+// tighter than `* / %` and everything below it. Checked against sqlite3 3.51: `SELECT '{"x' ||
+// '":5}' ->> 'x'` answers 5, so the concatenation is what the arrow reads from, while the right
+// operand on its own (`SELECT '":5}' ->> 'x'`) is malformed JSON.
+TEST_CASE("parser: JSON arrows share the concatenation level") {
+    SECTION("concatenation first: a || b ->> c") {
+        auto parseResult = parse("a || b ->> c");
+        REQUIRE(requireNode<BinaryOperatorNode>(parseResult) ==
+                BinaryOperatorNode(BinaryOperator::jsonArrow2,
+                                   std::make_unique<BinaryOperatorNode>(BinaryOperator::concatenate,
+                                                                        makeNode<ColumnRefNode>("a"),
+                                                                        makeNode<ColumnRefNode>("b"),
+                                                                        SourceLocation{}),
+                                   makeNode<ColumnRefNode>("c"),
+                                   {}));
+    }
+    SECTION("concatenation first: a || b -> c") {
+        auto parseResult = parse("a || b -> c");
+        REQUIRE(requireNode<BinaryOperatorNode>(parseResult) ==
+                BinaryOperatorNode(BinaryOperator::jsonArrow,
+                                   std::make_unique<BinaryOperatorNode>(BinaryOperator::concatenate,
+                                                                        makeNode<ColumnRefNode>("a"),
+                                                                        makeNode<ColumnRefNode>("b"),
+                                                                        SourceLocation{}),
+                                   makeNode<ColumnRefNode>("c"),
+                                   {}));
+    }
+    SECTION("arrow first: a ->> b || c") {
+        auto parseResult = parse("a ->> b || c");
+        REQUIRE(requireNode<BinaryOperatorNode>(parseResult) ==
+                BinaryOperatorNode(BinaryOperator::concatenate,
+                                   std::make_unique<BinaryOperatorNode>(BinaryOperator::jsonArrow2,
+                                                                        makeNode<ColumnRefNode>("a"),
+                                                                        makeNode<ColumnRefNode>("b"),
+                                                                        SourceLocation{}),
+                                   makeNode<ColumnRefNode>("c"),
+                                   {}));
+    }
+    SECTION("arrows are left-associative: a -> b ->> c") {
+        auto parseResult = parse("a -> b ->> c");
+        REQUIRE(requireNode<BinaryOperatorNode>(parseResult) ==
+                BinaryOperatorNode(BinaryOperator::jsonArrow2,
+                                   std::make_unique<BinaryOperatorNode>(BinaryOperator::jsonArrow,
+                                                                        makeNode<ColumnRefNode>("a"),
+                                                                        makeNode<ColumnRefNode>("b"),
+                                                                        SourceLocation{}),
+                                   makeNode<ColumnRefNode>("c"),
+                                   {}));
+    }
+    SECTION("tighter than multiply: a * b ->> c") {
+        auto parseResult = parse("a * b ->> c");
+        REQUIRE(requireNode<BinaryOperatorNode>(parseResult) ==
+                BinaryOperatorNode(BinaryOperator::multiply,
+                                   makeNode<ColumnRefNode>("a"),
+                                   std::make_unique<BinaryOperatorNode>(BinaryOperator::jsonArrow2,
+                                                                        makeNode<ColumnRefNode>("b"),
+                                                                        makeNode<ColumnRefNode>("c"),
+                                                                        SourceLocation{}),
+                                   {}));
+    }
+}
+
 // --- Bind parameters ---
 
 TEST_CASE("parser: bind parameter ?") {

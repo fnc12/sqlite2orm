@@ -65,12 +65,14 @@ namespace sqlite2orm {
                     return BinaryOperatorInfo{BinaryOperator::divide, 6};
                 case TokenType::percent:
                     return BinaryOperatorInfo{BinaryOperator::modulo, 6};
+                // SQLite's grammar puts `||`, `->` and `->>` on one left-associative level
+                // (`%left CONCAT PTR`), so `a || b ->> 'x'` reads as `(a || b) ->> 'x'`.
                 case TokenType::pipe2:
                     return BinaryOperatorInfo{BinaryOperator::concatenate, 7};
                 case TokenType::arrow:
-                    return BinaryOperatorInfo{BinaryOperator::jsonArrow, 8};
+                    return BinaryOperatorInfo{BinaryOperator::jsonArrow, 7};
                 case TokenType::arrow2:
-                    return BinaryOperatorInfo{BinaryOperator::jsonArrow2, 8};
+                    return BinaryOperatorInfo{BinaryOperator::jsonArrow2, 7};
                 default:
                     return std::nullopt;
             }

@@ -634,8 +634,9 @@ share one result type — so it needs a decision taken across the branches at on
 - [x] json_each(json, path)
 - [x] json_tree(json)
 - [x] json_tree(json, path)
-- [x] `->` operator → `json_extract<std::string>(lhs, rhs)` (codegen warning: JSON_EXTRACT answers the SQL value at the path where `->` answers the JSON text of it — `'{"a":"s"}' -> '$.a'` is `"s"` in SQLite and `s` here; sqlite_orm has no form for the operator)
-- [x] `->>` operator → `json_extract<std::string>(lhs, rhs)`, which SQLite answers value for value and storage class for storage class
+- [x] `->` operator → `json_extract<std::string>(lhs, path)` (codegen warning: JSON_EXTRACT answers the SQL value at the path where `->` answers the JSON text of it — `'{"a":"s"}' -> '$.a'` is `"s"` in SQLite and `s` here; sqlite_orm has no form for the operator)
+- [x] `->>` operator → `json_extract<std::string>(lhs, path)`, which SQLite answers value for value and storage class for storage class over the same path
+- [x] both arrows take an abbreviated path the JSON_EXTRACT call they are generated as does not, so the path the operand spells out is expanded the way SQLite expands it: `'x'` → `$.x`, `'a.b'` → `$."a.b"`, `'[1]'` → `$[1]`, `1` → `$[1]`, `-1` → `$[#-1]`, and a `$` path as written. A path operand SQLite only expands while it runs — a column, a bind parameter, an expression, or a literal it reads as a REAL or a BLOB — is left as written and reported (codegen warning: the call takes the operand as written, and SQLite refuses a path that does not start with `$`)
 
 ---
 

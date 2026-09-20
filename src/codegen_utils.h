@@ -33,6 +33,10 @@ namespace sqlite2orm {
     /** C++ variable name for the RAII guard of a savepoint (`sp 1` -> `sp_1_savepoint`). */
     std::string savepointGuardVariableName(std::string_view savepointName);
     std::string sqlStringToCpp(std::string_view sqlString);
+    /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
+    std::string sqlStringLiteralText(std::string_view literal);
+    /** `text` as a C++ string literal, quotes included. */
+    std::string cppStringLiteral(std::string_view text);
 
     std::string stripColumnAliasQuotes(std::string_view alias);
     bool isBuiltinColalias(std::string_view stripped);
@@ -120,11 +124,33 @@ namespace sqlite2orm {
      */
     std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName);
 
+    /** `"->"`, `"->>"` or an empty view for any other operator — the text a JSON arrow is written as. */
+    std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator);
+
     /**
      *  What a `->` generated as a JSON_EXTRACT call answers that `->` does not, underlined at
      *  `location`. sqlite_orm has no form for the operator itself.
      */
     CodegenWarning jsonTextArrowWarning(SourceLocation location);
+
+    /**
+     *  The report a JSON arrow carries whose path operand `jsonArrowPathExpansion` cannot expand,
+     *  underlined at the operator.
+     */
+    CodegenWarning jsonArrowPathNotExpandedWarning(const BinaryOperatorNode& arrow);
+
+    /**
+     *  The JSON path `X -> P` and `X ->> P` look P up under, for a P the operand spells out, and
+     *  nullopt for every other operand. The operators take an abbreviated path the JSON_EXTRACT
+     *  call they are generated as does not: SQLite expands an INTEGER operand into `$[N]` (and a
+     *  negative one into `$[#-N]`, counted from the right of the array), a text one starting with
+     *  `$` into itself, one of nothing but ASCII letters, digits and `_` into `$.label`, one
+     *  wrapped in brackets into `$[…]`, and every other one into `$."label"` — so
+     *  `'{"x":5}' ->> 'x'` is 5 while `json_extract('{"x":5}', 'x')` is the error `bad JSON path`.
+     *  Read off sqlite3 3.51 (`jsonExtractFunc`); an operand SQLite reads as a REAL or a BLOB is
+     *  left unexpanded, along with every operand that is not a literal at all.
+     */
+    std::optional<std::string> jsonArrowPathExpansion(const AstNode& pathOperand);
 
     /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from

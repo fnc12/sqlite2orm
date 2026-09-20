@@ -146,15 +146,27 @@ namespace sqlite2orm {
         return result;
     }
 
-    std::string sqlStringToCpp(std::string_view sqlString) {
-        auto content = sqlString.substr(1, sqlString.size() - 2);
-        std::string result = "\"";
+    std::string sqlStringLiteralText(std::string_view literal) {
+        if (literal.size() < 2) {
+            return std::string(literal);
+        }
+        const char quote = literal.front();
+        const std::string_view content = literal.substr(1, literal.size() - 2);
+        std::string result;
+        result.reserve(content.size());
         for (size_t index = 0; index < content.size(); ++index) {
-            char character = content[index];
-            if (character == '\'' && index + 1 < content.size() && content[index + 1] == '\'') {
-                result += '\'';
+            if (content[index] == quote && index + 1 < content.size() && content[index + 1] == quote) {
                 ++index;
-            } else if (character == '\\') {
+            }
+            result += content[index];
+        }
+        return result;
+    }
+
+    std::string cppStringLiteral(std::string_view text) {
+        std::string result = "\"";
+        for (const char character: text) {
+            if (character == '\\') {
                 result += "\\\\";
             } else if (character == '"') {
                 result += "\\\"";
@@ -170,6 +182,10 @@ namespace sqlite2orm {
         }
         result += '"';
         return result;
+    }
+
+    std::string sqlStringToCpp(std::string_view sqlString) {
+        return cppStringLiteral(sqlStringLiteralText(sqlString));
     }
 
     std::string stripColumnAliasQuotes(std::string_view alias) {
@@ -596,6 +612,17 @@ namespace sqlite2orm {
         return {};
     }
 
+    std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator) {
+        switch (binaryOperator) {
+            case BinaryOperator::jsonArrow:
+                return "->";
+            case BinaryOperator::jsonArrow2:
+                return "->>";
+            default:
+                return {};
+        }
+    }
+
     CodegenWarning jsonTextArrowWarning(SourceLocation location) {
         return CodegenWarning{"`->` is generated as a JSON_EXTRACT call, which answers the SQL value at the path "
                               "where `->` answers the JSON text of that value: a string comes back unquoted, and "
@@ -603,6 +630,15 @@ namespace sqlite2orm {
                               "operator itself",
                               location,
                               underlineLengthOf("->")};
+    }
+
+    CodegenWarning jsonArrowPathNotExpandedWarning(const BinaryOperatorNode& arrow) {
+        return CodegenWarning{"the path operand of a JSON arrow is not a text or an integer literal, so the `$` path "
+                              "SQLite expands it into cannot be spelled out here: the JSON_EXTRACT call the operator "
+                              "is generated as takes the operand as written, and SQLite refuses a path that does not "
+                              "start with `$` with `bad JSON path`",
+                              arrow.location,
+                              underlineLengthOf(jsonArrowOperatorText(arrow.binaryOperator))};
     }
 
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {
@@ -649,7 +685,8 @@ namespace sqlite2orm {
             case BinaryOperator::isNotDistinctFrom:
                 return {};
             // Both arrows are read back through the same call, which spells the result type
-            // `functionCallResultTypeArgument` names for it.
+            // `functionCallResultTypeArgument` names for it and looks up the path
+            // `jsonArrowPathExpansion` expands their right operand into.
             case BinaryOperator::jsonArrow:
                 return "json_extract";
             case BinaryOperator::jsonArrow2:
@@ -916,6 +953,23 @@ namespace sqlite2orm {
         bool hexLiteralIsUnsignedInCpp(std::string_view integerLiteral) {
             const std::string digits = significantDigits(integerLiteral.substr(2));
             return (digits.size() == 8 || digits.size() == 16) && digits.front() >= '8';
+        }
+
+        // The decimal text SQLite renders the value of an integer literal as, which is what its
+        // JSON path expansion is built from: a hexadecimal literal is a signed 64-bit integer
+        // there, `0xFFFFFFFFFFFFFFFF` wrapping around to -1, and a folded minus sign negates the
+        // magnitude the digits spell. The caller keeps a literal past the int64 range out: SQLite
+        // reads that one as a REAL, and a REAL is no array index.
+        std::string integerLiteralDecimalText(std::string_view integerLiteral, bool negated) {
+            const bool hexadecimal = isHexadecimalIntegerLiteral(integerLiteral);
+            const std::string digits = significantDigits(integerLiteral.substr(hexadecimal ? 2 : 0));
+            std::uint64_t magnitude = 0;
+            for (const char digit: digits) {
+                magnitude = magnitude * (hexadecimal ? 16 : 10) + static_cast<std::uint64_t>(hexDigitValue(digit));
+            }
+            const std::int64_t value =
+                negated ? static_cast<std::int64_t>(~magnitude + 1) : static_cast<std::int64_t>(magnitude);
+            return std::to_string(value);
         }
 
     }  // namespace
@@ -1247,6 +1301,56 @@ namespace sqlite2orm {
             return numericLiteralToCpp(significant) + ".0";
         }
         return numericLiteralToCpp(significant);
+    }
+
+    std::optional<std::string> jsonArrowPathExpansion(const AstNode& pathOperand) {
+        // A COLLATE and a unary plus stand for the value under them, which is the value the
+        // operator expands.
+        const AstNode& written = generatedOperandNode(pathOperand);
+        if (auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&written)) {
+            const std::string label = sqlStringLiteralText(stringLiteral->value);
+            if (!label.empty() && label.front() == '$') {
+                return label;
+            }
+            // A label of nothing but ASCII letters, digits and `_` needs no quoting, and an empty
+            // one takes this branch as well: `$.` is what SQLite builds for it, and what it then
+            // refuses as a bad JSON path — as it refuses the bare `''` the operator was written
+            // with, only naming the other of the two in the message.
+            const bool unquotable = std::all_of(label.begin(), label.end(), [](char character) {
+                return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'z') ||
+                       (character >= 'A' && character <= 'Z') || character == '_';
+            });
+            if (unquotable) {
+                return "$." + label;
+            }
+            if (label.size() >= 3 && label.front() == '[' && label.back() == ']') {
+                return "$" + label;
+            }
+            // The label goes in quoted and unescaped, exactly as SQLite pastes it in, so a label
+            // holding a quote of its own builds the same path here as it does there.
+            return "$.\"" + label + "\"";
+        }
+        if (auto* boolLiteral = dynamic_cast<const BoolLiteralNode*>(&written)) {
+            // `TRUE` and `FALSE` are the integers 1 and 0, and an integer is an array index.
+            return boolLiteral->value ? "$[1]" : "$[0]";
+        }
+        std::size_t foldedSigns = 0;
+        const AstNode& signless = *withoutFoldedSigns(written, foldedSigns);
+        auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&signless);
+        if (integerLiteral == nullptr) {
+            return std::nullopt;
+        }
+        const bool negated = foldedSigns % 2 != 0;
+        // Past the int64 range the literal is a REAL for SQLite, which expands as a label rather
+        // than as an index, spelled the way SQLite renders a REAL as text. That rendering is not
+        // reproduced here, so the operand is left to the caller to report.
+        if (integerLiteralExceedsInt64(integerLiteral->value, negated) ||
+            hexLiteralExceedsInt64(integerLiteral->value)) {
+            return std::nullopt;
+        }
+        const std::string decimal = integerLiteralDecimalText(integerLiteral->value, negated);
+        // SQLite counts a negative index from the right of the array, which `$[#-N]` spells.
+        return "$[" + std::string(decimal.front() == '-' ? "#" : "") + decimal + "]";
     }
 
     bool isNumericLiteral(const AstNode& astNode) {
@@ -2155,15 +2259,9 @@ namespace sqlite2orm {
         SourceLocation location;
         if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
             // An arrow is a call over the one path it was written with, whichever of the two it is.
-            switch (binaryOp->binaryOperator) {
-                case BinaryOperator::jsonArrow:
-                    writtenText = "->";
-                    break;
-                case BinaryOperator::jsonArrow2:
-                    writtenText = "->>";
-                    break;
-                default:
-                    return std::nullopt;
+            writtenText = jsonArrowOperatorText(binaryOp->binaryOperator);
+            if (writtenText.empty()) {
+                return std::nullopt;
             }
             location = binaryOp->location;
         } else if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
@@ -2466,28 +2564,6 @@ namespace sqlite2orm {
         }
         return std::nullopt;
     }
-
-    namespace {
-
-        /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
-        std::string sqlStringLiteralText(std::string_view literal) {
-            if (literal.size() < 2) {
-                return std::string(literal);
-            }
-            const char quote = literal.front();
-            const std::string_view content = literal.substr(1, literal.size() - 2);
-            std::string result;
-            result.reserve(content.size());
-            for (size_t index = 0; index < content.size(); ++index) {
-                if (content[index] == quote && index + 1 < content.size() && content[index + 1] == quote) {
-                    ++index;
-                }
-                result += content[index];
-            }
-            return result;
-        }
-
-    }  // namespace
 
     std::optional<std::int32_t> sqlitePragmaInt32(std::string_view valueText) {
         // `sqlite3GetInt32()` takes the sign off first and only then looks for a `0x` prefix, so a

@@ -504,9 +504,22 @@ namespace sqlite2orm {
                                            ? wrap(rightResult.code)
                                            : rightOperand;
 
+            // The JSON arrows expand the abbreviated path they are written with — a bare label
+            // into `$."label"`, an array index into `$[N]` — and the JSON_EXTRACT call they are
+            // generated as does not, so the expanded path is what the call is handed. An operand
+            // that cannot be expanded here goes in as written and is reported below.
+            std::string rightArgument = rightResult.code;
+            std::optional<std::string> arrowPath;
+            if (operandsBecomeCallArguments) {
+                arrowPath = jsonArrowPathExpansion(*binaryOp->rhs);
+                if (arrowPath) {
+                    rightArgument = cppStringLiteral(*arrowPath);
+                }
+            }
+
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
             std::string functionalCode = std::string(funcName) + std::string(functionCallResultTypeArgument(funcName)) +
-                                         "(" + leftResult.code + ", " + rightResult.code + ")";
+                                         "(" + leftResult.code + ", " + rightArgument + ")";
 
             auto op = binaryOperatorString(binaryOp->binaryOperator);
             std::string wrapLeftCode = wrappedLeft + std::string(op) + rightOperand;
@@ -568,10 +581,20 @@ namespace sqlite2orm {
                                std::make_move_iterator(rightResult.warnings.begin()),
                                std::make_move_iterator(rightResult.warnings.end()));
 
-            // `->>` is the JSON_EXTRACT call it is generated as, value for value and type for
-            // type; `->` is the JSON text of what that call answers, which sqlite_orm has no form
-            // for. The result type such a call is generated with is only read back where the call
-            // stands for a result column, and is reported there (`selectResultJsonExtractTypeWarning`).
+            // A path operand only SQLite can expand leaves the call looking up whatever the
+            // operand answers, which is the path the operator was written with rather than the
+            // one it stands for. A NULL path is the one operand that needs no expansion: SQLite
+            // answers NULL for it, and so does the generated call, which takes a NULL the same way.
+            if (operandsBecomeCallArguments && !arrowPath &&
+                !dynamic_cast<const NullLiteralNode*>(&generatedOperandNode(*binaryOp->rhs))) {
+                binWarnings.push_back(jsonArrowPathNotExpandedWarning(*binaryOp));
+            }
+
+            // `->>` over an expanded path is the JSON_EXTRACT call it is generated as, value for
+            // value and type for type; `->` is the JSON text of what that call answers, which
+            // sqlite_orm has no form for. The result type such a call is generated with is only
+            // read back where the call stands for a result column, and is reported there
+            // (`selectResultJsonExtractTypeWarning`).
             if (binaryOp->binaryOperator == BinaryOperator::jsonArrow) {
                 binWarnings.push_back(jsonTextArrowWarning(binaryOp->location));
             }

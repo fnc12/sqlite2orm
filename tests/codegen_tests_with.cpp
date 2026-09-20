@@ -366,6 +366,70 @@ TEST_CASE("codegen: a wrong arity inside a trigger body warns") {
                  26}});
 }
 
+// Every name the fixed-arity table holds is pinned here by a call written with an argument count SQLite
+// refuses, so that dropping a row from the table, or widening one, cannot pass unnoticed. `sqlite3`
+// 3.51.0 refuses each of these eight calls with `wrong number of arguments to function`.
+TEST_CASE("codegen: every fixed-arity form warns on an argument count SQLite refuses") {
+    const auto result =
+        generateFull("SELECT cume_dist(id) OVER (), first_value(id, 1) OVER (), last_value() OVER (), "
+                     "nth_value(id, 1, 2) OVER (), lead(id, 1, 0, 9) OVER (), rank(id) OVER (), dense_rank(id) "
+                     "OVER (), percent_rank(id) OVER () FROM users;");
+    REQUIRE(result.code == "auto rows = storage.select(columns(cume_dist(&Users::id).over(), first_value(&Users::id, "
+                           "1).over(), last_value().over(), nth_value(&Users::id, 1, 2).over(), lead(&Users::id, 1, "
+                           "0, 9).over(), rank(&Users::id).over(), dense_rank(&Users::id).over(), "
+                           "percent_rank(&Users::id).over()));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"cume_dist() takes no argument in sqlite_orm, and the call is written with 1 argument: each window "
+                 "function and a MATCH in its function spelling has one overload per argument count, so the generated "
+                 "code does not compile. SQLite refuses the same call — wrong number of arguments to function "
+                 "cume_dist() — but stores a trigger or a view holding it",
+                 SourceLocation{1, 8},
+                 21},
+                {"first_value() takes 1 argument in sqlite_orm, and the call is written with 2 arguments: each window "
+                 "function and a MATCH in its function spelling has one overload per argument count, so the generated "
+                 "code does not compile. SQLite refuses the same call — wrong number of arguments to function "
+                 "first_value() — but stores a trigger or a view holding it",
+                 SourceLocation{1, 31},
+                 26},
+                {"last_value() takes 1 argument in sqlite_orm, and the call is written with 0 arguments: each window "
+                 "function and a MATCH in its function spelling has one overload per argument count, so the generated "
+                 "code does not compile. SQLite refuses the same call — wrong number of arguments to function "
+                 "last_value() — but stores a trigger or a view holding it",
+                 SourceLocation{1, 59},
+                 20},
+                {"nth_value() takes 2 arguments in sqlite_orm, and the call is written with 3 arguments: each window "
+                 "function and a MATCH in its function spelling has one overload per argument count, so the generated "
+                 "code does not compile. SQLite refuses the same call — wrong number of arguments to function "
+                 "nth_value() — but stores a trigger or a view holding it",
+                 SourceLocation{1, 81},
+                 27},
+                {"lead() takes 1 to 3 arguments in sqlite_orm, and the call is written with 4 arguments: each window "
+                 "function and a MATCH in its function spelling has one overload per argument count, so the generated "
+                 "code does not compile. SQLite refuses the same call — wrong number of arguments to function lead() "
+                 "— but stores a trigger or a view holding it",
+                 SourceLocation{1, 110},
+                 25},
+                {"rank() takes no argument in sqlite_orm, and the call is written with 1 argument: each window "
+                 "function and a MATCH in its function spelling has one overload per argument count, so the generated "
+                 "code does not compile. SQLite refuses the same call — wrong number of arguments to function rank() "
+                 "— but stores a trigger or a view holding it",
+                 SourceLocation{1, 137},
+                 16},
+                {"dense_rank() takes no argument in sqlite_orm, and the call is written with 1 argument: each window "
+                 "function and a MATCH in its function spelling has one overload per argument count, so the generated "
+                 "code does not compile. SQLite refuses the same call — wrong number of arguments to function "
+                 "dense_rank() — but stores a trigger or a view holding it",
+                 SourceLocation{1, 155},
+                 22},
+                {"percent_rank() takes no argument in sqlite_orm, and the call is written with 1 argument: each "
+                 "window function and a MATCH in its function spelling has one overload per argument count, so the "
+                 "generated code does not compile. SQLite refuses the same call — wrong number of arguments to "
+                 "function percent_rank() — but stores a trigger or a view holding it",
+                 SourceLocation{1, 179},
+                 24}});
+}
+
 // Every argument count SQLite accepts is one sqlite_orm has an overload for, so none of these
 // warns; the counts are the ones `sqlite3` 3.51.0 prepares.
 TEST_CASE("codegen: the argument counts SQLite accepts generate without a warning") {

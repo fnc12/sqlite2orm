@@ -254,12 +254,15 @@ namespace sqlite2orm {
     ValueStorageClass fieldTypeStorageClass(std::string_view cppType);
     /**
      *  Characters of `sourceText` a warning anchored at its first character underlines, counted the
-     *  way `CodegenWarning::length` promises: a multi-byte UTF-8 character is one character, not as
-     *  many as it takes bytes. A consumer draws the underline from the warning's location along a
+     *  way `CodegenWarning::length` promises: one Unicode code point is one character, not as many
+     *  as it takes UTF-8 bytes. A consumer draws the underline from the warning's location along a
      *  single line, so a span written across lines — a quoted name or a string literal holding a
      *  newline, a pair of keywords split by one — is underlined up to the end of the line it starts
-     *  on and no further. Every anchored warning takes its length from here, so the two counts
-     *  cannot drift apart.
+     *  on and no further. Every warning whose length is measured from source text measures it here,
+     *  so that count cannot drift from the column the tokenizer moved over the same text. The
+     *  anchors that pass a length inline instead pass 1 for a single ASCII operator — a unary `+`
+     *  or `-` — which is one character in either count; a warning underlining anything longer than
+     *  that belongs here.
      */
     size_t underlineLengthOf(std::string_view sourceText);
     /**

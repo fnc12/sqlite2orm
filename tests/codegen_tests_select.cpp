@@ -1299,6 +1299,22 @@ TEST_CASE("codegen: a compared unary plus reports the column affinity it takes a
                                "here",
                                SourceLocation{1, 27},
                                1}});
+    // This anchor is one of the three that write their length inline instead of measuring it from
+    // source text (see `underlineLengthOf`): the plus is a single ASCII character, which is one
+    // character in either count. What the tokenizer hands it is not ASCII-only, though, so the
+    // column it is anchored at is in characters — sqlite3 3.51 takes the comment below and answers
+    // the two comparisons 1 and 0 all the same — and the inline 1 still underlines just the plus.
+    REQUIRE(generateFull("/* «üü» */ SELECT * FROM users WHERE +a = 1;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
+                               SourceLocation{1, 38},
+                               1}});
     // A COLLATE keeps the affinity of the column under it — sqlite3 3.51 answers
     // `(a COLLATE BINARY) = 1` the way it answers `a = 1` — and a plus over one takes it away
     // just the same, so the column under both is the one reported.

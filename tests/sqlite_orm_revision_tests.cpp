@@ -1,32 +1,18 @@
+#include "source_file_text.hpp"
+
 #include <catch2/catch_all.hpp>
 
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <string_view>
 
 namespace {
 
+    using source_file_test_helpers::countOccurrences;
+    using source_file_test_helpers::readSourceFile;
+
     // The revision cmake/SqliteOrmPinnedRevision.cmake pins. Spelled out here so that bumping it
     // takes updating every place that promises it: the build, the README table and this test.
     constexpr std::string_view pinnedRevision = "eb77998ef5e27350b25977b061e46e202742ecc8";
-
-    [[nodiscard]] std::string readSourceFile(std::string_view name) {
-        const std::filesystem::path path = std::filesystem::path{SQLITE2ORM_TEST_SOURCE_DIR} / name;
-        std::ifstream stream{path, std::ios::binary};
-        REQUIRE(stream.is_open());
-        return std::string{std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
-    }
-
-    [[nodiscard]] std::size_t countOccurrences(std::string_view haystack, std::string_view needle) {
-        std::size_t count = 0;
-        for (std::size_t pos = haystack.find(needle); pos != std::string_view::npos;
-             pos = haystack.find(needle, pos + needle.size())) {
-            ++count;
-        }
-        return count;
-    }
 
     // What to do about headers that are not the pinned revision depends on where they came from.
     // A populated dependency moves on the next reconfigure; a directory named by

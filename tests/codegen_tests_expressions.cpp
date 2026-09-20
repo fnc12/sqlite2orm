@@ -90,6 +90,31 @@ namespace {
         "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
         "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile.";
 
+    // The report every `->` carries, whatever it stands in; asserted with its anchor in
+    // "codegen: JSON -> operator".
+    const std::string kJsonTextArrowWarning =
+        "`->` is generated as a JSON_EXTRACT call, which answers the SQL value at the path where "
+        "`->` answers the JSON text of that value: a string comes back unquoted, and `true`, "
+        "`false` and `null` come back as 1, 0 and NULL. sqlite_orm has no form for the operator "
+        "itself";
+
+    // The report a result column read back through a single-path JSON_EXTRACT carries; asserted
+    // with its anchor in "codegen: JSON -> operator" and the cases around it.
+    const std::string kJsonExtractResultTypeWarning =
+        "result column taken from JSON_EXTRACT over one path comes back as text: SQLite answers "
+        "the value at the path, of whatever storage class the JSON holds, and sqlite_orm deduces "
+        "no result type for the call, so it is generated as `json_extract<std::string>(…)` — a "
+        "JSON number comes back as its digits. Spell the result type the value at the path has "
+        "where it is known";
+
+    // The report a JSON arrow carries whose path operand cannot be expanded here; asserted with
+    // its anchor in "codegen: a JSON arrow whose path is no literal is reported at the operator".
+    const std::string kJsonArrowPathNotExpandedWarning =
+        "the path operand of a JSON arrow is not a text or an integer literal, so the `$` path "
+        "SQLite expands it into cannot be spelled out here: the JSON_EXTRACT call the operator is "
+        "generated as takes the operand as written, and SQLite refuses a path that does not start "
+        "with `$` with `bad JSON path`";
+
 }  // namespace
 
 TEST_CASE("codegen: integer literal") {
@@ -1015,17 +1040,17 @@ TEST_CASE("codegen: an operator no looser than the predicate leaves it bare") {
     REQUIRE(generate("(NOT a) = 1") == "cast<int64_t>(not column<User>(&User::a)) == 1");
     // The JSON operators are generated as a json_extract() call, whose own syntax delimits both
     // operands whatever SQLite's precedence says.
-    REQUIRE(generate("a -> (b IS NULL)") == "json_extract(&User::a, is_null(&User::b))");
+    REQUIRE(generate("a -> (b IS NULL)") == "json_extract<std::string>(&User::a, is_null(&User::b))");
 }
 
 // `||`, `->` and `->>` share one left-associative level in SQLite, so the concatenation is the
 // operand the arrow reads from rather than the other way round. sqlite3 3.51 answers 5 to
 // `SELECT '{"x' || '":5}' ->> 'x'` and rejects `SELECT '":5}' ->> 'x'` as malformed JSON.
 TEST_CASE("codegen: the JSON arrows read a whole concatenation") {
-    REQUIRE(generate("a || b ->> 'x'") == "json_extract(c(&User::a) || &User::b, \"x\")");
-    REQUIRE(generate("a || b -> 'x'") == "json_extract(c(&User::a) || &User::b, \"x\")");
-    REQUIRE(generate("a ->> 'x' || b") == "json_extract(&User::a, \"x\") || &User::b");
-    REQUIRE(generate("a * b ->> 'x'") == "c(&User::a) * json_extract(&User::b, \"x\")");
+    REQUIRE(generate("a || b ->> 'x'") == "json_extract<std::string>(c(&User::a) || &User::b, \"$.x\")");
+    REQUIRE(generate("a || b -> 'x'") == "json_extract<std::string>(c(&User::a) || &User::b, \"$.x\")");
+    REQUIRE(generate("a ->> 'x' || b") == "json_extract<std::string>(&User::a, \"$.x\") || &User::b");
+    REQUIRE(generate("a * b ->> 'x'") == "c(&User::a) * json_extract<std::string>(&User::b, \"$.x\")");
 }
 
 // The functional spelling changes the C++ and not the SQL — `sub(1, is_null(&User::a))` serializes
@@ -1588,18 +1613,43 @@ TEST_CASE("codegen: IS NOT DISTINCT FROM returns error") {
                            "is not supported in sqlite_orm"}});
 }
 
+// `->` answers the JSON text of the value at the path — a string comes back quoted, `true` comes
+// back as `true` — where the JSON_EXTRACT call it is generated as answers the value itself, which
+// sqlite3 3.51 confirms: `'{"a":"s"}' -> '$.a'` is `"s"` and `json_extract('{"a":"s"}', '$.a')` is
+// `s`. sqlite_orm has no form for the operator, so the divergence is reported rather than fixed.
 TEST_CASE("codegen: JSON -> operator") {
-    REQUIRE(generateFull("SELECT data -> '$.name' FROM users;") ==
-            CodeGenResult{
-                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                {columnRefStyleDp(1, "&Users::data"),
-                 DecisionPoint{2,
-                               "expr_style",
-                               "functional",
-                               "json_extract(&Users::data, \"$.name\")",
-                               {Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
-                {"JSON -> / ->> operator is mapped to json_extract() "
-                 "— return type may differ from sqlite"}});
+    REQUIRE(
+        generateFull("SELECT data -> '$.name' FROM users;") ==
+        CodeGenResult{
+            "auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, \"$.name\")));",
+            {columnRefStyleDp(1, "&Users::data"),
+             DecisionPoint{
+                 2,
+                 "expr_style",
+                 "functional",
+                 "json_extract<std::string>(&Users::data, \"$.name\")",
+                 {Option{"functional", "json_extract<std::string>(&Users::data, \"$.name\")", "functional style"}}}},
+            {CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 13}, 2}}});
+}
+
+// The result type report belongs to `->>` and to the call, not to `->`. Whatever the JSON holds,
+// `->` answers its JSON text, so what it answers is a text already and the `std::string` the call
+// is read back through costs it nothing — sqlite3 3.51 answers `'{"n":42}' -> '$.n'` with the text
+// `42`, `'{"f":1.5}' -> '$.f'` with the text `1.5` and `'{"o":{"k":1}}' -> '$.o'` with the text
+// `{"k":1}`, each of which the generated code reads back unchanged. Where `->` does lose something
+// is where it differs from the call at all, which `kJsonTextArrowWarning` reports at the very same
+// two characters, so a second report there would underline them twice and say something untrue.
+TEST_CASE("codegen: `->` carries no result type report and `->>` carries nothing else") {
+    REQUIRE(generateFull("SELECT data -> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 13}, 2}});
+    REQUIRE(generateFull("SELECT data ->> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 13}, 3}});
+    // The same split holds where the arrow reads a whole concatenation, which is the form the two
+    // operators share a precedence level with.
+    REQUIRE(generateFull("SELECT data || data -> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 21}, 2}});
+    REQUIRE(generateFull("SELECT data || data ->> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 21}, 3}});
 }
 
 TEST_CASE("codegen: column_ref_style options list every variant without duplicating the chosen") {
@@ -1628,18 +1678,114 @@ TEST_CASE("codegen: column_ref_style options list every variant without duplicat
     check(generateWithPolicy("SELECT id FROM users;", policy).decisionPoints.at(0), "column_pointer");
 }
 
+// `->>` over the path it is generated with is the JSON_EXTRACT call it is generated as, value for
+// value and type for type — sqlite3 3.51 answers the same storage class and the same value for
+// both over every kind of JSON value — so the only thing left to report is the result type the
+// call is read back through. What the operator does that the call does not is expand an
+// abbreviated path, which is pinned in "codegen: a JSON arrow expands the path it is written with".
 TEST_CASE("codegen: JSON ->> operator") {
-    REQUIRE(generateFull("SELECT data ->> '$.name' FROM users;") ==
-            CodeGenResult{
-                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                {columnRefStyleDp(1, "&Users::data"),
-                 DecisionPoint{2,
-                               "expr_style",
-                               "functional",
-                               "json_extract(&Users::data, \"$.name\")",
-                               {Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
-                {"JSON -> / ->> operator is mapped to json_extract() "
-                 "— return type may differ from sqlite"}});
+    REQUIRE(
+        generateFull("SELECT data ->> '$.name' FROM users;") ==
+        CodeGenResult{
+            "auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, \"$.name\")));",
+            {columnRefStyleDp(1, "&Users::data"),
+             DecisionPoint{
+                 2,
+                 "expr_style",
+                 "functional",
+                 "json_extract<std::string>(&Users::data, \"$.name\")",
+                 {Option{"functional", "json_extract<std::string>(&Users::data, \"$.name\")", "functional style"}}}},
+            {CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 13}, 3}}});
+}
+
+// sqlite_orm declares `json_extract` and `json_quote` with a result type parameter that has no
+// default, so a call generated without one does not compile at all — the generated code names the
+// type the row is read back through. `json_quote` answers text whatever it is given and
+// JSON_EXTRACT over two paths or more answers the JSON array of what it found, also text, so only
+// the single-path form is reported.
+TEST_CASE("codegen: json_extract() and json_quote() calls name the result type") {
+    REQUIRE(generateFull("SELECT json_extract(data, '$.name') FROM users;") ==
+            CodeGenResult{"auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, "
+                          "\"$.name\")));",
+                          {columnRefStyleDp(1, "&Users::data")},
+                          {CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 8}, 12}}});
+    REQUIRE(generateFull("SELECT json_extract(data, '$.a', '$.b') FROM users;") ==
+            CodeGenResult{"auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, \"$.a\", "
+                          "\"$.b\")));",
+                          {columnRefStyleDp(1, "&Users::data")}});
+    REQUIRE(generateFull("SELECT json_quote(data) FROM users;") ==
+            CodeGenResult{"auto rows = storage.select(json_quote<std::string>(&Users::data));",
+                          {columnRefStyleDp(1, "&Users::data")}});
+}
+
+// The result type is what the row is read back into, and a call standing anywhere but in a result
+// column is never read back: the type is spelled out all the same, since the call does not compile
+// without it, and nothing is reported.
+TEST_CASE("codegen: a JSON_EXTRACT call outside a result column is typed without a report") {
+    REQUIRE(generate("SELECT data FROM users WHERE data ->> '$.a' = 5;") ==
+            "auto rows = storage.select(&Users::data, where(json_extract<std::string>(&Users::data, \"$.a\") == 5));");
+    REQUIRE(generateFull("SELECT data FROM users WHERE data ->> '$.a' = 5;").warnings == std::vector<CodegenWarning>{});
+    REQUIRE(generate("SELECT data FROM users ORDER BY json_extract(data, '$.a');") ==
+            "auto rows = storage.select(&Users::data, order_by(json_extract<std::string>(&Users::data, \"$.a\")));");
+    REQUIRE(generateFull("SELECT data FROM users ORDER BY json_extract(data, '$.a');").warnings ==
+            std::vector<CodegenWarning>{});
+}
+
+// `->` and `->>` take an abbreviated path the JSON_EXTRACT call they are generated as does not:
+// SQLite expands the operand into a `$` path before it looks anything up, so `'{"x":5}' ->> 'x'`
+// is 5 while `json_extract('{"x":5}', 'x')` is the error `bad JSON path: 'x'`. Every expansion
+// below is the one sqlite3 3.51 builds in `jsonExtractFunc`, cross-checked by running
+// `<json> ->> <operand>` against `json_extract(<json>, '<expansion>')` over objects and arrays.
+TEST_CASE("codegen: a JSON arrow expands the path it is written with") {
+    const std::string prefix = "auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, ";
+    // A label of nothing but ASCII letters, digits and `_` goes in unquoted, and so it does under
+    // `->`, which is expanded the same way and only differs in what it answers at the path.
+    REQUIRE(generate("SELECT data ->> 'name' FROM users;") == prefix + "\"$.name\")));");
+    REQUIRE(generate("SELECT data -> 'name' FROM users;") == prefix + "\"$.name\")));");
+    // Every other label goes in quoted — the dot of `a.b` is part of the name, not a step down —
+    // and pasted in unescaped, exactly as SQLite pastes it.
+    REQUIRE(generate("SELECT data ->> 'a.b' FROM users;") == prefix + "\"$.\\\"a.b\\\"\")));");
+    REQUIRE(generate("SELECT data ->> 'it''s' FROM users;") == prefix + "\"$.\\\"it's\\\"\")));");
+    // An empty label expands to `$.`, which SQLite refuses as a bad path — as it refuses the bare
+    // `''` the operator was written with, naming the other of the two in the message.
+    REQUIRE(generate("SELECT data ->> '' FROM users;") == prefix + "\"$.\")));");
+    // An integer is an array index, a negative one counted from the right of the array, and `TRUE`
+    // and a hexadecimal literal are integers as much as `1` is.
+    REQUIRE(generate("SELECT data ->> 1 FROM users;") == prefix + "\"$[1]\")));");
+    REQUIRE(generate("SELECT data ->> -1 FROM users;") == prefix + "\"$[#-1]\")));");
+    REQUIRE(generate("SELECT data ->> TRUE FROM users;") == prefix + "\"$[1]\")));");
+    REQUIRE(generate("SELECT data ->> 0x1 FROM users;") == prefix + "\"$[1]\")));");
+    // A path the operand already spells out is used as written, whether it starts with the `$` or
+    // with the subscript SQLite puts one in front of.
+    REQUIRE(generate("SELECT data ->> '$.name' FROM users;") == prefix + "\"$.name\")));");
+    REQUIRE(generate("SELECT data ->> '[1]' FROM users;") == prefix + "\"$[1]\")));");
+    // A NULL path needs no expansion: SQLite answers NULL for it, and so does the generated call.
+    REQUIRE(generate("SELECT data ->> NULL FROM users;") == prefix + "nullptr)));");
+}
+
+// An operand SQLite expands while it runs the statement cannot be expanded while the statement is
+// generated: a column, a bind parameter and an expression are only known then, and a REAL or a
+// BLOB expands through the text SQLite renders it as. The call is generated over the operand as
+// written — which is what the operator answers wherever the operand already holds a `$` path —
+// and the divergence is reported at the operator, so that a consumer underlines it.
+TEST_CASE("codegen: a JSON arrow whose path is no literal is reported at the operator") {
+    REQUIRE(generate("SELECT data FROM users WHERE data ->> name = 5;") ==
+            "auto rows = storage.select(&Users::data, where(json_extract<std::string>(&Users::data, &Users::name) == "
+            "5));");
+    REQUIRE(generateFull("SELECT data FROM users WHERE data ->> name = 5;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonArrowPathNotExpandedWarning, SourceLocation{1, 35}, 3}});
+    REQUIRE(generateFull("SELECT data FROM users WHERE data -> ? = 5;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{"bind parameter ? -> C++ variable 'bindParam1'; "
+                                                       "for prepared statements use storage.prepare() + get<N>(stmt)"},
+                                        CodegenWarning{kJsonArrowPathNotExpandedWarning, SourceLocation{1, 35}, 2},
+                                        CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 35}, 2}});
+    REQUIRE(generateFull("SELECT data FROM users WHERE data ->> 1.0 = 5;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonArrowPathNotExpandedWarning, SourceLocation{1, 35}, 3}});
+    REQUIRE(generateFull("SELECT data FROM users WHERE data ->> x'78' = 5;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonArrowPathNotExpandedWarning, SourceLocation{1, 35}, 3}});
+    // Past the int64 range SQLite reads the literal as a REAL, which is a label and no index.
+    REQUIRE(generateFull("SELECT data FROM users WHERE data ->> 9223372036854775808 = 5;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonArrowPathNotExpandedWarning, SourceLocation{1, 35}, 3}});
 }
 
 TEST_CASE("codegen: bind parameter anonymous") {

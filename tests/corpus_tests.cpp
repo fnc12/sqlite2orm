@@ -41,8 +41,7 @@ using namespace sqlite2orm;
  *  bug is fixed and the expectation has to move.
  *
  *  These cases are hidden (`[.corpus]`): they compile, link and run a program per schema, and the
- *  corpus grows with every schema worth watching. ctest runs them as `sqlite2orm_corpus`, in a CI
- *  job of their own.
+ *  corpus grows with every schema worth watching. ctest runs them as `sqlite2orm_tests_corpus`.
  */
 
 namespace {

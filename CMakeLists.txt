@@ -209,10 +209,13 @@ if(SQLITE2ORM_BUILD_TESTS)
 
     # The corpus cases are hidden (`[.corpus]`), so the run above skips them: each compiles, links
     # and runs a program around a whole generated schema, and the set grows with every schema worth
-    # watching. They run under a name of their own -- which is also why it is not
-    # `sqlite2orm_tests_corpus`, since the unit-test job selects by
-    # `-R "sqlite2orm_tests|sqlite2orm_cli"` -- and in a CI job of their own.
-    add_test(NAME sqlite2orm_corpus COMMAND sqlite2orm_tests "[corpus]")
+    # watching. They get a test of their own, which can then be run -- or left out -- by name.
+    #
+    # The name keeps the `sqlite2orm_tests` prefix on purpose: CI selects the unit tests with
+    # `-R "sqlite2orm_tests|sqlite2orm_cli"`, so the corpus runs on every pull request without a
+    # job of its own. It costs seconds against that job's minutes; give it a job when it no longer
+    # does, and rename it then, since a job selecting it would no longer want the prefix.
+    add_test(NAME sqlite2orm_tests_corpus COMMAND sqlite2orm_tests "[corpus]")
 
     if(UNIX)
         if(SQLITE2ORM_GIT_EXECUTABLE)

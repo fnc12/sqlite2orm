@@ -137,11 +137,12 @@ the generator gets wrong today is pinned as `knownBad` with the card that tracks
 stays usable while the bug waits and goes red the day it is fixed.
 
 Compiling and linking a program per schema costs seconds apiece, and the corpus grows with every
-schema worth watching, so these cases are hidden from the default run and have a ctest name — and
-a CI job — of their own:
+schema worth watching, so these cases are hidden from the default run and have a ctest name of
+their own — `sqlite2orm_tests_corpus`, which CI selects along with the rest of the unit tests, so
+they run on every pull request:
 
 ```bash
-ctest --test-dir build -R sqlite2orm_corpus
+ctest --test-dir build -R sqlite2orm_tests_corpus
 ```
 
 ## Code style

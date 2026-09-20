@@ -70,6 +70,20 @@ namespace {
         "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
         "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
 
+    // The hint attached to every AND and OR operand the generator hands over `c()`-wrapped;
+    // asserted on its own in "codegen: an AND or an OR with a quoted operand carries its comment".
+    const std::string kAndOrQuotedOperandComment =
+        "An operand of an AND or an OR that sqlite_orm does not recognize is generated as "
+        "`c(operand)`: `or_()` and `and_()` assert that both arguments are bindable values or "
+        "operands sqlite_orm knows, and `operator&&` is declared only where one of the operands "
+        "is a condition or an operator argument. A MATCH, a CURRENT_DATE / CURRENT_TIME / "
+        "CURRENT_TIMESTAMP, a window call and a FILTERed aggregate are none of those, and a pair "
+        "like `a + 1 AND a + 2` is neither, so `b MATCH 'x' OR b MATCH 'y'` and `a + 1 AND a + 2` "
+        "would not compile at all. `c()` hands the expression over as it stands: `or_()`, `and_()` "
+        "and `operator&&` all unwrap the `quoted_expression_t` back to the expression it holds, so "
+        "the condition built — and the SQL it serializes to — is the one the bare operand would "
+        "have built.";
+
     // The hint attached to every AND and OR the generator delimits in a predicate's argument slot;
     // asserted on its own in "codegen: an AND or an OR cast in a predicate argument carries its
     // comment".
@@ -606,14 +620,10 @@ TEST_CASE("codegen: an operator the C++ `||` token misreads is spelled as a call
         REQUIRE(generate("a OR 0") == "or_(&User::a, 0)");
         REQUIRE(generate("a OR b") == "or_(&User::a, &User::b)");
         REQUIRE(generate("-(1 OR 0)") == "(c(0) - (or_(1, 0)))");
-        // `match_t` is the one predicate sqlite_orm does not class as a condition. The call names
-        // the OR that was written, but it does not compile either: `match_t` derives from nothing
-        // at all, so `or_()` does not accept it as an operand either: the call is the OR that was
-        // written, but it does not compile — `or_() arguments must be bindable values or
-        // sqlite_orm-recognized operands`. Neither did the operator spelling it replaces, which
-        // had no `operator||` to pick at all, so this is what the form looks like and not a form
-        // that works yet.
-        REQUIRE(generate("a MATCH 'x' OR b") == R"(or_(match(&User::a, "x"), &User::b))");
+        // `match_t` is the one predicate sqlite_orm does not class as a condition, and it is not
+        // an operand `or_()` accepts either — it derives from nothing at all. The call hands it
+        // over `c()`-wrapped, which is what makes it one; the OR built is the same either way.
+        REQUIRE(generate("a MATCH 'x' OR b") == R"(or_(c(match(&User::a, "x")), &User::b))");
     }
     SECTION("an OR with a condition among its operands") {
         REQUIRE(generate("a = 1 OR b") == "c(&User::a) == 1 or &User::b");
@@ -1114,6 +1124,83 @@ TEST_CASE("codegen: an AND or an OR cast in a predicate argument carries its com
     REQUIRE(generateFull("SELECT (1 AND 0) IS NULL;").comments ==
             std::vector<std::string>{kAndOrPredicateArgumentCastComment});
     REQUIRE(generateFull("SELECT (a = 1) IS NULL;").comments.empty());
+}
+
+// sqlite_orm reads the operand types to decide what an AND or an OR may build at all. `operator&&`
+// is declared only where one of the operands is a condition or an operator argument, so a pair that
+// is neither — `a + 1 AND a + 2` — finds no overload; `or_()` and `and_()` assert that both of
+// their arguments are operands sqlite_orm recognizes, and a MATCH, a CURRENT_DATE / CURRENT_TIME /
+// CURRENT_TIMESTAMP, a window call and a FILTERed aggregate are none of them. The operand that has
+// to carry the pair is handed over `c()`-wrapped: `or_()`, `and_()` and `operator&&` all unwrap the
+// `quoted_expression_t` right back to the expression it holds, so the condition built is the one
+// that was written. What the generated code answers is pinned in "runtime: an AND or an OR over
+// operands sqlite_orm does not recognize returns the values SQLite computes".
+TEST_CASE("codegen: an AND or an OR quotes an operand sqlite_orm does not recognize") {
+    SECTION("a MATCH, in both of the spellings that generate `match_t`") {
+        REQUIRE(generate("a MATCH 'x' OR b MATCH 'y'") == R"(or_(c(match(&User::a, "x")), c(match(&User::b, "y"))))");
+        REQUIRE(generate("match(a, 'x') OR match(b, 'y')") ==
+                R"(or_(c(match(&User::a, "x")), c(match(&User::b, "y"))))");
+        REQUIRE(generate("a MATCH 'x' AND b MATCH 'y'") == R"(c(match(&User::a, "x")) and match(&User::b, "y"))");
+    }
+    SECTION("a CURRENT_DATE, CURRENT_TIME or CURRENT_TIMESTAMP") {
+        REQUIRE(generate("CURRENT_TIMESTAMP OR a") == "or_(c(current_timestamp()), &User::a)");
+        REQUIRE(generate("a OR CURRENT_DATE") == "or_(&User::a, c(current_date()))");
+        // The AND takes the quote the wrapping variant puts on a leaf operand anyway, and one
+        // quoted operand is all `operator&&` asks for.
+        REQUIRE(generate("CURRENT_TIME AND CURRENT_DATE") == "c(current_time()) and current_date()");
+    }
+    SECTION("a window call and a FILTERed aggregate") {
+        REQUIRE(generate("(row_number() OVER ()) OR a") == "or_(c(row_number().over()), &User::a)");
+        REQUIRE(generate("(count(a) FILTER (WHERE a > 0)) AND (a + 1)") ==
+                "c(count(&User::a).filter(where(c(&User::a) > 0))) and c(&User::a) + 1");
+    }
+    SECTION("a pair `operator&&` is declared for neither way round") {
+        REQUIRE(generate("a + 1 AND a + 2") == "c(c(&User::a) + 1) and c(&User::a) + 2");
+        REQUIRE(generate("(a || 'x') AND (b || 'y')") == R"(c(c(&User::a) || "x") and (c(&User::b) || "y"))");
+        REQUIRE(generate("~a AND -a") == "c(~c(&User::a)) and (c(0) - c(&User::a))");
+        REQUIRE(generate("(SELECT 1) AND a") == "c(select(1)) and &User::a");
+    }
+    SECTION("an operand beside a condition or an operator argument is left as it was written") {
+        REQUIRE(generate("a MATCH 'x' OR b = 1") == R"(match(&User::a, "x") or c(&User::b) == 1)");
+        REQUIRE(generate("b = 1 AND a MATCH 'x'") == R"(c(&User::b) == 1 and match(&User::a, "x"))");
+        REQUIRE(generate("CURRENT_DATE AND abs(a)") == "c(current_date()) and abs(&User::a)");
+        REQUIRE(generate("abs(a) AND a + 1") == "abs(&User::a) and c(&User::a) + 1");
+        REQUIRE(generate("CAST(a AS INTEGER) AND a + 1") == "cast<int64_t>(&User::a) and c(&User::a) + 1");
+        REQUIRE(generate("a AND b") == "c(&User::a) and &User::b");
+        REQUIRE(generate("a = 1 AND b = 2") == "c(&User::a) == 1 and c(&User::b) == 2");
+        REQUIRE(generate("a OR b") == "or_(&User::a, &User::b)");
+    }
+    SECTION("every variant the decision point offers is quoted the way its own spelling needs") {
+        const std::vector<Option> options = generateFull("a + 1 AND a + 2").decisionPoints.back().options;
+        REQUIRE(options.size() == 4);
+        REQUIRE(options[0].code == "c(c(&User::a) + 1) and c(&User::a) + 2");
+        REQUIRE(options[1].code == "c(&User::a) + 1 and c(c(&User::a) + 2)");
+        REQUIRE(options[2].code == "and_(c(&User::a) + 1, c(&User::a) + 2)");
+        REQUIRE(options[3].code == "c(c(&User::a) + 1) and c(c(&User::a) + 2)");
+        // The call is the only spelling offered for an OR over operands that are not conditions,
+        // and there both arguments carry the quote their own form needs.
+        const std::vector<Option> matchOptions =
+            generateFull("a MATCH 'x' OR b MATCH 'y'").decisionPoints.back().options;
+        REQUIRE(matchOptions.size() == 1);
+        REQUIRE(matchOptions[0].code == R"(or_(c(match(&User::a, "x")), c(match(&User::b, "y"))))");
+        // The operator spelling needs no quote where a condition stands beside the MATCH, and the
+        // call spelling, offered beside it, needs one all the same.
+        const std::vector<Option> mixedOptions = generateFull("a MATCH 'x' OR b = 1").decisionPoints.back().options;
+        REQUIRE(mixedOptions.size() == 4);
+        REQUIRE(mixedOptions[0].code == R"(match(&User::a, "x") or c(&User::b) == 1)");
+        REQUIRE(mixedOptions[2].code == R"(or_(c(match(&User::a, "x")), c(&User::b) == 1))");
+    }
+}
+
+TEST_CASE("codegen: an AND or an OR with a quoted operand carries its comment") {
+    REQUIRE(generateFull("SELECT a MATCH 'x' OR b MATCH 'y';").comments ==
+            std::vector<std::string>{kOrTokenCallSpellingComment, kAndOrQuotedOperandComment});
+    REQUIRE(generateFull("SELECT a + 1 AND a + 2;").comments == std::vector<std::string>{kAndOrQuotedOperandComment});
+    // The quote a wrapping variant puts on a leaf operand is the spelling of every AND and OR over
+    // one, so it speaks for itself; only an operand whose own form forces the quote carries the
+    // hint.
+    REQUIRE(generateFull("SELECT a AND b;").comments.empty());
+    REQUIRE(generateFull("SELECT a MATCH 'x' OR b = 1;").comments.empty());
 }
 
 TEST_CASE("codegen: IS NULL") {

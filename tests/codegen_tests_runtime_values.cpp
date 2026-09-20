@@ -10,16 +10,13 @@
 namespace {
 
     /**
-     *  Builds a program around the generated select statements, compiles and links it against
-     *  sqlite_orm, runs it and returns one line per statement with the value of its first row —
-     *  `NULL` for a row the result type can hold a NULL in and does. The single row of `users`
-     *  holds `a = rowValue`, and `a` is declared `fieldType`.
-     *  Generated code that compiles can still hand the caller a wrong value — sqlite_orm reports the
-     *  result type of an expression on its own — so only running it pins down what a user sees.
+     *  The source of a program around the generated select statements, each printing the value of
+     *  its first row — `NULL` for a row the result type can hold a NULL in and does. The single
+     *  row of `users` holds `a = rowValue`, and `a` is declared `fieldType`.
      */
-    std::vector<std::string> selectedValues(const std::vector<std::string>& selectStatements,
-                                            std::string_view fieldType = "int",
-                                            std::string_view rowValue = "7") {
+    std::string selectsProgramSource(const std::vector<std::string>& selectStatements,
+                                     std::string_view fieldType,
+                                     std::string_view rowValue) {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <iostream>\n"
@@ -63,9 +60,21 @@ namespace {
         }
         program << "    return 0;\n"
                    "}\n";
+        return program.str();
+    }
 
+    /**
+     *  Compiles and links that program against sqlite_orm, runs it and returns one line per
+     *  statement. Generated code that compiles can still hand the caller a wrong value —
+     *  sqlite_orm reports the result type of an expression on its own — so only running it pins
+     *  down what a user sees.
+     */
+    std::vector<std::string> selectedValues(const std::vector<std::string>& selectStatements,
+                                            std::string_view fieldType = "int",
+                                            std::string_view rowValue = "7") {
         const TempBuildDir dir;
-        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+        const std::filesystem::path cpppath =
+            dir.write("check.cpp", selectsProgramSource(selectStatements, fieldType, rowValue));
         const std::filesystem::path binpath = dir.file("check");
         const std::filesystem::path outpath = dir.file("check.out");
 
@@ -91,6 +100,30 @@ namespace {
         }
         REQUIRE(exitCode == 0);
         return values;
+    }
+
+    /**
+     *  Compiles a program around the generated select statements without running it, for
+     *  statements SQLite prepares only against a table this harness cannot make: a MATCH needs an
+     *  FTS table and a window function is refused in a WHERE, while both are stored in a schema
+     *  `--db` reads. Compiling is what they have to prove — `or_()`, `and_()` and `operator&&`
+     *  decide by the operand types, and a pair they reject takes the whole header down with it.
+     */
+    void requireSelectsCompile(const std::vector<std::string>& selectStatements,
+                               std::string_view fieldType = "int",
+                               std::string_view rowValue = "7") {
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath =
+            dir.write("check.cpp", selectsProgramSource(selectStatements, fieldType, rowValue));
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand() << " -fsyntax-only " << cpppath.string() << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        if (exitCode != 0) {
+            WARN("fsyntax-only failed (exit " << exitCode << "); ensure c++ and sqlite_orm headers are usable");
+        }
+        REQUIRE(exitCode == 0);
     }
 
     /**
@@ -1240,6 +1273,82 @@ TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads 
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "inf", "inf", "0", "4"});
 }
 
+// sqlite_orm reads the operand types to decide what an AND or an OR may build at all: `operator&&`
+// is declared only where one operand is a condition or an operator argument, and `or_()` asserts
+// that both of its arguments are operands it recognizes. A pair of arithmetic operands is neither,
+// and a CURRENT_DATE / CURRENT_TIME / CURRENT_TIMESTAMP is recognized nowhere, so `a + 1 AND a + 2`
+// and `a OR CURRENT_DATE` used to reach the user as code that does not compile — `no match for
+// operator&&` and `or_() arguments must be bindable values or sqlite_orm-recognized operands`.
+// The operand that carries the pair is handed over `c()`-wrapped now, and `or_()`, `and_()` and
+// `operator&&` all unwrap a `quoted_expression_t` right back to the expression it holds, so the
+// condition built — and the SQL it serializes to — is the one the bare operand would have built.
+// The two ORs over arithmetic operands are the counter-check: `or_()` took them before this change
+// and takes them unquoted still. Values checked against sqlite3 3.51 over `users(a INTEGER)`
+// holding one row with a = 7; CURRENT_DATE is a text whose leading digits are the year, which
+// SQLite reads as a true value whatever the day is.
+TEST_CASE("runtime: an AND or an OR over operands sqlite_orm does not recognize returns the values SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT (a + 1) AND (a + 2);"),
+        generate("SELECT (a - 7) AND (a + 2);"),
+        generate("SELECT (a || 'x') AND (a || 'y');"),
+        generate("SELECT (a & 1) AND (a & 2);"),
+        generate("SELECT ~a AND -a;"),
+        generate("SELECT (SELECT 0) AND (a + 1);"),
+        generate("SELECT NULL AND (a + 1);"),
+        generate("SELECT CURRENT_TIMESTAMP AND a;"),
+        generate("SELECT a OR CURRENT_DATE;"),
+        generate("SELECT 0 OR CURRENT_DATE;"),
+        generate("SELECT (a + 1) OR (a + 2);"),
+        generate("SELECT (a - 7) OR (a - 7);"),
+        generate("SELECT (row_number() OVER ()) OR a;"),
+        generate("SELECT (sum(a) OVER ()) AND (a + 1);"),
+        generate("SELECT (count(a) FILTER (WHERE a > 0)) OR a;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(c(c(&User::a) + 1) and c(&User::a) + 2));",
+                "auto rows = storage.select(as_optional(c(c(&User::a) - 7) and c(&User::a) + 2));",
+                "auto rows = storage.select(as_optional(c(c(&User::a) || \"x\") and (c(&User::a) || \"y\")));",
+                "auto rows = storage.select(as_optional(c(c(&User::a) & 1) and c(&User::a) & 2));",
+                "auto rows = storage.select(as_optional(c(~c(&User::a)) and (c(0) - c(&User::a))));",
+                "auto rows = storage.select(as_optional(c(select(0)) and c(&User::a) + 1));",
+                "auto rows = storage.select(as_optional(c(nullptr) and c(&User::a) + 1));",
+                "auto rows = storage.select(as_optional(c(current_timestamp()) and &User::a));",
+                "auto rows = storage.select(as_optional(or_(&User::a, c(current_date()))));",
+                "auto rows = storage.select(or_(0, c(current_date())));",
+                "auto rows = storage.select(as_optional(or_(c(&User::a) + 1, c(&User::a) + 2)));",
+                "auto rows = storage.select(as_optional(or_(c(&User::a) - 7, c(&User::a) - 7)));",
+                "auto rows = storage.select(as_optional(or_(c(row_number().over()), &User::a)));",
+                "auto rows = storage.select(as_optional(c(sum(&User::a).over()) and c(&User::a) + 1));",
+                "auto rows = storage.select(as_optional(or_(c(count(&User::a).filter(where(c(&User::a) > 0))), "
+                "&User::a)));",
+            });
+    REQUIRE(selectedValues(statements, "int", "7") ==
+            std::vector<std::string>{"1", "0", "1", "1", "1", "0", "NULL", "1", "1", "1", "1", "0", "1", "1", "1"});
+}
+
+// A MATCH is the one of these forms that cannot be run here: sqlite_orm generates `match_t` for
+// both spellings, and SQLite answers `unable to use function MATCH in the requested context` for
+// every table that is not an FTS one — and for an FTS one too, once the MATCH stands under an OR
+// in the result column. It is stored all the same, in a trigger WHEN and in a view `--db` reads,
+// and compiling is what it has to prove: `match_t` derives from nothing at all, so neither `or_()`
+// nor `operator&&` took it before this change. The third statement is the counter-check — a
+// condition beside it carries the pair, and that MATCH is left as it was written.
+TEST_CASE("runtime: an AND or an OR over a MATCH compiles") {
+    const std::vector<std::string> statements{
+        generate("SELECT a MATCH 'x' OR a MATCH 'y';"),
+        generate("SELECT match(a, 'x') AND match(a, 'y');"),
+        generate("SELECT a MATCH 'x' OR a = 1;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(or_(c(match(&User::a, \"x\")), c(match(&User::a, \"y\")))));",
+                "auto rows = storage.select(as_optional(c(match(&User::a, \"x\")) and match(&User::a, \"y\")));",
+                "auto rows = storage.select(as_optional(match(&User::a, \"x\") or c(&User::a) == 1));",
+            });
+    requireSelectsCompile(statements);
+}
+
 // sqlite_orm's `between(A, T, T)` deduces one C++ type from both bounds, so an `int` bound next to
 // a 64-bit one did not compile at all — `between(&User::a, 1, 3000000000)` is the `no matching
 // function` this test would have failed to build on. The `int64_t` cast that gives them one type
@@ -1427,4 +1536,36 @@ TEST_CASE("runtime: a scalar subquery result column reads the NULL back") {
             std::vector<std::string>{"NULL", "NULL", "NULL", "8", "7"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL"});
+}
+
+// sqlite_orm types `case_<R>` as R, and the inference that picks R — the type of the first
+// branch's result — never names a nullable type, so a CASE that answers NULL reached the caller as
+// 0. Both NULLs a CASE has are run here: a branch result that is one, and no branch matching with
+// no ELSE written. Expected rows checked against sqlite3 3.51 over `users(a INTEGER)` holding one
+// row, NULL first and 7 second; on master the first five columns are generated without the
+// `as_optional` around them, and every NULL below reaches the caller as 0 there.
+TEST_CASE("runtime: a CASE result column that can be NULL reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN 1 THEN NULL ELSE 0 END;"),
+        generate("SELECT CASE WHEN 1 THEN NULL END;"),
+        generate("SELECT CASE WHEN 0 THEN 1 END;"),
+        generate("SELECT CASE WHEN 1 THEN a ELSE 0 END;"),
+        generate("SELECT CASE a WHEN 7 THEN 1 END;"),
+        generate("SELECT CASE WHEN 1 THEN 2 ELSE 3 END;"),
+        generate("SELECT CASE WHEN a THEN 4 ELSE 5 END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(case_<int>().when(1, then(nullptr)).else_(0).end()));",
+                "auto rows = storage.select(as_optional(case_<int>().when(1, then(nullptr)).end()));",
+                "auto rows = storage.select(as_optional(case_<int>().when(0, then(1)).end()));",
+                "auto rows = storage.select(as_optional(case_<int>().when(1, then(&User::a)).else_(0).end()));",
+                "auto rows = storage.select(as_optional(case_<int>(&User::a).when(7, then(1)).end()));",
+                "auto rows = storage.select(case_<int>().when(1, then(2)).else_(3).end());",
+                "auto rows = storage.select(case_<int>().when(&User::a, then(4)).else_(5).end());",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "2", "5"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "7", "1", "2", "4"});
 }

@@ -965,6 +965,68 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT count(*) FROM users;") == "auto rows = storage.select(count<Users>());");
 }
 
+// sqlite_orm types `case_t<R, …>` as R, and R is the type inferred for the first branch's result —
+// `int` for a branch holding a NULL — so a CASE that answers NULL reached the caller as 0. SQLite
+// answers a CASE with the result of the branch it takes, with the ELSE result where no branch
+// matches, and with a NULL where none matches and no ELSE is written: `SELECT typeof(CASE WHEN 1
+// THEN NULL ELSE 0 END)` and `SELECT typeof(CASE WHEN 0 THEN 1 END)` are both null in sqlite3 3.51.
+// The inference that picks R never names a nullable type, so there is no `case_` already widened.
+// Values checked in "runtime: a CASE result column that can be NULL reads the NULL back".
+TEST_CASE("codegen: a CASE result column that can be NULL is generated as as_optional") {
+    REQUIRE(generate("SELECT CASE WHEN 1 THEN NULL ELSE 0 END;") ==
+            "auto rows = storage.select(as_optional(case_<int>().when(1, then(nullptr)).else_(0).end()));");
+    REQUIRE(generate("SELECT CASE WHEN 1 THEN NULL END;") ==
+            "auto rows = storage.select(as_optional(case_<int>().when(1, then(nullptr)).end()));");
+    REQUIRE(generate("SELECT CASE WHEN 0 THEN 1 ELSE NULL END;") ==
+            "auto rows = storage.select(as_optional(case_<int>().when(0, then(1)).else_(nullptr).end()));");
+    // No ELSE: the CASE answers NULL for every row no branch matches, whatever the branches hold.
+    REQUIRE(generate("SELECT CASE WHEN 0 THEN 1 END;") ==
+            "auto rows = storage.select(as_optional(case_<int>().when(0, then(1)).end()));");
+    REQUIRE(generate("SELECT CASE a WHEN 1 THEN 2 END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<int>(&Users::a).when(1, then(2)).end()));");
+    // A branch that always matches leaves no row for the missing ELSE — `SELECT CASE WHEN 1 THEN 2
+    // END` is 2 in sqlite3 3.51, never NULL — and it is widened all the same: telling those apart
+    // means evaluating what SQLite makes of the condition, and an answer of `always` that is wrong
+    // reads a NULL back as 0 again, while one widened for nothing only carries an `std::optional`
+    // that is always engaged.
+    REQUIRE(generate("SELECT CASE WHEN 1 THEN 2 END;") ==
+            "auto rows = storage.select(as_optional(case_<int>().when(1, then(2)).end()));");
+    // A branch other than the first is asked as well, and so is a result that is not a NULL
+    // literal: a nullable column, and a division SQLite answers with NULL rather than an error.
+    REQUIRE(generate("SELECT CASE WHEN 0 THEN 1 WHEN 1 THEN a ELSE 2 END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<int>().when(0, then(1)).when(1, "
+            "then(&Users::a)).else_(2).end()));");
+    REQUIRE(generate("SELECT CASE WHEN 1 THEN 1 / 0 ELSE 2 END;") ==
+            "auto rows = storage.select(as_optional(case_<int64_t>().when(1, then(c(1) / 0)).else_(2).end()));");
+    // The CASE under a dropped COLLATE is the node the result column comes out as, so it is the
+    // one the widening is decided from, the way it is for an operator.
+    REQUIRE(generate("SELECT (CASE WHEN 1 THEN NULL ELSE 0 END) COLLATE BINARY;") ==
+            "auto rows = storage.select(as_optional(case_<int>().when(1, then(nullptr)).else_(0).end()));");
+}
+
+// The operand a simple CASE compares and the conditions of a searched one pick the branch rather
+// than fill it, so a NULL among them takes no branch and leaves the value to the ELSE:
+// `SELECT CASE NULL WHEN 1 THEN 2 ELSE 3 END` and `SELECT CASE WHEN NULL THEN 2 ELSE 3 END` are
+// both 3 in sqlite3 3.51, and `CASE WHEN a THEN 'x' ELSE 'y' END` over a NULL `a` is 'y'. With an
+// ELSE written and no result that can be NULL, `case_<R>` carries every value the CASE answers.
+TEST_CASE("codegen: a CASE result column that cannot be NULL keeps the type sqlite_orm gives it") {
+    REQUIRE(generate("SELECT CASE WHEN 1 THEN 2 ELSE 3 END;") ==
+            "auto rows = storage.select(case_<int>().when(1, then(2)).else_(3).end());");
+    REQUIRE(generate("SELECT CASE NULL WHEN 1 THEN 2 ELSE 3 END;") ==
+            "auto rows = storage.select(case_<int>(nullptr).when(1, then(2)).else_(3).end());");
+    REQUIRE(generate("SELECT CASE WHEN NULL THEN 2 ELSE 3 END;") ==
+            "auto rows = storage.select(case_<int>().when(nullptr, then(2)).else_(3).end());");
+    REQUIRE(generate("SELECT CASE a WHEN 1 THEN 2 ELSE 3 END FROM users;") ==
+            "auto rows = storage.select(case_<int>(&Users::a).when(1, then(2)).else_(3).end());");
+    REQUIRE(generate("SELECT CASE WHEN a THEN 'x' ELSE 'y' END FROM users;") ==
+            "auto rows = storage.select(case_<std::string>().when(&Users::a, then(\"x\")).else_(\"y\").end());");
+    // The same answer is given for a CASE standing as an argument: `length` only propagates a NULL
+    // its argument holds, and this CASE holds none, so the call is not widened either.
+    REQUIRE(
+        generate("SELECT length(CASE WHEN a THEN 'x' ELSE 'y' END) FROM users;") ==
+        "auto rows = storage.select(length(case_<std::string>().when(&Users::a, then(\"x\")).else_(\"y\").end()));");
+}
+
 // A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the
 // result column of a select is widened.
 TEST_CASE("codegen: as_optional is confined to the result columns of a select") {

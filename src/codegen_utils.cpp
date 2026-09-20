@@ -410,6 +410,18 @@ namespace sqlite2orm {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentAndOrQuotedOperand =
+        "An operand of an AND or an OR that sqlite_orm does not recognize is generated as "
+        "`c(operand)`: `or_()` and `and_()` assert that both arguments are bindable values or "
+        "operands sqlite_orm knows, and `operator&&` is declared only where one of the operands "
+        "is a condition or an operator argument. A MATCH, a CURRENT_DATE / CURRENT_TIME / "
+        "CURRENT_TIMESTAMP, a window call and a FILTERed aggregate are none of those, and a pair "
+        "like `a + 1 AND a + 2` is neither, so `b MATCH 'x' OR b MATCH 'y'` and `a + 1 AND a + 2` "
+        "would not compile at all. `c()` hands the expression over as it stands: `or_()`, `and_()` "
+        "and `operator&&` all unwrap the `quoted_expression_t` back to the expression it holds, so "
+        "the condition built — and the SQL it serializes to — is the one the bare operand would "
+        "have built.";
+
     const std::string kCommentBetweenBoundsWidened =
         "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
         "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
@@ -614,6 +626,21 @@ namespace sqlite2orm {
         bool isWindowFunction(std::string_view lowerFunctionName) {
             return nameIsIn(lowerFunctionName, kNullaryWindowFunctions) ||
                    nameIsIn(lowerFunctionName, kArgumentTakingWindowFunctions);
+        }
+
+        /**
+         *  Whether the call generates one of the types sqlite_orm keeps out of its operand traits:
+         *  a window function, each generated as an aggregate of its own, and a MATCH in its
+         *  function spelling, generated as `match_t`. A `filter()` and an `over()` wrap whatever
+         *  they are called on into a `filtered_aggregate_function_t` and an `over_t`, which are
+         *  out of them too.
+         */
+        bool functionCallGeneratesUnrecognizedOperand(const FunctionCallNode& functionCall) {
+            if (functionCall.over != nullptr || functionCall.filterWhere != nullptr) {
+                return true;
+            }
+            const std::string lowerName = toLowerAscii(functionCall.name);
+            return isWindowFunction(lowerName) || lowerName == "match";
         }
     }
 
@@ -1582,6 +1609,40 @@ namespace sqlite2orm {
                dynamic_cast<const ExistsNode*>(&generatedNode) != nullptr;
     }
 
+    bool generatesSqliteOrmOperatorArgument(const AstNode& astNode) {
+        // A COLLATE and a unary plus generate their operand and nothing else, so the sqlite_orm
+        // node standing here is the one the operand generates.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            return !functionCallGeneratesUnrecognizedOperand(*functionCall);
+        }
+        if (auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            // The JSON arrows are generated as a `json_extract()` call, a built-in function like
+            // any other; every other operator builds a `binary_operator` or a `binary_condition`.
+            return binaryOperator->binaryOperator == BinaryOperator::jsonArrow ||
+                   binaryOperator->binaryOperator == BinaryOperator::jsonArrow2;
+        }
+        return dynamic_cast<const CastNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const CaseNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const NewRefNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const OldRefNode*>(&generatedNode) != nullptr ||
+               dynamic_cast<const ExcludedRefNode*>(&generatedNode) != nullptr;
+    }
+
+    bool generatesSqliteOrmOperandOrBindable(const AstNode& astNode) {
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            return !functionCallGeneratesUnrecognizedOperand(*functionCall);
+        }
+        // `match_t` derives from nothing, and the CURRENT_* literals are generated as
+        // `current_date()` / `current_time()` / `current_timestamp()`, types of their own that no
+        // operand trait names. Everything else the expression generator emits is a member
+        // pointer, a bindable value, an arithmetic or bitwise operator, a concatenation, a
+        // condition, an operator argument, a scalar subquery or a compound operator.
+        return dynamic_cast<const MatchNode*>(&generatedNode) == nullptr &&
+               dynamic_cast<const CurrentDatetimeLiteralNode*>(&generatedNode) == nullptr;
+    }
+
     bool binaryOperatorNeedsCallSpelling(const BinaryOperatorNode& binaryOperatorNode) {
         switch (binaryOperatorNode.binaryOperator) {
             case BinaryOperator::logicalOr:
@@ -2097,6 +2158,26 @@ namespace sqlite2orm {
             // A CAST changes the type of a value, never whether it is one: `CAST(NULL AS TEXT)` is NULL.
             return expressionMayBeNull(*cast->operand);
         }
+        if (auto* caseExpression = dynamic_cast<const CaseNode*>(&astNode)) {
+            // A CASE answers the result of the branch it takes, the ELSE result where no branch
+            // does, and a NULL where neither is there: `SELECT CASE WHEN 0 THEN 1 END` is NULL. The
+            // operand and the conditions pick the branch rather than fill it, so a NULL among them
+            // only takes no branch — `CASE NULL WHEN 1 THEN 2 ELSE 3 END` and
+            // `CASE WHEN NULL THEN 2 ELSE 3 END` are both 3 — and neither is asked here.
+            if (!caseExpression->elseResult) {
+                // Whether a branch always matches is not asked: it would take evaluating what
+                // SQLite makes of a condition — `'1'` is true and `'x'` is false — and getting
+                // that wrong the other way leaves a NULL narrow again, while a `CASE WHEN 1 THEN 2
+                // END` widened for nothing carries an `std::optional` that is always engaged.
+                return true;
+            }
+            for (const CaseBranch& branch: caseExpression->branches) {
+                if (expressionMayBeNull(*branch.result)) {
+                    return true;
+                }
+            }
+            return expressionMayBeNull(*caseExpression->elseResult);
+        }
         if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&astNode)) {
             return functionCallMayBeNull(*functionCall);
         }
@@ -2592,6 +2673,14 @@ namespace sqlite2orm {
         if (dynamic_cast<const CastNode*>(&generatedNode)) {
             // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
             // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
+            return expressionMayBeNull(generatedNode);
+        }
+        if (dynamic_cast<const CaseNode*>(&generatedNode)) {
+            // `case_t<R, …>` is typed R, and R is the type inferred for the first branch's result —
+            // `int` for a branch holding a NULL — so a CASE that answers NULL was read back as 0:
+            // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
+            // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
+            // NULL. The inference never names a nullable type, so nothing here is already widened.
             return expressionMayBeNull(generatedNode);
         }
         if (auto* subquery = dynamic_cast<const SubqueryNode*>(&generatedNode)) {

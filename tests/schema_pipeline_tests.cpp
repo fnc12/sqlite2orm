@@ -1182,6 +1182,39 @@ TEST_CASE("processMultiSql: the WHEN clauses codegen does not warn about compile
                     joinGeneratedCode(results));
 }
 
+// The WHEN clauses of the sweep this came from: SQLite stores every one of them, `--db` reads them
+// back, and sqlite_orm took none of the pairs below. `operator&&` is declared only where one
+// operand is a condition or an operator argument, and `or_()` asserts that both of its arguments
+// are operands sqlite_orm recognizes — a MATCH in either spelling, a CURRENT_* literal and a window
+// call are none of them, and a scalar subquery beside a `new_()` reference is not a pair
+// `operator&&` has an overload for either. The quote each of them is handed over with unwraps at
+// construction, so the WHEN expression is the one that was written, default constructor included.
+TEST_CASE("processMultiSql: the WHEN clauses over operands sqlite_orm does not recognize compile") {
+    const auto results = processMultiSql(
+        "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);\n"
+        "CREATE TRIGGER tr_match_or AFTER INSERT ON t WHEN match(NEW.b, 'x') OR match(NEW.b, 'y') "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_match_and AFTER INSERT ON t WHEN NEW.b MATCH 'x' AND NEW.b MATCH 'y' "
+        "BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_current_or AFTER INSERT ON t WHEN CURRENT_TIMESTAMP OR NEW.a BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_current_right AFTER INSERT ON t WHEN NEW.a OR CURRENT_DATE BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_window_or AFTER INSERT ON t WHEN row_number() OVER () OR NEW.a BEGIN DELETE FROM t; END;\n"
+        "CREATE TRIGGER tr_subquery_and AFTER INSERT ON t WHEN (SELECT count(*) FROM t) AND NEW.a "
+        "BEGIN DELETE FROM t; END;");
+
+    for (const auto& result: results) {
+        REQUIRE(result.codegen.warnings.empty());
+    }
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 // `make_index` deduces the table an index is made for from its first argument, and an expression
 // names none, so an index over one spells the table out. Before it did, every header of a database
 // holding an index over an expression — `CREATE INDEX i_expr ON t(a + 1)`, which SQLite takes and

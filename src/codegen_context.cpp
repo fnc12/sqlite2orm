@@ -278,6 +278,34 @@ namespace sqlite2orm {
         }
     }
 
+    void CodeGeneratorContext::recordPlaceholder(PlaceholderSlot slot) {
+        this->generatedPlaceholders.push_back(slot);
+    }
+
+    size_t CodeGeneratorContext::placeholderMark() const {
+        return this->generatedPlaceholders.size();
+    }
+
+    bool CodeGeneratorContext::placeheldSince(size_t mark) const {
+        return mark < this->generatedPlaceholders.size();
+    }
+
+    bool CodeGeneratorContext::placeheldInExpressionSince(size_t mark) const {
+        for (size_t index = mark; index < this->generatedPlaceholders.size(); ++index) {
+            if (this->generatedPlaceholders[index] == PlaceholderSlot::expression) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void CodeGeneratorContext::discardPlaceholdersSince(size_t mark) {
+        if (mark < this->generatedPlaceholders.size()) {
+            this->generatedPlaceholders.erase(this->generatedPlaceholders.begin() + static_cast<std::ptrdiff_t>(mark),
+                                              this->generatedPlaceholders.end());
+        }
+    }
+
     void CodeGeneratorContext::markUngeneratableTable(std::string_view tableName) {
         this->ungeneratableTables.insert(normalizeSqlIdentifier(tableName));
     }
@@ -314,6 +342,7 @@ namespace sqlite2orm {
         this->formsWithoutDefaultConstructor.clear();
         this->customFunctions.clear();
         this->comments.clear();
+        this->generatedPlaceholders.clear();
     }
 
 }  // namespace sqlite2orm

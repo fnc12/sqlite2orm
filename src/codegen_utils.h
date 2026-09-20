@@ -14,6 +14,8 @@
 
 namespace sqlite2orm {
 
+    class CodeGeneratorContext;
+
     bool policyEquals(const CodeGenPolicy* policy, std::string_view category, std::string_view value);
     CodeGenPolicy policyWithOverride(const CodeGenPolicy* base, std::string_view category, std::string_view value);
 
@@ -269,15 +271,19 @@ namespace sqlite2orm {
      *  The code generated in place of a construct sqlite_orm has no form for: a `/*` … `*\/`
      *  placeholder named by `label`, and `message` anchored at the construct appended to the
      *  warnings of `carried`, which brings along whatever was collected before the construct turned
-     *  out to be unmappable. Such a placeholder stands where an expression or a statement would
-     *  have, so the generated code does not compile there; going through one funnel is what keeps
-     *  every one of them saying which SQL to underline (`codegen: every generated placeholder is
-     *  funnelled through unsupportedPlaceholder` pins that). The placeholders standing for a WHOLE
-     *  statement do not come here — the PRAGMA ones and the `CREATE TABLE` / `CREATE VIEW` headers:
+     *  out to be unmappable. Such a placeholder stands where an EXPRESSION would have — inside the
+     *  code of something larger, where a comment is not an expression and the generated code does
+     *  not compile — so it is recorded in `context` as one, and the statement-level entry points
+     *  leave the statement holding it out whole rather than hand out a header that cannot be built.
+     *  Going through one funnel is what keeps every placeholder saying which SQL to underline and
+     *  where it stands (`codegen: every generated placeholder is funnelled through
+     *  unsupportedPlaceholder` pins that). The placeholders standing for a WHOLE statement that do
+     *  not come here at all are the PRAGMA ones and the `CREATE TABLE` / `CREATE VIEW` headers:
      *  each leaves the generated code compiling and already carries the warning saying why the
      *  statement generated nothing.
      */
-    CodeGenResult unsupportedPlaceholder(std::string_view label,
+    CodeGenResult unsupportedPlaceholder(CodeGeneratorContext& context,
+                                         std::string_view label,
                                          std::string message,
                                          const AstNode& astNode,
                                          CodeGenResult carried = {});
@@ -288,10 +294,23 @@ namespace sqlite2orm {
      *  `/*` … `*\/` the placeholder generates, so that the shape of a placeholder stays known to
      *  this one function and a caller cannot spell a second one of its own.
      */
-    CodeGenResult unsupportedPlaceholder(std::string_view label,
+    CodeGenResult unsupportedPlaceholder(CodeGeneratorContext& context,
+                                         std::string_view label,
                                          const PlaceholderMessage& message,
                                          const AstNode& astNode,
                                          CodeGenResult carried = {});
+    /**
+     *  The same funnel for a placeholder that is the WHOLE code of its statement: a `/*` … `*\/`
+     *  line of its own compiles, and it is the one thing left saying, in the generated file, that
+     *  a statement was read and not mapped. A generator whose code is embedded by whoever asked
+     *  for it — a trigger step, say — has to treat one of these as unmappable all the same, which
+     *  is what `CodeGeneratorContext::placeheldSince` is for.
+     */
+    CodeGenResult unsupportedStatementPlaceholder(CodeGeneratorContext& context,
+                                                  std::string_view label,
+                                                  std::string message,
+                                                  const AstNode& astNode,
+                                                  CodeGenResult carried = {});
     /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.

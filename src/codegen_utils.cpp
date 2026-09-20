@@ -998,19 +998,36 @@ namespace sqlite2orm {
 
     }  // namespace
 
-    CodeGenResult
-    unsupportedPlaceholder(std::string_view label, std::string message, const AstNode& astNode, CodeGenResult carried) {
+    CodeGenResult unsupportedPlaceholder(CodeGeneratorContext& context,
+                                         std::string_view label,
+                                         std::string message,
+                                         const AstNode& astNode,
+                                         CodeGenResult carried) {
+        context.recordPlaceholder(PlaceholderSlot::expression);
         carried.code = placeholderCode(label);
         carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
         return carried;
     }
 
-    CodeGenResult unsupportedPlaceholder(std::string_view label,
+    CodeGenResult unsupportedPlaceholder(CodeGeneratorContext& context,
+                                         std::string_view label,
                                          const PlaceholderMessage& message,
                                          const AstNode& astNode,
                                          CodeGenResult carried) {
+        context.recordPlaceholder(PlaceholderSlot::expression);
         carried.code = placeholderCode(label);
         carried.warnings.push_back(sourceSpanWarning(message(carried.code), astNode));
+        return carried;
+    }
+
+    CodeGenResult unsupportedStatementPlaceholder(CodeGeneratorContext& context,
+                                                  std::string_view label,
+                                                  std::string message,
+                                                  const AstNode& astNode,
+                                                  CodeGenResult carried) {
+        context.recordPlaceholder(PlaceholderSlot::statement);
+        carried.code = placeholderCode(label);
+        carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
         return carried;
     }
 

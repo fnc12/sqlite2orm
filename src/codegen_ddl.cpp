@@ -401,7 +401,9 @@ namespace sqlite2orm {
             case DropObjectKind::view: {
                 CodeGenResult carried;
                 carried.warnings = std::move(warnings);
-                return unsupportedPlaceholder(
+                return unsupportedStatementPlaceholder(
+                    this->context,
+
                     "DROP VIEW: not supported as storage.drop_* in sqlite_orm",
                     "DROP VIEW is not supported as a sqlite_orm storage method; sqlite_orm sync_schema() applies "
                     "to mapped tables/indexes/triggers, not views",
@@ -411,10 +413,11 @@ namespace sqlite2orm {
             default: {
                 CodeGenResult carried;
                 carried.warnings = std::move(warnings);
-                return unsupportedPlaceholder("DROP",
-                                              "this DROP statement is not mapped to sqlite_orm codegen",
-                                              node,
-                                              std::move(carried));
+                return unsupportedStatementPlaceholder(this->context,
+                                                       "DROP",
+                                                       "this DROP statement is not mapped to sqlite_orm codegen",
+                                                       node,
+                                                       std::move(carried));
             }
         }
     }
@@ -465,17 +468,21 @@ namespace sqlite2orm {
 
         if (moduleLower == "fts5") {
             if (node.moduleArguments.empty()) {
-                return unsupportedPlaceholder("CREATE VIRTUAL TABLE: fts5 (no columns)",
-                                              "FTS5 requires at least one column argument for sqlite_orm::using_fts5()",
-                                              node,
-                                              carriedParts(decisionPoints, warnings));
+                return unsupportedStatementPlaceholder(
+                    this->context,
+                    "CREATE VIRTUAL TABLE: fts5 (no columns)",
+                    "FTS5 requires at least one column argument for sqlite_orm::using_fts5()",
+                    node,
+                    carriedParts(decisionPoints, warnings));
             }
             if (const AstNode* unmapped = firstArgumentThatIsNoColumnRef()) {
-                return unsupportedPlaceholder("CREATE VIRTUAL TABLE: fts5 (unmapped arguments)",
-                                              "FTS5 module arguments that are not plain column names cannot be "
-                                              "mapped to sqlite_orm::using_fts5()",
-                                              *unmapped,
-                                              carriedParts(decisionPoints, warnings));
+                return unsupportedStatementPlaceholder(
+                    this->context,
+                    "CREATE VIRTUAL TABLE: fts5 (unmapped arguments)",
+                    "FTS5 module arguments that are not plain column names cannot be "
+                    "mapped to sqlite_orm::using_fts5()",
+                    *unmapped,
+                    carriedParts(decisionPoints, warnings));
             }
             std::string code = "struct " + structName + " {\n";
             for (const auto& moduleArgument: node.moduleArguments) {
@@ -512,7 +519,9 @@ namespace sqlite2orm {
         if (moduleLower == "rtree" || moduleLower == "rtree_i32") {
             const size_t moduleArgumentsCount = node.moduleArguments.size();
             if (moduleArgumentsCount < 3 || moduleArgumentsCount > 11 || (moduleArgumentsCount % 2 == 0)) {
-                return unsupportedPlaceholder(
+                return unsupportedStatementPlaceholder(
+                    this->context,
+
                     "CREATE VIRTUAL TABLE: rtree (invalid column count)",
                     "RTREE virtual table for sqlite_orm needs 3, 5, 7, 9, or 11 simple column identifiers (id + "
                     "min/max pairs)",
@@ -520,7 +529,9 @@ namespace sqlite2orm {
                     carriedParts(decisionPoints, warnings));
             }
             if (const AstNode* unmapped = firstArgumentThatIsNoColumnRef()) {
-                return unsupportedPlaceholder(
+                return unsupportedStatementPlaceholder(
+                    this->context,
+
                     "CREATE VIRTUAL TABLE: rtree (unmapped arguments)",
                     "RTREE module arguments that are not plain column names cannot be mapped to sqlite_orm "
                     "using_rtree() / using_rtree_i32()",
@@ -569,7 +580,9 @@ namespace sqlite2orm {
 
         if (moduleLower == "generate_series") {
             if (!node.moduleArguments.empty()) {
-                return unsupportedPlaceholder(
+                return unsupportedStatementPlaceholder(
+                    this->context,
+
                     "CREATE VIRTUAL TABLE: generate_series (unmapped arguments)",
                     "generate_series module arguments are not mapped to sqlite_orm; expected empty argument list "
                     "for make_virtual_table<generate_series>(..., internal::using_generate_series())",
@@ -584,7 +597,9 @@ namespace sqlite2orm {
 
         if (moduleLower == "dbstat") {
             if (node.moduleArguments.size() > 1) {
-                return unsupportedPlaceholder(
+                return unsupportedStatementPlaceholder(
+                    this->context,
+
                     "CREATE VIRTUAL TABLE: dbstat (too many arguments)",
                     "dbstat accepts at most one optional schema string argument for sqlite_orm::using_dbstat()",
                     *node.moduleArguments.at(1),
@@ -601,18 +616,21 @@ namespace sqlite2orm {
                                    sqlStringToCpp(stringLiteral->value) + "));\n";
                 return CodeGenResult{std::move(code), std::move(decisionPoints), std::move(warnings)};
             }
-            return unsupportedPlaceholder(
+            return unsupportedStatementPlaceholder(
+                this->context,
+
                 "CREATE VIRTUAL TABLE: dbstat (unmapped argument)",
                 "dbstat optional argument should be a SQL string literal for sqlite_orm::using_dbstat(\"...\")",
                 *node.moduleArguments.front(),
                 carriedParts(decisionPoints, warnings));
         }
 
-        return unsupportedPlaceholder("CREATE VIRTUAL TABLE: unknown module",
-                                      "virtual table module \"" + std::string(node.moduleName) +
-                                          "\" has no sqlite_orm mapping in sqlite2orm codegen",
-                                      node,
-                                      carriedParts(decisionPoints, warnings));
+        return unsupportedStatementPlaceholder(this->context,
+                                               "CREATE VIRTUAL TABLE: unknown module",
+                                               "virtual table module \"" + std::string(node.moduleName) +
+                                                   "\" has no sqlite_orm mapping in sqlite2orm codegen",
+                                               node,
+                                               carriedParts(decisionPoints, warnings));
     }
 
     namespace {
@@ -836,12 +854,27 @@ namespace sqlite2orm {
         // it may have been handed an unrelated node before, and that node's comment is not this
         // view's.
         const size_t commentMark = this->context.commentMark();
+        const size_t placeholderMark = this->context.placeholderMark();
         CreateViewParts parts = this->viewParts(node);
+        if (!parts.makeViewExpression.empty() && this->context.placeheldInExpressionSince(placeholderMark)) {
+            // The body holds a construct with no sqlite_orm form, and the placeholder standing for
+            // it is a comment: `make_view<V>(select(/* (SELECT ...) */))` is not C++. The view is
+            // given up on here, so that the branch below leaves it out the way every other
+            // ungeneratable view is left out.
+            parts.warnings.push_back("CREATE VIEW " + viewDisplayName(node) +
+                                     ": the SELECT holds a construct that is not mapped to sqlite_orm, so the "
+                                     "view is not generated");
+            parts.makeViewExpression.clear();
+        }
         if (parts.makeViewExpression.empty()) {
             // The body may well have generated and recorded before the view was given up on — a
             // stored hex literal past int64 stops it after that — but the statement ends up as a
             // placeholder, so the comment has no form left to explain and goes with the code.
+            // The placeholders it generated go the same way: the code holding them is the code
+            // that is not there, and the statement is left with the header placeholder, which is a
+            // comment line of its own and compiles.
             this->context.discardCommentsSince(commentMark);
+            this->context.discardPlaceholdersSince(placeholderMark);
             // A view sqlite_orm has no make_view() for is a name it has no type for either, so
             // whatever rests on the view — a trigger INSTEAD OF it, a view selecting from it —
             // has to go with it, exactly as it does for a table left out of the storage.
@@ -1082,6 +1115,7 @@ namespace sqlite2orm {
         // generator may have generated something else before this table, and that node's comment
         // belongs to it, not here.
         const size_t commentMark = this->context.commentMark();
+        const size_t placeholderMark = this->context.placeholderMark();
         const auto structName = toStructName(createTable.tableName);
         this->context.structName = structName;
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
@@ -1469,12 +1503,25 @@ namespace sqlite2orm {
                                stripIdentifierQuotes(createTable.tableName) + " (converted as a regular table)");
         }
 
+        if (this->context.placeheldInExpressionSince(placeholderMark)) {
+            // A DEFAULT, CHECK or generated-column expression holds a construct with no sqlite_orm
+            // form, and the placeholder standing for it is a comment: `check(/* IN (SELECT ...) */)`
+            // is not C++, so the table cannot be generated with the clause and cannot be generated
+            // without it either — sqlite_orm would map a table SQLite does not have.
+            warnings.push_back("a column or table constraint of " + rawTableName +
+                               " holds a construct that is not mapped to sqlite_orm, so the table is not "
+                               "generated");
+            tableIsGeneratable = false;
+        }
+
         if (!tableIsGeneratable) {
             // The clauses around the one that gave the table up generate and record as usual, and
             // the statement still ends up a placeholder, so their comments go with the code that
             // is not there: a CHECK explained next to a table the consumer never gets reads as a
-            // comment about the storage it does get.
+            // comment about the storage it does get. The placeholders they generated go with
+            // them, for the same reason: the code that held them is not in the statement either.
             this->context.discardCommentsSince(commentMark);
+            this->context.discardPlaceholdersSince(placeholderMark);
             // Nothing sqlite_orm can map this table to, so every statement naming it is left out
             // by whoever assembles the batch; the mark is what tells them which name that is.
             this->context.markUngeneratableTable(createTable.tableName);

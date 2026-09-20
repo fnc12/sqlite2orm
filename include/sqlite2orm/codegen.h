@@ -79,12 +79,15 @@ namespace sqlite2orm {
         CodeGenResult dispatchNode(const AstNode& astNode);
 
         /**
-         *  `result` with the comments the context recorded past `mark` appended: the comments the
-         *  call that produced it recorded, and none of the ones its statement recorded around it.
-         *  A `result` with no code generated nothing for a comment to explain, so the ones recorded
-         *  past `mark` are dropped instead — they belong to the fragment that was thrown away.
+         *  `result` with the comments the context recorded past `commentMark` appended: the
+         *  comments the call that produced it recorded, and none of the ones its statement recorded
+         *  around it. A `result` with no code generated nothing for a comment to explain, so the
+         *  ones recorded past `commentMark` are dropped instead — they belong to the fragment that
+         *  was thrown away, and so do the placeholders recorded past `placeholderMark`: a
+         *  placeholder that is not in the generated code cannot keep a statement from being
+         *  generated.
          */
-        CodeGenResult withRecordedComments(CodeGenResult result, size_t mark);
+        CodeGenResult withRecordedComments(CodeGenResult result, size_t commentMark, size_t placeholderMark);
 
         /** Prepend user-defined/extension function structs (+ registration) and add their decision points. */
         void injectCustomFunctions(CodeGenResult& result);

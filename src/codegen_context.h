@@ -44,6 +44,14 @@ namespace sqlite2orm {
         bool operator==(const CustomFunctionUse&) const = default;
     };
 
+    /** Where a placeholder a generator produced stands in the code the statement generates. */
+    enum class PlaceholderSlot {
+        /** The whole code of the statement: a `/*` … `*\/` line of its own, which compiles. */
+        statement,
+        /** Inside the code of something larger, where a comment is not an expression. */
+        expression,
+    };
+
     class CodeGeneratorContext {
       public:
         std::string structName = "User";
@@ -87,6 +95,16 @@ namespace sqlite2orm {
          *  their result.
          */
         std::vector<std::string> comments;
+        /**
+         *  The placeholders generation has produced since the last reset, in the order they were
+         *  produced, each saying where it stands. A statement whose whole code is a placeholder
+         *  reads as a comment line and compiles; one standing inside the code of something larger
+         *  — `storage.select(as<XAlias>(/*` … `*\/))` — is a comment where C++ expects an
+         *  expression, so the statement holding it cannot be generated at all. Only
+         *  `unsupportedPlaceholder` and `unsupportedStatementPlaceholder` record here, which is
+         *  what keeps the journal complete.
+         */
+        std::vector<PlaceholderSlot> generatedPlaceholders;
         /**
          *  The tables of the current batch that cannot be mapped at all — a STORED generated
          *  column holding such a hex literal leaves the whole table out, because a column that
@@ -207,6 +225,28 @@ namespace sqlite2orm {
          *  get reads it as a statement about the code it did.
          */
         void discardCommentsSince(size_t mark);
+
+        /** Records the placeholder a funnelled `unsupportedPlaceholder…` is about to hand back. */
+        void recordPlaceholder(PlaceholderSlot slot);
+
+        /** The count the `placeheld…Since` readers measure from: how many stand recorded now. */
+        size_t placeholderMark() const;
+
+        /** Whether anything at all was placeheld past `mark`. */
+        bool placeheldSince(size_t mark) const;
+
+        /**
+         *  Whether a placeholder standing in an expression slot was produced past `mark`, i.e.
+         *  whether the code generated since then holds a comment where C++ expects an expression.
+         */
+        bool placeheldInExpressionSince(size_t mark) const;
+
+        /**
+         *  Drops what was placeheld past `mark`, leaving the earlier placeholders in place. A
+         *  generator that throws away what it generated drops them along with the code that held
+         *  them, exactly as it drops the comments recorded for it.
+         */
+        void discardPlaceholdersSince(size_t mark);
 
         /**
          *  How many statements of the current batch already declared each result variable

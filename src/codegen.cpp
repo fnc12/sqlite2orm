@@ -44,6 +44,10 @@ namespace sqlite2orm {
     }
 
     namespace {
+        /** What a statement left out because a placeholder stands inside its code says. */
+        constexpr std::string_view kStatementNotGeneratedWarning =
+            "a construct in this statement is not mapped to sqlite_orm, so the statement is not generated";
+
         std::string escapeForCppStringLiteral(std::string_view text) {
             std::string result;
             for (char character: text) {
@@ -172,9 +176,24 @@ namespace sqlite2orm {
         const size_t commentMark = this->generatorContext->commentMark();
         this->syncToContext();
         this->generatorContext->resetForGeneration();
+        // Taken after the reset, which empties the journal: what this statement placeheld is what
+        // is recorded from here on.
+        const size_t placeholderMark = this->generatorContext->placeholderMark();
         auto result = this->generateNode(astNode);
         if (!this->generatorContext->accumulatedErrors.empty()) {
             return CodeGenResult{{}, {}, {}, std::move(this->generatorContext->accumulatedErrors), {}};
+        }
+        if (!result.code.empty() && this->generatorContext->placeheldInExpressionSince(placeholderMark)) {
+            // A placeholder standing in an expression slot is a comment where C++ expects an
+            // expression — `storage.select(as<XAlias>(/* (SELECT ...) */))` is not code anyone can
+            // build — so the statement is left out whole instead, the way a statement the pipeline
+            // could not carry through already is. The warnings naming the construct and underlining
+            // it stay: they are what says a statement was read and not generated.
+            this->generatorContext->discardCommentsSince(commentMark);
+            CodeGenResult dropped;
+            dropped.warnings = std::move(result.warnings);
+            dropped.warnings.push_back(std::string(kStatementNotGeneratedWarning));
+            return dropped;
         }
         // A comment belongs to the statement whose body the expression was generated in, and this is
         // that statement. `generateNode` has already reported everything recorded since the mark, so
@@ -212,7 +231,8 @@ namespace sqlite2orm {
 
     CodeGenResult CodeGenerator::generateNode(const AstNode& astNode) {
         const size_t mark = this->generatorContext->commentMark();
-        return this->withRecordedComments(this->dispatchNode(astNode), mark);
+        const size_t placeholderMark = this->generatorContext->placeholderMark();
+        return this->withRecordedComments(this->dispatchNode(astNode), mark, placeholderMark);
     }
 
     CodeGenResult CodeGenerator::dispatchNode(const AstNode& astNode) {
@@ -296,36 +316,46 @@ namespace sqlite2orm {
         // consumer is shown that error instead — so this placeholder and its underline are what a
         // generator asking another for a node sees. The same goes for the derived-FROM and the
         // `IN <table>` placeholders.
-        return unsupportedPlaceholder("unsupported node",
-                                      "this statement is not mapped to sqlite_orm codegen",
-                                      astNode);
+        return unsupportedStatementPlaceholder(*this->generatorContext,
+                                               "unsupported node",
+                                               "this statement is not mapped to sqlite_orm codegen",
+                                               astNode);
     }
 
     CodeGenResult CodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode) {
         const size_t mark = this->generatorContext->commentMark();
+        const size_t placeholderMark = this->generatorContext->placeholderMark();
         return this->withRecordedComments(this->selectCodeGenerator->tryCodegenSqliteSelectSubexpression(selectNode),
-                                          mark);
+                                          mark,
+                                          placeholderMark);
     }
 
     CodeGenResult CodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode) {
         const size_t mark = this->generatorContext->commentMark();
+        const size_t placeholderMark = this->generatorContext->placeholderMark();
         return this->withRecordedComments(
             this->selectCodeGenerator->tryCodegenCompoundSelectSubexpression(compoundNode),
-            mark);
+            mark,
+            placeholderMark);
     }
 
     CodeGenResult CodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node) {
         const size_t mark = this->generatorContext->commentMark();
-        return this->withRecordedComments(this->selectCodeGenerator->tryCodegenSelectLikeSubquery(node), mark);
+        const size_t placeholderMark = this->generatorContext->placeholderMark();
+        return this->withRecordedComments(this->selectCodeGenerator->tryCodegenSelectLikeSubquery(node),
+                                          mark,
+                                          placeholderMark);
     }
 
     CodeGenResult CodeGenerator::generateTriggerStep(const AstNode& statement, const std::string& subjectTableStruct) {
         const size_t mark = this->generatorContext->commentMark();
+        const size_t placeholderMark = this->generatorContext->placeholderMark();
         return this->withRecordedComments(this->dmlCodeGenerator->generateTriggerStep(statement, subjectTableStruct),
-                                          mark);
+                                          mark,
+                                          placeholderMark);
     }
 
-    CodeGenResult CodeGenerator::withRecordedComments(CodeGenResult result, size_t mark) {
+    CodeGenResult CodeGenerator::withRecordedComments(CodeGenResult result, size_t mark, size_t placeholderMark) {
         if (result.code.empty()) {
             // Nothing was generated, so there is no form left for a comment recorded here to
             // explain: a node that answers with no code has its comments dropped along with the
@@ -333,6 +363,7 @@ namespace sqlite2orm {
             // whole statement doing this — it generates its expression, drops the statement and
             // would otherwise explain a `0 - expr` the consumer never gets.
             this->generatorContext->discardCommentsSince(mark);
+            this->generatorContext->discardPlaceholdersSince(placeholderMark);
             return result;
         }
         appendUniqueStrings(result.comments, this->generatorContext->commentsRecordedSince(mark));

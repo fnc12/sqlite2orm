@@ -1453,6 +1453,59 @@ TEST_CASE("generateSqliteSchemaHeader: a view over an FTS5 table is left out wit
     requireCompiles(header.code);
 }
 
+// Which tables belong to a module is read off the tokens of the `CREATE VIRTUAL TABLE` row, not off
+// its AST, because everyday FTS5 DDL never reaches an AST here: `sender UNINDEXED` is a column
+// option FTS5 documents, SQLite hands module arguments to the module verbatim rather than parsing
+// them, and this parser reads them as expressions and gives up. Reading the module from the AST
+// left every shadow table of such a virtual table in the storage — the whole symptom, on a schema
+// sqlite3 3.51 creates without a word. The statement itself is left out either way.
+TEST_CASE("generateSqliteSchemaHeader: FTS5 tables are left out behind a virtual table that did not parse") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(
+        masterRow("table", "mail", "CREATE VIRTUAL TABLE mail USING fts5(subject, body, sender UNINDEXED)"));
+    schema.statements.push_back(
+        masterRow("table", "mail_data", "CREATE TABLE 'mail_data'(id INTEGER PRIMARY KEY, block BLOB)"));
+    schema.statements.push_back(
+        masterRow("table",
+                  "mail_idx",
+                  "CREATE TABLE 'mail_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"));
+    schema.statements.push_back(
+        masterRow("table", "mail_content", "CREATE TABLE 'mail_content'(id INTEGER PRIMARY KEY, c0, c1, c2)"));
+    schema.statements.push_back(
+        masterRow("table", "mail_docsize", "CREATE TABLE 'mail_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"));
+    schema.statements.push_back(
+        masterRow("table", "mail_config", "CREATE TABLE 'mail_config'(k PRIMARY KEY, v) WITHOUT ROWID"));
+    REQUIRE_FALSE(schema.statements.front().pipeline.ok());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path);\n"
+                           "}\n");
+    REQUIRE(header.warnings == std::vector<CodegenWarning>{
+                                   {"CREATE VIRTUAL TABLE `mail` did not generate and is not merged into "
+                                    "make_storage()"},
+                                   {"CREATE TABLE `mail_data` is an internal FTS5 table of virtual table `mail` and is "
+                                    "not merged into make_storage()"},
+                                   {"CREATE TABLE `mail_idx` is an internal FTS5 table of virtual table `mail` and is "
+                                    "not merged into make_storage()"},
+                                   {"CREATE TABLE `mail_content` is an internal FTS5 table of virtual table `mail` and "
+                                    "is not merged into make_storage()"},
+                                   {"CREATE TABLE `mail_docsize` is an internal FTS5 table of virtual table `mail` and "
+                                    "is not merged into make_storage()"},
+                                   {"CREATE TABLE `mail_config` is an internal FTS5 table of virtual table `mail` and "
+                                    "is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
 // A trigger body statement with no sqlite_orm form is reachable from an ordinary database, not only
 // from `-e`: SQLite stores `SELECT *, a FROM t` as a trigger step and runs it, while sqlite_orm's
 // `asterisk<T>()` is the form for a result list that is a `*` and nothing else. A placeholder

@@ -487,6 +487,33 @@ namespace sqlite2orm {
             castPredicate(leftResult.code, *binaryOp->lhs, false);
             castPredicate(rightResult.code, *binaryOp->rhs, true);
 
+            // sqlite_orm reads the operand types to decide what an AND or an OR may build at all.
+            // `operator&&` is declared only where one operand is a condition or an operator
+            // argument, so `a + 1 AND a + 2` finds no overload; `or_()` and `and_()` assert that
+            // both arguments are operands it recognizes, and a MATCH, a CURRENT_* literal, a
+            // window call and a FILTERed aggregate are none of them. `c()` is the escape hatch
+            // the assertion names, and it costs nothing: all three unwrap the
+            // `quoted_expression_t` right back to the expression it holds, so the condition built
+            // and the SQL it serializes to are the ones the bare operand would have given.
+            const bool isAndOr = binaryOp->binaryOperator == BinaryOperator::logicalAnd ||
+                                 binaryOp->binaryOperator == BinaryOperator::logicalOr;
+            auto generatesOperatorArgument = [&](const AstNode& operandNode, bool noWrap) {
+                // A column reference generates an operator argument as a column pointer and as a
+                // C++20 alias moniker — an `alias_holder` — and a plain member pointer otherwise,
+                // which is none: only the generator knows which of the three it emits.
+                return generatesSqliteOrmOperatorArgument(operandNode) || noWrap ||
+                       nodeGeneratesColumnPointer(&operandNode);
+            };
+            const bool andOrHasRecognizedOperand =
+                generatesSqliteOrmCondition(leftNode) || generatesSqliteOrmCondition(rightNode) ||
+                generatesOperatorArgument(leftNode, leftNoWrap) || generatesOperatorArgument(rightNode, rightNoWrap);
+            // The operator spelling needs one recognized operand, and each of its variants quotes
+            // a different side, so the side a variant quotes is the one that carries it.
+            const bool operatorSpellingQuotesOperand = isAndOr && !andOrHasRecognizedOperand;
+            // The call spelling needs both of its arguments recognized, each on its own.
+            const bool quoteLeftCallArgument = isAndOr && !generatesSqliteOrmOperandOrBindable(leftNode);
+            const bool quoteRightCallArgument = isAndOr && !generatesSqliteOrmOperandOrBindable(rightNode);
+
             // The operator spelling puts the operands into a C++ expression, whose grouping is the
             // C++ precedence and not the SQL one this node was parsed with. An operand that would
             // regroup there gets parentheses: every operator involved is left-associative, so the
@@ -503,10 +530,12 @@ namespace sqlite2orm {
             std::string leftOperand = asOperand(leftResult.code, leftNode, false);
             std::string rightOperand = asOperand(rightResult.code, rightNode, true);
 
-            std::string wrappedLeft = (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(&leftNode))
-                                          ? wrap(leftResult.code)
-                                          : leftOperand;
-            std::string wrappedRight = (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(&rightNode))
+            std::string wrappedLeft =
+                (operatorSpellingQuotesOperand || (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(&leftNode)))
+                    ? wrap(leftResult.code)
+                    : leftOperand;
+            std::string wrappedRight = (operatorSpellingQuotesOperand ||
+                                        (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(&rightNode)))
                                            ? wrap(rightResult.code)
                                            : rightOperand;
 
@@ -524,8 +553,10 @@ namespace sqlite2orm {
             }
 
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
-            std::string functionalCode = std::string(funcName) + std::string(functionCallResultTypeArgument(funcName)) +
-                                         "(" + leftResult.code + ", " + rightArgument + ")";
+            std::string functionalCode =
+                std::string(funcName) + std::string(functionCallResultTypeArgument(funcName)) + "(" +
+                (quoteLeftCallArgument ? wrap(leftResult.code) : leftResult.code) + ", " +
+                (quoteRightCallArgument ? wrap(rightArgument) : rightArgument) + ")";
 
             auto op = binaryOperatorString(binaryOp->binaryOperator);
             std::string wrapLeftCode = wrappedLeft + std::string(op) + rightOperand;
@@ -641,6 +672,29 @@ namespace sqlite2orm {
             }
             if (needsCallSpelling) {
                 this->context.recordComment(kCommentOrTokenCallSpelling);
+            }
+            // Only the spelling that is emitted carries a quoted operand into the code; the
+            // variants that are merely offered speak for themselves. A leaf operand — a literal or
+            // a column reference — is spelled `c(…)` by the wrapping variants whatever the operator
+            // is, so what the comment marks is the quoting an operand's own form forces on top of
+            // that.
+            auto quotesUnrecognizedOperand = [&](std::string_view exprStyle) {
+                if (exprStyle == "functional") {
+                    return quoteLeftCallArgument || quoteRightCallArgument;
+                }
+                if (!operatorSpellingQuotesOperand) {
+                    return false;
+                }
+                if (exprStyle == "operator_wrap_right") {
+                    return !rightLeaf;
+                }
+                if (exprStyle == "operator_wrap_both") {
+                    return !leftLeaf || !rightLeaf;
+                }
+                return !leftLeaf;
+            };
+            if (quotesUnrecognizedOperand(chosenExprVal)) {
+                this->context.recordComment(kCommentAndOrQuotedOperand);
             }
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings)};
         } else if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {

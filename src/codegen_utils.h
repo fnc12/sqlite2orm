@@ -71,6 +71,7 @@ namespace sqlite2orm {
     extern const std::string kCommentConcatenationCast;
     extern const std::string kCommentBitwiseResultCast;
     extern const std::string kCommentOrTokenCallSpelling;
+    extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
 
@@ -180,6 +181,28 @@ namespace sqlite2orm {
      *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.
      */
     bool generatesSqliteOrmCondition(const AstNode& astNode);
+    /**
+     *  True when the node generates a sqlite_orm operator argument, i.e. a type its
+     *  `is_operator_argument` recognizes: a built-in function call (aggregate and `func<>()`
+     *  included), a CAST, a CASE, a `json_extract()` — what the JSON arrows generate — and the
+     *  `new_()` / `old()` / `excluded()` references. A window function, a call carrying a FILTER
+     *  or an OVER and a MATCH in its function spelling are not: the window aggregates, `match_t`,
+     *  `filtered_aggregate_function_t` and `over_t` are recognized nowhere. Column references are
+     *  left out on purpose — whether one generates a column pointer or an alias, both operator
+     *  arguments, or a plain member pointer, which is none, is the generator's business and not
+     *  the node's.
+     */
+    bool generatesSqliteOrmOperatorArgument(const AstNode& astNode);
+    /**
+     *  True when the node generates something `or_()` and `and_()` accept as an argument, i.e. a
+     *  type their `is_operand_or_bindable` static assertion holds for. Everything the expression
+     *  generator emits is one — a member pointer, a bindable value, an arithmetic or bitwise
+     *  operator, a concatenation, a condition, an operator argument, a scalar subquery or a
+     *  compound operator — except a MATCH in either spelling (`match_t` derives from nothing), a
+     *  CURRENT_DATE / CURRENT_TIME / CURRENT_TIMESTAMP, a window function and a call carrying a
+     *  FILTER or an OVER.
+     */
+    bool generatesSqliteOrmOperandOrBindable(const AstNode& astNode);
     /**
      *  True when the node has to be generated as a call — `or_(…)` or `conc(…)` — because the C++
      *  token `||` would build the other sqlite_orm node than the SQL operator stands for. C++

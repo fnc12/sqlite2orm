@@ -2683,6 +2683,28 @@ namespace sqlite2orm {
             // NULL. The inference never names a nullable type, so nothing here is already widened.
             return expressionMayBeNull(generatedNode);
         }
+        if (auto* subquery = dynamic_cast<const SubqueryNode*>(&generatedNode)) {
+            // A scalar subquery is read back through the type its own result column comes out as:
+            // `(SELECT 1 / 0)` is generated as the nested `select(c(1) / 0)`, and sqlite_orm types
+            // a `select_t` as the column list it carries, so the `double` of the division is what
+            // the outer row holds. The widening belongs here rather than inside the nested
+            // `select(...)`: `as_optional` is the widening of a RESULT column, and the generator
+            // the nested select shares with a view body, a CTE, an IN and an INSERT ... SELECT
+            // hands its columns to no caller. Wrapping the subquery keeps its SQL byte for byte —
+            // `as_optional` serializes its operand and nothing else.
+            auto* nestedSelect = dynamic_cast<const SelectNode*>(subquery->select.get());
+            // A compound subquery is typed from the common type of its parts, and a nested WITH is
+            // not mapped to sqlite_orm codegen at all. Both are left to the arms that own them.
+            if (!nestedSelect || nestedSelect->columns.size() != 1u || !nestedSelect->columns.at(0).expression) {
+                return false;
+            }
+            // What this arm does not cover is the NULL the subquery itself answers: SQLite reads a
+            // scalar subquery over an empty rowset as NULL, so `(SELECT a FROM t)` over a NOT NULL
+            // column is NULL on an empty `t` and still reads back as 0. Whether the column the
+            // nested select names is already nullable is the table's to answer, and no schema
+            // reaches this layer. A known hole, carded separately.
+            return selectResultNeedsAsOptional(*nestedSelect->columns.at(0).expression);
+        }
         if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
             if (functionCall->over) {
                 // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,

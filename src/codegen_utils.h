@@ -108,6 +108,21 @@ namespace sqlite2orm {
     bool functionCallFormHasNoFilter(std::string_view lowerFunctionName);
 
     /**
+     *  The warning a call of `lowerFunctionName` earns when it is written with an argument count
+     *  the sqlite_orm form has no overload for, and nothing when the count is one it takes or the
+     *  name is not one of those forms. The window functions and a MATCH in its function spelling
+     *  declare exactly one overload per argument count SQLite itself accepts — none for
+     *  `row_number` and the other ranking functions, one for `ntile`, `first_value` and
+     *  `last_value`, one to three for `lag` and `lead`, two for `nth_value` and `match` — so a
+     *  call written with any other count generates a call no overload matches. A star counts as no
+     *  argument here, as it does in SQLite. SQLite refuses such a call — `wrong number of arguments
+     *  to function` — but stores a trigger or a view that holds one, so it reaches codegen and the
+     *  warning says so instead of the generated code failing silently.
+     */
+    std::optional<CodegenWarning> functionCallArityWarning(const FunctionCallNode& functionCall,
+                                                           std::string_view lowerFunctionName);
+
+    /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
      *  `internal::condition_t`: a comparison, AND, OR, IN, BETWEEN, LIKE, GLOB, IS [NOT] NULL,
      *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.

@@ -851,6 +851,57 @@ TEST_CASE("codegen: a string PRAGMA value reaches the reader of a PRAGMA that ha
                           {}});
 }
 
+// `sqlite3DecOrHexToI64()` hands `sqlite3Atoi64()` only what `strspn(z, "+- \n\t0123456789")`
+// spans, plus the one character behind it, so the two ends of the text differ although
+// `sqlite3Isspace()` calls `\v`, `\f` and `\r` spaces just like a blank: in front of the digits
+// such a character cuts them away and leaves nothing to read, while behind them it is the trailing
+// space the reader tolerates — and whatever follows it is never looked at, so `'12<VT>abc'` reads
+// as the 12 that `'12abc'` is refused for. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: a vertical tab bounds a max_page_count value where a blank does not") {
+    REQUIRE(generateFull("PRAGMA max_page_count = '\v12';") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '\v12': SQLite reads a PRAGMA value as text, "
+                                          "so this one leaves the limit alone and only reports it",
+                                          SourceLocation{1, 25},
+                                          5}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '  12';") ==
+            CodeGenResult{"storage.pragma.max_page_count(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '  12': SQLite reads a PRAGMA value as text, "
+                                          "so it sets 12",
+                                          SourceLocation{1, 25},
+                                          6}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '12\vabc';") ==
+            CodeGenResult{"storage.pragma.max_page_count(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '12\vabc': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 12",
+                                          SourceLocation{1, 25},
+                                          8}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '12 abc';") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '12 abc': SQLite reads a PRAGMA value as "
+                                          "text, so this one leaves the limit alone and only reports it",
+                                          SourceLocation{1, 25},
+                                          8}},
+                          {}});
+    // `getSafetyLevel()` takes its digit branch only for a text that starts with one, so the very
+    // same leading vertical tab sends `'\v12'` to the PRAGMA's default of 1 rather than to 12.
+    REQUIRE(generateFull("PRAGMA synchronous = '\v12';") ==
+            CodeGenResult{"storage.pragma.synchronous(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = '\v12': SQLite reads a PRAGMA value as text, so "
+                                          "it sets 1",
+                                          SourceLocation{1, 22},
+                                          5}},
+                          {}});
+}
+
 // A real literal is text to these readers too, and only `max_page_count` parts ways with the C++
 // conversion over it: `sqlite3Atoi()` stops at the dot the way a narrowing conversion does, so
 // `synchronous = 1.5` is 1 either way, while `sqlite3DecOrHexToI64()` refuses a text with a dot in

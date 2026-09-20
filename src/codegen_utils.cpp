@@ -2473,10 +2473,32 @@ namespace sqlite2orm {
         }
 
         /**
+         *  The prefix `sqlite3DecOrHexToI64()` hands on to `sqlite3Atoi64()`: what
+         *  `strspn(z, "+- \n\t0123456789")` spans, plus the one character behind it. So the number
+         *  is read from a text that stops at the first character none of those are, and `\v`, `\f`
+         *  and `\r` are such characters even though `sqlite3Isspace()` calls them spaces.
+         */
+        std::string_view sqliteNumberPrefix(std::string_view text) {
+            constexpr std::string_view spanned = "+- \n\t0123456789";
+            size_t length = 0;
+            while (length < text.size() && spanned.find(text[length]) != std::string_view::npos) {
+                ++length;
+            }
+            if (length < text.size()) {
+                ++length;
+            }
+            return text.substr(0, length);
+        }
+
+        /**
          *  SQLite's `sqlite3DecOrHexToI64()`: a `0x` prefix reads the rest as hexadecimal, and
-         *  everything else goes through `sqlite3Atoi64()`, which skips leading spaces, takes a sign
-         *  and then digits, and tolerates only spaces behind them. Nullopt where SQLite refuses the
-         *  text — anything but digits behind the number, or a magnitude past the int64 range.
+         *  everything else goes through `sqlite3Atoi64()` over `sqliteNumberPrefix()`, which skips
+         *  leading spaces, takes a sign and then digits, and tolerates only spaces behind them.
+         *  Nullopt where SQLite refuses the text — anything but digits behind the number, or a
+         *  magnitude past the int64 range. The prefix is what makes the two ends differ: a `\v` in
+         *  front of the digits cuts them away and leaves nothing to read, while one behind them is
+         *  the trailing space `sqlite3Atoi64()` tolerates and everything past it goes unread, so
+         *  `'<VT>12'` is refused and `'12<VT>abc'` reads as 12 where `'12abc'` is refused.
          */
         std::optional<std::int64_t> sqliteDecOrHexToInt64(std::string_view text) {
             if (text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
@@ -2496,6 +2518,7 @@ namespace sqlite2orm {
                 }
                 return static_cast<std::int64_t>(value);
             }
+            text = sqliteNumberPrefix(text);
             size_t index = 0;
             while (index < text.size() && isSqliteSpace(text[index])) {
                 ++index;

@@ -532,9 +532,9 @@ namespace sqlite2orm {
     std::int32_t sqlitePragmaAutoVacuum(std::string_view valueText);
     /**
      *  What `PRAGMA max_page_count = <valueText>` sets the limit to: `sqlite3DecOrHexToI64()` over
-     *  the whole text, clamped to 0..0xfffffffe. Zero for a text it refuses — a name, a number with
-     *  anything trailing it, one past the int64 range — and zero means "leave the limit alone and
-     *  just report it", which is what SQLite does with such a value.
+     *  the whole text, clamped to 0..0xfffffffe. Zero for a text it refuses — a name, `'12abc'`,
+     *  one past the int64 range — and zero means "leave the limit alone and just report it", which
+     *  is what SQLite does with such a value.
      */
     std::int64_t sqlitePragmaMaxPageCount(std::string_view valueText);
 

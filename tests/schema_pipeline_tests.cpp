@@ -1025,6 +1025,68 @@ TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C+
     REQUIRE(exitCode == 0);
 }
 
+// SQLite takes a literal no double holds and answers an Inf — `SELECT 9e999` and a `DEFAULT 9e999`
+// alike — while C++ has no floating literal for that value: g++ 13.3 warns `floating constant
+// exceeds range of 'double'` and the header stops building under `-Werror`. The value is spelled
+// `std::numeric_limits<double>::infinity()` instead, and `<limits>` comes along with it; a header
+// without one is left byte for byte as it was, which the merged-storage case above pins down.
+// Checked against sqlite3 3.51.
+TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelled as an infinity") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE inf_t (a REAL DEFAULT 9e999, b REAL DEFAULT 1e-400, c REAL CHECK (c < 1e309));");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    const CodeGenResult expected{std::string("#pragma once\n\n"
+                                             "#include <sqlite_orm/sqlite_orm.h>\n"
+                                             "#include <cstdint>\n"
+                                             "#include <limits>\n"
+                                             "#include <optional>\n"
+                                             "#include <string>\n"
+                                             "#include <vector>\n\n"
+                                             "struct InfT {\n"
+                                             "    std::optional<double> a;\n"
+                                             "    std::optional<double> b;\n"
+                                             "    std::optional<double> c;\n"
+                                             "};\n\n\n"
+                                             "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                                             "    using namespace sqlite_orm;\n"
+                                             "    return make_storage(db_path,\n"
+                                             "        make_table(\"inf_t\",\n"
+                                             "        make_column(\"a\", &InfT::a, "
+                                             "default_value(std::numeric_limits<double>::infinity())),\n"
+                                             "        make_column(\"b\", &InfT::b, default_value(0.0)),\n"
+                                             "        make_column(\"c\", &InfT::c, "
+                                             "check(c(&InfT::c) < std::numeric_limits<double>::infinity()))));\n"
+                                             "}\n"),
+                                 {},
+                                 {}};
+
+    REQUIRE(header == expected);
+
+    // `-Woverflow` is the diagnostic the out-of-range literals would raise, and nothing else in
+    // the generated header or in sqlite_orm raises it, so it is the one warning worth failing on.
+    const codegen_test_helpers::TempBuildDir dir;
+    dir.write("gen.hpp", header.code);
+    const std::filesystem::path cpppath = dir.write("check.cpp", "#include \"gen.hpp\"\n");
+
+    std::ostringstream cmd;
+    cmd << codegen_test_helpers::TempBuildDir::compilerCommand() << " -fsyntax-only -Werror=overflow";
+    cmd << " -I" << dir.path().string();
+    cmd << ' ' << cpppath.string();
+    cmd << " 2>&1";
+
+    const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
+    if (exitCode != 0) {
+        WARN("compiling the generated header failed (exit " << exitCode
+                                                            << "); ensure c++ and sqlite_orm headers are usable");
+    }
+    REQUIRE(exitCode == 0);
+}
+
 TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE round_t (id INTEGER PRIMARY KEY, name TEXT);");

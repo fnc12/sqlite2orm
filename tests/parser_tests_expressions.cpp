@@ -875,6 +875,65 @@ TEST_CASE("parser: error on trailing tokens") {
     REQUIRE(parseResult.errors.size() == 1);
 }
 
+namespace {
+    /** `1 + 1 + ... + 1` with `termCount` terms, which nests `termCount` expression levels deep. */
+    std::string additionChain(size_t termCount) {
+        std::string sql = "1";
+        for (size_t i = 1; i < termCount; ++i) {
+            sql += " + 1";
+        }
+        return sql;
+    }
+}
+
+TEST_CASE("parser: expression nested past the depth limit is refused") {
+    auto parseResult = parse("SELECT " + additionChain(kMaxExpressionDepth + 1));
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.astNodePointer == nullptr);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "expression tree is too large (maximum depth 1000)");
+}
+
+TEST_CASE("parser: expression at the depth limit is accepted") {
+    auto parseResult = parse("SELECT " + additionChain(kMaxExpressionDepth));
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: parentheses count towards the depth limit") {
+    // SQLite drops parentheses before it measures, so it takes these; they cost a level here
+    // because the parser recurses once per pair, and recursing that deep is what has to stop.
+    const std::string deep = std::string(kMaxExpressionDepth, '(') + "1" + std::string(kMaxExpressionDepth, ')');
+    auto parseResult = parse("SELECT " + deep);
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "expression tree is too large (maximum depth 1000)");
+}
+
+TEST_CASE("parser: prefix NOT nested past the depth limit is refused") {
+    std::string sql = "SELECT ";
+    for (size_t i = 0; i < kMaxExpressionDepth; ++i) {
+        sql += "NOT ";
+    }
+    sql += "1";
+    auto parseResult = parse(sql);
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "expression tree is too large (maximum depth 1000)");
+}
+
+TEST_CASE("parser: subqueries nested past the depth limit are refused") {
+    std::string sql = "SELECT ";
+    for (size_t i = 0; i < kMaxExpressionDepth; ++i) {
+        sql += "(SELECT ";
+    }
+    sql += "1";
+    sql += std::string(kMaxExpressionDepth, ')');
+    auto parseResult = parse(sql);
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "expression tree is too large (maximum depth 1000)");
+}
+
 // --- IS / IS NOT / IS [NOT] DISTINCT FROM ---
 
 TEST_CASE("parser: IS expr") {

@@ -34,6 +34,18 @@ namespace sqlite2orm {
       private:
         /** `parsePrimary` without the source span it records on what it returns. */
         AstNodePointer parsePrimaryCore();
+        /** `parseBinaryExpression` without the nesting levels its loop takes. */
+        AstNodePointer parseBinaryExpressionCore(int minPrecedence);
+
+        /**
+         *  Takes the level the node about to be built will sit on, and answers whether there is
+         *  one left. On `false` the expression is refused with a parse error, the way SQLite
+         *  refuses one past SQLITE_MAX_EXPR_DEPTH, instead of recursing until the stack runs out.
+         */
+        bool enterExpressionLevel();
+
+        /** Expression nodes already on the path from the statement down to what is parsed now. */
+        size_t expressionDepth = 0;
 
         Parser& parser;
         TokenStream& tokenStream;

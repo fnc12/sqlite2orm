@@ -701,6 +701,150 @@ storage.insert(into<T>(), columns(&T::id, &T::name), values(std::make_tuple(1, "
     REQUIRE(header == expected);
 }
 
+// A whole schema follows the same decision: targeting C++26, every table it merges into
+// make_storage() is mapped by reflection, and the decision points of the tables reach the caller
+// along with those of the views and the indices.
+TEST_CASE("generateSqliteSchemaHeader: targeting C++26 merges reflected tables") {
+    auto pipelines = processMultiSql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);");
+    REQUIRE(pipelines.size() == 1);
+    REQUIRE(pipelines[0].ok());
+
+    ProcessSqliteSchemaResult schema;
+    for (auto& p: pipelines) {
+        SchemaStatementResult s;
+        s.meta.type = "table";
+        s.pipeline = std::move(p);
+        schema.statements.push_back(std::move(s));
+    }
+
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    const CodeGenResult header = generateSqliteSchemaHeader(schema, &policy);
+    REQUIRE(header.code == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace sqlite_orm;
+
+struct [[= "t"_orm_name]] T {
+    [[= primary_key()]] int64_t id = 0;
+    std::optional<std::string> name;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table<T>());
+}
+)");
+    REQUIRE(header.decisionPoints.size() == 1);
+    REQUIRE(header.decisionPoints.at(0).category == "table_mapping_style");
+    REQUIRE(header.decisionPoints.at(0).chosenValue == "reflection");
+    REQUIRE(header.warnings.empty());
+    REQUIRE(header.errors.empty());
+}
+
+// The names inside an annotation get unqualified lookup where the struct is written, and the
+// literal operator of `[[= "t"_orm_name]]` gets nothing else at all — not even ADL — so a header
+// whose structs are annotated declares sqlite_orm's names in front of them, as upstream's own
+// reflection tests do. Answering the decision point with the classical mapping takes the
+// annotations away, and the directive goes with them: a header of plain structs is left as it was.
+TEST_CASE("generateSqliteSchemaHeader: an explicit make_table policy leaves the header unannotated") {
+    auto pipelines = processMultiSql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);");
+    REQUIRE(pipelines.size() == 1);
+    REQUIRE(pipelines[0].ok());
+
+    ProcessSqliteSchemaResult schema;
+    for (auto& p: pipelines) {
+        SchemaStatementResult s;
+        s.meta.type = "table";
+        s.pipeline = std::move(p);
+        schema.statements.push_back(std::move(s));
+    }
+
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "make_table";
+    const CodeGenResult header = generateSqliteSchemaHeader(schema, &policy);
+    REQUIRE(header.code == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct T {
+    int64_t id = 0;
+    std::optional<std::string> name;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("t",
+        make_column("id", &T::id, primary_key()),
+        make_column("name", &T::name)));
+}
+)");
+    REQUIRE(header.decisionPoints.size() == 1);
+    REQUIRE(header.decisionPoints.at(0).chosenValue == "make_table");
+    REQUIRE(header.warnings.empty());
+    REQUIRE(header.errors.empty());
+}
+
+// A view has no classical form at all — sqlite_orm maps every one of them by reflection — so its
+// struct carries an annotation whatever standard the header targets, and the directive comes with
+// it even when the tables around it are mapped classically.
+TEST_CASE("generateSqliteSchemaHeader: a view makes the header declare sqlite_orm's names") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, age INTEGER);"
+            "CREATE VIEW adults AS SELECT id FROM users WHERE age >= 18;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace sqlite_orm;
+
+struct Users {
+    int64_t id = 0;
+    std::optional<int64_t> age;
+};
+
+struct [[= "adults"_orm_name]] Adults {
+    int64_t id = 0;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("users",
+        make_column("id", &Users::id, primary_key()),
+        make_column("age", &Users::age)),
+        make_view<Adults>(select(&Users::id, where(c(&Users::age) >= 18))));
+}
+)");
+    REQUIRE(header.errors.empty());
+}
+
 TEST_CASE("sqliteSchemaResultToJson: shape") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");
@@ -773,6 +917,21 @@ TEST_CASE("sqliteSchemaResultToJson: a table that generates nothing reports no c
         sqliteSchemaResultToJson(schema) ==
         R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":true,"tableName":"q","type":"table"}]})");
     REQUIRE(generateSqliteSchemaHeader(schema).comments == std::vector<std::string>{});
+}
+
+// The header assembles a table from its `CreateTableParts`, a channel of its own next to the
+// per-statement one, so the comments a table's clauses record have to be taken there too: the
+// `table_mapping_style` decision point the parts also carry is not the only thing on them.
+TEST_CASE("generateSqliteSchemaHeader: a comment from a table clause reaches the header") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (a INTEGER CHECK(-a > 0));");
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(generateSqliteSchemaHeader(schema).comments ==
+            std::vector<std::string>{
+                "Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong result "
+                "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
+                "computes for `-expr` — same value and same typeof for every operand kind."});
 }
 
 // The view path of the same rule: SQLite stores a body holding that literal and refuses every query

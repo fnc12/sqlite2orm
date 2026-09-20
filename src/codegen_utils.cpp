@@ -584,19 +584,36 @@ namespace sqlite2orm {
             "percent_rank",
             "cume_dist",
         }};
-        // The window functions that take arguments, and MATCH in its function spelling.
-        constexpr std::array<std::string_view, 7> kArgumentTakingAggregateForms{{
+        // The window functions that take arguments.
+        constexpr std::array<std::string_view, 6> kArgumentTakingWindowFunctions{{
             "ntile",
             "lag",
             "lead",
             "first_value",
             "last_value",
             "nth_value",
-            "match",
+        }};
+        // The built-in aggregate functions sqlite_orm declares as a `builtin_aggregate_function_t`,
+        // the form carrying `filter()`. COUNT, MAX and MIN are aggregates too, but which form a
+        // call of them is generated as follows from its arguments rather than from its name, so
+        // `functionCallFormHasNoFilter` answers those three on its own.
+        constexpr std::array<std::string_view, 6> kFilterableAggregateFunctions{{
+            "avg",
+            "group_concat",
+            "json_group_array",
+            "json_group_object",
+            "sum",
+            "total",
         }};
 
         bool nameIsIn(std::string_view name, std::span<const std::string_view> names) {
             return std::find(names.begin(), names.end(), name) != names.end();
+        }
+
+        /** Whether SQLite reads a call of `lowerFunctionName` as a window function. */
+        bool isWindowFunction(std::string_view lowerFunctionName) {
+            return nameIsIn(lowerFunctionName, kNullaryWindowFunctions) ||
+                   nameIsIn(lowerFunctionName, kArgumentTakingWindowFunctions);
         }
     }
 
@@ -607,12 +624,58 @@ namespace sqlite2orm {
         if (star) {
             return lowerFunctionName == "count";
         }
-        return nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
+        // MATCH in its function spelling is generated as `match_t`, an aggregate of its own.
+        return nameIsIn(lowerFunctionName, kArgumentTakingWindowFunctions) || lowerFunctionName == "match";
     }
 
-    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName) {
-        return nameIsIn(lowerFunctionName, kNullaryWindowFunctions) ||
-               nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName,
+                                     size_t argumentCount,
+                                     bool generatedAsCountAsterisk) {
+        if (generatedAsCountAsterisk) {
+            return false;
+        }
+        if (lowerFunctionName == "count") {
+            // `count(X)` is the aggregate; the argument-less `count()` SQLite counts every row of
+            // the group with is generated as a `count_asterisk_without_type`, which holds nothing
+            // and carries no `filter()`.
+            return argumentCount == 0;
+        }
+        if (lowerFunctionName == "max" || lowerFunctionName == "min") {
+            // MAX(X) and MIN(X) are the aggregates; from a second argument on sqlite_orm picks the
+            // scalar overload, the same split SQLite makes — `FILTER may not be used with
+            // non-aggregate max()`.
+            return argumentCount >= 2;
+        }
+        return !nameIsIn(lowerFunctionName, kFilterableAggregateFunctions);
+    }
+
+    std::string
+    filterOnCallWithoutFilterWarning(std::string_view functionName, bool hasOverClause, bool userDefinedFunction) {
+        const std::string name(functionName);
+        const std::string preamble = name + "() has no filter() in sqlite_orm: only the aggregate function calls and "
+                                            "count(*) take a FILTER, so the generated code does not compile. ";
+        if (userDefinedFunction) {
+            return preamble +
+                   "SQLite takes a FILTER over a user-defined aggregate function, so the SQL may well be fine "
+                   "while the func<" +
+                   toStructName(functionName) + ">() call standing for " + name + "() is not";
+        }
+        const std::string lowerName = toLowerAscii(functionName);
+        if (lowerName == "count") {
+            // The only COUNT generated without a `filter()` is the argument-less one, which SQLite
+            // takes as readily as the star it counts the same rows as.
+            return preamble + "SQLite takes the same call — count() counts the rows count(*) does — so the SQL is well "
+                              "formed and the generated code alone is not";
+        }
+        std::string refusal;
+        if (isWindowFunction(lowerName)) {
+            refusal = hasOverClause ? "FILTER clause may only be used with aggregate window functions"
+                                    : "misuse of window function " + name + "()";
+        } else {
+            refusal = hasOverClause ? name + "() may not be used as a window function"
+                                    : "FILTER may not be used with non-aggregate " + name + "()";
+        }
+        return preamble + "SQLite refuses the same call — " + refusal + " — but stores a trigger or a view holding it";
     }
 
     std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName) {

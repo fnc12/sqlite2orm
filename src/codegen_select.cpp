@@ -212,6 +212,9 @@ namespace sqlite2orm {
                 if (auto warning = selectResultDoublePrecisionWarning(*column.expression)) {
                     appendUniqueWarnings(selectWarnings, {std::move(*warning)});
                 }
+                if (auto warning = selectResultJsonExtractTypeWarning(*column.expression)) {
+                    appendUniqueWarnings(selectWarnings, {std::move(*warning)});
+                }
                 return wrapWithColumnAlias(colCode, column.alias, cpp20ColumnAliases);
             };
             code = "auto " + rowsVariable + " = storage.select(";

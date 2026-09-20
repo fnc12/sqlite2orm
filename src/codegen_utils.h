@@ -33,6 +33,10 @@ namespace sqlite2orm {
     /** C++ variable name for the RAII guard of a savepoint (`sp 1` -> `sp_1_savepoint`). */
     std::string savepointGuardVariableName(std::string_view savepointName);
     std::string sqlStringToCpp(std::string_view sqlString);
+    /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
+    std::string sqlStringLiteralText(std::string_view literal);
+    /** `text` as a C++ string literal, quotes included. */
+    std::string cppStringLiteral(std::string_view text);
 
     std::string stripColumnAliasQuotes(std::string_view alias);
     bool isBuiltinColalias(std::string_view stripped);
@@ -107,6 +111,47 @@ namespace sqlite2orm {
      *  aggregate window functions` — but stores a trigger or a view that holds one.
      */
     bool functionCallFormHasNoFilter(std::string_view lowerFunctionName);
+
+    /**
+     *  The result type a generated call of `lowerFunctionName` spells between angle brackets —
+     *  `"<std::string>"` — and an empty view for a call that spells none. `json_extract` and
+     *  `json_quote` are the two sqlite_orm builtins declared with a result type parameter that has
+     *  no default (`template<class R, class X, class... Args> json_extract(X, Args...)`), so a call
+     *  generated without one does not compile at all: JSON_EXTRACT answers a value of whatever
+     *  storage class the JSON holds, and there is nothing in the arguments to deduce that from.
+     *  `std::string` is the type that reads every storage class back — sqlite_orm reads it through
+     *  `sqlite3_column_text`, which renders an INTEGER or a REAL as its text — and the only one
+     *  JSON_QUOTE ever answers.
+     */
+    std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName);
+
+    /** `"->"`, `"->>"` or an empty view for any other operator — the text a JSON arrow is written as. */
+    std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator);
+
+    /**
+     *  What a `->` generated as a JSON_EXTRACT call answers that `->` does not, underlined at
+     *  `location`. sqlite_orm has no form for the operator itself.
+     */
+    CodegenWarning jsonTextArrowWarning(SourceLocation location);
+
+    /**
+     *  The report a JSON arrow carries whose path operand `jsonArrowPathExpansion` cannot expand,
+     *  underlined at the operator.
+     */
+    CodegenWarning jsonArrowPathNotExpandedWarning(const BinaryOperatorNode& arrow);
+
+    /**
+     *  The JSON path `X -> P` and `X ->> P` look P up under, for a P the operand spells out, and
+     *  nullopt for every other operand. The operators take an abbreviated path the JSON_EXTRACT
+     *  call they are generated as does not: SQLite expands an INTEGER operand into `$[N]` (and a
+     *  negative one into `$[#-N]`, counted from the right of the array), a text one starting with
+     *  `$` into itself, one of nothing but ASCII letters, digits and `_` into `$.label`, one
+     *  wrapped in brackets into `$[…]`, and every other one into `$."label"` — so
+     *  `'{"x":5}' ->> 'x'` is 5 while `json_extract('{"x":5}', 'x')` is the error `bad JSON path`.
+     *  Read off sqlite3 3.51 (`jsonExtractFunc`); an operand SQLite reads as a REAL or a BLOB is
+     *  left unexpanded, along with every operand that is not a literal at all.
+     */
+    std::optional<std::string> jsonArrowPathExpansion(const AstNode& pathOperand);
 
     /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
@@ -192,6 +237,22 @@ namespace sqlite2orm {
     std::string blobToCpp(std::string_view blobLiteral);
     /** SQL numeric literal to C++: SQLite's `_` digit separators become C++'s `'` (1_000 -> 1'000). */
     std::string numericLiteralToCpp(std::string_view numericLiteral);
+    /**
+     *  The value C++ has no floating literal for: SQLite answers a literal past the range of a
+     *  double with an Inf, while [lex.fcon] makes the same spelling ill-formed in C++, where gcc
+     *  and clang warn (`floating constant exceeds range of 'double'`) and a consumer building the
+     *  generated code with `-Werror` gets an error. The generated header takes `<limits>` along
+     *  with this, which is why the emitter tells the context it was spelled.
+     */
+    inline constexpr std::string_view kInfinityCppExpression = "std::numeric_limits<double>::infinity()";
+    /** Whether codegen spells `numericLiteral` as `kInfinityCppExpression` rather than as itself. */
+    bool numericLiteralGeneratesInfinity(std::string_view numericLiteral);
+    /**
+     *  SQL real literal to C++, as the value SQLite reads it as: a literal past the range of a
+     *  double becomes an infinity, one too small for a double the zero it rounds to, and every
+     *  other one keeps the spelling it was written with.
+     */
+    std::string realLiteralToCpp(std::string_view realLiteral);
     /** Same for an integer literal, whose leading zeros C++ would read as an octal prefix (`010` is 10 in SQLite, 8 in C++). */
     std::string integerLiteralToCpp(std::string_view integerLiteral);
     /**
@@ -512,6 +573,19 @@ namespace sqlite2orm {
      *  or a NULL whenever an operand is one.
      */
     std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode);
+    /**
+     *  The warning a SELECT result column read back through a JSON_EXTRACT call over a single path
+     *  carries — a `->>` and a `json_extract(X, P)` written as a call alike — and nullopt for
+     *  every other column. What SQLite answers there is the value at the path, of whatever storage
+     *  class the JSON holds; sqlite_orm deduces no result type for the call, and the one generated
+     *  for it (see `functionCallResultTypeArgument`) reads every storage class back as its text.
+     *  JSON_EXTRACT over two paths or more answers the JSON array of what it found, which is text
+     *  whatever the JSON holds, so that form is left alone. `->` is left alone too: it answers the
+     *  JSON text of the value rather than the value, so it is a text itself and a `std::string`
+     *  costs it nothing — where the call it is generated as differs from it is what
+     *  `jsonTextArrowWarning` already reports, at the same two characters.
+     */
+    std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode);
     /**
      *  The report for a unary plus that stands over a column reference on one side of a comparison,
      *  if `astNode` is one. A unary plus is an identity for the value, which is why codegen emits

@@ -733,19 +733,27 @@ TEST_CASE("codegen: an arithmetic result column that can overflow into a NaN is 
     // A decimal literal whose exponent runs past the double range is an infinity of its own, and
     // it is read out of the literal's text rather than out of an int64 it does not fit, so these
     // pin the text-to-double path the two cells above reach through a magnitude bound instead.
-    REQUIRE(generate("SELECT 9e999 - 9e999;") == "auto rows = storage.select(as_optional(c(9e999) - 9e999));");
-    REQUIRE(generate("SELECT 0 * 9e999;") == "auto rows = storage.select(as_optional(c(0) * 9e999));");
-    REQUIRE(generate("SELECT 1.0e400 - 1.0e400;") == "auto rows = storage.select(as_optional(c(1.0e400) - 1.0e400));");
-    REQUIRE(generate("SELECT -9e999 + 9e999;") == "auto rows = storage.select(as_optional(c(-9e999) + 9e999));");
+    REQUIRE(generate("SELECT 9e999 - 9e999;") ==
+            "auto rows = storage.select(as_optional(c(std::numeric_limits<double>::infinity()) - "
+            "std::numeric_limits<double>::infinity()));");
+    REQUIRE(generate("SELECT 0 * 9e999;") ==
+            "auto rows = storage.select(as_optional(c(0) * std::numeric_limits<double>::infinity()));");
+    REQUIRE(generate("SELECT 1.0e400 - 1.0e400;") ==
+            "auto rows = storage.select(as_optional(c(std::numeric_limits<double>::infinity()) - "
+            "std::numeric_limits<double>::infinity()));");
+    REQUIRE(generate("SELECT -9e999 + 9e999;") ==
+            "auto rows = storage.select(as_optional(c(-std::numeric_limits<double>::infinity()) + "
+            "std::numeric_limits<double>::infinity()));");
     // COLLATE decides how a value compares, not what the value is, so the literal under one is
     // read as the literal it is: a zero next to an infinity still reaches the NaN, a one does not.
     REQUIRE(generate("SELECT (0 COLLATE BINARY) * (1e300 * 1e300);") ==
             "auto rows = storage.select(as_optional(c(0) * (c(1e300) * 1e300)));");
-    REQUIRE(generate("SELECT 0 * (9e999 COLLATE BINARY);") == "auto rows = storage.select(as_optional(c(0) * 9e999));");
+    REQUIRE(generate("SELECT 0 * (9e999 COLLATE BINARY);") ==
+            "auto rows = storage.select(as_optional(c(0) * std::numeric_limits<double>::infinity()));");
     REQUIRE(generate("SELECT (1 COLLATE BINARY) * (1e300 * 1e300);") ==
             "auto rows = storage.select(c(1) * (c(1e300) * 1e300));");
     REQUIRE(generate("SELECT 1e300 * 1e300;") == "auto rows = storage.select(c(1e300) * 1e300);");
-    REQUIRE(generate("SELECT 9e999;") == "auto rows = storage.select(9e999);");
+    REQUIRE(generate("SELECT 9e999;") == "auto rows = storage.select(std::numeric_limits<double>::infinity());");
     REQUIRE(generate("SELECT 0 * 1e300;") == "auto rows = storage.select(c(0) * 1e300);");
     REQUIRE(generate("SELECT 1.5 + 2.5;") == "auto rows = storage.select(c(1.5) + 2.5);");
     REQUIRE(generate("SELECT (1 + 2) * 0;") == "auto rows = storage.select((c(1) + 2) * 0);");
@@ -832,7 +840,7 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
     REQUIRE(generate("SELECT unicode('') + 1;") == "auto rows = storage.select(as_optional(unicode(\"\") + 1));");
     REQUIRE(generate("SELECT sign('abc');") == "auto rows = storage.select(as_optional(sign(\"abc\")));");
     REQUIRE(generate("SELECT json_extract('{}', '$.a');") ==
-            "auto rows = storage.select(as_optional(json_extract(\"{}\", \"$.a\")));");
+            "auto rows = storage.select(as_optional(json_extract<std::string>(\"{}\", \"$.a\")));");
     REQUIRE(generate("SELECT sqrt(-1);") == "auto rows = storage.select(as_optional(sqrt(-1)));");
     // `substr(x'', 1)` is NULL rather than an empty blob, and `printf('')` NULL rather than an
     // empty string, so neither is a function that only propagates a NULL argument.

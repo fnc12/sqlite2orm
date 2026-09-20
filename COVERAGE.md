@@ -617,7 +617,7 @@ share one result type — so it needs a decision taken across the branches at on
 - [x] json_array(value1, ...)
 - [x] json_array_length(json)
 - [x] json_array_length(json, path)
-- [x] json_extract(json, path, ...)
+- [x] json_extract(json, path, ...) → `json_extract<std::string>(…)`: sqlite_orm declares the call with a result type parameter that has no default, so a call generated without one does not compile. JSON_EXTRACT over one path answers the value at it, of whatever storage class the JSON holds, and `std::string` reads every one of them back as its text — reported on a result column; over two paths or more it answers the JSON array of what it found, which is text anyway
 - [x] json_insert(json, path, value, ...)
 - [x] json_object(label1, value1, ...)
 - [x] json_patch(json1, json2)
@@ -627,15 +627,16 @@ share one result type — so it needs a decision taken across the branches at on
 - [x] json_type(json)
 - [x] json_type(json, path)
 - [x] json_valid(json)
-- [x] json_quote(value)
+- [x] json_quote(value) → `json_quote<std::string>(…)`: the same result type parameter with no default, and text is what JSON_QUOTE always answers
 - [x] json_group_array(value)
 - [x] json_group_object(name, value)
 - [x] json_each(json)
 - [x] json_each(json, path)
 - [x] json_tree(json)
 - [x] json_tree(json, path)
-- [x] `->` operator → `json_extract(lhs, rhs)` (codegen warning: return type may differ)
-- [x] `->>` operator → `json_extract(lhs, rhs)` (codegen warning: return type may differ)
+- [x] `->` operator → `json_extract<std::string>(lhs, path)` (codegen warning: JSON_EXTRACT answers the SQL value at the path where `->` answers the JSON text of it — `'{"a":"s"}' -> '$.a'` is `"s"` in SQLite and `s` here; sqlite_orm has no form for the operator)
+- [x] `->>` operator → `json_extract<std::string>(lhs, path)`, which SQLite answers value for value and storage class for storage class over the same path; the result type report a single-path JSON_EXTRACT carries on a result column is its, and not `->`'s: `->` answers the JSON text of the value, which is a text whatever the JSON holds, so reading it back through a `std::string` costs it nothing and only the divergence above is reported
+- [x] both arrows take an abbreviated path the JSON_EXTRACT call they are generated as does not, so the path the operand spells out is expanded the way SQLite expands it: `'x'` → `$.x`, `'a.b'` → `$."a.b"`, `'[1]'` → `$[1]`, `1` → `$[1]`, `-1` → `$[#-1]`, and a `$` path as written. A path operand SQLite only expands while it runs — a column, a bind parameter, an expression, or a literal it reads as a REAL or a BLOB — is left as written and reported (codegen warning: the call takes the operand as written, and SQLite refuses a path that does not start with `$`)
 
 ---
 

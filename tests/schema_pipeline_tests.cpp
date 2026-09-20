@@ -1316,6 +1316,143 @@ TEST_CASE("generateSqliteSchemaHeader: nothing that names a virtual table is mer
     requireCompiles(header.code);
 }
 
+// FTS5 keeps its index in ordinary tables named `<virtual-table>_data`, `_idx`, `_content`,
+// `_docsize` and `_config`, and `sqlite_master` holds a plain `CREATE TABLE` for every one of
+// them. They are the module's own storage: writing to one through a storage corrupts the index,
+// and sync_schema() would go around the module altogether. SQLite reads the names exactly this way
+// — `sqlite3ShadowTableName()` cuts at the LAST underscore and asks the module about the rest —
+// and refuses `CREATE TABLE a_b_content(z)` next to `CREATE VIRTUAL TABLE a_b USING fts5(x,
+// content='')` with "object name reserved for internal use". The SQL below is what sqlite3 3.51
+// stores for the schema of the report.
+TEST_CASE("generateSqliteSchemaHeader: the tables FTS5 keeps its index in are not merged into the storage") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "docs", "CREATE TABLE docs(id INTEGER PRIMARY KEY, body TEXT)"));
+    schema.statements.push_back(
+        masterRow("table", "docs_fts", "CREATE VIRTUAL TABLE docs_fts USING fts5(body, content='docs')"));
+    schema.statements.push_back(
+        masterRow("table", "docs_fts_config", "CREATE TABLE 'docs_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"));
+    schema.statements.push_back(
+        masterRow("table", "docs_fts_data", "CREATE TABLE 'docs_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"));
+    schema.statements.push_back(
+        masterRow("table", "docs_fts_docsize", "CREATE TABLE 'docs_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"));
+    schema.statements.push_back(
+        masterRow("table",
+                  "docs_fts_idx",
+                  "CREATE TABLE 'docs_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"));
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Docs {\n"
+                           "    int64_t id = 0;\n"
+                           "    std::optional<std::string> body;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"docs\",\n"
+                           "        make_column(\"id\", &Docs::id, primary_key()),\n"
+                           "        make_column(\"body\", &Docs::body)));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE TABLE `docs_fts_config` is an internal FTS5 table of virtual table `docs_fts` "
+                 "and is not merged into make_storage()"},
+                {"CREATE TABLE `docs_fts_data` is an internal FTS5 table of virtual table `docs_fts` "
+                 "and is not merged into make_storage()"},
+                {"CREATE TABLE `docs_fts_docsize` is an internal FTS5 table of virtual table `docs_fts` "
+                 "and is not merged into make_storage()"},
+                {"CREATE TABLE `docs_fts_idx` is an internal FTS5 table of virtual table `docs_fts` "
+                 "and is not merged into make_storage()"},
+                {"CREATE VIRTUAL TABLE `docs_fts` is not merged into make_storage(); run sqlite2orm on "
+                 "its SQL separately"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// Only the suffixes FTS5 claims, behind a name that is a virtual table of its own, belong to the
+// module. `t5_bogus` is an ordinary table, and so is `t5_extra_data` — SQLite cuts `t5_extra_data`
+// at its last underscore, finds no virtual table called `t5_extra`, and creates both without a
+// word (checked against sqlite3 3.51).
+TEST_CASE("generateSqliteSchemaHeader: a table that only looks like FTS5 storage is merged as it is") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "t5", "CREATE VIRTUAL TABLE t5 USING fts5(a)"));
+    schema.statements.push_back(masterRow("table", "t5_bogus", "CREATE TABLE t5_bogus(x INTEGER PRIMARY KEY)"));
+    schema.statements.push_back(
+        masterRow("table", "t5_data", "CREATE TABLE 't5_data'(id INTEGER PRIMARY KEY, block BLOB)"));
+    schema.statements.push_back(
+        masterRow("table", "t5_extra_data", "CREATE TABLE t5_extra_data(x INTEGER PRIMARY KEY)"));
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T5Bogus {\n"
+                           "    int64_t x = 0;\n"
+                           "};\n\n"
+                           "struct T5ExtraData {\n"
+                           "    int64_t x = 0;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"t5_bogus\",\n"
+                           "        make_column(\"x\", &T5Bogus::x, primary_key())),\n"
+                           "        make_table(\"t5_extra_data\",\n"
+                           "        make_column(\"x\", &T5ExtraData::x, primary_key())));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE TABLE `t5_data` is an internal FTS5 table of virtual table `t5` and is not "
+                 "merged into make_storage()"},
+                {"CREATE VIRTUAL TABLE `t5` is not merged into make_storage(); run sqlite2orm on its "
+                 "SQL separately"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// The module reads the names without regard to case, so `My_FTS_data` is `My_FTS`'s storage. A view
+// over it is a name resting on a table that gets no C++ type, and goes the same way — SQLite stores
+// and runs such a view, so it is reachable from an ordinary database.
+TEST_CASE("generateSqliteSchemaHeader: a view over an FTS5 table is left out with the table") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "My_FTS", "CREATE VIRTUAL TABLE \"My_FTS\" USING fts5(a)"));
+    schema.statements.push_back(
+        masterRow("table", "My_FTS_data", "CREATE TABLE 'My_FTS_data'(id INTEGER PRIMARY KEY, block BLOB)"));
+    schema.statements.push_back(masterRow("view", "blocks", "CREATE VIEW blocks AS SELECT block FROM \"My_FTS_data\""));
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path);\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE TABLE `My_FTS_data` is an internal FTS5 table of virtual table `My_FTS` and is "
+                 "not merged into make_storage()"},
+                {"CREATE VIRTUAL TABLE `My_FTS` is not merged into make_storage(); run sqlite2orm on "
+                 "its SQL separately"},
+                {"`blocks` rests on a table that is not generated and is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
 // A trigger body statement with no sqlite_orm form is reachable from an ordinary database, not only
 // from `-e`: SQLite stores `SELECT *, a FROM t` as a trigger step and runs it, while sqlite_orm's
 // `asterisk<T>()` is the form for a result list that is a `*` and nothing else. The step that

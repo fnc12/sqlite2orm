@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <optional>
 #include <queue>
 #include <set>
@@ -121,6 +122,69 @@ namespace sqlite2orm {
             return ordered;
         }
 
+        /**
+         *  The suffixes FTS5 gives the tables it keeps its index in. SQLite decides that a table
+         *  belongs to a module by its name alone: `sqlite3ShadowTableName()` cuts the name at its
+         *  LAST underscore, looks the part in front up as a virtual table and asks that module's
+         *  `xShadowName` about the part behind, which for FTS5 is this list, compared without
+         *  regard to case.
+         */
+        constexpr std::string_view fts5ShadowTableSuffixes[] = {"config", "content", "data", "docsize", "idx"};
+
+        /**
+         *  The tables FTS5 keeps its own index in, mapped to the virtual table they belong to.
+         *  They are ordinary `CREATE TABLE` rows of `sqlite_master` and nothing in their SQL says
+         *  whose they are, so the whole schema is needed to tell them apart from a table of the
+         *  same shape a user wrote. The module behind a name is only known from a `CREATE VIRTUAL
+         *  TABLE` this pipeline could parse; one it could not is left out of the storage anyway.
+         */
+        [[nodiscard]] std::unordered_map<std::string, std::string>
+        fts5ShadowTables(const ProcessSqliteSchemaResult& schema) {
+            std::unordered_map<std::string, std::string> virtualTableNames;
+            for (const SchemaStatementResult& statementResult: schema.statements) {
+                if (!statementResult.pipeline.ok()) {
+                    continue;
+                }
+                const auto* createVirtualTable = dynamic_cast<const CreateVirtualTableNode*>(
+                    statementResult.pipeline.parseResult.astNodePointer.get());
+                if (!createVirtualTable || normalizeSqlIdentifier(createVirtualTable->moduleName) != "fts5") {
+                    continue;
+                }
+                virtualTableNames.emplace(normalizeSqlIdentifier(createVirtualTable->tableName),
+                                          normTableName(createVirtualTable->tableName));
+            }
+
+            std::unordered_map<std::string, std::string> shadowTables;
+            if (virtualTableNames.empty()) {
+                return shadowTables;
+            }
+            for (const SchemaStatementResult& statementResult: schema.statements) {
+                if (!statementResult.pipeline.ok()) {
+                    continue;
+                }
+                const auto* createTable =
+                    dynamic_cast<const CreateTableNode*>(statementResult.pipeline.parseResult.astNodePointer.get());
+                if (!createTable) {
+                    continue;
+                }
+                const std::string normalizedName = normalizeSqlIdentifier(createTable->tableName);
+                const size_t lastUnderscore = normalizedName.rfind('_');
+                if (lastUnderscore == std::string::npos) {
+                    continue;
+                }
+                const std::string_view suffix = std::string_view{normalizedName}.substr(lastUnderscore + 1);
+                if (std::find(std::begin(fts5ShadowTableSuffixes), std::end(fts5ShadowTableSuffixes), suffix) ==
+                    std::end(fts5ShadowTableSuffixes)) {
+                    continue;
+                }
+                const auto virtualTable = virtualTableNames.find(normalizedName.substr(0, lastUnderscore));
+                if (virtualTable != virtualTableNames.end()) {
+                    shadowTables.emplace(normalizedName, virtualTable->second);
+                }
+            }
+            return shadowTables;
+        }
+
         /** The DDL keyword behind a `sqlite_master` type, for a warning that reads like the SQL. */
         std::string_view createStatementLabel(std::string_view masterType) {
             if (masterType == "table") {
@@ -163,6 +227,8 @@ namespace sqlite2orm {
             gen.context().ungeneratableTables = ungeneratableTables;
             gen.context().ungeneratableViews = ungeneratableViews;
 
+            const std::unordered_map<std::string, std::string> shadowTables = fts5ShadowTables(schema);
+
             std::vector<const CreateTableNode*> tableNodes;
             for (const SchemaStatementResult& statementResult: schema.statements) {
                 if (!statementResult.pipeline.ok()) {
@@ -170,6 +236,9 @@ namespace sqlite2orm {
                 }
                 if (const auto* createTable = dynamic_cast<const CreateTableNode*>(
                         statementResult.pipeline.parseResult.astNodePointer.get())) {
+                    if (shadowTables.count(normalizeSqlIdentifier(createTable->tableName))) {
+                        continue;
+                    }
                     tableNodes.push_back(createTable);
                 }
             }
@@ -214,6 +283,22 @@ namespace sqlite2orm {
                     if (dynamic_cast<const CreateVirtualTableNode*>(
                             statementResult.pipeline.parseResult.astNodePointer.get())) {
                         gen.context().markUngeneratableTable(statementResult.meta.name);
+                        continue;
+                    }
+                    // A table FTS5 keeps its index in is the module's own storage: writing to it
+                    // through a storage corrupts the index, and sync_schema() would go around the
+                    // module. It is left out of make_storage() exactly as the virtual table it
+                    // belongs to is, and its name gets no C++ type either, so whatever rests on it
+                    // goes with it.
+                    if (const auto* createTable = dynamic_cast<const CreateTableNode*>(
+                            statementResult.pipeline.parseResult.astNodePointer.get())) {
+                        const auto shadowTable = shadowTables.find(normalizeSqlIdentifier(createTable->tableName));
+                        if (shadowTable != shadowTables.end()) {
+                            gen.context().markUngeneratableTable(statementResult.meta.name);
+                            allWarnings.push_back("CREATE TABLE `" + statementResult.meta.name +
+                                                  "` is an internal FTS5 table of virtual table `" +
+                                                  shadowTable->second + "` and is not merged into make_storage()");
+                        }
                     }
                     continue;
                 }

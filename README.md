@@ -99,6 +99,11 @@ named a revision of its own picks it up on its next configure. To try the tests 
 cmake -S . -B build -DSQLITE2ORM_SQLITE_ORM_REVISION=dev
 ```
 
+A branch is checked out as `origin/<branch>`, which the build works out by asking the remote: a
+tree populated at the pinned hash holds no local branch of its own, and `git checkout dev` inside a
+sqlite_orm checkout — which keeps a top-level `dev/` directory — is ambiguous between the two.
+Tags and commit hashes are taken as they are written.
+
 Naming the revision on the command line is what puts it in the cache, and a tree configured that
 way keeps it — bumps included — until
 

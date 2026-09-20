@@ -13,6 +13,7 @@ endif()
 
 include(FetchContent)
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmGitRevision.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmHeadersCheckoutRef.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmHeadersRevisionNote.cmake")
 message(STATUS "[sqlite2orm] Fetching fmt…")
 FetchContent_Declare(
@@ -107,11 +108,20 @@ if(SQLITE2ORM_BUILD_TESTS)
     # revision lives in its own module, together with the rule that decides which one a tree uses;
     # a commit hash rules out GIT_SHALLOW, which CMake accepts only for branch and tag names.
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmPinnedRevision.cmake")
-    message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (${SQLITE2ORM_SQLITE_ORM_REVISION})...")
+    set(sqlite2orm_sqlite_orm_repository "https://github.com/fnc12/sqlite_orm.git")
+
+    # A tree that follows a branch instead of the pin has to say which ref that is: a checkout
+    # populated at a commit hash holds no local branches, and the bare name README names is one
+    # sqlite_orm also spells as a top-level directory, so the update step's `git checkout` refuses
+    # it as ambiguous. The pinned hash goes through untouched.
+    sqlite2orm_headers_checkout_ref(
+        "${SQLITE2ORM_SQLITE_ORM_REVISION}" "${sqlite2orm_sqlite_orm_repository}"
+        "${sqlite2orm_git_executable}" sqlite2orm_sqlite_orm_checkout_ref)
+    message(STATUS "[sqlite2orm] Fetching sqlite_orm headers (${sqlite2orm_sqlite_orm_checkout_ref})...")
     FetchContent_Declare(
         sqlite_orm_headers
-        GIT_REPOSITORY https://github.com/fnc12/sqlite_orm.git
-        GIT_TAG ${SQLITE2ORM_SQLITE_ORM_REVISION}
+        GIT_REPOSITORY ${sqlite2orm_sqlite_orm_repository}
+        GIT_TAG ${sqlite2orm_sqlite_orm_checkout_ref}
     )
     FetchContent_Populate(sqlite_orm_headers)
     message(STATUS "[sqlite2orm] sqlite_orm headers ready.")
@@ -207,6 +217,12 @@ if(SQLITE2ORM_BUILD_TESTS)
                 NAME sqlite2orm_tests_git_revision_of
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_git_revision_test.sh"
                         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmGitRevision.cmake"
+                        "${SQLITE2ORM_GIT_EXECUTABLE}"
+                        "${CMAKE_COMMAND}")
+            add_test(
+                NAME sqlite2orm_tests_headers_checkout_ref
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_headers_checkout_ref_test.sh"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmHeadersCheckoutRef.cmake"
                         "${SQLITE2ORM_GIT_EXECUTABLE}"
                         "${CMAKE_COMMAND}")
         endif()

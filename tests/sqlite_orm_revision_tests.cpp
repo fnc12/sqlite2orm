@@ -69,14 +69,28 @@ TEST_CASE("CMakeLists takes the revision from the pinned revision module") {
     REQUIRE(countOccurrences(readSourceFile("CMakeLists.txt"), expected) == 1);
 }
 
+// The ref handed to FetchContent is the revision as resolved, not as written: a branch name goes
+// to `git checkout` bare out of a tree populated at the pinned hash, and sqlite_orm has a top-level
+// directory named like the branch README tells its reader to try.
 TEST_CASE("CMakeLists fetches the configured sqlite_orm revision") {
-    const std::string expected = "    message(STATUS \"[sqlite2orm] Fetching sqlite_orm headers "
-                                 "(${SQLITE2ORM_SQLITE_ORM_REVISION})...\")\n"
+    const std::string expected = "    sqlite2orm_headers_checkout_ref(\n"
+                                 "        \"${SQLITE2ORM_SQLITE_ORM_REVISION}\" "
+                                 "\"${sqlite2orm_sqlite_orm_repository}\"\n"
+                                 "        \"${sqlite2orm_git_executable}\" "
+                                 "sqlite2orm_sqlite_orm_checkout_ref)\n"
+                                 "    message(STATUS \"[sqlite2orm] Fetching sqlite_orm headers "
+                                 "(${sqlite2orm_sqlite_orm_checkout_ref})...\")\n"
                                  "    FetchContent_Declare(\n"
                                  "        sqlite_orm_headers\n"
-                                 "        GIT_REPOSITORY https://github.com/fnc12/sqlite_orm.git\n"
-                                 "        GIT_TAG ${SQLITE2ORM_SQLITE_ORM_REVISION}\n"
+                                 "        GIT_REPOSITORY ${sqlite2orm_sqlite_orm_repository}\n"
+                                 "        GIT_TAG ${sqlite2orm_sqlite_orm_checkout_ref}\n"
                                  "    )\n";
+    REQUIRE(countOccurrences(readSourceFile("CMakeLists.txt"), expected) == 1);
+}
+
+TEST_CASE("CMakeLists resolves the revision against the repository it fetches") {
+    const std::string expected =
+        "    set(sqlite2orm_sqlite_orm_repository \"https://github.com/fnc12/sqlite_orm.git\")\n";
     REQUIRE(countOccurrences(readSourceFile("CMakeLists.txt"), expected) == 1);
 }
 
@@ -98,6 +112,24 @@ TEST_CASE("README quotes the pinned sqlite_orm revision") {
     const std::string expected =
         "| `SQLITE2ORM_SQLITE_ORM_REVISION` | `eb77998ef5e27350b25977b061e46e202742ecc8` | Revision "
         "of `fnc12/sqlite_orm` the runtime tests compile against |\n";
+    REQUIRE(countOccurrences(readSourceFile("README.md"), expected) == 1);
+}
+
+// The one thing README offers other than following the pin is aiming a tree at a branch, and that
+// is the command the resolution above exists for: a tree already populated at the pinned hash used
+// to answer it with a git error naming neither this project nor its option.
+TEST_CASE("README says how a branch is checked out") {
+    const std::string expected =
+        "cmake -S . -B build -DSQLITE2ORM_SQLITE_ORM_REVISION=dev\n"
+        "```\n"
+        "\n"
+        "A branch is checked out as `origin/<branch>`, which the build works out by asking the "
+        "remote: a\n"
+        "tree populated at the pinned hash holds no local branch of its own, and `git checkout "
+        "dev` inside a\n"
+        "sqlite_orm checkout — which keeps a top-level `dev/` directory — is ambiguous "
+        "between the two.\n"
+        "Tags and commit hashes are taken as they are written.\n";
     REQUIRE(countOccurrences(readSourceFile("README.md"), expected) == 1);
 }
 

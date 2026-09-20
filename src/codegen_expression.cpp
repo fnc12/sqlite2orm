@@ -883,6 +883,10 @@ namespace sqlite2orm {
                                   std::make_move_iterator(highResult.decisionPoints.begin()),
                                   std::make_move_iterator(highResult.decisionPoints.end()));
 
+            auto warnings = std::move(operandResult.warnings);
+            appendUniqueWarnings(warnings, lowResult.warnings);
+            appendUniqueWarnings(warnings, highResult.warnings);
+
             std::string operandCode =
                 groupPredicateArgument(std::move(operandResult.code), *betweenNode->operand, this->context);
             std::string lowCode = groupPredicateArgument(std::move(lowResult.code), *betweenNode->low, this->context);
@@ -892,7 +896,7 @@ namespace sqlite2orm {
             this->context.recordFormWithoutDefaultConstructor("BETWEEN");
             std::string betweenCode = "between(" + operandCode + ", " + lowCode + ", " + highCode + ")";
             std::string code = betweenNode->negated ? "!" + betweenCode : betweenCode;
-            return CodeGenResult{code, std::move(decisionPoints)};
+            return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
         } else if (auto* subqueryNode = dynamic_cast<const SubqueryNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*subqueryNode->select);
             if (sub.code.empty()) {

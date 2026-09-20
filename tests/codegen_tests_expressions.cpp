@@ -1063,6 +1063,21 @@ TEST_CASE("codegen: NOT BETWEEN") {
     REQUIRE(generate("a NOT BETWEEN 1 AND 10") == "!between(&User::a, 1, 10)");
 }
 
+// What a bound generates warns for itself too, and that warning used to be dropped on the way out
+// of the BETWEEN: the three operands were generated and only their code was kept.
+TEST_CASE("codegen: a warning from a BETWEEN operand reaches the caller") {
+    auto result = generateFull("a BETWEEN (1 COLLATE BINARY) AND 3");
+    REQUIRE(result.code == "between(&User::a, 1, 3)");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE BINARY on expressions is not directly supported in sqlite_orm "
+                                        "codegen"});
+    result = generateFull("(a COLLATE NOCASE) BETWEEN 1 AND 3");
+    REQUIRE(result.code == "between(&User::a, 1, 3)");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE NOCASE on expressions is not directly supported in sqlite_orm "
+                                        "codegen"});
+}
+
 TEST_CASE("codegen: IN") {
     REQUIRE(generateFull("a IN (1, 2, 3)") ==
             CodeGenResult{"in(&User::a, {1, 2, 3})", {columnRefStyleDp(1, "&User::a")}, {}});

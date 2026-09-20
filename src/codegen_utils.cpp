@@ -589,6 +589,22 @@ namespace sqlite2orm {
                nameIsIn(lowerFunctionName, kArgumentTakingAggregateForms);
     }
 
+    std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName) {
+        if (lowerFunctionName == "json_extract" || lowerFunctionName == "json_quote") {
+            return "<std::string>";
+        }
+        return {};
+    }
+
+    CodegenWarning jsonTextArrowWarning(SourceLocation location) {
+        return CodegenWarning{"`->` is generated as a JSON_EXTRACT call, which answers the SQL value at the path "
+                              "where `->` answers the JSON text of that value: a string comes back unquoted, and "
+                              "`true`, `false` and `null` come back as 1, 0 and NULL. sqlite_orm has no form for the "
+                              "operator itself",
+                              location,
+                              underlineLengthOf("->")};
+    }
+
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {
         switch (binaryOperator) {
             case BinaryOperator::logicalOr:
@@ -632,6 +648,8 @@ namespace sqlite2orm {
             case BinaryOperator::isDistinctFrom:
             case BinaryOperator::isNotDistinctFrom:
                 return {};
+            // Both arrows are read back through the same call, which spells the result type
+            // `functionCallResultTypeArgument` names for it.
             case BinaryOperator::jsonArrow:
                 return "json_extract";
             case BinaryOperator::jsonArrow2:
@@ -1635,6 +1653,13 @@ namespace sqlite2orm {
                 case BinaryOperator::modulo:
                     // `1 / 0` and `1 % 0` are NULL in SQLite, however plain the operands are.
                     return true;
+                case BinaryOperator::jsonArrow:
+                case BinaryOperator::jsonArrow2:
+                    // A path the JSON does not hold answers NULL over operands that are none:
+                    // `'{"a":1}' -> '$.zz'` and `'{"a":1}' ->> '$.zz'` are both NULL. The
+                    // JSON_EXTRACT call both are generated as answers NULL for a JSON null at
+                    // the path as well.
+                    return true;
                 case BinaryOperator::add:
                 case BinaryOperator::subtract:
                 case BinaryOperator::multiply:
@@ -2120,6 +2145,49 @@ namespace sqlite2orm {
                               underlineLengthOf(arithmetic.operatorText)};
     }
 
+    std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the call the row is
+        // read back through is the one the operand under them comes out as.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        // The written text the warning underlines: the arrow operator a node is located at, or the
+        // name a call was written under. Both are the source text as written, quoted in neither.
+        std::string_view writtenText;
+        SourceLocation location;
+        if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            // An arrow is a call over the one path it was written with, whichever of the two it is.
+            switch (binaryOp->binaryOperator) {
+                case BinaryOperator::jsonArrow:
+                    writtenText = "->";
+                    break;
+                case BinaryOperator::jsonArrow2:
+                    writtenText = "->>";
+                    break;
+                default:
+                    return std::nullopt;
+            }
+            location = binaryOp->location;
+        } else if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+            if (functionCall->star || toLowerAscii(functionCall->name) != "json_extract") {
+                return std::nullopt;
+            }
+            // The first argument is the JSON itself, every other one a path into it.
+            if (functionCall->arguments.size() != 2) {
+                return std::nullopt;
+            }
+            writtenText = functionCall->name;
+            location = functionCall->location;
+        } else {
+            return std::nullopt;
+        }
+        return CodegenWarning{"result column taken from JSON_EXTRACT over one path comes back as text: "
+                              "SQLite answers the value at the path, of whatever storage class the JSON holds, and "
+                              "sqlite_orm deduces no result type for the call, so it is generated as "
+                              "`json_extract<std::string>(…)` — a JSON number comes back as its digits. Spell the "
+                              "result type the value at the path has where it is known",
+                              location,
+                              underlineLengthOf(writtenText)};
+    }
+
     bool selectResultNeedsAsOptional(const AstNode& astNode) {
         // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
         // the result column comes out as — and with it the type the row is read back into — is the
@@ -2131,12 +2199,13 @@ namespace sqlite2orm {
                 case BinaryOperator::isNot:
                 case BinaryOperator::isDistinctFrom:
                 case BinaryOperator::isNotDistinctFrom:
-                case BinaryOperator::jsonArrow:
-                case BinaryOperator::jsonArrow2:
-                    // Not generated as a C++ binary operator: the first four never reach codegen (the
-                    // validator rejects them), the JSON arrows become a json_extract() call.
+                    // Not generated as a C++ binary operator, and never reaching codegen at all:
+                    // the validator rejects the IS family.
                     return false;
                 default:
+                    // The JSON arrows are generated as a `json_extract<std::string>()` call, whose
+                    // result type is as much the type the row is read back into as an operator's
+                    // is, and a `std::string` reads a NULL back as an empty string.
                     return expressionMayBeNull(generatedNode);
             }
         }

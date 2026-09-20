@@ -1190,3 +1190,41 @@ TEST_CASE("runtime: an arithmetic result column that overflows into a NaN reads 
     REQUIRE(selectedValues(statements) ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "inf", "inf", "0", "4"});
 }
+
+// sqlite_orm's `json_extract` and `json_quote` take the type the row is read back into as a
+// template argument with no default, so the code generated for a JSON arrow and for the two calls
+// only compiles once it names one — before this, every statement here failed to compile with
+// `no matching function for call to 'json_extract(std::string User::*, const char [4])'`. The
+// generated type is `std::string`, which reads back a value of any storage class as its text.
+// Every value below is what sqlite3 3.51 answers for the generated SQL, run over the same row.
+// The `->` rows are the two the generated code answers differently from the operator that was
+// written, which is what the `->` warning reports: sqlite3 answers `"txt"` for `a -> '$.s'` and
+// `true` for `a -> '$.t'`, since `->` answers the JSON text of the value where JSON_EXTRACT
+// answers the value itself.
+TEST_CASE("runtime: a JSON_EXTRACT result column reads the value at the path back as text") {
+    const std::vector<std::string> statements{
+        generate("SELECT a ->> '$.n';"),
+        generate("SELECT a ->> '$.s';"),
+        generate("SELECT a -> '$.s';"),
+        generate("SELECT a -> '$.t';"),
+        generate("SELECT a ->> '$.zz';"),
+        generate("SELECT a ->> '$.z';"),
+        generate("SELECT json_extract(a, '$.n');"),
+        generate("SELECT json_extract(a, '$.n', '$.s');"),
+        generate("SELECT json_quote(a -> '$.s');"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.s\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.s\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.t\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.zz\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.z\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\", \"$.s\")));",
+                "auto rows = storage.select(json_quote<std::string>(json_extract<std::string>(&User::a, \"$.s\")));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"({"n":42,"s":"txt","t":true,"z":null})")CPP") ==
+            std::vector<std::string>{"42", "txt", "txt", "1", "NULL", "NULL", "42", "[42,\"txt\"]", "\"txt\""});
+}

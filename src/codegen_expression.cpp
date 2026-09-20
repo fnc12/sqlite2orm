@@ -505,7 +505,8 @@ namespace sqlite2orm {
                                            : rightOperand;
 
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
-            std::string functionalCode = std::string(funcName) + "(" + leftResult.code + ", " + rightResult.code + ")";
+            std::string functionalCode = std::string(funcName) + std::string(functionCallResultTypeArgument(funcName)) +
+                                         "(" + leftResult.code + ", " + rightResult.code + ")";
 
             auto op = binaryOperatorString(binaryOp->binaryOperator);
             std::string wrapLeftCode = wrappedLeft + std::string(op) + rightOperand;
@@ -567,10 +568,12 @@ namespace sqlite2orm {
                                std::make_move_iterator(rightResult.warnings.begin()),
                                std::make_move_iterator(rightResult.warnings.end()));
 
-            if (binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
-                binaryOp->binaryOperator == BinaryOperator::jsonArrow2) {
-                binWarnings.push_back("JSON -> / ->> operator is mapped to json_extract() "
-                                      "— return type may differ from sqlite");
+            // `->>` is the JSON_EXTRACT call it is generated as, value for value and type for
+            // type; `->` is the JSON text of what that call answers, which sqlite_orm has no form
+            // for. The result type such a call is generated with is only read back where the call
+            // stands for a result column, and is reported there (`selectResultJsonExtractTypeWarning`).
+            if (binaryOp->binaryOperator == BinaryOperator::jsonArrow) {
+                binWarnings.push_back(jsonTextArrowWarning(binaryOp->location));
             }
 
             // Only a comparison reads the affinity of its operands, so only there does dropping a
@@ -1308,10 +1311,15 @@ namespace sqlite2orm {
                 if (customFunction) {
                     this->context.registerCustomFunction(std::move(customUse));
                     baseCode = "func<" + toStructName(funcCall->name) + ">(" + argList + ")";
-                } else if (funcCall->distinct && !argList.empty()) {
-                    baseCode = funcName + "(distinct(" + argList + "))";
                 } else {
-                    baseCode = funcName + "(" + argList + ")";
+                    // A builtin whose result type sqlite_orm cannot deduce is generated with the
+                    // one it is read back through spelled out; every other call names none.
+                    const std::string callName = funcName + std::string(functionCallResultTypeArgument(funcName));
+                    if (funcCall->distinct && !argList.empty()) {
+                        baseCode = callName + "(distinct(" + argList + "))";
+                    } else {
+                        baseCode = callName + "(" + argList + ")";
+                    }
                 }
             }
 

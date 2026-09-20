@@ -108,6 +108,25 @@ namespace sqlite2orm {
     bool functionCallFormHasNoFilter(std::string_view lowerFunctionName);
 
     /**
+     *  The result type a generated call of `lowerFunctionName` spells between angle brackets —
+     *  `"<std::string>"` — and an empty view for a call that spells none. `json_extract` and
+     *  `json_quote` are the two sqlite_orm builtins declared with a result type parameter that has
+     *  no default (`template<class R, class X, class... Args> json_extract(X, Args...)`), so a call
+     *  generated without one does not compile at all: JSON_EXTRACT answers a value of whatever
+     *  storage class the JSON holds, and there is nothing in the arguments to deduce that from.
+     *  `std::string` is the type that reads every storage class back — sqlite_orm reads it through
+     *  `sqlite3_column_text`, which renders an INTEGER or a REAL as its text — and the only one
+     *  JSON_QUOTE ever answers.
+     */
+    std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName);
+
+    /**
+     *  What a `->` generated as a JSON_EXTRACT call answers that `->` does not, underlined at
+     *  `location`. sqlite_orm has no form for the operator itself.
+     */
+    CodegenWarning jsonTextArrowWarning(SourceLocation location);
+
+    /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
      *  `internal::condition_t`: a comparison, AND, OR, IN, BETWEEN, LIKE, GLOB, IS [NOT] NULL,
      *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.
@@ -464,6 +483,16 @@ namespace sqlite2orm {
      *  or a NULL whenever an operand is one.
      */
     std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode);
+    /**
+     *  The warning a SELECT result column read back through a JSON_EXTRACT call over a single path
+     *  carries — the JSON arrows and a `json_extract(X, P)` written as a call alike — and nullopt
+     *  for every other column. What SQLite answers there is the value at the path, of whatever
+     *  storage class the JSON holds; sqlite_orm deduces no result type for the call, and the one
+     *  generated for it (see `functionCallResultTypeArgument`) reads every storage class back as
+     *  its text. JSON_EXTRACT over two paths or more answers the JSON array of what it found,
+     *  which is text whatever the JSON holds, so that form is left alone.
+     */
+    std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode);
     /**
      *  The report for a unary plus that stands over a column reference on one side of a comparison,
      *  if `astNode` is one. A unary plus is an identity for the value, which is why codegen emits

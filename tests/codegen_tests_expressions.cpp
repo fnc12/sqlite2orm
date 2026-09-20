@@ -90,6 +90,23 @@ namespace {
         "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
         "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile.";
 
+    // The report every `->` carries, whatever it stands in; asserted with its anchor in
+    // "codegen: JSON -> operator".
+    const std::string kJsonTextArrowWarning =
+        "`->` is generated as a JSON_EXTRACT call, which answers the SQL value at the path where "
+        "`->` answers the JSON text of that value: a string comes back unquoted, and `true`, "
+        "`false` and `null` come back as 1, 0 and NULL. sqlite_orm has no form for the operator "
+        "itself";
+
+    // The report a result column read back through a single-path JSON_EXTRACT carries; asserted
+    // with its anchor in "codegen: JSON -> operator" and the cases around it.
+    const std::string kJsonExtractResultTypeWarning =
+        "result column taken from JSON_EXTRACT over one path comes back as text: SQLite answers "
+        "the value at the path, of whatever storage class the JSON holds, and sqlite_orm deduces "
+        "no result type for the call, so it is generated as `json_extract<std::string>(…)` — a "
+        "JSON number comes back as its digits. Spell the result type the value at the path has "
+        "where it is known";
+
 }  // namespace
 
 TEST_CASE("codegen: integer literal") {
@@ -968,7 +985,7 @@ TEST_CASE("codegen: an operator no looser than the predicate leaves it bare") {
     REQUIRE(generate("(NOT a) = 1") == "cast<int64_t>(not column<User>(&User::a)) == 1");
     // The JSON operators are generated as a json_extract() call, whose own syntax delimits both
     // operands whatever SQLite's precedence says.
-    REQUIRE(generate("a -> (b IS NULL)") == "json_extract(&User::a, is_null(&User::b))");
+    REQUIRE(generate("a -> (b IS NULL)") == "json_extract<std::string>(&User::a, is_null(&User::b))");
 }
 
 // The functional spelling changes the C++ and not the SQL — `sub(1, is_null(&User::a))` serializes
@@ -1531,18 +1548,24 @@ TEST_CASE("codegen: IS NOT DISTINCT FROM returns error") {
                            "is not supported in sqlite_orm"}});
 }
 
+// `->` answers the JSON text of the value at the path — a string comes back quoted, `true` comes
+// back as `true` — where the JSON_EXTRACT call it is generated as answers the value itself, which
+// sqlite3 3.51 confirms: `'{"a":"s"}' -> '$.a'` is `"s"` and `json_extract('{"a":"s"}', '$.a')` is
+// `s`. sqlite_orm has no form for the operator, so the divergence is reported rather than fixed.
 TEST_CASE("codegen: JSON -> operator") {
-    REQUIRE(generateFull("SELECT data -> '$.name' FROM users;") ==
-            CodeGenResult{
-                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                {columnRefStyleDp(1, "&Users::data"),
-                 DecisionPoint{2,
-                               "expr_style",
-                               "functional",
-                               "json_extract(&Users::data, \"$.name\")",
-                               {Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
-                {"JSON -> / ->> operator is mapped to json_extract() "
-                 "— return type may differ from sqlite"}});
+    REQUIRE(
+        generateFull("SELECT data -> '$.name' FROM users;") ==
+        CodeGenResult{
+            "auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, \"$.name\")));",
+            {columnRefStyleDp(1, "&Users::data"),
+             DecisionPoint{
+                 2,
+                 "expr_style",
+                 "functional",
+                 "json_extract<std::string>(&Users::data, \"$.name\")",
+                 {Option{"functional", "json_extract<std::string>(&Users::data, \"$.name\")", "functional style"}}}},
+            {CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 13}, 2},
+             CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 13}, 2}}});
 }
 
 TEST_CASE("codegen: column_ref_style options list every variant without duplicating the chosen") {
@@ -1571,18 +1594,55 @@ TEST_CASE("codegen: column_ref_style options list every variant without duplicat
     check(generateWithPolicy("SELECT id FROM users;", policy).decisionPoints.at(0), "column_pointer");
 }
 
+// `->>` is the JSON_EXTRACT call it is generated as, value for value and type for type — sqlite3
+// 3.51 answers the same storage class and the same value for both over every kind of JSON value —
+// so the only thing left to report is the result type the call is read back through.
 TEST_CASE("codegen: JSON ->> operator") {
-    REQUIRE(generateFull("SELECT data ->> '$.name' FROM users;") ==
-            CodeGenResult{
-                "auto rows = storage.select(json_extract(&Users::data, \"$.name\"));",
-                {columnRefStyleDp(1, "&Users::data"),
-                 DecisionPoint{2,
-                               "expr_style",
-                               "functional",
-                               "json_extract(&Users::data, \"$.name\")",
-                               {Option{"functional", "json_extract(&Users::data, \"$.name\")", "functional style"}}}},
-                {"JSON -> / ->> operator is mapped to json_extract() "
-                 "— return type may differ from sqlite"}});
+    REQUIRE(
+        generateFull("SELECT data ->> '$.name' FROM users;") ==
+        CodeGenResult{
+            "auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, \"$.name\")));",
+            {columnRefStyleDp(1, "&Users::data"),
+             DecisionPoint{
+                 2,
+                 "expr_style",
+                 "functional",
+                 "json_extract<std::string>(&Users::data, \"$.name\")",
+                 {Option{"functional", "json_extract<std::string>(&Users::data, \"$.name\")", "functional style"}}}},
+            {CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 13}, 3}}});
+}
+
+// sqlite_orm declares `json_extract` and `json_quote` with a result type parameter that has no
+// default, so a call generated without one does not compile at all — the generated code names the
+// type the row is read back through. `json_quote` answers text whatever it is given and
+// JSON_EXTRACT over two paths or more answers the JSON array of what it found, also text, so only
+// the single-path form is reported.
+TEST_CASE("codegen: json_extract() and json_quote() calls name the result type") {
+    REQUIRE(generateFull("SELECT json_extract(data, '$.name') FROM users;") ==
+            CodeGenResult{"auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, "
+                          "\"$.name\")));",
+                          {columnRefStyleDp(1, "&Users::data")},
+                          {CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 8}, 12}}});
+    REQUIRE(generateFull("SELECT json_extract(data, '$.a', '$.b') FROM users;") ==
+            CodeGenResult{"auto rows = storage.select(as_optional(json_extract<std::string>(&Users::data, \"$.a\", "
+                          "\"$.b\")));",
+                          {columnRefStyleDp(1, "&Users::data")}});
+    REQUIRE(generateFull("SELECT json_quote(data) FROM users;") ==
+            CodeGenResult{"auto rows = storage.select(json_quote<std::string>(&Users::data));",
+                          {columnRefStyleDp(1, "&Users::data")}});
+}
+
+// The result type is what the row is read back into, and a call standing anywhere but in a result
+// column is never read back: the type is spelled out all the same, since the call does not compile
+// without it, and nothing is reported.
+TEST_CASE("codegen: a JSON_EXTRACT call outside a result column is typed without a report") {
+    REQUIRE(generate("SELECT data FROM users WHERE data ->> '$.a' = 5;") ==
+            "auto rows = storage.select(&Users::data, where(json_extract<std::string>(&Users::data, \"$.a\") == 5));");
+    REQUIRE(generateFull("SELECT data FROM users WHERE data ->> '$.a' = 5;").warnings == std::vector<CodegenWarning>{});
+    REQUIRE(generate("SELECT data FROM users ORDER BY json_extract(data, '$.a');") ==
+            "auto rows = storage.select(&Users::data, order_by(json_extract<std::string>(&Users::data, \"$.a\")));");
+    REQUIRE(generateFull("SELECT data FROM users ORDER BY json_extract(data, '$.a');").warnings ==
+            std::vector<CodegenWarning>{});
 }
 
 TEST_CASE("codegen: bind parameter anonymous") {

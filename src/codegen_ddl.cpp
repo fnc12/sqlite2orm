@@ -403,7 +403,6 @@ namespace sqlite2orm {
                 carried.warnings = std::move(warnings);
                 return unsupportedStatementPlaceholder(
                     this->context,
-
                     "DROP VIEW: not supported as storage.drop_* in sqlite_orm",
                     "DROP VIEW is not supported as a sqlite_orm storage method; sqlite_orm sync_schema() applies "
                     "to mapped tables/indexes/triggers, not views",
@@ -521,7 +520,6 @@ namespace sqlite2orm {
             if (moduleArgumentsCount < 3 || moduleArgumentsCount > 11 || (moduleArgumentsCount % 2 == 0)) {
                 return unsupportedStatementPlaceholder(
                     this->context,
-
                     "CREATE VIRTUAL TABLE: rtree (invalid column count)",
                     "RTREE virtual table for sqlite_orm needs 3, 5, 7, 9, or 11 simple column identifiers (id + "
                     "min/max pairs)",
@@ -531,7 +529,6 @@ namespace sqlite2orm {
             if (const AstNode* unmapped = firstArgumentThatIsNoColumnRef()) {
                 return unsupportedStatementPlaceholder(
                     this->context,
-
                     "CREATE VIRTUAL TABLE: rtree (unmapped arguments)",
                     "RTREE module arguments that are not plain column names cannot be mapped to sqlite_orm "
                     "using_rtree() / using_rtree_i32()",
@@ -582,7 +579,6 @@ namespace sqlite2orm {
             if (!node.moduleArguments.empty()) {
                 return unsupportedStatementPlaceholder(
                     this->context,
-
                     "CREATE VIRTUAL TABLE: generate_series (unmapped arguments)",
                     "generate_series module arguments are not mapped to sqlite_orm; expected empty argument list "
                     "for make_virtual_table<generate_series>(..., internal::using_generate_series())",
@@ -599,7 +595,6 @@ namespace sqlite2orm {
             if (node.moduleArguments.size() > 1) {
                 return unsupportedStatementPlaceholder(
                     this->context,
-
                     "CREATE VIRTUAL TABLE: dbstat (too many arguments)",
                     "dbstat accepts at most one optional schema string argument for sqlite_orm::using_dbstat()",
                     *node.moduleArguments.at(1),
@@ -618,7 +613,6 @@ namespace sqlite2orm {
             }
             return unsupportedStatementPlaceholder(
                 this->context,
-
                 "CREATE VIRTUAL TABLE: dbstat (unmapped argument)",
                 "dbstat optional argument should be a SQL string literal for sqlite_orm::using_dbstat(\"...\")",
                 *node.moduleArguments.front(),

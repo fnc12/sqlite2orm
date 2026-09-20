@@ -592,3 +592,122 @@ TEST_CASE("codegen: a WITH does not wrap a placeholder standing for its outer st
             "using cte_0 = decltype(1_ctealias);\n"
             "storage.with(cte<cte_0>().as(select(&T::a)), insert(into<U>(), select(column<cte_0>(&T::a))));");
 }
+
+namespace {
+
+    /**
+     *  The lines of `code` that hold a placeholder next to other code. A placeholder standing on a
+     *  line of its own is a comment where a statement stands and compiles; one sharing its line
+     *  with anything else is a comment where C++ expects an expression, and the file does not
+     *  build. The scan is over the generated text because that is where the property is visible:
+     *  what decides it is which funnel a generator called and whether the statement holding the
+     *  placeholder asked the journal before embedding its code.
+     */
+    std::vector<std::string> linesHoldingAPlaceholderBesideCode(const std::string& code) {
+        std::vector<std::string> lines;
+        for (size_t start = 0; start < code.size();) {
+            const size_t lineEnd = std::min(code.find('\n', start), code.size());
+            const std::string line = code.substr(start, lineEnd - start);
+            start = lineEnd + 1;
+            const size_t firstVisible = line.find_first_not_of(" \t");
+            if (line.find("/*") == std::string::npos) {
+                continue;
+            }
+            const bool standsAlone = firstVisible != std::string::npos && line.compare(firstVisible, 2, "/*") == 0 &&
+                                     line.substr(firstVisible).find("*/") == line.size() - firstVisible - 2;
+            if (!standsAlone) {
+                lines.push_back(line);
+            }
+        }
+        return lines;
+    }
+
+    /** A statement that holds an unmapped expression, and exactly what it generates once it does. */
+    struct PlaceholderCase {
+        /** The SQL, with `$` standing where the unmapped expression goes. */
+        std::string sql;
+        /** The whole generated code, for every expression put in its place. */
+        std::string code;
+    };
+
+    std::string withExpression(const std::string& sql, const std::string& expression) {
+        const size_t slot = sql.find('$');
+        REQUIRE(slot != std::string::npos);
+        return sql.substr(0, slot) + expression + sql.substr(slot + 1);
+    }
+
+}  // namespace
+
+// The funnel test above pins that every placeholder is BUILT in one place. This one pins the
+// property that makes the two funnels worth telling apart: whatever a generator placeheld, no line
+// a statement hands out holds a placeholder beside other code. It is the property a call site
+// breaks by reaching for the wrong funnel, and the one an embedder breaks by nesting a statement's
+// code without asking the journal — `storage.with(cte…, /* INSERT ... SELECT: … */)` was the second
+// kind, and the next one will be too.
+//
+// The corpus is the placeholder sites, each crossed with the expressions codegen has no sqlite_orm
+// form for, plus the shapes that are placeheld whole. sqlite3 3.51 prepares every input except the
+// three whose expression it refuses outright — a subquery in a CHECK, in a column DEFAULT and in an
+// index expression — which `-e` still reads, and `-e` is the path the playground runs on.
+TEST_CASE("codegen: no statement hands out a line holding a placeholder beside other code") {
+    const std::vector<std::string> unmappedExpressions{
+        "(SELECT b FROM u GROUP BY b)",
+        "(SELECT b FROM u GROUP BY b HAVING count(*) > 0)",
+        "1 IN (SELECT b FROM u GROUP BY b)",
+        "EXISTS (SELECT b FROM u GROUP BY b)",
+    };
+    const std::vector<PlaceholderCase> contexts{
+        {"SELECT $ AS x", {}},
+        {"SELECT a FROM t WHERE $", {}},
+        {"SELECT max(a) FROM t GROUP BY a HAVING $", {}},
+        {"SELECT a FROM t ORDER BY $", {}},
+        {"SELECT a FROM t LIMIT $", {}},
+        {"UPDATE t SET a = $", {}},
+        {"DELETE FROM t WHERE $", {}},
+        {"INSERT INTO t(a) VALUES ($)", {}},
+        {"CREATE VIEW v2 AS SELECT $", "/* CREATE VIEW v2 — not supported for sqlite_orm */"},
+        {"CREATE TABLE q (a INTEGER, CHECK($))", "/* CREATE TABLE q — not supported for sqlite_orm */"},
+        {"CREATE TABLE q (a INTEGER DEFAULT ($))", "/* CREATE TABLE q — not supported for sqlite_orm */"},
+        {"CREATE TRIGGER tr AFTER INSERT ON t WHEN $ BEGIN DELETE FROM t; END", {}},
+        {"CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM t WHERE $; END", {}},
+        {"CREATE INDEX i ON t(($))", {}},
+        {"WITH c AS (SELECT a FROM t) SELECT $ AS x", {}},
+        {"WITH c AS (SELECT a FROM t) DELETE FROM t WHERE $", {}},
+        {"WITH RECURSIVE c(x) AS (SELECT 1) UPDATE t SET a = $", {}},
+        {"WITH c AS (SELECT a FROM t) INSERT INTO u(a) VALUES ($)", {}},
+    };
+    const std::vector<PlaceholderCase> shapes{
+        {"ANALYZE", "/* unsupported node */"},
+        {"DROP VIEW v", "/* DROP VIEW: not supported as storage.drop_* in sqlite_orm */"},
+        {"PRAGMA journal_mode", "storage.pragma.journal_mode();"},
+        {"SELECT *, a FROM t", {}},
+        {"INSERT INTO u SELECT a FROM t GROUP BY a", "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"WITH c AS (SELECT a FROM t) INSERT INTO u SELECT a FROM t GROUP BY a",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"WITH RECURSIVE c(x) AS (SELECT 1) INSERT INTO u SELECT *, a FROM t",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"SELECT a FROM t UNION SELECT a FROM t GROUP BY a", "/* compound SELECT */"},
+        {"WITH c AS (SELECT a FROM t) SELECT a FROM t UNION SELECT a FROM t GROUP BY a", "/* compound SELECT */"},
+        {"CREATE TRIGGER tr AFTER DELETE ON t BEGIN INSERT INTO u SELECT a FROM t GROUP BY a; END", {}},
+    };
+
+    size_t checked = 0;
+    for (const PlaceholderCase& context: contexts) {
+        for (const std::string& expression: unmappedExpressions) {
+            const std::string sql = withExpression(context.sql, expression);
+            INFO(sql);
+            const CodeGenResult result = generateFull(sql);
+            REQUIRE(result.code == context.code);
+            REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
+            ++checked;
+        }
+    }
+    for (const PlaceholderCase& shape: shapes) {
+        INFO(shape.sql);
+        const CodeGenResult result = generateFull(shape.sql);
+        REQUIRE(result.code == shape.code);
+        REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
+        ++checked;
+    }
+    REQUIRE(checked == 82);
+}

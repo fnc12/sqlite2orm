@@ -539,10 +539,24 @@ namespace sqlite2orm {
                                            ? wrap(rightResult.code)
                                            : rightOperand;
 
+            // The JSON arrows expand the abbreviated path they are written with — a bare label
+            // into `$."label"`, an array index into `$[N]` — and the JSON_EXTRACT call they are
+            // generated as does not, so the expanded path is what the call is handed. An operand
+            // that cannot be expanded here goes in as written and is reported below.
+            std::string rightArgument = rightResult.code;
+            std::optional<std::string> arrowPath;
+            if (operandsBecomeCallArguments) {
+                arrowPath = jsonArrowPathExpansion(*binaryOp->rhs);
+                if (arrowPath) {
+                    rightArgument = cppStringLiteral(*arrowPath);
+                }
+            }
+
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
-            std::string functionalCode = std::string(funcName) + "(" +
-                                         (quoteLeftCallArgument ? wrap(leftResult.code) : leftResult.code) + ", " +
-                                         (quoteRightCallArgument ? wrap(rightResult.code) : rightResult.code) + ")";
+            std::string functionalCode =
+                std::string(funcName) + std::string(functionCallResultTypeArgument(funcName)) + "(" +
+                (quoteLeftCallArgument ? wrap(leftResult.code) : leftResult.code) + ", " +
+                (quoteRightCallArgument ? wrap(rightArgument) : rightArgument) + ")";
 
             auto op = binaryOperatorString(binaryOp->binaryOperator);
             std::string wrapLeftCode = wrappedLeft + std::string(op) + rightOperand;
@@ -604,10 +618,22 @@ namespace sqlite2orm {
                                std::make_move_iterator(rightResult.warnings.begin()),
                                std::make_move_iterator(rightResult.warnings.end()));
 
-            if (binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
-                binaryOp->binaryOperator == BinaryOperator::jsonArrow2) {
-                binWarnings.push_back("JSON -> / ->> operator is mapped to json_extract() "
-                                      "— return type may differ from sqlite");
+            // A path operand only SQLite can expand leaves the call looking up whatever the
+            // operand answers, which is the path the operator was written with rather than the
+            // one it stands for. A NULL path is the one operand that needs no expansion: SQLite
+            // answers NULL for it, and so does the generated call, which takes a NULL the same way.
+            if (operandsBecomeCallArguments && !arrowPath &&
+                !dynamic_cast<const NullLiteralNode*>(&generatedOperandNode(*binaryOp->rhs))) {
+                binWarnings.push_back(jsonArrowPathNotExpandedWarning(*binaryOp));
+            }
+
+            // `->>` over an expanded path is the JSON_EXTRACT call it is generated as, value for
+            // value and type for type; `->` is the JSON text of what that call answers, which
+            // sqlite_orm has no form for. The result type such a call is generated with is only
+            // read back where the call stands for a result column, and is reported there
+            // (`selectResultJsonExtractTypeWarning`).
+            if (binaryOp->binaryOperator == BinaryOperator::jsonArrow) {
+                binWarnings.push_back(jsonTextArrowWarning(binaryOp->location));
             }
 
             // Only a comparison reads the affinity of its operands, so only there does dropping a
@@ -943,16 +969,51 @@ namespace sqlite2orm {
                                   std::make_move_iterator(highResult.decisionPoints.begin()),
                                   std::make_move_iterator(highResult.decisionPoints.end()));
 
+            auto warnings = std::move(operandResult.warnings);
+            appendUniqueWarnings(warnings, lowResult.warnings);
+            appendUniqueWarnings(warnings, highResult.warnings);
+
             std::string operandCode =
                 groupPredicateArgument(std::move(operandResult.code), *betweenNode->operand, this->context);
             std::string lowCode = groupPredicateArgument(std::move(lowResult.code), *betweenNode->low, this->context);
             std::string highCode =
                 groupPredicateArgument(std::move(highResult.code), *betweenNode->high, this->context);
 
+            // sqlite_orm deduces one `T` from both bounds of `between(A, T, T)`, so bounds
+            // generated as different C++ types do not compile — and SQLite takes the SQL either
+            // way, `a BETWEEN 1 AND 3000000000` as readily as `a BETWEEN 1 AND 'x'`.
+            switch (betweenBoundsForm(*betweenNode->low, *betweenNode->high)) {
+                case BetweenBoundsForm::asWritten:
+                    break;
+                case BetweenBoundsForm::widenedToInt64: {
+                    // Only a bound the generated code already casts carries the type `int64_t`
+                    // itself; a constant past the `int` range is typed by its magnitude, as the
+                    // `long` that is not the `long long` an `int64_t` is on macOS. So every bound
+                    // but that one is cast, rather than the narrower of the two.
+                    const auto widened = [](const AstNode& bound, std::string code) {
+                        return generatedValueCppType(bound) == GeneratedValueCppType::integer64Cast
+                                   ? code
+                                   : "static_cast<int64_t>(" + code + ")";
+                    };
+                    lowCode = widened(*betweenNode->low, std::move(lowCode));
+                    highCode = widened(*betweenNode->high, std::move(highCode));
+                    this->context.recordComment(kCommentBetweenBoundsWidened);
+                    break;
+                }
+                case BetweenBoundsForm::noCommonType:
+                    warnings.push_back(sourceSpanWarning(
+                        "sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and " +
+                            betweenBoundTypeDescription(*betweenNode->low) + " next to " +
+                            betweenBoundTypeDescription(*betweenNode->high) +
+                            " is not one type, so the generated code does not compile",
+                        *betweenNode));
+                    break;
+            }
+
             this->context.recordFormWithoutDefaultConstructor("BETWEEN");
             std::string betweenCode = "between(" + operandCode + ", " + lowCode + ", " + highCode + ")";
             std::string code = betweenNode->negated ? "!" + betweenCode : betweenCode;
-            return CodeGenResult{code, std::move(decisionPoints)};
+            return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
         } else if (auto* subqueryNode = dynamic_cast<const SubqueryNode*>(&astNode)) {
             auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*subqueryNode->select);
             if (sub.code.empty()) {
@@ -1320,6 +1381,13 @@ namespace sqlite2orm {
             std::vector<DecisionPoint> decisionPoints;
             std::vector<CodegenWarning> funcWarnings;
             std::string baseCode;
+            // Whether the call comes out a `count_asterisk_t`, the one star form sqlite_orm holds
+            // a row type and a `filter()` for; a `count(*)` over no FROM clause and every other
+            // star are written as `name()` instead.
+            bool generatedAsCountAsterisk = false;
+            // A name the generator knows nothing about is written as a `func<…>()` call over a
+            // stub. A star names no arguments to write one from, so it never takes that road.
+            const bool customFunction = !funcCall->star && !isKnownSqlFunction(funcName);
 
             if (funcCall->star) {
                 if (funcName == "count" && !this->context.fromTableAliasToStructName.empty()) {
@@ -1327,11 +1395,11 @@ namespace sqlite2orm {
                                                           ? *this->context.implicitSingleSourceCteTypedef
                                                           : this->context.structName;
                     baseCode = "count<" + countRowType + ">()";
+                    generatedAsCountAsterisk = true;
                 } else {
                     baseCode = funcName + "()";
                 }
             } else {
-                const bool customFunction = !isKnownSqlFunction(funcName);
                 CustomFunctionUse customUse;
                 if (customFunction) {
                     customUse.sqlName = funcCall->name;
@@ -1368,10 +1436,15 @@ namespace sqlite2orm {
                 if (customFunction) {
                     this->context.registerCustomFunction(std::move(customUse));
                     baseCode = "func<" + toStructName(funcCall->name) + ">(" + argList + ")";
-                } else if (funcCall->distinct && !argList.empty()) {
-                    baseCode = funcName + "(distinct(" + argList + "))";
                 } else {
-                    baseCode = funcName + "(" + argList + ")";
+                    // A builtin whose result type sqlite_orm cannot deduce is generated with the
+                    // one it is read back through spelled out; every other call names none.
+                    const std::string callName = funcName + std::string(functionCallResultTypeArgument(funcName));
+                    if (funcCall->distinct && !argList.empty()) {
+                        baseCode = callName + "(distinct(" + argList + "))";
+                    } else {
+                        baseCode = callName + "(" + argList + ")";
+                    }
                 }
             }
 
@@ -1397,12 +1470,9 @@ namespace sqlite2orm {
                                     std::make_move_iterator(filterResult.warnings.begin()),
                                     std::make_move_iterator(filterResult.warnings.end()));
                 baseCode += ".filter(where(" + filterResult.code + "))";
-                if (functionCallFormHasNoFilter(funcName)) {
-                    funcWarnings.push_back(std::string(funcCall->name) +
-                                           "() has no filter() in sqlite_orm: only the aggregate function calls "
-                                           "and count(*) take a FILTER, so the generated code does not compile. "
-                                           "SQLite refuses the same call — FILTER clause may only be used with "
-                                           "aggregate window functions — but stores a trigger or a view holding it");
+                if (functionCallFormHasNoFilter(funcName, funcCall->arguments.size(), generatedAsCountAsterisk)) {
+                    funcWarnings.push_back(
+                        filterOnCallWithoutFilterWarning(funcCall->name, funcCall->over != nullptr, customFunction));
                 }
             }
             if (funcCall->over) {

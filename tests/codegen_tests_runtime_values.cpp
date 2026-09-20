@@ -127,6 +127,50 @@ namespace {
     }
 
     /**
+     *  Syntax-checks the generated select statements with `int64_t` naming `int64Spelling`, and
+     *  returns the compiler's exit status. Which type `int64_t` is differs by platform — a `long`
+     *  where the tests run, a `long long` on macOS — and so does the type C++ gives a 64-bit
+     *  constant, so a pair of bounds that deduces one `T` here can be two types there. The alias
+     *  stands in for the platform: the generated code names `int64_t` unqualified, and inside the
+     *  namespace that name is whichever of the two types the probe asks for.
+     */
+    int compilesWithInt64Spelled(const std::vector<std::string>& selectStatements, std::string_view int64Spelling) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <optional>\n"
+                   "\n"
+                   "struct User {\n"
+                   "    long long a{};\n"
+                   "};\n"
+                   "\n"
+                   "namespace probe {\n"
+                   "    using int64_t = "
+                << int64Spelling
+                << ";\n"
+                   "    using namespace sqlite_orm;\n"
+                   "\n";
+        for (std::size_t index = 0; index < selectStatements.size(); ++index) {
+            program << "    void statement" << index
+                    << "() {\n"
+                       "        auto storage = make_storage(\"\", make_table(\"users\", make_column(\"a\", "
+                       "&User::a)));\n"
+                       "        "
+                    << selectStatements[index]
+                    << "\n"
+                       "        (void)rows;\n"
+                       "    }\n";
+        }
+        program << "}  // namespace probe\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand() << " -fsyntax-only -w " << cpppath.string() << " > /dev/null 2>&1";
+        return TempBuildDir::run(cmd.str());
+    }
+
+    /**
      *  Builds a program around the generated INSERT statements for a one-column `t` table whose
      *  field is `std::optional<fieldType>`, or a bare `fieldType` for the NOT NULL column
      *  `nullable` stands for, compiles and links it against sqlite_orm, runs it and returns
@@ -1303,4 +1347,166 @@ TEST_CASE("runtime: an AND or an OR over a MATCH compiles") {
                 "auto rows = storage.select(as_optional(match(&User::a, \"x\") or c(&User::a) == 1));",
             });
     requireSelectsCompile(statements);
+}
+
+// sqlite_orm's `between(A, T, T)` deduces one C++ type from both bounds, so an `int` bound next to
+// a 64-bit one did not compile at all — `between(&User::a, 1, 3000000000)` is the `no matching
+// function` this test would have failed to build on. The `int64_t` cast that gives them one type
+// has to leave the values alone, and a TEXT column is where that is visible: SQLite applies the
+// column's affinity to a bound with none of its own, and '1' compares against the text '1' an
+// INTEGER bound becomes rather than against the '1.0' a REAL one would. Every value here is what
+// sqlite3 3.45.1 and 3.51 answer for the same SQL.
+//
+// Casting the narrower bound alone is not enough, which only a platform where `int64_t` is a
+// `long long` shows: a 64-bit constant is a `long` there, and `3000000000` next to
+// `static_cast<int64_t>(1)` is two types again. So the cast goes on both, and the
+// `3000000000 AND 0xFFFFFFFF` pair is the one where neither bound is an `int` and the two are
+// still not one type. The two hex pairs at the end run the line the width of a signed hex bound
+// is read off: `0x100000000` is not an `int` and takes the cast next to one, and is the type a
+// 64-bit decimal constant is, so next to that one it is left alone and still has to build.
+TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite computes them") {
+    const std::vector<std::string> statements{
+        generate("SELECT a BETWEEN 1 AND 3000000000;"),
+        generate("SELECT a BETWEEN 3000000000 AND 4000000000;"),
+        generate("SELECT a BETWEEN 1 AND TRUE;"),
+        generate("SELECT a BETWEEN 1 AND 0xFFFFFFFF;"),
+        generate("SELECT a BETWEEN -1 AND 3000000000;"),
+        generate("SELECT a BETWEEN 3000000000 AND 0xFFFFFFFF;"),
+        generate("SELECT a BETWEEN 1 AND 0x100000000;"),
+        generate("SELECT a BETWEEN 0x100000000 AND 3000000000;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(3000000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, 3000000000, 4000000000)));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(true))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(0xFFFFFFFF))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(-1), "
+                "static_cast<int64_t>(3000000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(3000000000), "
+                "static_cast<int64_t>(0xFFFFFFFF))));",
+                "auto rows = storage.select(as_optional(between(&User::a, static_cast<int64_t>(1), "
+                "static_cast<int64_t>(0x100000000))));",
+                "auto rows = storage.select(as_optional(between(&User::a, 0x100000000, 3000000000)));",
+            });
+    REQUIRE(selectedValues(statements, "int64_t", "2147483648") ==
+            std::vector<std::string>{"1", "0", "0", "1", "1", "0", "1", "0"});
+    REQUIRE(selectedValues(statements, "std::string", "\"1\"") ==
+            std::vector<std::string>{"1", "0", "1", "1", "1", "0", "1", "0"});
+    // Building these once says nothing about the platform the tests do not run on, and this is
+    // the bug: the cast the generator used to put on the narrower bound alone builds here, where
+    // an `int64_t` is a `long` and so is `3000000000`, and does not build where an `int64_t` is a
+    // `long long`. Both spellings have to compile, whichever one this platform uses itself.
+    REQUIRE(compilesWithInt64Spelled(statements, "long") == 0);
+    REQUIRE(compilesWithInt64Spelled(statements, "long long") == 0);
+}
+
+// sqlite_orm's `json_extract` and `json_quote` take the type the row is read back into as a
+// template argument with no default, so the code generated for a JSON arrow and for the two calls
+// only compiles once it names one — before this, every statement here failed to compile with
+// `no matching function for call to 'json_extract(std::string User::*, const char [4])'`. The
+// generated type is `std::string`, which reads back a value of any storage class as its text.
+// Every value below is what sqlite3 3.51 answers for the generated SQL, run over the same row.
+// The `->` rows are the two the generated code answers differently from the operator that was
+// written, which is what the `->` warning reports: sqlite3 answers `"txt"` for `a -> '$.s'` and
+// `true` for `a -> '$.t'`, since `->` answers the JSON text of the value where JSON_EXTRACT
+// answers the value itself.
+TEST_CASE("runtime: a JSON_EXTRACT result column reads the value at the path back as text") {
+    const std::vector<std::string> statements{
+        generate("SELECT a ->> '$.n';"),
+        generate("SELECT a ->> '$.s';"),
+        generate("SELECT a -> '$.s';"),
+        generate("SELECT a -> '$.t';"),
+        generate("SELECT a ->> '$.zz';"),
+        generate("SELECT a ->> '$.z';"),
+        generate("SELECT json_extract(a, '$.n');"),
+        generate("SELECT json_extract(a, '$.n', '$.s');"),
+        generate("SELECT json_quote(a -> '$.s');"),
+        generate("SELECT a ->> 'n';"),
+        generate("SELECT a -> 'n';"),
+        generate("SELECT a ->> 'a.b';"),
+        generate("SELECT a ->> 'zz';"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.s\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.s\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.t\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.zz\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.z\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\", \"$.s\")));",
+                "auto rows = storage.select(json_quote<std::string>(json_extract<std::string>(&User::a, \"$.s\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.\\\"a.b\\\"\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.zz\")));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"({"n":42,"s":"txt","t":true,"z":null,"a.b":7})")CPP") ==
+            std::vector<std::string>{"42",
+                                     "txt",
+                                     "txt",
+                                     "1",
+                                     "NULL",
+                                     "NULL",
+                                     "42",
+                                     "[42,\"txt\"]",
+                                     "\"txt\"",
+                                     "42",
+                                     "42",
+                                     "7",
+                                     "NULL"});
+}
+
+// `||`, `->` and `->>` share one left-associative precedence level, so the arrow reads the whole
+// concatenation to its left rather than its last operand — the seam between the result type named
+// here and the grouping the parser builds. `a || ''` is the JSON document itself, so sqlite3 3.51
+// answers 42 to `a || '' ->> '$.n'` over the row below, and the `->` row is the one the generated
+// call answers without the quotes the operator keeps: sqlite3 answers `"txt"` for `a || '' -> '$.s'`.
+// The mirror form, a concatenation over an arrow (`a ->> '$.n' || 'x'`), is pinned by the string
+// test alone: `operator||` over a builtin function call is a form only the C++20 branch of the
+// sqlite_orm header declares, and the legacy branch every compiler without consteval takes — Apple
+// clang among them — rejects it. That hole belongs to `||`, not to the result type named here, so
+// building it in this probe would only turn one platform red.
+TEST_CASE("runtime: a JSON arrow over a concatenation reads the value the whole of it holds") {
+    const std::vector<std::string> statements{
+        generate("SELECT a || '' ->> '$.n';"),
+        generate("SELECT a || '' -> '$.s';"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(json_extract<std::string>(c(&User::a) || \"\", \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(c(&User::a) || \"\", \"$.s\")));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"({"n":42,"s":"txt"})")CPP") ==
+            std::vector<std::string>{"42", "txt"});
+}
+
+// The path an arrow is written with is the abbreviated one SQLite expands, and an array index is
+// the form of it a `$` path never reaches: `json_extract(X, 1)` is the error `bad JSON path` where
+// `X ->> 1` is the second element. Every value below is what sqlite3 3.51 answers for the row.
+TEST_CASE("runtime: a JSON arrow reads back the array index it is written with") {
+    const std::vector<std::string> statements{
+        generate("SELECT a ->> 1;"),
+        generate("SELECT a ->> -1;"),
+        generate("SELECT a ->> '[1]';"),
+        generate("SELECT a ->> 0;"),
+        generate("SELECT a ->> 9;"),
+        generate("SELECT a -> 1;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[1]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[#-1]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[1]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[0]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[9]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[1]\")));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"([10,20,30])")CPP") ==
+            std::vector<std::string>{"20", "30", "20", "10", "NULL", "20"});
 }

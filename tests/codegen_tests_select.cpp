@@ -840,7 +840,7 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
     REQUIRE(generate("SELECT unicode('') + 1;") == "auto rows = storage.select(as_optional(unicode(\"\") + 1));");
     REQUIRE(generate("SELECT sign('abc');") == "auto rows = storage.select(as_optional(sign(\"abc\")));");
     REQUIRE(generate("SELECT json_extract('{}', '$.a');") ==
-            "auto rows = storage.select(as_optional(json_extract(\"{}\", \"$.a\")));");
+            "auto rows = storage.select(as_optional(json_extract<std::string>(\"{}\", \"$.a\")));");
     REQUIRE(generate("SELECT sqrt(-1);") == "auto rows = storage.select(as_optional(sqrt(-1)));");
     // `substr(x'', 1)` is NULL rather than an empty blob, and `printf('')` NULL rather than an
     // empty string, so neither is a function that only propagates a NULL argument.

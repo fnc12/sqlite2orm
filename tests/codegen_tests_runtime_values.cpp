@@ -1401,3 +1401,30 @@ TEST_CASE("runtime: a JSON arrow reads back the array index it is written with")
     REQUIRE(selectedValues(statements, "std::string", R"CPP(R"([10,20,30])")CPP") ==
             std::vector<std::string>{"20", "30", "20", "10", "NULL", "20"});
 }
+
+// sqlite_orm types a `select_t` as the column list it carries, so the `double` of the division in
+// `(SELECT 1 / 0)` is what the outer row is read back through, and the NULL sqlite3 3.51 answers
+// reached the caller as 0. `as_optional` around the subquery leaves its SQL untouched — both
+// values below are what sqlite3 3.51 answers for the row. The last two statements are the forms
+// the widening leaves alone: `max(...)` is already a `std::unique_ptr`, and a subquery over a
+// column carries the field's own type.
+TEST_CASE("runtime: a scalar subquery result column reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT (SELECT 1 / 0);"),
+        generate("SELECT (SELECT 0 * (1e300 * 1e300));"),
+        generate("SELECT (SELECT (SELECT 1 / 0));"),
+        generate("SELECT (SELECT a + 1);"),
+        generate("SELECT (SELECT max(a));"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(select(c(1) / 0)));",
+                              "auto rows = storage.select(as_optional(select(c(0) * (c(1e300) * 1e300))));",
+                              "auto rows = storage.select(as_optional(select(select(c(1) / 0))));",
+                              "auto rows = storage.select(as_optional(select(c(&User::a) + 1)));",
+                              "auto rows = storage.select(select(max(&User::a)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "8", "7"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL"});
+}

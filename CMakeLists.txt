@@ -13,6 +13,7 @@ endif()
 
 include(FetchContent)
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmGitRevision.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmHeadersRevisionNote.cmake")
 message(STATUS "[sqlite2orm] Fetching fmt…")
 FetchContent_Declare(
     fmt
@@ -114,6 +115,16 @@ if(SQLITE2ORM_BUILD_TESTS)
     sqlite2orm_git_revision_of(
         "${sqlite_orm_headers_SOURCE_DIR}" "${SQLITE2ORM_GIT_EXECUTABLE}" sqlite2orm_sqlite_orm_head)
 
+    # Headers that are not a checkout at all leave the guard with nothing to compare, and it can
+    # then only skip: say so here, or the pin quietly stops holding for the trees that most need it.
+    sqlite2orm_headers_revision_note(
+        "${sqlite_orm_headers_SOURCE_DIR}" "${FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS}"
+        "${SQLITE2ORM_SQLITE_ORM_REVISION}" "${sqlite2orm_sqlite_orm_head}"
+        sqlite2orm_sqlite_orm_headers_note)
+    if(sqlite2orm_sqlite_orm_headers_note)
+        message(STATUS "[sqlite2orm] ${sqlite2orm_sqlite_orm_headers_note}")
+    endif()
+
     enable_testing()
     add_executable(sqlite2orm_tests
         tests/tokenizer_tests.cpp
@@ -190,6 +201,11 @@ if(SQLITE2ORM_BUILD_TESTS)
             NAME sqlite2orm_tests_pinned_revision
             COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_pinned_revision_test.sh"
                     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmPinnedRevision.cmake"
+                    "${CMAKE_COMMAND}")
+        add_test(
+            NAME sqlite2orm_tests_headers_revision_note
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_headers_revision_note_test.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmHeadersRevisionNote.cmake"
                     "${CMAKE_COMMAND}")
     endif()
 

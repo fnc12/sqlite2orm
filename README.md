@@ -111,6 +111,11 @@ configuring says so. A tree pointed at a checkout of its own with
 `FETCHCONTENT_SOURCE_DIR_SQLITE_ORM_HEADERS` is not moved by `cmake` at all — check that
 directory out at the pinned revision yourself.
 
+Headers that are not a `git` checkout — a tree copied out of another build, a directory an
+override points at — hold no revision to compare, so the check can only skip over them.
+Configuring reports that case as well, because headers of an unknown age are exactly how the
+failures this pin exists to stop get blamed on the change under test.
+
 ## Code style
 
 The tree is formatted with **clang-format 19** using the `.clang-format` copied from

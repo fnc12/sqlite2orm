@@ -2258,11 +2258,15 @@ namespace sqlite2orm {
         std::string_view writtenText;
         SourceLocation location;
         if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
-            // An arrow is a call over the one path it was written with, whichever of the two it is.
-            writtenText = jsonArrowOperatorText(binaryOp->binaryOperator);
-            if (writtenText.empty()) {
+            // `->>` is a call over the one path it was written with, and answers the very value
+            // that call does. `->` answers the JSON text of that value — always a text, whatever
+            // the JSON holds — so a `std::string` loses nothing of what `->` itself answers, and
+            // what it does lose is what `->` and the call differ by, which `jsonTextArrowWarning`
+            // already reports at these same two characters.
+            if (binaryOp->binaryOperator != BinaryOperator::jsonArrow2) {
                 return std::nullopt;
             }
+            writtenText = jsonArrowOperatorText(binaryOp->binaryOperator);
             location = binaryOp->location;
         } else if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
             if (functionCall->star || toLowerAscii(functionCall->name) != "json_extract") {

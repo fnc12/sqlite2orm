@@ -511,12 +511,15 @@ namespace sqlite2orm {
     std::optional<CodegenWarning> selectResultDoublePrecisionWarning(const AstNode& astNode);
     /**
      *  The warning a SELECT result column read back through a JSON_EXTRACT call over a single path
-     *  carries — the JSON arrows and a `json_extract(X, P)` written as a call alike — and nullopt
-     *  for every other column. What SQLite answers there is the value at the path, of whatever
-     *  storage class the JSON holds; sqlite_orm deduces no result type for the call, and the one
-     *  generated for it (see `functionCallResultTypeArgument`) reads every storage class back as
-     *  its text. JSON_EXTRACT over two paths or more answers the JSON array of what it found,
-     *  which is text whatever the JSON holds, so that form is left alone.
+     *  carries — a `->>` and a `json_extract(X, P)` written as a call alike — and nullopt for
+     *  every other column. What SQLite answers there is the value at the path, of whatever storage
+     *  class the JSON holds; sqlite_orm deduces no result type for the call, and the one generated
+     *  for it (see `functionCallResultTypeArgument`) reads every storage class back as its text.
+     *  JSON_EXTRACT over two paths or more answers the JSON array of what it found, which is text
+     *  whatever the JSON holds, so that form is left alone. `->` is left alone too: it answers the
+     *  JSON text of the value rather than the value, so it is a text itself and a `std::string`
+     *  costs it nothing — where the call it is generated as differs from it is what
+     *  `jsonTextArrowWarning` already reports, at the same two characters.
      */
     std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode);
     /**

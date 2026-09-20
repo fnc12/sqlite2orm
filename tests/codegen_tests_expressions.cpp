@@ -1582,8 +1582,27 @@ TEST_CASE("codegen: JSON -> operator") {
                  "functional",
                  "json_extract<std::string>(&Users::data, \"$.name\")",
                  {Option{"functional", "json_extract<std::string>(&Users::data, \"$.name\")", "functional style"}}}},
-            {CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 13}, 2},
-             CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 13}, 2}}});
+            {CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 13}, 2}}});
+}
+
+// The result type report belongs to `->>` and to the call, not to `->`. Whatever the JSON holds,
+// `->` answers its JSON text, so what it answers is a text already and the `std::string` the call
+// is read back through costs it nothing — sqlite3 3.51 answers `'{"n":42}' -> '$.n'` with the text
+// `42`, `'{"f":1.5}' -> '$.f'` with the text `1.5` and `'{"o":{"k":1}}' -> '$.o'` with the text
+// `{"k":1}`, each of which the generated code reads back unchanged. Where `->` does lose something
+// is where it differs from the call at all, which `kJsonTextArrowWarning` reports at the very same
+// two characters, so a second report there would underline them twice and say something untrue.
+TEST_CASE("codegen: `->` carries no result type report and `->>` carries nothing else") {
+    REQUIRE(generateFull("SELECT data -> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 13}, 2}});
+    REQUIRE(generateFull("SELECT data ->> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 13}, 3}});
+    // The same split holds where the arrow reads a whole concatenation, which is the form the two
+    // operators share a precedence level with.
+    REQUIRE(generateFull("SELECT data || data -> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonTextArrowWarning, SourceLocation{1, 21}, 2}});
+    REQUIRE(generateFull("SELECT data || data ->> '$.name' FROM users;").warnings ==
+            std::vector<CodegenWarning>{CodegenWarning{kJsonExtractResultTypeWarning, SourceLocation{1, 21}, 3}});
 }
 
 TEST_CASE("codegen: column_ref_style options list every variant without duplicating the chosen") {

@@ -44,6 +44,27 @@ namespace sqlite2orm {
         bool operator==(const CustomFunctionUse&) const = default;
     };
 
+    /** Where a placeholder a generator produced stands in the code the statement generates. */
+    enum class PlaceholderSlot {
+        /** The whole code of the statement: a `/*` … `*\/` line of its own, which compiles. */
+        statement,
+        /** Inside the code of something larger, where a comment is not an expression. */
+        expression,
+    };
+
+    /**
+     *  Where the two journals of a generation stood when a generator started, so that it can report
+     *  or drop exactly what it recorded. The two are taken and passed together — a bare `size_t`
+     *  for each reads the same at a call site, and the one mistake that makes is silent: a
+     *  statement kept that should have been dropped, or dropped that should have been kept.
+     */
+    struct GenerationMarks {
+        /** Where `CodeGeneratorContext::comments` stood. */
+        size_t comments = 0;
+        /** Where `CodeGeneratorContext::generatedPlaceholders` stood. */
+        size_t placeholders = 0;
+    };
+
     class CodeGeneratorContext {
       public:
         std::string structName = "User";
@@ -87,6 +108,16 @@ namespace sqlite2orm {
          *  their result.
          */
         std::vector<std::string> comments;
+        /**
+         *  The placeholders generation has produced since the last reset, in the order they were
+         *  produced, each saying where it stands. A statement whose whole code is a placeholder
+         *  reads as a comment line and compiles; one standing inside the code of something larger
+         *  — `storage.select(as<XAlias>(/*` … `*\/))` — is a comment where C++ expects an
+         *  expression, so the statement holding it cannot be generated at all. Only
+         *  `unsupportedPlaceholder` and `unsupportedStatementPlaceholder` record here, which is
+         *  what keeps the journal complete.
+         */
+        std::vector<PlaceholderSlot> generatedPlaceholders;
         /**
          *  The tables of the current batch that cannot be mapped at all — a STORED generated
          *  column holding such a hex literal leaves the whole table out, because a column that
@@ -183,6 +214,9 @@ namespace sqlite2orm {
         /** The count `commentsRecordedSince` measures from: how many comments stand recorded now. */
         size_t commentMark() const;
 
+        /** Both journals' marks at once, for a generator that reports or drops what it recorded. */
+        GenerationMarks mark() const;
+
         /**
          *  Copies out the distinct comments recorded past `commentMark()`, i.e. the ones whatever ran since
          *  recorded. This is how an entry point reports the comments of the node it was handed
@@ -207,6 +241,36 @@ namespace sqlite2orm {
          *  get reads it as a statement about the code it did.
          */
         void discardCommentsSince(size_t mark);
+
+        /** Records the placeholder a funnelled `unsupportedPlaceholder…` is about to hand back. */
+        void recordPlaceholder(PlaceholderSlot slot);
+
+        /** The count the `placeheld…Since` readers measure from: how many stand recorded now. */
+        size_t placeholderMark() const;
+
+        /** Whether anything at all was placeheld past `mark`. */
+        bool placeheldSince(size_t mark) const;
+
+        /**
+         *  Whether a placeholder standing in an expression slot was produced past `mark`, i.e.
+         *  whether the code generated since then holds a comment where C++ expects an expression.
+         */
+        bool placeheldInExpressionSince(size_t mark) const;
+
+        /**
+         *  Whether a placeholder standing for a whole statement was produced past `mark`. Such a
+         *  placeholder is a comment line of its own and compiles where a statement stands — and
+         *  only there, so whoever is about to nest the code holding it inside something larger
+         *  asks this first and gives the nesting up.
+         */
+        bool placeheldAsStatementSince(size_t mark) const;
+
+        /**
+         *  Drops what was placeheld past `mark`, leaving the earlier placeholders in place. A
+         *  generator that throws away what it generated drops them along with the code that held
+         *  them, exactly as it drops the comments recorded for it.
+         */
+        void discardPlaceholdersSince(size_t mark);
 
         /**
          *  How many statements of the current batch already declared each result variable

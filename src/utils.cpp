@@ -81,4 +81,18 @@ namespace sqlite2orm {
         return digits == "8000000000000000";
     }
 
+    bool isUtf8ContinuationByte(char byte) {
+        return (static_cast<unsigned char>(byte) & 0xC0u) == 0x80u;
+    }
+
+    std::size_t utf8CharacterCount(std::string_view text) {
+        std::size_t count = 0;
+        for (const char byte: text) {
+            if (!isUtf8ContinuationByte(byte)) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
 }  // namespace sqlite2orm

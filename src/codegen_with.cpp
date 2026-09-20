@@ -385,6 +385,7 @@ namespace sqlite2orm {
         if (outerSelect || outerCompound) {
             // A bare `SELECT *` outer must render as select(asterisk<T>()) so it nests into storage.with().
             this->context.withOuterSelect = true;
+            const size_t outerPlaceholderMark = this->context.placeholderMark();
             auto outerResult = this->coordinator.generateNode(*withQueryNode.statement);
             warnings.insert(warnings.end(),
                             std::make_move_iterator(outerResult.warnings.begin()),
@@ -394,7 +395,16 @@ namespace sqlite2orm {
                                      std::make_move_iterator(outerResult.decisionPoints.end()));
 
             const std::string rowsVariable = this->context.statementVariableName("rows");
-            auto outerArgOpt = extractStorageSelectArgument(outerResult.code, rowsVariable);
+            // A placeholder the outer SELECT handed back for the whole statement is a comment line
+            // of its own and compiles — but only where a statement stands. Nested as the argument
+            // of storage.with(…) it would be a comment where C++ expects an expression, so the wrap
+            // is given up and the outer code is handed back as it is. A placeholder standing in an
+            // expression slot is not this branch's to catch: the statement holding one is left out
+            // whole by `CodeGenerator::generate`, wrapped or not.
+            std::optional<std::string> outerArgOpt;
+            if (!this->context.placeheldAsStatementSince(outerPlaceholderMark)) {
+                outerArgOpt = extractStorageSelectArgument(outerResult.code, rowsVariable);
+            }
             if (!outerArgOpt) {
                 warnings.push_back(
                     "WITH: outer SELECT is not in the expected `auto rows = storage.select(...);` form; emitted "
@@ -446,6 +456,7 @@ namespace sqlite2orm {
         }
 
         if (outerInsert || outerUpdate || outerDelete) {
+            const size_t outerPlaceholderMark = this->context.placeholderMark();
             auto outerResult = this->coordinator.generateNode(*withQueryNode.statement);
             warnings.insert(warnings.end(),
                             std::make_move_iterator(outerResult.warnings.begin()),
@@ -453,7 +464,15 @@ namespace sqlite2orm {
             allDecisionPoints.insert(allDecisionPoints.end(),
                                      std::make_move_iterator(outerResult.decisionPoints.begin()),
                                      std::make_move_iterator(outerResult.decisionPoints.end()));
-            std::string stripped = stripStoragePrefixAndTrailingSemicolon(outerResult.code);
+            // `INSERT … SELECT` whose SELECT has no sqlite_orm form is placeheld as a whole
+            // statement, which leaves `stripped` a non-empty comment line — and a comment is not
+            // the second argument of storage.with(…) any more than it is the argument of select().
+            // The wrap is given up for the same reason the outer SELECT gives it up, and the plain
+            // DML, the placeholder line, is what the statement generates.
+            std::string stripped;
+            if (!this->context.placeheldAsStatementSince(outerPlaceholderMark)) {
+                stripped = stripStoragePrefixAndTrailingSemicolon(outerResult.code);
+            }
             if (stripped.empty()) {
                 warnings.push_back(
                     "WITH … DML: outer statement codegen could not be wrapped in storage.with(); emitted plain "

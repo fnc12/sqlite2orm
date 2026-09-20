@@ -24,12 +24,15 @@ namespace sqlite2orm {
          */
         std::optional<SourceLocation> location;
         /**
-         *  Number of characters to underline from `location` (0 when unknown). A character is a
-         *  UTF-8 one: `«ü»` is three characters wherever it stands, both in this length and in the
-         *  column of `location`, so SQL that is not all ASCII — SQLite takes non-ASCII in bare
-         *  identifiers as readily as in quoted names and string literals — underlines the same
-         *  text a consumer measuring characters expects. Whoever indexes the SQL by byte instead
-         *  has to convert.
+         *  Number of characters to underline from `location` (0 when unknown). A character is one
+         *  Unicode code point, whatever it takes to write in UTF-8: `«ü»` is three characters
+         *  wherever it stands, both in this length and in the column of `location`, so SQL that is
+         *  not all ASCII — SQLite takes non-ASCII in bare identifiers as readily as in quoted
+         *  names and string literals — underlines the same text a consumer measuring characters
+         *  expects. Whoever indexes the SQL by byte instead has to convert. So does a consumer
+         *  counting UTF-16 code units — a browser string, a UTF-16 string type — but only above
+         *  the basic multilingual plane: a code point written with a surrogate pair there, `🙂`
+         *  among them, is one character here and two of those units.
          *
          *  The span stays on the line `location` names: a token written across lines — a quoted
          *  name or a string literal holding a newline, keywords split by one — is underlined up to

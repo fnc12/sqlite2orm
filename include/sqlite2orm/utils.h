@@ -33,10 +33,11 @@ namespace sqlite2orm {
     bool isUtf8ContinuationByte(char byte);
 
     /**
-     *  Characters `text` is written with: a multi-byte UTF-8 character counts once, so the count
-     *  is what a consumer holding the same text as characters measures. Input that is not valid
-     *  UTF-8 is counted byte by byte except for the bytes that continue a character, which never
-     *  makes the count exceed `text.size()`.
+     *  Characters `text` is written with: one Unicode code point counts once however many UTF-8
+     *  bytes it takes, so the count is what a consumer holding the same text as characters
+     *  measures — `CodegenWarning::length` is in this unit. Input that is not valid UTF-8 is
+     *  counted byte by byte except for the bytes that continue a character, which never makes the
+     *  count exceed `text.size()`.
      */
     std::size_t utf8CharacterCount(std::string_view text);
 

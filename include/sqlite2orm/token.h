@@ -210,9 +210,11 @@ namespace sqlite2orm {
 
     /**
      *  A position in the SQL, counted from 1. `column` counts characters rather than bytes: a
-     *  multi-byte UTF-8 character moves it by one, so a diagnostic anchored here points at the
-     *  same place a consumer holding the SQL as text does; a leading byte-order mark is not a
-     *  character of its own and takes no column.
+     *  character is one Unicode code point and moves the column by one however many UTF-8 bytes it
+     *  takes, so a diagnostic anchored here points at the same place a consumer holding the SQL as
+     *  text does; a leading byte-order mark is not a character of its own and takes no column. A
+     *  consumer counting UTF-16 code units converts above the basic multilingual plane, where one
+     *  code point is written with a surrogate pair.
      */
     struct SourceLocation {
         size_t line = 1;
@@ -227,6 +229,11 @@ namespace sqlite2orm {
      *  spelling built for the message, and it is owned: the AST a span sits on stays readable once
      *  the SQL it was parsed from is gone. Empty for anything no parse recorded a span for, a node
      *  a test builds by hand among them.
+     *
+     *  The two members are measured in different units: `location.column` counts characters, while
+     *  `text` is bytes, so `text.size()` is not the span's length in the unit the column is in —
+     *  a diagnostic underlining the span takes its length from the characters `text` is written
+     *  with.
      */
     struct SourceSpan {
         SourceLocation location;

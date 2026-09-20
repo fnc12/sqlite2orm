@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -27,5 +28,16 @@ namespace sqlite2orm {
      *  one value whose negation SQLite rejects with `hex literal too big`.
      */
     bool hexLiteralIsInt64Min(std::string_view integerLiteral);
+
+    /** True for a byte that continues a multi-byte UTF-8 character rather than starting one. */
+    bool isUtf8ContinuationByte(char byte);
+
+    /**
+     *  Characters `text` is written with: a multi-byte UTF-8 character counts once, so the count
+     *  is what a consumer holding the same text as characters measures. Input that is not valid
+     *  UTF-8 is counted byte by byte except for the bytes that continue a character, which never
+     *  makes the count exceed `text.size()`.
+     */
+    std::size_t utf8CharacterCount(std::string_view text);
 
 }  // namespace sqlite2orm

@@ -401,7 +401,11 @@ namespace sqlite2orm {
             if (!atEnd() && peek() == '\n') {
                 ++this->position;
             }
-        } else {
+        } else if (!isUtf8ContinuationByte(c)) {
+            // `column` counts characters, which is what a location a diagnostic carries promises:
+            // the bytes that continue a multi-byte UTF-8 character belong to the character its
+            // leading byte has already counted. SQLite takes such characters in bare identifiers
+            // (`CREATE VIEW ü`) as well as inside quoted names and string literals.
             ++this->column;
         }
         return c;

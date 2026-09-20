@@ -208,6 +208,12 @@ namespace sqlite2orm {
         eof,
     };
 
+    /**
+     *  A position in the SQL, counted from 1. `column` counts characters rather than bytes: a
+     *  multi-byte UTF-8 character moves it by one, so a diagnostic anchored here points at the
+     *  same place a consumer holding the SQL as text does; a leading byte-order mark is not a
+     *  character of its own and takes no column.
+     */
     struct SourceLocation {
         size_t line = 1;
         size_t column = 1;

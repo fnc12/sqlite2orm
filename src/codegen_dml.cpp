@@ -216,10 +216,12 @@ namespace sqlite2orm {
                 CodeGenResult carried;
                 carried.decisionPoints = std::move(dps);
                 carried.warnings = std::move(warnings);
-                return unsupportedPlaceholder("INSERT ... SELECT: inner SELECT not mapped to sqlite_orm",
-                                              "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
-                                              *insertNode.selectStatement,
-                                              std::move(carried));
+                return unsupportedStatementPlaceholder(
+                    this->context,
+                    "INSERT ... SELECT: inner SELECT not mapped to sqlite_orm",
+                    "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
+                    *insertNode.selectStatement,
+                    std::move(carried));
             }
             if (!insertNode.columnNames.empty()) {
                 std::string cols = "columns(";
@@ -422,14 +424,21 @@ namespace sqlite2orm {
         // read from, with nothing in the generated code saying so. A step is a placeholder site
         // like every other one: the placeholder stands where the step would have, and its warning
         // names the SQL to underline.
-        auto stepOrPlaceholder = [&statement](CodeGenResult step) {
-            if (!step.code.empty()) {
+        //
+        // A step that generated a placeholder of its own is unmappable too, whatever code came
+        // with it: the placeholders standing for a whole statement read as a comment line only
+        // where a statement stands, and a trigger body is not such a place — `begin(/* INSERT ...
+        // SELECT: ... */)` is not C++ any more than an empty step is.
+        const size_t stepPlaceholderMark = this->context.placeholderMark();
+        auto stepOrPlaceholder = [&statement, this, stepPlaceholderMark](CodeGenResult step) {
+            if (!step.code.empty() && !this->context.placeheldSince(stepPlaceholderMark)) {
                 return step;
             }
             CodeGenResult carried;
             carried.decisionPoints = std::move(step.decisionPoints);
             carried.warnings = std::move(step.warnings);
-            return unsupportedPlaceholder("trigger step not mapped to sqlite_orm",
+            return unsupportedPlaceholder(this->context,
+                                          "trigger step not mapped to sqlite_orm",
                                           "a statement in the trigger body is not mapped to sqlite_orm codegen",
                                           statement,
                                           std::move(carried));

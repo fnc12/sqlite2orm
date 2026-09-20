@@ -11,20 +11,28 @@
 #include <vector>
 
 // A placeholder is the `/* … */` comment codegen writes where an expression or a statement it has
-// no sqlite_orm form for would have stood. The generated code does not compile there, so whoever
-// shows it — the playground, SQLite ORM Studio — has to be told which SQL to underline: a
-// CodegenWarning carrying a location and a length. `unsupportedPlaceholder` is the single place
-// that builds such a placeholder, so that the next one cannot appear without saying so; the last
-// test in this file is what keeps it single.
+// no sqlite_orm form for would have stood. Whoever shows it — the playground, SQLite ORM Studio —
+// has to be told which SQL to underline: a CodegenWarning carrying a location and a length.
+// `unsupportedPlaceholder` is the single place that builds such a placeholder, so that the next one
+// cannot appear without saying so; the last test in this file is what keeps it single.
+//
+// A placeholder that is the whole code of its statement is a comment line of its own and compiles,
+// and it is what says, in the generated file, that a statement was read and not mapped. One
+// standing in an expression slot does not compile — `storage.select(as<XAlias>(/* … */))` is not
+// C++ — so it never reaches a consumer: the statement holding it is left out whole, and the tests
+// that pin such a placeholder reach it through `generateNodeOnly`, the channel the generators hand
+// each other. What the consumer gets instead is pinned in "codegen: a statement whose code would
+// hold a placeholder is not generated".
 //
 // The spans below are the SQL the warning underlines, character for character.
 
 namespace {
 
     /**
-     *  Codegen of one node, the way the generators reach each other. `CodeGenerator::generate`
-     *  answers with the accumulated errors alone and drops the warnings along with the code, which
-     *  is why the one branch that raises an error is generated through here.
+     *  Codegen of one node, the way the generators reach each other: a placeholder standing in an
+     *  expression slot survives here and nowhere else. `CodeGenerator::generate` leaves out the
+     *  statement that would hold one, and answers with the accumulated errors alone when a branch
+     *  raised an error, dropping the warnings along with the code.
      */
     CodeGenResult generateNodeOnly(std::string_view sql) {
         Tokenizer tokenizer;
@@ -105,7 +113,7 @@ TEST_CASE("codegen: a placeholder over non-ASCII SQL is underlined in characters
 }
 
 TEST_CASE("codegen: an unmapped EXISTS subquery is underlined together with its keyword") {
-    REQUIRE(generateFull("EXISTS (SELECT a FROM users GROUP BY a)") ==
+    REQUIRE(generateNodeOnly("EXISTS (SELECT a FROM users GROUP BY a)") ==
             CodeGenResult{
                 "/* EXISTS (SELECT ...) */",
                 {},
@@ -114,7 +122,7 @@ TEST_CASE("codegen: an unmapped EXISTS subquery is underlined together with its 
 }
 
 TEST_CASE("codegen: an IN over a table name is underlined") {
-    REQUIRE(generateFull("id IN t") ==
+    REQUIRE(generateNodeOnly("id IN t") ==
             CodeGenResult{
                 "/* &User::id IN t */",
                 {columnRefStyleDp(1, "&User::id")},
@@ -122,7 +130,7 @@ TEST_CASE("codegen: an IN over a table name is underlined") {
 }
 
 TEST_CASE("codegen: an IN over an unmapped subquery is underlined") {
-    REQUIRE(generateFull("id IN (SELECT a FROM users GROUP BY a)") ==
+    REQUIRE(generateNodeOnly("id IN (SELECT a FROM users GROUP BY a)") ==
             CodeGenResult{
                 "/* IN (SELECT ...) */",
                 {columnRefStyleDp(1, "&User::id")},
@@ -133,7 +141,7 @@ TEST_CASE("codegen: an IN over an unmapped subquery is underlined") {
 // SQLite refuses a bind marker with no name behind it ("unrecognized token: \":\"" on 3.51.0), so
 // nothing names the C++ variable either and a placeholder stands where the value would go.
 TEST_CASE("codegen: a bind parameter with no name behind it is underlined") {
-    REQUIRE(generateFull(":") ==
+    REQUIRE(generateNodeOnly(":") ==
             CodeGenResult{"/* : */",
                           {},
                           {CodegenWarning{"bind parameter : -> C++ variable '/* : */'; for prepared statements "
@@ -225,13 +233,105 @@ TEST_CASE("codegen: an unmappable CREATE VIRTUAL TABLE is underlined") {
 // A consumer draws the underline along one line, so a span written across lines is cut at the end
 // of the line it starts on — here the subquery `(SELECT a` and not the whole `(SELECT a\nFROM …)`.
 TEST_CASE("codegen: a placeholder's underline stops at the end of the line it starts on") {
-    REQUIRE(generateFull("SELECT name FROM users LIMIT (SELECT a\nFROM users GROUP BY a)") ==
+    REQUIRE(generateNodeOnly("SELECT name FROM users LIMIT (SELECT a\nFROM users GROUP BY a)") ==
             CodeGenResult{"auto rows = storage.select(&Users::name, limit(/* (SELECT ...) */));",
                           {columnRefStyleDp(1, "&Users::name")},
                           {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
                                           SourceLocation{1, 30},
                                           9},
                            "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)"}});
+}
+
+// The rule every placeholder above is held to: a header handed out at exit 0 has to compile, and
+// `storage.select(as<XAlias>(/* (SELECT ...) */))` does not — g++ answers `expected
+// primary-expression before ')' token`. So a statement whose code would hold a placeholder standing
+// in an expression slot is left out whole instead, the way a statement the pipeline could not carry
+// through already is, and the warnings that name the construct and underline it are what is left.
+// sqlite3 3.51 accepts and runs every input here (the CHECK below is the one it refuses, and it is
+// reachable from `-e` all the same).
+TEST_CASE("codegen: a statement whose code would hold a placeholder is not generated") {
+    const std::string groupByMessage = "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)";
+
+    // The card's own input: `sqlite2orm -e "CREATE TABLE t(a INTEGER); SELECT (SELECT a FROM t
+    // GROUP BY a) AS x;"` used to answer `storage.select(as<XAlias>(/* (SELECT ...) */));` at
+    // exit 0.
+    REQUIRE(generateFull("SELECT (SELECT a FROM t GROUP BY a) AS x") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 8},
+                                          28},
+                           groupByMessage,
+                           "SELECT column alias uses as<AliasTag>() with a generated sqlite_orm::alias_tag struct",
+                           kStatementNotGenerated}});
+    REQUIRE(generateFull("SELECT a FROM t WHERE EXISTS (SELECT a FROM t GROUP BY a)") ==
+            CodeGenResult{
+                {},
+                {},
+                {CodegenWarning{"EXISTS (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 23}, 35},
+                 groupByMessage,
+                 kStatementNotGenerated}});
+    // The same subquery in a trigger WHEN clause, the other half of the card.
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.a = (SELECT a FROM u GROUP BY a) "
+                         "BEGIN DELETE FROM t; END") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 50},
+                                          28},
+                           groupByMessage,
+                           kStatementNotGenerated}});
+    // A `*` next to other result columns is placeheld in the same slot, `columns(…)`.
+    REQUIRE(generateFull("SELECT *, a FROM t") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{"a `*` result column next to other result columns is not mapped to "
+                                          "sqlite_orm codegen",
+                                          SourceLocation{1, 1},
+                                          18},
+                           kStatementNotGenerated}});
+    // A trigger step is a slot too, and the placeholder standing in it may be one that would read
+    // as a comment line of its own where a statement stands — `begin(/* INSERT ... SELECT: … */)`
+    // is not C++ either, so the step counts as unmappable and the trigger goes.
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER DELETE ON t BEGIN INSERT INTO t SELECT a FROM t GROUP BY a; "
+                         "END") ==
+            CodeGenResult{{},
+                          {},
+                          {groupByMessage,
+                           CodegenWarning{"the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 57},
+                                          26},
+                           CodegenWarning{kTriggerStepMessage, SourceLocation{1, 43}, 40},
+                           kStatementNotGenerated}});
+
+    // The two DDL statements keep the header placeholder they already had for a statement they
+    // cannot map: it is a comment line of its own, it compiles, and it is what says in the
+    // generated file that the statement was read. What they drop is the make-expression that
+    // would have held the placeholder.
+    REQUIRE(
+        generateFull("CREATE TABLE q (a INTEGER, CHECK(a IN (SELECT b FROM t GROUP BY b)))") ==
+        CodeGenResult{"/* CREATE TABLE q — not supported for sqlite_orm */",
+                      {},
+                      {groupByMessage,
+                       CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 34}, 33},
+                       "a column or table constraint of q holds a construct that is not mapped to "
+                       "sqlite_orm, so the table is not generated"}});
+    REQUIRE(generateFull("CREATE VIEW v AS SELECT (SELECT a FROM t GROUP BY a)") ==
+            CodeGenResult{"/* CREATE VIEW v — not supported for sqlite_orm */",
+                          {},
+                          {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 25},
+                                          28},
+                           groupByMessage,
+                           "view v: SELECT column 1 has no name; using synthesized field name `column_1`",
+                           "view v: type of column `column_1` could not be inferred; defaulting to int",
+                           CodegenWarning{"CREATE VIEW v: sqlite_orm views use C++26 reflection (make_view + "
+                                          "[[= \"…\"_orm_name]]); this code requires C++26 and will not compile "
+                                          "under the selected C++ standard",
+                                          SourceLocation{1, 1},
+                                          11},
+                           "CREATE VIEW v: the SELECT holds a construct that is not mapped to sqlite_orm, so "
+                           "the view is not generated"}});
 }
 
 namespace {
@@ -332,34 +432,34 @@ TEST_CASE("codegen: every generated placeholder is funnelled through unsupported
 TEST_CASE("codegen: a `*` next to other result columns is placeheld and the SELECT underlined") {
     const std::string message = "a `*` result column next to other result columns is not mapped to "
                                 "sqlite_orm codegen";
-    REQUIRE(generateFull("SELECT *, a FROM t") ==
+    REQUIRE(generateNodeOnly("SELECT *, a FROM t") ==
             CodeGenResult{"auto rows = storage.select(columns(/* * among other result columns */, &T::a));",
                           {columnRefStyleDp(1, "&T::a")},
                           {CodegenWarning{message, SourceLocation{1, 1}, 18}}});
-    REQUIRE(generateFull("SELECT a, * FROM t") ==
+    REQUIRE(generateNodeOnly("SELECT a, * FROM t") ==
             CodeGenResult{"auto rows = storage.select(columns(&T::a, /* * among other result columns */));",
                           {columnRefStyleDp(1, "&T::a")},
                           {CodegenWarning{message, SourceLocation{1, 1}, 18}}});
-    REQUIRE(generateFull("SELECT count(*), * FROM t") ==
+    REQUIRE(generateNodeOnly("SELECT count(*), * FROM t") ==
             CodeGenResult{"auto rows = storage.select(columns(count<T>(), /* * among other result columns */));",
                           {},
                           {CodegenWarning{message, SourceLocation{1, 1}, 25}}});
-    REQUIRE(generateFull("SELECT t.*, * FROM t") ==
+    REQUIRE(generateNodeOnly("SELECT t.*, * FROM t") ==
             CodeGenResult{"auto rows = storage.select(columns(asterisk<T>(), /* * among other result columns */));",
                           {},
                           {CodegenWarning{message, SourceLocation{1, 1}, 20}}});
-    REQUIRE(generateFull("SELECT DISTINCT *, a FROM t") ==
+    REQUIRE(generateNodeOnly("SELECT DISTINCT *, a FROM t") ==
             CodeGenResult{"auto rows = storage.select(distinct(columns(/* * among other result columns */, &T::a)));",
                           {columnRefStyleDp(1, "&T::a")},
                           {CodegenWarning{message, SourceLocation{1, 1}, 27}}});
     // One warning for a result list holding two of them, underlined at the SELECT all the same.
-    REQUIRE(generateFull("SELECT *, a, * FROM t") ==
+    REQUIRE(generateNodeOnly("SELECT *, a, * FROM t") ==
             CodeGenResult{"auto rows = storage.select(columns(/* * among other result columns */, &T::a, "
                           "/* * among other result columns */));",
                           {columnRefStyleDp(1, "&T::a")},
                           {CodegenWarning{message, SourceLocation{1, 1}, 21}}});
     // The underline stops at the end of the line the SELECT starts on.
-    REQUIRE(generateFull("SELECT *,\na FROM t") ==
+    REQUIRE(generateNodeOnly("SELECT *,\na FROM t") ==
             CodeGenResult{"auto rows = storage.select(columns(/* * among other result columns */, &T::a));",
                           {columnRefStyleDp(1, "&T::a")},
                           {CodegenWarning{message, SourceLocation{1, 1}, 9}}});
@@ -373,14 +473,14 @@ TEST_CASE("codegen: a `*` next to other result columns is placeheld and the SELE
 TEST_CASE("codegen: a subquery selecting a `*` next to other columns is left unmapped") {
     const std::string message = "a `*` result column next to other result columns is not mapped to "
                                 "sqlite_orm select(...)";
-    REQUIRE(generateFull("SELECT (SELECT *, a FROM t)") ==
+    REQUIRE(generateNodeOnly("SELECT (SELECT *, a FROM t)") ==
             CodeGenResult{"auto rows = storage.select(/* (SELECT ...) */);",
                           {},
                           {CodegenWarning{"scalar subquery (SELECT ...) is not mapped to sqlite_orm codegen",
                                           SourceLocation{1, 8},
                                           20},
                            CodegenWarning{message, SourceLocation{1, 9}, 18}}});
-    REQUIRE(generateFull("SELECT a FROM t WHERE b IN (SELECT *, c FROM u)") ==
+    REQUIRE(generateNodeOnly("SELECT a FROM t WHERE b IN (SELECT *, c FROM u)") ==
             CodeGenResult{
                 "auto rows = storage.select(&T::a, where(/* IN (SELECT ...) */));",
                 {columnRefStyleDp(1, "&T::a"), columnRefStyleDp(2, "&T::b")},
@@ -392,7 +492,7 @@ TEST_CASE("codegen: a subquery selecting a `*` next to other columns is left unm
                           {CodegenWarning{message, SourceLocation{1, 18}, 18},
                            CodegenWarning{"CREATE VIEW v: SELECT is not supported for sqlite_orm "
                                           "code generation"}}});
-    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t; END") ==
+    REQUIRE(generateNodeOnly("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t; END") ==
             CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
                           "sqlite_orm */));",
                           {},
@@ -408,14 +508,14 @@ TEST_CASE("codegen: a subquery selecting a `*` next to other columns is left unm
 TEST_CASE("codegen: a trigger step with no sqlite_orm form is placeheld and underlined") {
     const std::string starMessage = "a `*` result column next to other result columns is not mapped to "
                                     "sqlite_orm select(...)";
-    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; END") ==
+    REQUIRE(generateNodeOnly("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; END") ==
             CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
                           "/* trigger step not mapped to sqlite_orm */));",
                           {columnRefStyleDp(1, "&T::b")},
                           {CodegenWarning{starMessage, SourceLocation{1, 60}, 18},
                            CodegenWarning{kTriggerStepMessage, SourceLocation{1, 60}, 18}}});
-    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; "
-                         "SELECT b FROM t; END") ==
+    REQUIRE(generateNodeOnly("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *, a FROM t; "
+                             "SELECT b FROM t; END") ==
             CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
                           "/* trigger step not mapped to sqlite_orm */, select(&T::b)));",
                           {columnRefStyleDp(1, "&T::b"), columnRefStyleDp(2, "&T::b")},
@@ -423,15 +523,15 @@ TEST_CASE("codegen: a trigger step with no sqlite_orm form is placeheld and unde
                            CodegenWarning{kTriggerStepMessage, SourceLocation{1, 60}, 18}}});
     // The step that generated nothing is the first one: it used to disappear from the body without
     // a trace, leaving a trigger that compiles and runs and does less than the one imported.
-    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t; SELECT b FROM t; END") ==
+    REQUIRE(generateNodeOnly("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t; SELECT b FROM t; END") ==
             CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
                           "sqlite_orm */, select(&T::b)));",
                           {columnRefStyleDp(1, "&T::b")},
                           {CodegenWarning{starMessage, SourceLocation{1, 43}, 18},
                            CodegenWarning{kTriggerStepMessage, SourceLocation{1, 43}, 18}}});
     // A compound step is underlined whole, arms included.
-    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t UNION "
-                         "SELECT b FROM t; END") ==
+    REQUIRE(generateNodeOnly("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT *, a FROM t UNION "
+                             "SELECT b FROM t; END") ==
             CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
                           "sqlite_orm */));",
                           {},
@@ -439,17 +539,187 @@ TEST_CASE("codegen: a trigger step with no sqlite_orm form is placeheld and unde
                            CodegenWarning{kTriggerStepMessage, SourceLocation{1, 43}, 40}}});
     // The arm that answered with no code before this branch existed: a `*` needs a FROM to name the
     // row type `asterisk<T>()` is taken over, and a step of one is a placeholder site all the same.
-    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *; END") ==
+    REQUIRE(generateNodeOnly("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT b FROM t; SELECT *; END") ==
             CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(select(&T::b), "
                           "/* trigger step not mapped to sqlite_orm */));",
                           {columnRefStyleDp(1, "&T::b")},
                           {CodegenWarning{"SELECT * subexpression requires FROM for sqlite_orm asterisk<...>()"},
                            CodegenWarning{kTriggerStepMessage, SourceLocation{1, 60}, 8}}});
     // The underline stops at the end of the line the step starts on.
-    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN\nSELECT *,\na FROM t; END") ==
+    REQUIRE(generateNodeOnly("CREATE TRIGGER tr AFTER INSERT ON t BEGIN\nSELECT *,\na FROM t; END") ==
             CodeGenResult{"make_trigger(\"tr\", after().insert().on<T>().begin(/* trigger step not mapped to "
                           "sqlite_orm */));",
                           {},
                           {CodegenWarning{starMessage, SourceLocation{2, 1}, 9},
                            CodegenWarning{kTriggerStepMessage, SourceLocation{2, 1}, 9}}});
+}
+
+// A WITH nests the outer statement's code inside `storage.with(cte…, <outer>)`, which turns a
+// placeholder standing for the whole outer statement — a comment line of its own, which compiles —
+// into a comment where C++ expects an expression. `INSERT … SELECT` whose SELECT has no sqlite_orm
+// form is exactly that: `storage.with(cte<cte_0>().as(select(&T::a)), /* INSERT ... SELECT: … */);`
+// was handed out at exit 0, and g++ answers `expected primary-expression before ')' token`. The
+// wrap is given up instead and the plain DML — the placeholder line — is what the statement
+// generates. Every input here is prepared by sqlite3 3.51.
+TEST_CASE("codegen: a WITH does not wrap a placeholder standing for its outer statement") {
+    const std::string insertSelectPlaceholder = "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */";
+    const std::string unwrappedMessage =
+        "WITH … DML: outer statement codegen could not be wrapped in storage.with(); emitted plain DML";
+    const std::string insertReadsMessage = "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen";
+
+    REQUIRE(generateFull("WITH c AS (SELECT a FROM t) INSERT INTO u SELECT a FROM t GROUP BY a") ==
+            CodeGenResult{insertSelectPlaceholder,
+                          {columnRefStyleDp(1, "&T::a")},
+                          {"GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
+                           CodegenWarning{insertReadsMessage, SourceLocation{1, 43}, 26},
+                           unwrappedMessage}});
+    REQUIRE(generateFull("WITH RECURSIVE c(x) AS (SELECT 1) INSERT INTO u SELECT *, a FROM t") ==
+            CodeGenResult{insertSelectPlaceholder,
+                          {},
+                          {CodegenWarning{"a `*` result column next to other result columns is not mapped to "
+                                          "sqlite_orm select(...)",
+                                          SourceLocation{1, 49},
+                                          18},
+                           CodegenWarning{insertReadsMessage, SourceLocation{1, 49}, 18},
+                           unwrappedMessage}});
+
+    // The outer SELECT branch nests its argument the same way. `extractStorageSelectArgument`
+    // happens to turn a placeholder down today, which makes this safe by accident; the journal is
+    // what makes it safe by construction, and the fallback it lands in is the one below.
+    REQUIRE(generateFull("WITH c AS (SELECT a FROM t) SELECT a FROM t UNION SELECT a FROM t GROUP BY a") ==
+            CodeGenResult{"/* compound SELECT */",
+                          {columnRefStyleDp(1, "&T::a"), columnRefStyleDp(2, "&T::a")},
+                          {CodegenWarning{"compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to "
+                                          "sqlite_orm codegen",
+                                          SourceLocation{1, 29},
+                                          48},
+                           "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)",
+                           "WITH: outer SELECT is not in the expected `auto rows = storage.select(...);` form; "
+                           "emitted as plain outer codegen"}});
+
+    // A WITH whose outer statement generates is untouched: the wrap is given up only for a
+    // placeholder, not for every DML that a CTE stands in front of.
+    REQUIRE(generate("WITH c AS (SELECT a FROM t) INSERT INTO u SELECT a FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "storage.with(cte<cte_0>().as(select(&T::a)), insert(into<U>(), select(column<cte_0>(&T::a))));");
+}
+
+namespace {
+
+    /**
+     *  The lines of `code` that hold a placeholder next to other code. A placeholder standing on a
+     *  line of its own is a comment where a statement stands and compiles; one sharing its line
+     *  with anything else is a comment where C++ expects an expression, and the file does not
+     *  build. The scan is over the generated text because that is where the property is visible:
+     *  what decides it is which funnel a generator called and whether the statement holding the
+     *  placeholder asked the journal before embedding its code.
+     */
+    std::vector<std::string> linesHoldingAPlaceholderBesideCode(const std::string& code) {
+        std::vector<std::string> lines;
+        for (size_t start = 0; start < code.size();) {
+            const size_t lineEnd = std::min(code.find('\n', start), code.size());
+            const std::string line = code.substr(start, lineEnd - start);
+            start = lineEnd + 1;
+            const size_t firstVisible = line.find_first_not_of(" \t");
+            if (line.find("/*") == std::string::npos) {
+                continue;
+            }
+            const bool standsAlone = firstVisible != std::string::npos && line.compare(firstVisible, 2, "/*") == 0 &&
+                                     line.substr(firstVisible).find("*/") == line.size() - firstVisible - 2;
+            if (!standsAlone) {
+                lines.push_back(line);
+            }
+        }
+        return lines;
+    }
+
+    /** A statement that holds an unmapped expression, and exactly what it generates once it does. */
+    struct PlaceholderCase {
+        /** The SQL, with `$` standing where the unmapped expression goes. */
+        std::string sql;
+        /** The whole generated code, for every expression put in its place. */
+        std::string code;
+    };
+
+    std::string withExpression(const std::string& sql, const std::string& expression) {
+        const size_t slot = sql.find('$');
+        REQUIRE(slot != std::string::npos);
+        return sql.substr(0, slot) + expression + sql.substr(slot + 1);
+    }
+
+}  // namespace
+
+// The funnel test above pins that every placeholder is BUILT in one place. This one pins the
+// property that makes the two funnels worth telling apart: whatever a generator placeheld, no line
+// a statement hands out holds a placeholder beside other code. It is the property a call site
+// breaks by reaching for the wrong funnel, and the one an embedder breaks by nesting a statement's
+// code without asking the journal — `storage.with(cte…, /* INSERT ... SELECT: … */)` was the second
+// kind, and the next one will be too.
+//
+// The corpus is the placeholder sites, each crossed with the expressions codegen has no sqlite_orm
+// form for, plus the shapes that are placeheld whole. sqlite3 3.51 prepares every input except the
+// three whose expression it refuses outright — a subquery in a CHECK, in a column DEFAULT and in an
+// index expression — which `-e` still reads, and `-e` is the path the playground runs on.
+TEST_CASE("codegen: no statement hands out a line holding a placeholder beside other code") {
+    const std::vector<std::string> unmappedExpressions{
+        "(SELECT b FROM u GROUP BY b)",
+        "(SELECT b FROM u GROUP BY b HAVING count(*) > 0)",
+        "1 IN (SELECT b FROM u GROUP BY b)",
+        "EXISTS (SELECT b FROM u GROUP BY b)",
+    };
+    const std::vector<PlaceholderCase> contexts{
+        {"SELECT $ AS x", {}},
+        {"SELECT a FROM t WHERE $", {}},
+        {"SELECT max(a) FROM t GROUP BY a HAVING $", {}},
+        {"SELECT a FROM t ORDER BY $", {}},
+        {"SELECT a FROM t LIMIT $", {}},
+        {"UPDATE t SET a = $", {}},
+        {"DELETE FROM t WHERE $", {}},
+        {"INSERT INTO t(a) VALUES ($)", {}},
+        {"CREATE VIEW v2 AS SELECT $", "/* CREATE VIEW v2 — not supported for sqlite_orm */"},
+        {"CREATE TABLE q (a INTEGER, CHECK($))", "/* CREATE TABLE q — not supported for sqlite_orm */"},
+        {"CREATE TABLE q (a INTEGER DEFAULT ($))", "/* CREATE TABLE q — not supported for sqlite_orm */"},
+        {"CREATE TRIGGER tr AFTER INSERT ON t WHEN $ BEGIN DELETE FROM t; END", {}},
+        {"CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM t WHERE $; END", {}},
+        {"CREATE INDEX i ON t(($))", {}},
+        {"WITH c AS (SELECT a FROM t) SELECT $ AS x", {}},
+        {"WITH c AS (SELECT a FROM t) DELETE FROM t WHERE $", {}},
+        {"WITH RECURSIVE c(x) AS (SELECT 1) UPDATE t SET a = $", {}},
+        {"WITH c AS (SELECT a FROM t) INSERT INTO u(a) VALUES ($)", {}},
+    };
+    const std::vector<PlaceholderCase> shapes{
+        {"ANALYZE", "/* unsupported node */"},
+        {"DROP VIEW v", "/* DROP VIEW: not supported as storage.drop_* in sqlite_orm */"},
+        {"PRAGMA journal_mode", "storage.pragma.journal_mode();"},
+        {"SELECT *, a FROM t", {}},
+        {"INSERT INTO u SELECT a FROM t GROUP BY a", "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"WITH c AS (SELECT a FROM t) INSERT INTO u SELECT a FROM t GROUP BY a",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"WITH RECURSIVE c(x) AS (SELECT 1) INSERT INTO u SELECT *, a FROM t",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"SELECT a FROM t UNION SELECT a FROM t GROUP BY a", "/* compound SELECT */"},
+        {"WITH c AS (SELECT a FROM t) SELECT a FROM t UNION SELECT a FROM t GROUP BY a", "/* compound SELECT */"},
+        {"CREATE TRIGGER tr AFTER DELETE ON t BEGIN INSERT INTO u SELECT a FROM t GROUP BY a; END", {}},
+    };
+
+    size_t checked = 0;
+    for (const PlaceholderCase& context: contexts) {
+        for (const std::string& expression: unmappedExpressions) {
+            const std::string sql = withExpression(context.sql, expression);
+            INFO(sql);
+            const CodeGenResult result = generateFull(sql);
+            REQUIRE(result.code == context.code);
+            REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
+            ++checked;
+        }
+    }
+    for (const PlaceholderCase& shape: shapes) {
+        INFO(shape.sql);
+        const CodeGenResult result = generateFull(shape.sql);
+        REQUIRE(result.code == shape.code);
+        REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
+        ++checked;
+    }
+    REQUIRE(checked == 82);
 }

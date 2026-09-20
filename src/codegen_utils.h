@@ -100,12 +100,33 @@ namespace sqlite2orm {
 
     /**
      *  True when a call of `lowerFunctionName` is generated as a form sqlite_orm gives no
-     *  `filter()`: the window functions and a MATCH in its function spelling hold their arguments
-     *  and an `over()` and nothing else, while `count(*)` and the aggregate function calls do have
-     *  one. SQLite refuses a FILTER on the same calls — `FILTER clause may only be used with
-     *  aggregate window functions` — but stores a trigger or a view that holds one.
+     *  `filter()`. sqlite_orm declares one on `count_asterisk_t` and on the built-in aggregate
+     *  function calls alone, so a scalar function, a window function, a MATCH in its function
+     *  spelling and a user-defined function — written as a `func<…>()` call — all carry none.
+     *  Three names are answered by what the call holds rather than by the name: `count(*)`, which
+     *  the generator writes as `count<T>()`, is the one star with a `filter()` — hence
+     *  `generatedAsCountAsterisk`, false for the same star over no FROM clause — while the
+     *  argument-less `count()` is a `count_asterisk_without_type`, which has none, and MAX and MIN
+     *  are the aggregates in their one-argument form only, `argumentCount` telling the two apart.
      */
-    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName);
+    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName,
+                                     size_t argumentCount,
+                                     bool generatedAsCountAsterisk);
+
+    /**
+     *  The warning a FILTER over a call `functionCallFormHasNoFilter` answers true for carries.
+     *  `functionName` is spelled as the SQL writes it, which is how SQLite echoes a function name
+     *  in the diagnostics quoted here — checked against sqlite3 3.51.0, which refuses such a call
+     *  at prepare yet stores a trigger or a view holding one. Which diagnostic it is follows from
+     *  the call: a window function is `misuse of window function name()` on its own and `FILTER
+     *  clause may only be used with aggregate window functions` under an OVER, every other
+     *  non-aggregate `FILTER may not be used with non-aggregate name()` and `name() may not be
+     *  used as a window function`. The two forms SQLite does take — the argument-less `count()`
+     *  and a `userDefinedFunction` registered as an aggregate — say so instead: there the
+     *  generated code alone is at fault.
+     */
+    std::string
+    filterOnCallWithoutFilterWarning(std::string_view functionName, bool hasOverClause, bool userDefinedFunction);
 
     /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from

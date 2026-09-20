@@ -1260,6 +1260,13 @@ namespace sqlite2orm {
             std::vector<DecisionPoint> decisionPoints;
             std::vector<CodegenWarning> funcWarnings;
             std::string baseCode;
+            // Whether the call comes out a `count_asterisk_t`, the one star form sqlite_orm holds
+            // a row type and a `filter()` for; a `count(*)` over no FROM clause and every other
+            // star are written as `name()` instead.
+            bool generatedAsCountAsterisk = false;
+            // A name the generator knows nothing about is written as a `func<…>()` call over a
+            // stub. A star names no arguments to write one from, so it never takes that road.
+            const bool customFunction = !funcCall->star && !isKnownSqlFunction(funcName);
 
             if (funcCall->star) {
                 if (funcName == "count" && !this->context.fromTableAliasToStructName.empty()) {
@@ -1267,11 +1274,11 @@ namespace sqlite2orm {
                                                           ? *this->context.implicitSingleSourceCteTypedef
                                                           : this->context.structName;
                     baseCode = "count<" + countRowType + ">()";
+                    generatedAsCountAsterisk = true;
                 } else {
                     baseCode = funcName + "()";
                 }
             } else {
-                const bool customFunction = !isKnownSqlFunction(funcName);
                 CustomFunctionUse customUse;
                 if (customFunction) {
                     customUse.sqlName = funcCall->name;
@@ -1337,12 +1344,9 @@ namespace sqlite2orm {
                                     std::make_move_iterator(filterResult.warnings.begin()),
                                     std::make_move_iterator(filterResult.warnings.end()));
                 baseCode += ".filter(where(" + filterResult.code + "))";
-                if (functionCallFormHasNoFilter(funcName)) {
-                    funcWarnings.push_back(std::string(funcCall->name) +
-                                           "() has no filter() in sqlite_orm: only the aggregate function calls "
-                                           "and count(*) take a FILTER, so the generated code does not compile. "
-                                           "SQLite refuses the same call — FILTER clause may only be used with "
-                                           "aggregate window functions — but stores a trigger or a view holding it");
+                if (functionCallFormHasNoFilter(funcName, funcCall->arguments.size(), generatedAsCountAsterisk)) {
+                    funcWarnings.push_back(
+                        filterOnCallWithoutFilterWarning(funcCall->name, funcCall->over != nullptr, customFunction));
                 }
             }
             if (funcCall->over) {

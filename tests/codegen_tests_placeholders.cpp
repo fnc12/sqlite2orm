@@ -92,6 +92,18 @@ TEST_CASE("codegen: the IS placeholder is underlined on the operator's own expre
                                           24}}});
 }
 
+// The span a placeholder underlines is measured in characters as well: `ключ IS b` is nine
+// characters written with thirteen bytes, and the warning carries the nine a consumer draws.
+TEST_CASE("codegen: a placeholder over non-ASCII SQL is underlined in characters") {
+    REQUIRE(generateNodeOnly("SELECT ключ IS b FROM t") ==
+            CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */);",
+                          {},
+                          {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
+                                          "is not supported in sqlite_orm",
+                                          SourceLocation{1, 8},
+                                          9}}});
+}
+
 TEST_CASE("codegen: an unmapped EXISTS subquery is underlined together with its keyword") {
     REQUIRE(generateFull("EXISTS (SELECT a FROM users GROUP BY a)") ==
             CodeGenResult{

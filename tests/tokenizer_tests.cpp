@@ -495,6 +495,71 @@ TEST_CASE("tokenizer: source locations") {
     REQUIRE(tokens.at(2).location.column == 1);
 }
 
+// A location counts characters, not the bytes they take. SQLite takes non-ASCII in bare
+// identifiers, in quoted names and inside string literals alike, and a consumer holding the same
+// SQL as text underlines a diagnostic from the column this reports — so `café` has to move the
+// column by four, not by the five bytes it is written with.
+TEST_CASE("tokenizer: a multi-byte character takes one column rather than one per byte") {
+    auto tokens = tokenize("SELECT café, x FROM t");
+    REQUIRE(tokens.at(1) == Token{TokenType::identifier, "café"});
+    REQUIRE(tokens.at(1).location.column == 8);
+    REQUIRE(tokens.at(2) == Token{TokenType::comma, ","});
+    REQUIRE(tokens.at(2).location.column == 12);
+    REQUIRE(tokens.at(3) == Token{TokenType::identifier, "x"});
+    REQUIRE(tokens.at(3).location.column == 14);
+    REQUIRE(tokens.at(5) == Token{TokenType::identifier, "t"});
+    REQUIRE(tokens.at(5).location.column == 21);
+}
+
+TEST_CASE("tokenizer: quoted names and string literals count characters too") {
+    auto tokens = tokenize("SELECT '«ü»', \"ÿ\" FROM t");
+    REQUIRE(tokens.at(1) == Token{TokenType::stringLiteral, "'«ü»'"});
+    REQUIRE(tokens.at(1).location.column == 8);
+    REQUIRE(tokens.at(2) == Token{TokenType::comma, ","});
+    REQUIRE(tokens.at(2).location.column == 13);
+    REQUIRE(tokens.at(3) == Token{TokenType::identifier, "\"ÿ\""});
+    REQUIRE(tokens.at(3).location.column == 15);
+    REQUIRE(tokens.at(5) == Token{TokenType::identifier, "t"});
+    REQUIRE(tokens.at(5).location.column == 24);
+}
+
+// A character outside the basic multilingual plane takes four bytes and still one column.
+TEST_CASE("tokenizer: a four-byte character takes one column") {
+    auto tokens = tokenize("SELECT '🙂' AS x");
+    REQUIRE(tokens.at(2) == Token{TokenType::kwAs, "AS"});
+    REQUIRE(tokens.at(2).location.column == 12);
+    REQUIRE(tokens.at(3) == Token{TokenType::identifier, "x"});
+    REQUIRE(tokens.at(3).location.column == 15);
+}
+
+// The count restarts with every line, so a multi-byte character on one line does not shift the
+// columns reported on the next, and one on the next line shifts them by a character there.
+TEST_CASE("tokenizer: character columns restart on a new line") {
+    auto tokens = tokenize("SELECT café\nFROM café t");
+    REQUIRE(tokens.at(2) == Token{TokenType::kwFrom, "FROM"});
+    REQUIRE(tokens.at(2).location.line == 2);
+    REQUIRE(tokens.at(2).location.column == 1);
+    REQUIRE(tokens.at(4) == Token{TokenType::identifier, "t"});
+    REQUIRE(tokens.at(4).location.line == 2);
+    REQUIRE(tokens.at(4).location.column == 11);
+}
+
+// SQLite takes bytes >= 0x80 in an identifier whether or not they spell a UTF-8 character, so
+// input that is not valid UTF-8 still tokenizes. A byte that continues a character takes no column
+// of its own there either: nothing is a right character count for text that is not characters, and
+// counting no more columns than there are bytes is what keeps an underline inside its line.
+TEST_CASE("tokenizer: a stray continuation byte takes no column") {
+    // 0x80 continues a UTF-8 character; standing on its own it spells no character at all.
+    const std::string continuationBytes(2, static_cast<char>(0x80));
+    // Kept alive: a token's value views into the SQL it was tokenized from.
+    const std::string sql = "SELECT " + continuationBytes + " FROM t";
+    auto tokens = tokenize(sql);
+    REQUIRE(tokens.at(1) == Token{TokenType::identifier, continuationBytes});
+    REQUIRE(tokens.at(1).location.column == 8);
+    REQUIRE(tokens.at(2) == Token{TokenType::kwFrom, "FROM"});
+    REQUIRE(tokens.at(2).location.column == 9);
+}
+
 TEST_CASE("tokenizer: CREATE TABLE statement") {
     REQUIRE(tokenize("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)") ==
             std::vector<Token>{

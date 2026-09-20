@@ -893,6 +893,33 @@ namespace sqlite2orm {
             std::string highCode =
                 groupPredicateArgument(std::move(highResult.code), *betweenNode->high, this->context);
 
+            // sqlite_orm deduces one `T` from both bounds of `between(A, T, T)`, so bounds
+            // generated as different C++ types do not compile — and SQLite takes the SQL either
+            // way, `a BETWEEN 1 AND 3000000000` as readily as `a BETWEEN 1 AND 'x'`.
+            switch (betweenBoundsForm(*betweenNode->low, *betweenNode->high)) {
+                case BetweenBoundsForm::asWritten:
+                    break;
+                case BetweenBoundsForm::widenedToInt64: {
+                    const auto widened = [](const AstNode& bound, std::string code) {
+                        return generatedValueCppType(bound) == GeneratedValueCppType::integer64
+                                   ? code
+                                   : "static_cast<int64_t>(" + code + ")";
+                    };
+                    lowCode = widened(*betweenNode->low, std::move(lowCode));
+                    highCode = widened(*betweenNode->high, std::move(highCode));
+                    this->context.recordComment(kCommentBetweenBoundsWidened);
+                    break;
+                }
+                case BetweenBoundsForm::noCommonType:
+                    warnings.push_back(sourceSpanWarning(
+                        "sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and " +
+                            betweenBoundTypeDescription(*betweenNode->low) + " next to " +
+                            betweenBoundTypeDescription(*betweenNode->high) +
+                            " is not one type, so the generated code does not compile",
+                        *betweenNode));
+                    break;
+            }
+
             this->context.recordFormWithoutDefaultConstructor("BETWEEN");
             std::string betweenCode = "between(" + operandCode + ", " + lowCode + ", " + highCode + ")";
             std::string code = betweenNode->negated ? "!" + betweenCode : betweenCode;

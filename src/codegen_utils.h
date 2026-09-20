@@ -68,6 +68,7 @@ namespace sqlite2orm {
     extern const std::string kCommentBitwiseResultCast;
     extern const std::string kCommentOrTokenCallSpelling;
     extern const std::string kCommentAndOrPredicateArgumentCast;
+    extern const std::string kCommentBetweenBoundsWidened;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -393,6 +394,46 @@ namespace sqlite2orm {
      *  names something (a column, NEW/OLD, a function call) and is serialized into the SQL itself.
      */
     bool generatesBoundValue(const AstNode& astNode);
+    /** The C++ type of the value a node generated as a bound value is spelled with. */
+    enum class GeneratedValueCppType {
+        /** `1`, `0xFF` — a constant an `int` holds. */
+        integer32,
+        /** `3000000000`, `static_cast<int64_t>(0xFFFFFFFF)` — a constant that needs 64 bits. */
+        integer64,
+        /** `true` / `false`. */
+        boolean,
+        /** `2.5`, and the `99999999999999999999.0` an integer literal past the int64 range becomes. */
+        real,
+        /** A string literal, which decays to a `const char*` wherever a type is deduced from it. */
+        text,
+        /** `std::vector<char>{…}`. */
+        blob,
+        /** The `nullptr` a NULL literal becomes. */
+        null,
+    };
+    /**
+     *  The C++ type the code generated for `astNode` has, for the nodes `generatesBoundValue`
+     *  answers for; `std::nullopt` for every other node, whose type only the compiler knows.
+     *  Integers come in two widths because C++ types a constant by its magnitude rather than by
+     *  the column it is compared against: `1` is an `int` and `3000000000` a 64-bit integer.
+     */
+    std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode);
+    /**
+     *  How the two bounds of a BETWEEN have to be spelled. sqlite_orm's `between(A, T, T)` deduces
+     *  ONE `T` from both of them, so bounds generated as different C++ types do not compile at all.
+     */
+    enum class BetweenBoundsForm {
+        /** Both bounds generate the one type already, or nothing here can tell that they do not. */
+        asWritten,
+        /** Integer bounds of different widths, which a cast on each of them widens to one type. */
+        widenedToInt64,
+        /** Types with nothing to widen to; codegen warns, and the generated code does not compile. */
+        noCommonType,
+    };
+    /** The shape the bounds of a BETWEEN are generated in — the single home of that rule. */
+    BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high);
+    /** How a BETWEEN bound is named in the warning about the two types, e.g. "an `int`". */
+    std::string betweenBoundTypeDescription(const AstNode& bound);
     /**
      *  True for a node generated as sqlite_orm's `negated_condition_t`: a logical NOT, and the
      *  `!predicate` spelling a negated BETWEEN, LIKE, GLOB or MATCH takes. sqlite_orm classifies

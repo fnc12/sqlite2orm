@@ -1063,6 +1063,94 @@ TEST_CASE("codegen: NOT BETWEEN") {
     REQUIRE(generate("a NOT BETWEEN 1 AND 10") == "!between(&User::a, 1, 10)");
 }
 
+// sqlite_orm's `between(A, T, T)` deduces one `T` from both bounds, and C++ types an integer
+// constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a 64-bit
+// constant and does not compile — while sqlite3 3.45.1 and 3.51 both take the SQL and answer 1.
+// The cast gives the two bounds one type; the values it carries are pinned in
+// "runtime: BETWEEN bounds of two integer widths read back as SQLite computes them".
+TEST_CASE("codegen: BETWEEN bounds of two integer widths are widened to one") {
+    REQUIRE(generate("a BETWEEN 1 AND 3000000000") == "between(&User::a, static_cast<int64_t>(1), 3000000000)");
+    REQUIRE(generate("a BETWEEN 3000000000 AND 1") == "between(&User::a, 3000000000, static_cast<int64_t>(1))");
+    REQUIRE(generate("a BETWEEN -1 AND 3000000000") == "between(&User::a, static_cast<int64_t>(-1), 3000000000)");
+    REQUIRE(generate("a NOT BETWEEN 1 AND 3000000000") == "!between(&User::a, static_cast<int64_t>(1), 3000000000)");
+    // TRUE is the integer 1 for SQLite, so a `bool` bound widens with the rest of them.
+    REQUIRE(generate("a BETWEEN 1 AND TRUE") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(true))");
+    // A hex literal C++ would make unsigned already carries the cast that types it, and the other
+    // bound joins it there.
+    REQUIRE(generate("a BETWEEN 1 AND 0xFFFFFFFF") ==
+            "between(&User::a, static_cast<int64_t>(1), static_cast<int64_t>(0xFFFFFFFF))");
+    // Bounds that are one type already are left as written, whichever width that type is.
+    REQUIRE(generate("a BETWEEN 1 AND 10") == "between(&User::a, 1, 10)");
+    REQUIRE(generate("a BETWEEN 3000000000 AND 4000000000") == "between(&User::a, 3000000000, 4000000000)");
+    REQUIRE(generate("a BETWEEN 0xFFFFFFFF AND 0xFFFFFFFF") ==
+            "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), static_cast<int64_t>(0xFFFFFFFF))");
+}
+
+// Two bounds with no C++ type to widen to have no working form at all: `between(A, T, T)` takes
+// one type, and an integer next to a text, a real, a NULL, a blob, a column pointer or an
+// expression node is two. SQLite takes every one of these (`SELECT 1 BETWEEN 1 AND 'x'` answers 1
+// on 3.45.1 and on 3.51), so the statement is generated and the warning says what the code does.
+TEST_CASE("codegen: BETWEEN bounds with no common C++ type warn") {
+    const auto boundsWarning = [](const std::string& low, const std::string& high, size_t length) {
+        return std::vector<CodegenWarning>{
+            {"sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and " + low +
+                 " next to " + high + " is not one type, so the generated code does not compile",
+             SourceLocation{1, 1},
+             length}};
+    };
+    auto result = generateFull("a BETWEEN 1 AND 'x'");
+    REQUIRE(result.code == "between(&User::a, 1, \"x\")");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a `const char*`", 19));
+
+    result = generateFull("a BETWEEN 1 AND 2.5");
+    REQUIRE(result.code == "between(&User::a, 1, 2.5)");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a `double`", 19));
+
+    result = generateFull("a BETWEEN NULL AND 1");
+    REQUIRE(result.code == "between(&User::a, nullptr, 1)");
+    REQUIRE(result.warnings == boundsWarning("a `std::nullptr_t`", "an `int`", 20));
+
+    result = generateFull("a BETWEEN x'41' AND 1");
+    REQUIRE(result.code == "between(&User::a, std::vector<char>{'\\x41'}, 1)");
+    REQUIRE(result.warnings == boundsWarning("a `std::vector<char>`", "an `int`", 21));
+
+    result = generateFull("a BETWEEN b AND 3");
+    REQUIRE(result.code == "between(&User::a, &User::b, 3)");
+    REQUIRE(result.warnings == boundsWarning("a pointer to a column", "an `int`", 17));
+
+    result = generateFull("a BETWEEN 1 AND abs(b)");
+    REQUIRE(result.code == "between(&User::a, 1, abs(&User::b))");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a sqlite_orm expression", 22));
+
+    // A pointer to a member is none of the node types sqlite_orm builds an expression out of,
+    // whichever column and whichever expression the two bounds stand for.
+    result = generateFull("a BETWEEN b AND abs(b)");
+    REQUIRE(result.code == "between(&User::a, &User::b, abs(&User::b))");
+    REQUIRE(result.warnings == boundsWarning("a pointer to a column", "a sqlite_orm expression", 22));
+
+    // A decimal literal past the int64 range is a REAL for SQLite and a `double` here, so it is
+    // the integer bound beside it that has nothing to meet.
+    result = generateFull("a BETWEEN 1 AND 99999999999999999999");
+    REQUIRE(result.code == "between(&User::a, 1, 99999999999999999999.0)");
+    REQUIRE(result.warnings == boundsWarning("an `int`", "a `double`", 36));
+}
+
+// Bounds whose type this cannot know are left alone rather than warned about: two columns are
+// typed by the schema and two expression nodes by what they are built over — `abs(&User::a)` and
+// `abs(&User::b)` are the same type when the two columns are — and a bind parameter is typed by
+// the caller, who declares `bindParam1` himself.
+TEST_CASE("codegen: BETWEEN bounds this cannot type are left as written") {
+    REQUIRE(generateFull("a BETWEEN b AND b").warnings.empty());
+    REQUIRE(generateFull("a BETWEEN b AND c").warnings.empty());
+    REQUIRE(generateFull("a BETWEEN abs(b) AND abs(c)").warnings.empty());
+    REQUIRE(generateFull("a BETWEEN 'x' AND 'y'").warnings.empty());
+    REQUIRE(generate("a BETWEEN 1 AND ?") == "between(&User::a, 1, bindParam1)");
+    REQUIRE(generateFull("a BETWEEN 1 AND ?").warnings ==
+            std::vector<CodegenWarning>{"bind parameter ? -> C++ variable 'bindParam1'; for prepared statements use "
+                                        "storage.prepare() + get<N>(stmt)"});
+}
+
 // What a bound generates warns for itself too, and that warning used to be dropped on the way out
 // of the BETWEEN: the three operands were generated and only their code was kept.
 TEST_CASE("codegen: a warning from a BETWEEN operand reaches the caller") {

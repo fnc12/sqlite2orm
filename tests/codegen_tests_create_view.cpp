@@ -174,6 +174,31 @@ TEST_CASE("codegen: view column-type warning carries a source location to underl
                 cpp26ViewWarning("v", 1)});
 }
 
+// A location and a length count characters, not the bytes they take. SQLite takes non-ASCII in a
+// bare identifier as readily as in a quoted one, so a view named `«ü»` — six bytes, three
+// characters — must not shift the columns reported for what follows it, and a consumer holding
+// the SQL as text underlines exactly `id` and `name`.
+TEST_CASE("codegen: a non-ASCII view name does not shift the columns it is followed by") {
+    auto result = generateFull("CREATE VIEW «ü» AS SELECT id, name FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view «ü»: type of column `id` could not be inferred; defaulting to int", SourceLocation{1, 27}, 2},
+                {"view «ü»: type of column `name` could not be inferred; defaulting to std::string",
+                 SourceLocation{1, 31},
+                 4},
+                cpp26ViewWarning("«ü»", 1)});
+}
+
+// The length is measured the same way: `ключ` is four characters written with eight bytes, and
+// underlining eight of them would run past the column the message is about.
+TEST_CASE("codegen: a non-ASCII column is underlined for as many characters as it is written with") {
+    auto result = generateFull("CREATE VIEW v AS SELECT ключ FROM users;");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: type of column `ключ` could not be inferred; defaulting to int", SourceLocation{1, 25}, 4},
+                cpp26ViewWarning("v", 1)});
+}
+
 // The opening keywords are underlined as the source spells them, not as the message spells them
 // back: SQLite takes any whitespace between CREATE and VIEW, and a consumer draws the underline
 // along one line, so a statement broken across lines underlines what stands on the first one.

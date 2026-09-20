@@ -39,6 +39,19 @@ namespace sqlite2orm {
             return false;
         }
 
+        /**
+         *  Whether `valueNode` is an integer literal, the minus and plus signs folded into it
+         *  included. That is the one value the PRAGMAs with a reader of their own can pass on as
+         *  written: the reader takes the digits the generated C++ literal spells, while a real
+         *  literal already parts ways with it — `max_page_count = 1.5` sets nothing at all, because
+         *  `sqlite3DecOrHexToI64()` refuses a text with a dot in it.
+         */
+        bool pragmaValueIsIntegerLiteral(const AstNode& valueNode) {
+            std::size_t foldedSigns = 0;
+            const AstNode* literal = withoutFoldedSigns(valueNode, foldedSigns);
+            return literal != nullptr && dynamic_cast<const IntegerLiteralNode*>(literal) != nullptr;
+        }
+
     }  // namespace
 
     PragmaCodeGenerator::PragmaCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -174,6 +187,34 @@ namespace sqlite2orm {
                         "one, so it sets 0",
                     *node.value));
                 return CodeGenResult{"storage.pragma." + name + "(0);", {}, std::move(warnings)};
+            }
+            // A PRAGMA value is a name as readily as a number — SQLite's `nmnum` rule takes either —
+            // and each of these three readers knows names of its own: `getSafetyLevel()` reads
+            // `full` as 2 and `extra` as 3, `getAutoVacuum()` reads `none`/`full`/`incremental` as
+            // 0/1/2, and `max_page_count` refuses a name and reports the limit rather than setting
+            // one. A name is no C++ expression — it used to leave here as `&User::full` — so every
+            // value but the integer literal that spells itself goes out as the number its reader
+            // answers for the text.
+            if (!pragmaValueIsIntegerLiteral(*node.value)) {
+                const std::optional<PragmaValue> value = pragmaValue(*node.value);
+                if (!value) {
+                    this->context.accumulatedErrors.push_back("PRAGMA " + name +
+                                                              " = …: expected a number, a string or a name");
+                    return CodeGenResult{"/* PRAGMA " + name + " */"};
+                }
+                const std::int64_t readValue = name == "synchronous"   ? sqlitePragmaSafetyLevel(value->text)
+                                               : name == "auto_vacuum" ? sqlitePragmaAutoVacuum(value->text)
+                                                                       : sqlitePragmaMaxPageCount(value->text);
+                const std::string prefix =
+                    "PRAGMA " + name + " = " + value->sqlText + ": SQLite reads a PRAGMA value as text, so ";
+                warnings.push_back(
+                    pragmaValueWarning(name == "max_page_count" && readValue == 0
+                                           ? prefix + "this one leaves the limit alone and only reports it"
+                                           : prefix + "it sets " + std::to_string(readValue),
+                                       *value));
+                return CodeGenResult{"storage.pragma." + name + "(" + std::to_string(readValue) + ");",
+                                     {},
+                                     std::move(warnings)};
             }
             std::string arg = mergeSub(this->coordinator.generateNode(*node.value));
             return CodeGenResult{"storage.pragma." + name + "(" + std::move(arg) + ");",

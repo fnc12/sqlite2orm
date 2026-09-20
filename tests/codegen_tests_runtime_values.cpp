@@ -1212,6 +1212,10 @@ TEST_CASE("runtime: a JSON_EXTRACT result column reads the value at the path bac
         generate("SELECT json_extract(a, '$.n');"),
         generate("SELECT json_extract(a, '$.n', '$.s');"),
         generate("SELECT json_quote(a -> '$.s');"),
+        generate("SELECT a ->> 'n';"),
+        generate("SELECT a -> 'n';"),
+        generate("SELECT a ->> 'a.b';"),
+        generate("SELECT a ->> 'zz';"),
     };
     REQUIRE(statements ==
             std::vector<std::string>{
@@ -1224,7 +1228,48 @@ TEST_CASE("runtime: a JSON_EXTRACT result column reads the value at the path bac
                 "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
                 "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\", \"$.s\")));",
                 "auto rows = storage.select(json_quote<std::string>(json_extract<std::string>(&User::a, \"$.s\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.\\\"a.b\\\"\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.zz\")));",
             });
-    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"({"n":42,"s":"txt","t":true,"z":null})")CPP") ==
-            std::vector<std::string>{"42", "txt", "txt", "1", "NULL", "NULL", "42", "[42,\"txt\"]", "\"txt\""});
+    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"({"n":42,"s":"txt","t":true,"z":null,"a.b":7})")CPP") ==
+            std::vector<std::string>{"42",
+                                     "txt",
+                                     "txt",
+                                     "1",
+                                     "NULL",
+                                     "NULL",
+                                     "42",
+                                     "[42,\"txt\"]",
+                                     "\"txt\"",
+                                     "42",
+                                     "42",
+                                     "7",
+                                     "NULL"});
+}
+
+// The path an arrow is written with is the abbreviated one SQLite expands, and an array index is
+// the form of it a `$` path never reaches: `json_extract(X, 1)` is the error `bad JSON path` where
+// `X ->> 1` is the second element. Every value below is what sqlite3 3.51 answers for the row.
+TEST_CASE("runtime: a JSON arrow reads back the array index it is written with") {
+    const std::vector<std::string> statements{
+        generate("SELECT a ->> 1;"),
+        generate("SELECT a ->> -1;"),
+        generate("SELECT a ->> '[1]';"),
+        generate("SELECT a ->> 0;"),
+        generate("SELECT a ->> 9;"),
+        generate("SELECT a -> 1;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[1]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[#-1]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[1]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[0]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[9]\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$[1]\")));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"([10,20,30])")CPP") ==
+            std::vector<std::string>{"20", "30", "20", "10", "NULL", "20"});
 }

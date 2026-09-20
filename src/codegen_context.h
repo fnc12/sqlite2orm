@@ -52,6 +52,19 @@ namespace sqlite2orm {
         expression,
     };
 
+    /**
+     *  Where the two journals of a generation stood when a generator started, so that it can report
+     *  or drop exactly what it recorded. The two are taken and passed together — a bare `size_t`
+     *  for each reads the same at a call site, and the one mistake that makes is silent: a
+     *  statement kept that should have been dropped, or dropped that should have been kept.
+     */
+    struct GenerationMarks {
+        /** Where `CodeGeneratorContext::comments` stood. */
+        size_t comments = 0;
+        /** Where `CodeGeneratorContext::generatedPlaceholders` stood. */
+        size_t placeholders = 0;
+    };
+
     class CodeGeneratorContext {
       public:
         std::string structName = "User";
@@ -200,6 +213,9 @@ namespace sqlite2orm {
 
         /** The count `commentsRecordedSince` measures from: how many comments stand recorded now. */
         size_t commentMark() const;
+
+        /** Both journals' marks at once, for a generator that reports or drops what it recorded. */
+        GenerationMarks mark() const;
 
         /**
          *  Copies out the distinct comments recorded past `commentMark()`, i.e. the ones whatever ran since

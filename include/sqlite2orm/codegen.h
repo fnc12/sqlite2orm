@@ -13,6 +13,7 @@ namespace sqlite2orm {
 
     class CodeGenerator;
     class CodeGeneratorContext;
+    struct GenerationMarks;
     class ExpressionCodeGenerator;
     class SelectCodeGenerator;
     class DmlCodeGenerator;
@@ -79,15 +80,14 @@ namespace sqlite2orm {
         CodeGenResult dispatchNode(const AstNode& astNode);
 
         /**
-         *  `result` with the comments the context recorded past `commentMark` appended: the
-         *  comments the call that produced it recorded, and none of the ones its statement recorded
-         *  around it. A `result` with no code generated nothing for a comment to explain, so the
-         *  ones recorded past `commentMark` are dropped instead — they belong to the fragment that
-         *  was thrown away, and so do the placeholders recorded past `placeholderMark`: a
-         *  placeholder that is not in the generated code cannot keep a statement from being
-         *  generated.
+         *  `result` with the comments the context recorded past `marks` appended: the comments the
+         *  call that produced it recorded, and none of the ones its statement recorded around it.
+         *  A `result` with no code generated nothing for a comment to explain, so the ones recorded
+         *  past `marks` are dropped instead — they belong to the fragment that was thrown away, and
+         *  so do the placeholders recorded past it: a placeholder that is not in the generated code
+         *  cannot keep a statement from being generated.
          */
-        CodeGenResult withRecordedComments(CodeGenResult result, size_t commentMark, size_t placeholderMark);
+        CodeGenResult withRecordedSince(CodeGenResult result, GenerationMarks marks);
 
         /** Prepend user-defined/extension function structs (+ registration) and add their decision points. */
         void injectCustomFunctions(CodeGenResult& result);

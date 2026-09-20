@@ -256,6 +256,10 @@ namespace sqlite2orm {
         return this->comments.size();
     }
 
+    GenerationMarks CodeGeneratorContext::mark() const {
+        return GenerationMarks{this->commentMark(), this->placeholderMark()};
+    }
+
     std::vector<std::string> CodeGeneratorContext::commentsRecordedSince(size_t mark) const {
         // A take in between leaves fewer than `mark` behind: the statement the comments belong to
         // has carried them off already, so there is nothing left for this node to report.

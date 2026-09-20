@@ -93,6 +93,50 @@ namespace {
     }
 
     /**
+     *  Syntax-checks the generated select statements with `int64_t` naming `int64Spelling`, and
+     *  returns the compiler's exit status. Which type `int64_t` is differs by platform — a `long`
+     *  where the tests run, a `long long` on macOS — and so does the type C++ gives a 64-bit
+     *  constant, so a pair of bounds that deduces one `T` here can be two types there. The alias
+     *  stands in for the platform: the generated code names `int64_t` unqualified, and inside the
+     *  namespace that name is whichever of the two types the probe asks for.
+     */
+    int compilesWithInt64Spelled(const std::vector<std::string>& selectStatements, std::string_view int64Spelling) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <optional>\n"
+                   "\n"
+                   "struct User {\n"
+                   "    long long a{};\n"
+                   "};\n"
+                   "\n"
+                   "namespace probe {\n"
+                   "    using int64_t = "
+                << int64Spelling
+                << ";\n"
+                   "    using namespace sqlite_orm;\n"
+                   "\n";
+        for (std::size_t index = 0; index < selectStatements.size(); ++index) {
+            program << "    void statement" << index
+                    << "() {\n"
+                       "        auto storage = make_storage(\"\", make_table(\"users\", make_column(\"a\", "
+                       "&User::a)));\n"
+                       "        "
+                    << selectStatements[index]
+                    << "\n"
+                       "        (void)rows;\n"
+                       "    }\n";
+        }
+        program << "}  // namespace probe\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand() << " -fsyntax-only -w " << cpppath.string() << " > /dev/null 2>&1";
+        return TempBuildDir::run(cmd.str());
+    }
+
+    /**
      *  Builds a program around the generated INSERT statements for a one-column `t` table whose
      *  field is `std::optional<fieldType>`, or a bare `fieldType` for the NOT NULL column
      *  `nullable` stands for, compiles and links it against sqlite_orm, runs it and returns
@@ -1230,4 +1274,10 @@ TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite com
             std::vector<std::string>{"1", "0", "0", "1", "1", "0"});
     REQUIRE(selectedValues(statements, "std::string", "\"1\"") ==
             std::vector<std::string>{"1", "0", "1", "1", "1", "0"});
+    // Building these once says nothing about the platform the tests do not run on, and this is
+    // the bug: the cast the generator used to put on the narrower bound alone builds here, where
+    // an `int64_t` is a `long` and so is `3000000000`, and does not build where an `int64_t` is a
+    // `long long`. Both spellings have to compile, whichever one this platform uses itself.
+    REQUIRE(compilesWithInt64Spelled(statements, "long") == 0);
+    REQUIRE(compilesWithInt64Spelled(statements, "long long") == 0);
 }

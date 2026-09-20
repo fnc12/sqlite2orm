@@ -1249,6 +1249,28 @@ TEST_CASE("runtime: a JSON_EXTRACT result column reads the value at the path bac
                                      "NULL"});
 }
 
+// `||`, `->` and `->>` share one left-associative precedence level, so the arrow reads the whole
+// concatenation to its left rather than its last operand — the seam between the result type named
+// here and the grouping the parser builds. `a || ''` is the JSON document itself, so sqlite3 3.51
+// answers 42 to `a || '' ->> '$.n'` and `42x` to `a ->> '$.n' || 'x'` over the row below, and the
+// `->` row is again the one the generated call answers without the quotes the operator keeps:
+// sqlite3 answers `"txt"` for `a || '' -> '$.s'`.
+TEST_CASE("runtime: a JSON arrow over a concatenation reads the value the whole of it holds") {
+    const std::vector<std::string> statements{
+        generate("SELECT a || '' ->> '$.n';"),
+        generate("SELECT a ->> '$.n' || 'x';"),
+        generate("SELECT a || '' -> '$.s';"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(json_extract<std::string>(c(&User::a) || \"\", \"$.n\")));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(&User::a, \"$.n\") || \"x\"));",
+                "auto rows = storage.select(as_optional(json_extract<std::string>(c(&User::a) || \"\", \"$.s\")));",
+            });
+    REQUIRE(selectedValues(statements, "std::string", R"CPP(R"({"n":42,"s":"txt"})")CPP") ==
+            std::vector<std::string>{"42", "42x", "txt"});
+}
+
 // The path an arrow is written with is the abbreviated one SQLite expands, and an array index is
 // the form of it a `$` path never reaches: `json_extract(X, 1)` is the error `bad JSON path` where
 // `X ->> 1` is the second element. Every value below is what sqlite3 3.51 answers for the row.

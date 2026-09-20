@@ -1000,10 +1000,10 @@ TEST_CASE("codegen: an operator no looser than the predicate leaves it bare") {
 // operand the arrow reads from rather than the other way round. sqlite3 3.51 answers 5 to
 // `SELECT '{"x' || '":5}' ->> 'x'` and rejects `SELECT '":5}' ->> 'x'` as malformed JSON.
 TEST_CASE("codegen: the JSON arrows read a whole concatenation") {
-    REQUIRE(generate("a || b ->> 'x'") == "json_extract(c(&User::a) || &User::b, \"x\")");
-    REQUIRE(generate("a || b -> 'x'") == "json_extract(c(&User::a) || &User::b, \"x\")");
-    REQUIRE(generate("a ->> 'x' || b") == "json_extract(&User::a, \"x\") || &User::b");
-    REQUIRE(generate("a * b ->> 'x'") == "c(&User::a) * json_extract(&User::b, \"x\")");
+    REQUIRE(generate("a || b ->> 'x'") == "json_extract<std::string>(c(&User::a) || &User::b, \"$.x\")");
+    REQUIRE(generate("a || b -> 'x'") == "json_extract<std::string>(c(&User::a) || &User::b, \"$.x\")");
+    REQUIRE(generate("a ->> 'x' || b") == "json_extract<std::string>(&User::a, \"$.x\") || &User::b");
+    REQUIRE(generate("a * b ->> 'x'") == "c(&User::a) * json_extract<std::string>(&User::b, \"$.x\")");
 }
 
 // The functional spelling changes the C++ and not the SQL — `sub(1, is_null(&User::a))` serializes

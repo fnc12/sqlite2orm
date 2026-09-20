@@ -134,6 +134,20 @@ namespace sqlite2orm {
         constexpr std::string_view fts5ShadowTableSuffixes[] = {"config", "content", "data", "docsize", "idx"};
 
         /**
+         *  Whether SQLite keeps this name for itself. Every name spelled `sqlite_...` belongs to
+         *  the engine — `sqlite_sequence` behind AUTOINCREMENT and `sqlite_stat1` behind ANALYZE
+         *  are the two an ordinary database hands out — and no schema of a user's own can hold
+         *  one: sqlite3 3.51 answers `CREATE TABLE "sqlite_foo"(x)` with "object name reserved for
+         *  internal use" whatever the case and the quoting, and refuses an index, a view and a
+         *  trigger under such a name just as flatly. A storage holding one could therefore never
+         *  create it — sync_schema() would stop right there — and writing to `sqlite_sequence`
+         *  through it would take the bookkeeping of every AUTOINCREMENT key with it.
+         */
+        [[nodiscard]] bool isReservedSqliteName(std::string_view name) {
+            return normalizeSqlIdentifier(name).rfind("sqlite_", 0) == 0;
+        }
+
+        /**
          *  The module behind a `sqlite_master` row when that row is a `CREATE VIRTUAL TABLE`, and
          *  nothing for any other statement. It is read off the tokens rather than off the AST
          *  because an AST is only there for a statement the whole pipeline carried through, and
@@ -279,11 +293,11 @@ namespace sqlite2orm {
             gen.context().ungeneratableTables = ungeneratableTables;
             gen.context().ungeneratableViews = ungeneratableViews;
 
-            // Whether SQLite, not sqlite_orm, owns what a row created: a table a module keeps its
-            // index in. Such a row is left out of the storage before anything is generated, and the
-            // name it created gets no C++ type.
+            // Whether SQLite, not sqlite_orm, owns what a row created: its own `sqlite_...` object
+            // or a table a module keeps its index in. Either way the row is left out of the storage
+            // before anything is generated, and the name gets no C++ type.
             const auto sqliteOwnsStatement = [&shadowTables](const SchemaStatementMeta& meta) {
-                return shadowTables.count(normalizeSqlIdentifier(meta.name)) != 0;
+                return isReservedSqliteName(meta.name) || shadowTables.count(normalizeSqlIdentifier(meta.name)) != 0;
             };
 
             std::vector<const CreateTableNode*> tableNodes;
@@ -337,6 +351,18 @@ namespace sqlite2orm {
             // ungeneratable table has none, so it is marked here — before anything is generated — and
             // the existing funnel drops whatever rests on it.
             for (const SchemaStatementResult& statementResult: schema.statements) {
+                // What SQLite owns is decided before what this pipeline could do with it: a
+                // reserved `sqlite_...` object and a table a module keeps its index in are left out
+                // whether or not they parsed, and saying they "did not generate" would name the
+                // wrong reason for a row that generates perfectly well.
+                if (isReservedSqliteName(statementResult.meta.name)) {
+                    markNameOfStatement(statementResult.meta);
+                    allWarnings.push_back(std::string(createStatementLabel(statementResult.meta)) + " `" +
+                                          statementResult.meta.name +
+                                          "` is reserved for SQLite's own use and is not merged into "
+                                          "make_storage()");
+                    continue;
+                }
                 // A table FTS5 keeps its index in is the module's own storage: writing to it
                 // through a storage corrupts the index, and sync_schema() would go around the
                 // module. It is left out of make_storage() exactly as the virtual table it

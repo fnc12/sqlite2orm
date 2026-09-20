@@ -388,12 +388,22 @@ TEST_CASE("codegen: the argument counts SQLite accepts generate without a warnin
     REQUIRE(others.warnings == std::vector<CodegenWarning>{});
 }
 
-// The arity table names these forms only: a function sqlite_orm generates as a `builtin_function_t`
-// takes whatever it is written with, and an unknown name becomes a user-defined function.
+// The arity table names these forms only, and outside it the call is generated as written. That is
+// right for a name sqlite_orm spells variadically — the scalar `max(X, Y, ...)` takes the three
+// arguments SQLite accepts here, on the C++20 and on the legacy header path alike — and it is the
+// known remainder for a builtin written with an argument count sqlite_orm has no signature for:
+// `abs(a, 1)`, which SQLite refuses too, is still generated silently into code that compiles on
+// neither path. Widening the check to the builtins is card 1868323633923884702, not this table.
+// An unknown name becomes a user-defined function instead, whatever it is written with.
 TEST_CASE("codegen: a function outside the fixed-arity forms keeps generating without a warning") {
-    const auto result = generateFull("SELECT max(id, id, id) FROM users;");
-    REQUIRE(result.code == "auto rows = storage.select(max(&Users::id, &Users::id, &Users::id));");
-    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    const auto variadic = generateFull("SELECT max(id, id, id) FROM users;");
+    REQUIRE(variadic.code == "auto rows = storage.select(max(&Users::id, &Users::id, &Users::id));");
+    REQUIRE(variadic.warnings == std::vector<CodegenWarning>{});
+
+    // Pinned as the remainder it is, so that card 1868323633923884702 has to come back here.
+    const auto wrongArityBuiltin = generateFull("SELECT abs(id, 1) FROM users;");
+    REQUIRE(wrongArityBuiltin.code == "auto rows = storage.select(abs(&Users::id, 1));");
+    REQUIRE(wrongArityBuiltin.warnings == std::vector<CodegenWarning>{});
 }
 
 TEST_CASE("codegen: WINDOW clause maps to window(...) on select") {

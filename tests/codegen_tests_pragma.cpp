@@ -693,6 +693,301 @@ TEST_CASE("codegen: the PRAGMAs with a reader of their own keep a value past the
             CodeGenResult{"storage.pragma.auto_vacuum(4294967296);", {}, {}, {}});
 }
 
+// `nmnum` takes a name wherever it takes a number, and the three PRAGMAs with a reader of their own
+// read that name themselves: `getSafetyLevel()` answers 2 for `full` and 3 for `extra`,
+// `getAutoVacuum()` answers 0/1/2 for `none`/`full`/`incremental`, and `sqlite3DecOrHexToI64()`
+// refuses a name outright, which leaves `max_page_count` reporting the limit rather than setting it.
+// A name is no C++ expression — it used to go out as `&User::full` — so the generated call carries
+// the number the reader answers. Every value below was checked against sqlite3 3.51.0.
+TEST_CASE("codegen: a name PRAGMA value reaches the reader of a PRAGMA that has one") {
+    REQUIRE(generateFull("PRAGMA synchronous = full;") ==
+            CodeGenResult{"storage.pragma.synchronous(2);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = full: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 2",
+                                          SourceLocation{1, 22},
+                                          4}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA synchronous = extra;") ==
+            CodeGenResult{"storage.pragma.synchronous(3);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = extra: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 3",
+                                          SourceLocation{1, 22},
+                                          5}},
+                          {}});
+    // A name `getSafetyLevel()` does not know is the PRAGMA's own default, 1, and not the 0 that
+    // `sqlite3Atoi()` answers for the same letters over at `user_version`.
+    REQUIRE(generateFull("PRAGMA synchronous = incremental;") ==
+            CodeGenResult{"storage.pragma.synchronous(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = incremental: SQLite reads a PRAGMA value as text, "
+                                          "so it sets 1",
+                                          SourceLocation{1, 22},
+                                          11}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA auto_vacuum = incremental;") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(2);",
+                          {},
+                          {CodegenWarning{"PRAGMA auto_vacuum = incremental: SQLite reads a PRAGMA value as text, "
+                                          "so it sets 2",
+                                          SourceLocation{1, 22},
+                                          11}},
+                          {}});
+    // `full` is 2 to `synchronous` and 1 to `auto_vacuum`: the readers are the PRAGMA's own, not
+    // one rule the value passes through.
+    REQUIRE(generateFull("PRAGMA auto_vacuum = FULL;") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA auto_vacuum = FULL: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 1",
+                                          SourceLocation{1, 22},
+                                          4}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA auto_vacuum = extra;") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA auto_vacuum = extra: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 0",
+                                          SourceLocation{1, 22},
+                                          5}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = full;") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = full: SQLite reads a PRAGMA value as text, so "
+                                          "this one leaves the limit alone and only reports it",
+                                          SourceLocation{1, 25},
+                                          4}},
+                          {}});
+}
+
+// The keywords `nmnum` names on top of the names it falls back to: `DELETE` and `DEFAULT` are
+// values here, and so is the `ON` the parser hands on as a bool literal and the `CURRENT_DATE` it
+// hands on as a datetime. Every one of them is letters to the reader, spelled back as written.
+TEST_CASE("codegen: a keyword PRAGMA value reaches the reader of a PRAGMA that has one") {
+    REQUIRE(generateFull("PRAGMA synchronous = DELETE;") ==
+            CodeGenResult{"storage.pragma.synchronous(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = DELETE: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 1",
+                                          SourceLocation{1, 22},
+                                          6}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA auto_vacuum = DEFAULT;") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA auto_vacuum = DEFAULT: SQLite reads a PRAGMA value as text, so "
+                                          "it sets 0",
+                                          SourceLocation{1, 22},
+                                          7}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA synchronous = ON;") ==
+            CodeGenResult{"storage.pragma.synchronous(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = ON: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 1",
+                                          SourceLocation{1, 22},
+                                          2}},
+                          {}});
+    // `ON` is 1 to `getSafetyLevel()` and a name `getAutoVacuum()` does not know, so the same
+    // keyword is 0 here — the boolean the node carries would have made it 1.
+    REQUIRE(generateFull("PRAGMA auto_vacuum = ON;") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA auto_vacuum = ON: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 0",
+                                          SourceLocation{1, 22},
+                                          2}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA synchronous = CURRENT_DATE;") ==
+            CodeGenResult{"storage.pragma.synchronous(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = current_date: SQLite reads a PRAGMA value as "
+                                          "text, so it sets 1",
+                                          SourceLocation{1, 22},
+                                          12}},
+                          {}});
+}
+
+// A string is a `nmnum` value as much as a name is, and the reader gets the letters between the
+// quotes: `getSafetyLevel()` takes `'12'` down its digit branch and answers the 12 that
+// `= 12` answers, while `max_page_count` reads `'12'` as the limit 12 and refuses `'12abc'` the way
+// it refuses a name. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: a string PRAGMA value reaches the reader of a PRAGMA that has one") {
+    REQUIRE(generateFull("PRAGMA synchronous = '12';") ==
+            CodeGenResult{"storage.pragma.synchronous(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = '12': SQLite reads a PRAGMA value as text, so it "
+                                          "sets 12",
+                                          SourceLocation{1, 22},
+                                          4}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '12';") ==
+            CodeGenResult{"storage.pragma.max_page_count(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '12': SQLite reads a PRAGMA value as text, so "
+                                          "it sets 12",
+                                          SourceLocation{1, 25},
+                                          4}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '12abc';") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '12abc': SQLite reads a PRAGMA value as text, "
+                                          "so this one leaves the limit alone and only reports it",
+                                          SourceLocation{1, 25},
+                                          7}},
+                          {}});
+    // `sqlite3DecOrHexToI64()` reads the whole text, hexadecimal included, and the limit tops out
+    // at 0xfffffffe — which is past the `int` sqlite_orm's setter takes, so the call that would
+    // carry it is the one generated below instead.
+    REQUIRE(generateFull("PRAGMA max_page_count = '0xFFFFFFFF';") ==
+            CodeGenResult{"/* PRAGMA max_page_count */",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '0xFFFFFFFF': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 4294967294, which sqlite_orm's max_page_count(int) "
+                                          "cannot pass on",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+}
+
+// `sqlite3DecOrHexToI64()` hands `sqlite3Atoi64()` only what `strspn(z, "+- \n\t0123456789")`
+// spans, plus the one character behind it, so the two ends of the text differ although
+// `sqlite3Isspace()` calls `\v`, `\f` and `\r` spaces just like a blank: in front of the digits
+// such a character cuts them away and leaves nothing to read, while behind them it is the trailing
+// space the reader tolerates — and whatever follows it is never looked at, so `'12<VT>abc'` reads
+// as the 12 that `'12abc'` is refused for. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: a vertical tab bounds a max_page_count value where a blank does not") {
+    REQUIRE(generateFull("PRAGMA max_page_count = '\v12';") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '\v12': SQLite reads a PRAGMA value as text, "
+                                          "so this one leaves the limit alone and only reports it",
+                                          SourceLocation{1, 25},
+                                          5}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '  12';") ==
+            CodeGenResult{"storage.pragma.max_page_count(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '  12': SQLite reads a PRAGMA value as text, "
+                                          "so it sets 12",
+                                          SourceLocation{1, 25},
+                                          6}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '12\vabc';") ==
+            CodeGenResult{"storage.pragma.max_page_count(12);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '12\vabc': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 12",
+                                          SourceLocation{1, 25},
+                                          8}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '12 abc';") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '12 abc': SQLite reads a PRAGMA value as "
+                                          "text, so this one leaves the limit alone and only reports it",
+                                          SourceLocation{1, 25},
+                                          8}},
+                          {}});
+    // `getSafetyLevel()` takes its digit branch only for a text that starts with one, so the very
+    // same leading vertical tab sends `'\v12'` to the PRAGMA's default of 1 rather than to 12.
+    REQUIRE(generateFull("PRAGMA synchronous = '\v12';") ==
+            CodeGenResult{"storage.pragma.synchronous(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = '\v12': SQLite reads a PRAGMA value as text, so "
+                                          "it sets 1",
+                                          SourceLocation{1, 22},
+                                          5}},
+                          {}});
+}
+
+// sqlite_orm declares every one of these setters as taking an `int`, and `max_page_count` is the
+// one reader here that reaches past that range: it clamps at 0xfffffffe, so the upper half of the
+// limits SQLite accepts cannot be asked for through the setter at all. Naming the number in the
+// warning and generating a call that narrows it silently would be a diagnostic the code
+// contradicts, so the statement generates nothing and the warning says why. Every number below is
+// what sqlite3 3.51.0 sets the limit to for the SQL beside it.
+TEST_CASE("codegen: a max_page_count past an int32 generates no call at all") {
+    REQUIRE(generateFull("PRAGMA max_page_count = '2147483647';") ==
+            CodeGenResult{"storage.pragma.max_page_count(2147483647);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '2147483647': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 2147483647",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = '2147483648';") ==
+            CodeGenResult{"/* PRAGMA max_page_count */",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '2147483648': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 2147483648, which sqlite_orm's max_page_count(int) "
+                                          "cannot pass on",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+    // Clamped down to 0xfffffffe, and still past an int32.
+    REQUIRE(generateFull("PRAGMA max_page_count = '4294967295';") ==
+            CodeGenResult{"/* PRAGMA max_page_count */",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = '4294967295': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 4294967294, which sqlite_orm's max_page_count(int) "
+                                          "cannot pass on",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+    // The two readers that answer a small number of their own never reach here: `getSafetyLevel()`
+    // returns a u8 and `getAutoVacuum()` clamps to 0..2, so both keep generating their call.
+    REQUIRE(generateFull("PRAGMA synchronous = '4294967295';") ==
+            CodeGenResult{"storage.pragma.synchronous(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = '4294967295': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 0",
+                                          SourceLocation{1, 22},
+                                          12}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA auto_vacuum = '4294967295';") ==
+            CodeGenResult{"storage.pragma.auto_vacuum(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA auto_vacuum = '4294967295': SQLite reads a PRAGMA value as "
+                                          "text, so it sets 0",
+                                          SourceLocation{1, 22},
+                                          12}},
+                          {}});
+}
+
+// A real literal is text to these readers too, and only `max_page_count` parts ways with the C++
+// conversion over it: `sqlite3Atoi()` stops at the dot the way a narrowing conversion does, so
+// `synchronous = 1.5` is 1 either way, while `sqlite3DecOrHexToI64()` refuses a text with a dot in
+// it outright and leaves the limit alone. Checked against sqlite3 3.51.0.
+TEST_CASE("codegen: a real PRAGMA value reaches the reader of a PRAGMA that has one") {
+    REQUIRE(generateFull("PRAGMA synchronous = 1.5;") ==
+            CodeGenResult{"storage.pragma.synchronous(1);",
+                          {},
+                          {CodegenWarning{"PRAGMA synchronous = 1.5: SQLite reads a PRAGMA value as text, so it "
+                                          "sets 1",
+                                          SourceLocation{1, 22},
+                                          3}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA max_page_count = 1.5;") ==
+            CodeGenResult{"storage.pragma.max_page_count(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA max_page_count = 1.5: SQLite reads a PRAGMA value as text, so "
+                                          "this one leaves the limit alone and only reports it",
+                                          SourceLocation{1, 25},
+                                          3}},
+                          {}});
+}
+
+// `NULL` is the one value SQLite's `nmnum` rule has no room for, and a PRAGMA with a reader of its
+// own says so rather than handing the node to expression codegen.
+TEST_CASE("codegen: PRAGMA synchronous = NULL is an error") {
+    REQUIRE(generateFull("PRAGMA synchronous = NULL;") ==
+            CodeGenResult{{}, {}, {}, {"PRAGMA synchronous = …: expected a number, a string or a name"}, {}});
+}
+
 // The value `PRAGMA integrity_check` cannot read as an int32 is the one it falls back to reading as
 // a table name, so the whole int32 range behaves like the too-big hex literal already did.
 TEST_CASE("codegen: PRAGMA integrity_check = a literal past the int32 range is an error") {
@@ -1051,6 +1346,73 @@ namespace {
         return outcomes;
     }
 
+    /**
+     *  Runs each generated `PRAGMA <pragmaName>` setter over a database of its own, the PRAGMA set
+     *  to `before` first, and answers what it reads back afterwards. A setter returns nothing, so
+     *  only reading the PRAGMA back says where the generated number landed — and a database of its
+     *  own per statement is what makes `before` mean anything, because the value `max_page_count`
+     *  refuses leaves the limit where it was instead of setting one.
+     */
+    std::vector<std::string>
+    pragmaSettings(std::string_view pragmaName, int before, const std::vector<std::string>& statements) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <iostream>\n"
+                   "\n"
+                   "struct User {\n"
+                   "    int id = 0;\n"
+                   "};\n"
+                   "\n"
+                   "int main() {\n";
+        for (const auto& statement: statements) {
+            // No `sync_schema()`: `auto_vacuum` only ever changes on a database with no table in
+            // it, which is the state sqlite3 answered these values in.
+            program << "    {\n"
+                       "        auto storage = sqlite_orm::make_storage(\n"
+                       "            \"\", sqlite_orm::make_table(\"users\", sqlite_orm::make_column(\"id\", "
+                       "&User::id)));\n"
+                       "        storage.pragma."
+                    << pragmaName << '(' << before
+                    << ");\n"
+                       "        "
+                    << statement
+                    << "\n"
+                       "        std::cout << storage.pragma."
+                    << pragmaName
+                    << "() << '\\n';\n"
+                       "    }\n";
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("check");
+        const std::filesystem::path outpath = dir.file("check.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> settings;
+        {
+            std::ifstream out(outpath);
+            for (std::string line; std::getline(out, line);) {
+                settings.push_back(line);
+            }
+        }
+        if (exitCode != 0) {
+            WARN("building the generated PRAGMA calls failed (exit "
+                 << exitCode << "); ensure c++, sqlite_orm headers and libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return settings;
+    }
+
 }  // namespace
 
 // Every journal mode a user can write, built the way a Windows user builds it. `DELETE` is the one
@@ -1091,4 +1453,47 @@ TEST_CASE("codegen: a generated integrity_check keyword argument names the table
     };
     REQUIRE(pragmaOutcomes(statements) == std::vector<std::string>{"error", "ok", "ok"});
     REQUIRE(pragmaOutcomes(statements, "on") == std::vector<std::string>{"ok", "ok", "ok"});
+}
+
+// A name value used to leave codegen as `&User::full`, which names a member no struct has and
+// compiles nowhere. Building the generated calls says the name is gone; running them says the
+// number that replaced it is the one SQLite reads, which no amount of reading the code does — the
+// same `full` is 2 to `synchronous`, 1 to `auto_vacuum` and no number at all to `max_page_count`.
+// Every value below is what sqlite3 3.51.0 reads back for the SQL the call was generated from.
+TEST_CASE("codegen: a generated name PRAGMA value sets what SQLite sets") {
+    const auto generateCall = [](const std::string& sql) {
+        const CodeGenResult result = generateFull(sql);
+        REQUIRE(result.errors == std::vector<std::string>{});
+        REQUIRE(result.code != std::string{});
+        return result.code;
+    };
+
+    REQUIRE(pragmaSettings("synchronous",
+                           2,
+                           {
+                               generateCall("PRAGMA synchronous = full;"),
+                               generateCall("PRAGMA synchronous = extra;"),
+                               generateCall("PRAGMA synchronous = abc;"),
+                               generateCall("PRAGMA synchronous = OFF;"),
+                           }) == std::vector<std::string>{"2", "3", "1", "0"});
+    REQUIRE(pragmaSettings("auto_vacuum",
+                           0,
+                           {
+                               generateCall("PRAGMA auto_vacuum = full;"),
+                               generateCall("PRAGMA auto_vacuum = incremental;"),
+                               generateCall("PRAGMA auto_vacuum = ON;"),
+                           }) == std::vector<std::string>{"1", "2", "0"});
+    // The name `max_page_count` refuses leaves the 1000 in place, while the string it reads as a
+    // number sets it. The last two are the edge of the `int` the setter takes: 2147483647 lands,
+    // and the limit past it generates a placeholder instead of a call, so the 1000 stays — which
+    // is the whole point of generating no call, because a call narrowing 2147483648 to an `int`
+    // compiles without a word from the compiler and then sets nothing either way.
+    REQUIRE(pragmaSettings("max_page_count",
+                           1000,
+                           {
+                               generateCall("PRAGMA max_page_count = full;"),
+                               generateCall("PRAGMA max_page_count = '12';"),
+                               generateCall("PRAGMA max_page_count = '2147483647';"),
+                               generateCall("PRAGMA max_page_count = '2147483648';"),
+                           }) == std::vector<std::string>{"1000", "12", "2147483647", "1000"});
 }

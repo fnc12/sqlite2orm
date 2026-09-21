@@ -273,7 +273,7 @@ TEST_CASE("reportSqliteSchema: the sqlite_sequence behind AUTOINCREMENT is left 
 #include <vector>
 
 struct Users {
-    int64_t id = 0;
+    std::optional<int64_t> id;
     std::string name;
 };
 

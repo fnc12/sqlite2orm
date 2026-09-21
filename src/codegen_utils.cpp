@@ -587,24 +587,35 @@ namespace sqlite2orm {
     }
 
     namespace {
-        // The window functions that take no argument, so the `name()` a star is generated as is the
-        // same call as the one written without one.
-        constexpr std::array<std::string_view, 5> kNullaryWindowFunctions{{
-            "row_number",
-            "rank",
-            "dense_rank",
-            "percent_rank",
-            "cume_dist",
+        /**
+         *  The sqlite_orm forms that declare one overload per argument count SQLite itself takes:
+         *  each window function and MATCH in its function spelling. `minimumArgumentCount` and
+         *  `maximumArgumentCount` are the ends of that range, measured against the real SQLite —
+         *  a call outside it is refused there too, with `wrong number of arguments to function`.
+         *  The nullary ones are the forms whose `name()` a star is generated as, which is the same
+         *  call as the one written without one; SQLite counts a star as no argument as well.
+         */
+        struct FixedArityForm {
+            std::string_view name;
+            size_t minimumArgumentCount;
+            size_t maximumArgumentCount;
+        };
+
+        constexpr std::array<FixedArityForm, 12> kFixedArityForms{{
+            {"row_number", 0, 0},
+            {"rank", 0, 0},
+            {"dense_rank", 0, 0},
+            {"percent_rank", 0, 0},
+            {"cume_dist", 0, 0},
+            {"ntile", 1, 1},
+            {"lag", 1, 3},
+            {"lead", 1, 3},
+            {"first_value", 1, 1},
+            {"last_value", 1, 1},
+            {"nth_value", 2, 2},
+            {"match", 2, 2},
         }};
-        // The window functions that take arguments.
-        constexpr std::array<std::string_view, 6> kArgumentTakingWindowFunctions{{
-            "ntile",
-            "lag",
-            "lead",
-            "first_value",
-            "last_value",
-            "nth_value",
-        }};
+
         // The built-in aggregate functions sqlite_orm declares as a `builtin_aggregate_function_t`,
         // the form carrying `filter()`. COUNT, MAX and MIN are aggregates too, but which form a
         // call of them is generated as follows from its arguments rather than from its name, so
@@ -618,14 +629,37 @@ namespace sqlite2orm {
             "total",
         }};
 
+        const FixedArityForm* fixedArityForm(std::string_view lowerFunctionName) {
+            auto found = std::find_if(kFixedArityForms.begin(),
+                                      kFixedArityForms.end(),
+                                      [lowerFunctionName](const FixedArityForm& form) {
+                                          return form.name == lowerFunctionName;
+                                      });
+            return found == kFixedArityForms.end() ? nullptr : &*found;
+        }
+
+        /** `count` with the noun in the number it takes: `0 arguments`, `1 argument`, `2 arguments`. */
+        std::string argumentCountText(size_t count) {
+            return std::to_string(count) + (count == 1 ? " argument" : " arguments");
+        }
+
+        /** What `form` accepts, as the sentence fragment the arity warning is built from. */
+        std::string acceptedArgumentCountText(const FixedArityForm& form) {
+            if (form.minimumArgumentCount == form.maximumArgumentCount) {
+                return form.minimumArgumentCount == 0 ? "no argument" : argumentCountText(form.minimumArgumentCount);
+            }
+            return std::to_string(form.minimumArgumentCount) + " to " + argumentCountText(form.maximumArgumentCount);
+        }
+
         bool nameIsIn(std::string_view name, std::span<const std::string_view> names) {
             return std::find(names.begin(), names.end(), name) != names.end();
         }
 
         /** Whether SQLite reads a call of `lowerFunctionName` as a window function. */
         bool isWindowFunction(std::string_view lowerFunctionName) {
-            return nameIsIn(lowerFunctionName, kNullaryWindowFunctions) ||
-                   nameIsIn(lowerFunctionName, kArgumentTakingWindowFunctions);
+            // The fixed-arity forms are the eleven window functions and MATCH, the one of them
+            // SQLite reads as an operator rather than as a window function.
+            return fixedArityForm(lowerFunctionName) != nullptr && lowerFunctionName != "match";
         }
 
         /**
@@ -645,14 +679,14 @@ namespace sqlite2orm {
     }
 
     bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
-        if (nameIsIn(lowerFunctionName, kNullaryWindowFunctions)) {
+        const FixedArityForm* form = fixedArityForm(lowerFunctionName);
+        if (form && form->maximumArgumentCount == 0) {
             return true;
         }
         if (star) {
             return lowerFunctionName == "count";
         }
-        // MATCH in its function spelling is generated as `match_t`, an aggregate of its own.
-        return nameIsIn(lowerFunctionName, kArgumentTakingWindowFunctions) || lowerFunctionName == "match";
+        return form != nullptr;
     }
 
     bool functionCallFormHasNoFilter(std::string_view lowerFunctionName,
@@ -739,6 +773,27 @@ namespace sqlite2orm {
                               "start with `$` with `bad JSON path`",
                               arrow.location,
                               underlineLengthOf(jsonArrowOperatorText(arrow.binaryOperator))};
+    }
+
+    std::optional<CodegenWarning> functionCallArityWarning(const FunctionCallNode& functionCall,
+                                                           std::string_view lowerFunctionName) {
+        const FixedArityForm* form = fixedArityForm(lowerFunctionName);
+        if (form == nullptr) {
+            return std::nullopt;
+        }
+        const size_t writtenCount = functionCall.star ? 0 : functionCall.arguments.size();
+        if (writtenCount >= form->minimumArgumentCount && writtenCount <= form->maximumArgumentCount) {
+            return std::nullopt;
+        }
+        const std::string written =
+            functionCall.star ? "a star, which counts as none" : argumentCountText(writtenCount);
+        return sourceSpanWarning(functionCall.name + "() takes " + acceptedArgumentCountText(*form) +
+                                     " in sqlite_orm, and the call is written with " + written +
+                                     ": each window function and a MATCH in its function spelling has one "
+                                     "overload per argument count, so the generated code does not compile. "
+                                     "SQLite refuses the same call — wrong number of arguments to function " +
+                                     functionCall.name + "() — but stores a trigger or a view holding it",
+                                 functionCall);
     }
 
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator) {

@@ -1461,6 +1461,15 @@ namespace sqlite2orm {
                 this->context.recordFormWithoutDefaultConstructor(std::string(funcCall->name) + "()");
             }
 
+            // Those same forms are the ones sqlite_orm declares a fixed set of overloads for, one
+            // per argument count SQLite takes, so a call written with any other count generates a
+            // call that matches none of them. The code is generated as written all the same: SQLite
+            // stores a trigger or a view holding such a call, so it arrives here from `--db` and
+            // refusing it in the parser would refuse a schema SQLite itself accepted.
+            if (auto arityWarning = functionCallArityWarning(*funcCall, funcName)) {
+                funcWarnings.push_back(std::move(*arityWarning));
+            }
+
             if (funcCall->filterWhere) {
                 auto filterResult = this->coordinator.generateNode(*funcCall->filterWhere);
                 decisionPoints.insert(decisionPoints.end(),

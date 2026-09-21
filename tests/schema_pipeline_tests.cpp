@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <sstream>
 #include <string>
@@ -74,6 +75,109 @@ namespace {
         return statement;
     }
 
+    /**
+     *  The program the round-trip probe builds around a generated header: it opens the very
+     *  database the header was generated from, runs `sync_schema()` and prints one
+     *  `table=outcome` line per mapped table, then inserts a row through the storage. Spelling the
+     *  outcomes out — rather than printing the enumerator's number — is what makes the expected
+     *  text say what the probe proves.
+     */
+    constexpr std::string_view kSyncSchemaProbeSource = R"(#include "gen.hpp"
+
+#include <iostream>
+#include <string>
+
+namespace {
+
+    std::string outcomeName(sqlite_orm::sync_schema_result outcome) {
+        switch (outcome) {
+            case sqlite_orm::sync_schema_result::new_table_created:
+                return "new_table_created";
+            case sqlite_orm::sync_schema_result::already_in_sync:
+                return "already_in_sync";
+            case sqlite_orm::sync_schema_result::old_columns_removed:
+                return "old_columns_removed";
+            case sqlite_orm::sync_schema_result::new_columns_added:
+                return "new_columns_added";
+            case sqlite_orm::sync_schema_result::new_columns_added_and_old_columns_removed:
+                return "new_columns_added_and_old_columns_removed";
+            case sqlite_orm::sync_schema_result::dropped_and_recreated:
+                return "dropped_and_recreated";
+        }
+        return "unknown";
+    }
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        return 1;
+    }
+    auto storage = make_sqlite_schema_storage(argv[1]);
+    for (const auto& outcome: storage.sync_schema()) {
+        std::cout << outcome.first << "=" << outcomeName(outcome.second) << "\n";
+    }
+    AutoincPk inserted;
+    inserted.v = "new";
+    std::cout << "inserted autoinc_pk id=" << storage.insert(inserted) << "\n";
+    return 0;
+}
+)";
+
+    /**
+     *  Builds that program around `generatedCode`, runs it over `dbPath` and returns what it
+     *  printed. A header that compiles can still be wrong about the database it was generated
+     *  from: sqlite_orm compares a mapped column against what `PRAGMA table_info` reports and
+     *  rebuilds the table over any difference, which takes the rows with it, so running
+     *  `sync_schema()` is the only thing that answers whether the mapping and the schema SQLite
+     *  stores are the same.
+     */
+    [[nodiscard]] std::string syncSchemaProbeOutput(std::string_view generatedCode,
+                                                    const std::filesystem::path& dbPath) {
+        const codegen_test_helpers::TempBuildDir dir;
+        dir.write("gen.hpp", generatedCode);
+        const std::filesystem::path cpppath = dir.write("check.cpp", kSyncSchemaProbeSource);
+        const std::filesystem::path binpath = dir.file("check");
+        const std::filesystem::path outpath = dir.file("check.out");
+
+        std::ostringstream cmd;
+        cmd << codegen_test_helpers::TempBuildDir::compilerCommand();
+        cmd << " -I" << dir.path().string();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << codegen_test_helpers::TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << ' ' << dbPath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = codegen_test_helpers::TempBuildDir::run(cmd.str());
+        std::ostringstream output;
+        {
+            std::ifstream out(outpath);
+            output << out.rdbuf();
+        }
+        if (exitCode != 0) {
+            WARN("running the generated header failed (exit " << exitCode
+                                                              << "); ensure c++, sqlite_orm headers and libsqlite3 "
+                                                                 "are usable\n"
+                                                              << output.str());
+        }
+        REQUIRE(exitCode == 0);
+        return output.str();
+    }
+
+    /** Text of the first column of the first row `sql` answers with. */
+    [[nodiscard]] std::string queryText(const std::filesystem::path& dbPath, std::string_view sql) {
+        sqlite3* db = nullptr;
+        REQUIRE(sqlite3_open(dbPath.string().c_str(), &db) == SQLITE_OK);
+        sqlite3_stmt* statement = nullptr;
+        REQUIRE(sqlite3_prepare_v2(db, sql.data(), static_cast<int>(sql.size()), &statement, nullptr) == SQLITE_OK);
+        REQUIRE(sqlite3_step(statement) == SQLITE_ROW);
+        const unsigned char* text = sqlite3_column_text(statement, 0);
+        const std::string result = text ? reinterpret_cast<const char*>(text) : std::string{};
+        sqlite3_finalize(statement);
+        sqlite3_close(db);
+        return result;
+    }
+
     void execSql(const std::filesystem::path& dbPath, std::string_view sql) {
         sqlite3* db = nullptr;
         REQUIRE(sqlite3_open(dbPath.string().c_str(), &db) == SQLITE_OK);
@@ -125,10 +229,10 @@ TEST_CASE("generateSqliteSchemaHeader: merged storage") {
                                              "#include <string>\n"
                                              "#include <vector>\n\n"
                                              "struct A {\n"
-                                             "    int64_t id = 0;\n"
+                                             "    std::optional<int64_t> id;\n"
                                              "};\n\n"
                                              "struct B {\n"
-                                             "    int64_t id = 0;\n"
+                                             "    std::optional<int64_t> id;\n"
                                              "    std::optional<int64_t> aid;\n"
                                              "};\n\n\n"
                                              "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -312,7 +416,7 @@ TEST_CASE("generateSqliteSchemaHeader: what rests on an ungenerated table is lef
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct Child {\n"
-                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> id;\n"
                            "    std::optional<int64_t> gid;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -354,7 +458,7 @@ TEST_CASE("generateSqliteSchemaHeader: a table-level foreign key into an ungener
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct Child {\n"
-                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> id;\n"
                            "    std::optional<int64_t> gid;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -682,7 +786,7 @@ TEST_CASE("generateSqliteSchemaHeader: DML after DDL emits seed_data()") {
 #include <vector>
 
 struct T {
-    int64_t id = 0;
+    std::optional<int64_t> id;
     std::optional<std::string> name;
 };
 
@@ -731,7 +835,7 @@ TEST_CASE("generateSqliteSchemaHeader: targeting C++26 merges reflected tables")
 using namespace sqlite_orm;
 
 struct [[= "t"_orm_name]] T {
-    [[= primary_key()]] int64_t id = 0;
+    [[= primary_key()]] std::optional<int64_t> id;
     std::optional<std::string> name;
 };
 
@@ -780,7 +884,7 @@ TEST_CASE("generateSqliteSchemaHeader: an explicit make_table policy leaves the 
 #include <vector>
 
 struct T {
-    int64_t id = 0;
+    std::optional<int64_t> id;
     std::optional<std::string> name;
 };
 
@@ -824,12 +928,12 @@ TEST_CASE("generateSqliteSchemaHeader: a view makes the header declare sqlite_or
 using namespace sqlite_orm;
 
 struct Users {
-    int64_t id = 0;
+    std::optional<int64_t> id;
     std::optional<int64_t> age;
 };
 
 struct [[= "adults"_orm_name]] Adults {
-    int64_t id = 0;
+    std::optional<int64_t> id;
 };
 
 
@@ -1241,7 +1345,7 @@ TEST_CASE("generateSqliteSchemaHeader: an index over an expression compiles") {
                                        "#include <string>\n"
                                        "#include <vector>\n\n"
                                        "struct T {\n"
-                                       "    int64_t a = 0;\n"
+                                       "    std::optional<int64_t> a;\n"
                                        "    std::optional<std::string> b;\n"
                                        "};\n\n\n"
                                        "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -1279,7 +1383,7 @@ TEST_CASE("processMultiSql: the snippet of a batch with an index over an express
 
     REQUIRE(joinGeneratedCode(results) ==
             std::string("struct T {\n"
-                        "    int64_t a = 0;\n"
+                        "    std::optional<int64_t> a;\n"
                         "    std::optional<std::string> b;\n"
                         "};\n\n"
                         "auto storage = make_storage(\"\",\n"
@@ -1362,10 +1466,10 @@ TEST_CASE("generateSqliteSchemaHeader: a foreign key into a view that is left ou
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct Ok1 {\n"
-                           "    int64_t a = 0;\n"
+                           "    std::optional<int64_t> a;\n"
                            "};\n\n"
                            "struct T {\n"
-                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> id;\n"
                            "    std::optional<int64_t> r;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -1407,7 +1511,7 @@ TEST_CASE("generateSqliteSchemaHeader: nothing that names a virtual table is mer
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct Tv {\n"
-                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> id;\n"
                            "    std::optional<int64_t> r;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -1461,7 +1565,7 @@ TEST_CASE("generateSqliteSchemaHeader: the tables FTS5 keeps its index in are no
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct Docs {\n"
-                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> id;\n"
                            "    std::optional<std::string> body;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -1509,10 +1613,10 @@ TEST_CASE("generateSqliteSchemaHeader: a table that only looks like FTS5 storage
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct T5Bogus {\n"
-                           "    int64_t x = 0;\n"
+                           "    std::optional<int64_t> x;\n"
                            "};\n\n"
                            "struct T5ExtraData {\n"
-                           "    int64_t x = 0;\n"
+                           "    std::optional<int64_t> x;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                            "    using namespace sqlite_orm;\n"
@@ -1602,7 +1706,7 @@ TEST_CASE("generateSqliteSchemaHeader: the objects SQLite reserves for itself ar
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct Docs {\n"
-                           "    int64_t id = 0;\n"
+                           "    std::optional<int64_t> id;\n"
                            "    std::optional<std::string> body;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
@@ -1652,7 +1756,7 @@ TEST_CASE("generateSqliteSchemaHeader: a name that only begins like a reserved o
                            "#include <string>\n"
                            "#include <vector>\n\n"
                            "struct Sqlitefoo {\n"
-                           "    int64_t x = 0;\n"
+                           "    std::optional<int64_t> x;\n"
                            "};\n\n\n"
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                            "    using namespace sqlite_orm;\n"
@@ -1812,4 +1916,57 @@ TEST_CASE("generateSqliteSchemaHeader: a trigger WHEN clause with an unmapped su
                 {"CREATE TRIGGER `tr` is not merged into make_storage()"}});
     REQUIRE(header.errors.empty());
     requireCompiles(header.code);
+}
+
+// A header is generated from a database the user already has, and the first thing generated code
+// does with it is `sync_schema()`. sqlite_orm decides what to do with a mapped table by comparing
+// it column by column against `PRAGMA table_info`, and the `notnull` flag is part of that
+// comparison: a member that is not an optional makes sqlite_orm emit `NOT NULL`, see the stored
+// column as changed and drop the table to rebuild it — every row in it gone. A PRIMARY KEY is
+// where the two disagree most easily, because SQLite leaves a PRIMARY KEY column nullable in a
+// rowid table (`notnull = 0`, an INTEGER PRIMARY KEY turning an inserted NULL into the next rowid)
+// and makes it NOT NULL in a WITHOUT ROWID one. Every spelling of a key is probed here on a live
+// database with rows in it, because that is what the user loses.
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() over the database the header came from keeps the rows") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE autoinc_pk (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT);"
+            "CREATE TABLE notnull_pk (id INTEGER PRIMARY KEY NOT NULL, v TEXT NOT NULL);"
+            "CREATE TABLE rowid_pk (id INTEGER PRIMARY KEY, v TEXT);"
+            "CREATE TABLE table_pk (a INTEGER, b INTEGER, PRIMARY KEY(a, b));"
+            "CREATE TABLE text_pk (id TEXT PRIMARY KEY, v TEXT);"
+            "CREATE TABLE wr_pk (id TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID;"
+            "CREATE TABLE wr_table_pk (a TEXT, b TEXT, PRIMARY KEY(a, b)) WITHOUT ROWID;");
+    execSql(file.path,
+            "INSERT INTO autoinc_pk VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO notnull_pk VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO rowid_pk VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO table_pk VALUES (1, 1), (2, 2);"
+            "INSERT INTO text_pk VALUES ('a', 'keep'), ('b', 'me');"
+            "INSERT INTO wr_pk VALUES ('a', 'keep'), ('b', 'me');"
+            "INSERT INTO wr_table_pk VALUES ('a', 'x'), ('b', 'y');");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    // `sqlite_sequence` is SQLite's own, and AUTOINCREMENT is what makes it exist; it is left out
+    // of the storage, so `sync_schema()` says nothing about it either.
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path) == "autoinc_pk=already_in_sync\n"
+                                                             "notnull_pk=already_in_sync\n"
+                                                             "rowid_pk=already_in_sync\n"
+                                                             "table_pk=already_in_sync\n"
+                                                             "text_pk=already_in_sync\n"
+                                                             "wr_pk=already_in_sync\n"
+                                                             "wr_table_pk=already_in_sync\n"
+                                                             "inserted autoinc_pk id=3\n");
+
+    // The rows the database was seeded with, plus the one the probe inserted through the storage:
+    // an optional primary key is still a key sqlite_orm fills in, and nothing was rebuilt.
+    REQUIRE(queryText(file.path,
+                      "SELECT (SELECT count(*) FROM autoinc_pk) || ',' || (SELECT count(*) FROM notnull_pk) || ',' || "
+                      "(SELECT count(*) FROM rowid_pk) || ',' || (SELECT count(*) FROM table_pk) || ',' || (SELECT "
+                      "count(*) FROM text_pk) || ',' || (SELECT count(*) FROM wr_pk) || ',' || (SELECT count(*) FROM "
+                      "wr_table_pk);") == "3,2,2,2,2,2,2");
 }

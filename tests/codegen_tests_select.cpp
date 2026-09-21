@@ -1597,3 +1597,53 @@ TEST_CASE("codegen: naming the sources of an aliased select carries its comment"
             std::vector<std::string>{kAliasedFromSourcesComment});
     REQUIRE(generateFull("SELECT u.name FROM users u").comments.empty());
 }
+
+// Whether the sources have to be named is only settled once every clause is generated: a
+// `count(*)` standing in a HAVING or an ORDER BY names the aliased source just as one among the
+// result columns does, and `count<alias_a<T>>()` carries no table into an inferred FROM. Deciding
+// before the tail clauses left such a select with no FROM at all — `SELECT 1 GROUP BY 1 HAVING
+// COUNT(*) > 1` — so the clause is written at one point, after them.
+TEST_CASE("codegen: COUNT(*) in HAVING over an aliased source names the source") {
+    REQUIRE(generate("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1;") ==
+            "auto rows = storage.select(1, from<alias_a<Users>>(), group_by(1).having(count<alias_a<Users>>() > 1));");
+}
+
+TEST_CASE("codegen: COUNT(*) in ORDER BY over an aliased source names the source") {
+    REQUIRE(generate("SELECT name FROM users u GROUP BY name ORDER BY COUNT(*) DESC;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "group_by(alias_column<alias_a<Users>>(&Users::name)), order_by(count<alias_a<Users>>()).desc());");
+}
+
+// The named FROM stands ahead of the clauses that follow it, whichever of them the `count(*)` was
+// generated into.
+TEST_CASE("codegen: a FROM named for a HAVING stands before the clauses that follow") {
+    REQUIRE(generate("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1 LIMIT 1;") ==
+            "auto rows = storage.select(1, from<alias_a<Users>>(), group_by(1).having(count<alias_a<Users>>() > 1), "
+            "limit(1));");
+}
+
+// A subquery in the HAVING answers for its own sources, and the outer select still answers for
+// its own: left unnamed, the outer FROM took in the source of the subquery and gave two sources
+// the one alias `"a"`, which SQLite refuses.
+TEST_CASE("codegen: a subquery in HAVING leaves the outer FROM named") {
+    REQUIRE(generate("SELECT uid FROM orders o GROUP BY uid HAVING COUNT(*) > "
+                     "(SELECT COUNT(*) FROM users u WHERE u.id > 2);") ==
+            "auto rows = storage.select(alias_column<alias_a<Orders>>(&Orders::uid), from<alias_a<Orders>>(), "
+            "group_by(alias_column<alias_a<Orders>>(&Orders::uid)).having(count<alias_a<Orders>>() > "
+            "select(count<alias_a<Users>>(), from<alias_a<Users>>(), "
+            "where(alias_column<alias_a<Users>>(&Users::id) > 2))));");
+}
+
+// A join carrying an ON writes its own alias out, so only the source the `count(*)` stands for is
+// named — and the join keeps its place after it.
+TEST_CASE("codegen: COUNT(*) over an aliased source next to a constrained join") {
+    REQUIRE(generate("SELECT COUNT(*) FROM users u JOIN orders o ON u.id = o.uid;") ==
+            "auto rows = storage.select(count<alias_a<Users>>(), from<alias_a<Users>>(), "
+            "join<alias_b<Orders>>(on(alias_column<alias_a<Users>>(&Users::id) == "
+            "alias_column<alias_b<Orders>>(&Orders::uid))));");
+}
+
+TEST_CASE("codegen: naming the sources for a COUNT(*) in HAVING carries its comment") {
+    REQUIRE(generateFull("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1;").comments ==
+            std::vector<std::string>{kAliasedFromSourcesComment});
+}

@@ -406,6 +406,13 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
              .rows = {"Let There Be Rock", "Big Ones"}},
             {.sql = "SELECT COUNT(*) FROM Track t1, Track t2 WHERE t1.TrackId = t2.TrackId;", .rows = {"7"}},
             {.sql = "SELECT COUNT(*) FROM Album a WHERE a.ArtistId = 1;", .rows = {"2"}},
+            // The `count(*)` of the HAVING is the only thing naming the aliased source, and
+            // `count<alias_a<T>>()` carries no table into the FROM sqlite_orm infers: unless the
+            // source is written out, the select runs with no FROM at all.
+            {.sql = "SELECT 1 FROM Track t GROUP BY 1 HAVING COUNT(*) > 1;", .rows = {"1"}},
+            {.sql = "SELECT GenreId FROM Track t GROUP BY GenreId HAVING COUNT(*) > (SELECT COUNT(*) FROM Album a "
+                    "WHERE a.AlbumId > 2) ORDER BY GenreId;",
+             .rows = {"1"}},
             {.sql = "SELECT Name FROM Artist ar ORDER BY ar.ArtistId LIMIT 3;",
              .rows = {"AC/DC", "Accept", "Aerosmith"}},
             {.sql = "SELECT TYPEOF(Bytes) FROM Track ORDER BY TrackId;",

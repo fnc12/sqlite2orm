@@ -175,6 +175,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/codegen_tests_virtual_table.cpp
         tests/codegen_tests_with.cpp
         tests/codegen_tests_pragma.cpp
+        tests/codegen_tests_forms.cpp
         tests/codegen_tests_placeholders.cpp
         tests/codegen_tests_savepoint.cpp
         tests/corpus_tests.cpp

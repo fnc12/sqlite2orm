@@ -1,5 +1,6 @@
 #include "codegen_expression.h"
 #include "codegen_context.h"
+#include "codegen_forms.h"
 #include "codegen_utils.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
@@ -553,10 +554,9 @@ namespace sqlite2orm {
             }
 
             auto funcName = binaryFunctionalName(binaryOp->binaryOperator);
-            std::string functionalCode =
-                std::string(funcName) + std::string(functionCallResultTypeArgument(funcName)) + "(" +
-                (quoteLeftCallArgument ? wrap(leftResult.code) : leftResult.code) + ", " +
-                (quoteRightCallArgument ? wrap(rightArgument) : rightArgument) + ")";
+            std::string functionalCode = std::string(funcName) + std::string(functionCallResultTypeArgument(funcName)) +
+                                         "(" + (quoteLeftCallArgument ? wrap(leftResult.code) : leftResult.code) +
+                                         ", " + (quoteRightCallArgument ? wrap(rightArgument) : rightArgument) + ")";
 
             auto op = binaryOperatorString(binaryOp->binaryOperator);
             std::string wrapLeftCode = wrappedLeft + std::string(op) + rightOperand;
@@ -1461,15 +1461,6 @@ namespace sqlite2orm {
                 this->context.recordFormWithoutDefaultConstructor(std::string(funcCall->name) + "()");
             }
 
-            // Those same forms are the ones sqlite_orm declares a fixed set of overloads for, one
-            // per argument count SQLite takes, so a call written with any other count generates a
-            // call that matches none of them. The code is generated as written all the same: SQLite
-            // stores a trigger or a view holding such a call, so it arrives here from `--db` and
-            // refusing it in the parser would refuse a schema SQLite itself accepted.
-            if (auto arityWarning = functionCallArityWarning(*funcCall, funcName)) {
-                funcWarnings.push_back(std::move(*arityWarning));
-            }
-
             if (funcCall->filterWhere) {
                 auto filterResult = this->coordinator.generateNode(*funcCall->filterWhere);
                 decisionPoints.insert(decisionPoints.end(),
@@ -1479,14 +1470,23 @@ namespace sqlite2orm {
                                     std::make_move_iterator(filterResult.warnings.begin()),
                                     std::make_move_iterator(filterResult.warnings.end()));
                 baseCode += ".filter(where(" + filterResult.code + "))";
-                if (functionCallFormHasNoFilter(funcName, funcCall->arguments.size(), generatedAsCountAsterisk)) {
-                    funcWarnings.push_back(
-                        filterOnCallWithoutFilterWarning(funcCall->name, funcCall->over != nullptr, customFunction));
-                }
             }
             if (funcCall->over) {
                 std::string overArgs = this->codegenOverClause(*funcCall->over, decisionPoints, funcWarnings);
                 baseCode += ".over(" + overArgs + ")";
+            }
+
+            // The gate every generated call passes: whether sqlite_orm has a form for the call as
+            // written is the registry's answer, and a call it has none for is placeheld rather
+            // than emitted at a guess for a compiler to refuse. It runs here, once the arguments,
+            // the FILTER and the OVER have been generated, so that whatever they collected is
+            // carried along with the placeholder.
+            if (auto refusal = functionCallFormRefusal(*funcCall, generatedAsCountAsterisk, customFunction)) {
+                return unsupportedPlaceholder(this->context,
+                                              funcCall->name + "(...)",
+                                              std::move(*refusal),
+                                              *funcCall,
+                                              CodeGenResult{{}, std::move(decisionPoints), std::move(funcWarnings)});
             }
             return CodeGenResult{std::move(baseCode), std::move(decisionPoints), std::move(funcWarnings)};
         }

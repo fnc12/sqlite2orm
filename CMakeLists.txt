@@ -49,6 +49,7 @@ add_library(sqlite2orm_lib
     src/validator.cpp
     src/codegen.cpp
     src/codegen_utils.cpp
+    src/codegen_forms.cpp
     src/codegen_context.cpp
     src/codegen_expression.cpp
     src/codegen_select.cpp

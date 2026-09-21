@@ -393,6 +393,75 @@ namespace {
         return lines;
     }
 
+    /**
+     *  Builds a program around the generated select statements over a two-row FTS5 `docs` table,
+     *  compiles and links it against sqlite_orm, runs it and returns the rows each statement came
+     *  back with, comma separated, or `throws` for a statement SQLite refuses. An FTS table is what
+     *  a MATCH needs to run at all, and a statement whose table is named inside the MATCH alone
+     *  went out with no FROM and threw where SQLite answers rows.
+     */
+    std::vector<std::string> ftsSelectedRowValues(const std::vector<std::string>& selectStatements) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <iostream>\n"
+                   "#include <string>\n"
+                   "#include <system_error>\n"
+                   "\n"
+                   "struct Docs {\n"
+                   "    std::string body;\n"
+                   "};\n"
+                   "\n"
+                   "int main() {\n"
+                   "    using namespace sqlite_orm;\n"
+                   "    auto storage = make_storage(\"\", make_virtual_table<Docs>(\"docs\", "
+                   "using_fts5(make_column(\"body\", &Docs::body))));\n"
+                   "    storage.sync_schema();\n"
+                   "    storage.replace(Docs{\"hello world\"});\n"
+                   "    storage.replace(Docs{\"bye\"});\n";
+        for (const auto& statement: selectStatements) {
+            program << "    try {\n        " << statement
+                    << "\n        const char* separator = \"\";\n"
+                       "        for(const auto& row: rows) {\n"
+                       "            std::cout << separator << row;\n"
+                       "            separator = \",\";\n"
+                       "        }\n"
+                       "        std::cout << '\\n';\n"
+                       "    } catch(const std::system_error&) {\n"
+                       "        std::cout << \"throws\" << '\\n';\n"
+                       "    }\n";
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("fts.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("fts");
+        const std::filesystem::path outpath = dir.file("fts.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> rows;
+        {
+            std::ifstream out(outpath);
+            for (std::string line; std::getline(out, line);) {
+                rows.push_back(line);
+            }
+        }
+        if (exitCode != 0) {
+            WARN("building the generated FTS selects failed (exit " << exitCode
+                                                                    << "); ensure c++, sqlite_orm headers and "
+                                                                       "libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return rows;
+    }
+
 }  // namespace
 
 // The generated code used to read every negative numeric literal back as 0: the SQL was right, but
@@ -1610,4 +1679,29 @@ TEST_CASE("runtime: an aliased source with a subquery over its own table returns
                 "where(exists(select(1, where(c(&Users::a) > 2)))));",
             });
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"2,3", "2,3", "1,2,3"});
+}
+
+// `match_t` holds the field it compares, and sqlite_orm walks only the pattern argument of it, so
+// a table named inside a MATCH and nowhere else left the select with no FROM to infer: `SELECT 1
+// FROM docs WHERE body MATCH 'hello'` went out as `SELECT 1 WHERE ("docs"."body" MATCH 'hello')`
+// and threw `SQL logic error` where sqlite3 answers a row (card 1868412795247134567). The second
+// statement is the counter-check — the result column names the table where sqlite_orm can see it,
+// and that form is left as it was. The third stands for the MATCH against the table name, which
+// carried its FROM before this change already: `c<Docs>()->*&fts5::hidden::any` names no recordset
+// at all, so the half of the criterion that asks whether anything was named had it covered.
+// Expected rows checked against sqlite3 3.51 over `docs(body)` as an FTS5 table holding
+// 'hello world' and 'bye'; on master the first of them reads back as `throws`.
+TEST_CASE("runtime: a select naming its table inside a MATCH alone returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello';"),
+        generate("SELECT body FROM docs WHERE body MATCH 'hello';"),
+        generate("SELECT 1 FROM docs WHERE docs MATCH 'hello';"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(1, from<Docs>(), where(match(&Docs::body, \"hello\")));",
+                              "auto rows = storage.select(&Docs::body, where(match(&Docs::body, \"hello\")));",
+                              "auto rows = storage.select(1, from<Docs>(), where(match(c<Docs>()->*&fts5::hidden::any, "
+                              "\"hello\")));",
+                          });
+    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "hello world", "1"});
 }

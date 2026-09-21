@@ -176,6 +176,21 @@ namespace sqlite2orm {
     std::optional<std::string> jsonArrowPathExpansion(const AstNode& pathOperand);
 
     /**
+     *  The warning a call of `lowerFunctionName` earns when it is written with an argument count
+     *  the sqlite_orm form has no overload for, and nothing when the count is one it takes or the
+     *  name is not one of those forms. The window functions and a MATCH in its function spelling
+     *  declare exactly one overload per argument count SQLite itself accepts — none for
+     *  `row_number` and the other ranking functions, one for `ntile`, `first_value` and
+     *  `last_value`, one to three for `lag` and `lead`, two for `nth_value` and `match` — so a
+     *  call written with any other count generates a call no overload matches. A star counts as no
+     *  argument here, as it does in SQLite. SQLite refuses such a call — `wrong number of arguments
+     *  to function` — but stores a trigger or a view that holds one, so it reaches codegen and the
+     *  warning says so instead of the generated code failing silently.
+     */
+    std::optional<CodegenWarning> functionCallArityWarning(const FunctionCallNode& functionCall,
+                                                           std::string_view lowerFunctionName);
+
+    /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from
      *  `internal::condition_t`: a comparison, AND, OR, IN, BETWEEN, LIKE, GLOB, IS [NOT] NULL,
      *  EXISTS or NOT. MATCH is not one of them — `match_t` derives from nothing.
@@ -587,10 +602,12 @@ namespace sqlite2orm {
      *  for the arithmetic ones, `std::string` for `||`, `bool` for a comparison —, a BETWEEN, an
      *  IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for, and a built-in function
      *  call the return type that function declares. None of those can hold a NULL, so such a row
-     *  is read back as 0 / "" / false. `as_optional` leaves the SQL untouched and yields
-     *  `std::optional<T>` instead. Every other expression sqlite_orm already types nullably where
-     *  it has to (a column carries its field's type, `abs(...)` is a `std::unique_ptr`, `max(...)`
-     *  and `coalesce(...)` carry the type of an argument, NULL itself is a `std::nullptr_t`).
+     *  is read back as 0 / "" / false. A scalar subquery is typed from the result column of the
+     *  nested `select(...)`, so it needs the widening exactly when that column does. `as_optional`
+     *  leaves the SQL untouched and yields `std::optional<T>` instead. Every other expression
+     *  sqlite_orm already types nullably where it has to (a column carries its field's type,
+     *  `abs(...)` is a `std::unique_ptr`, `max(...)` and `coalesce(...)` carry the type of an
+     *  argument, NULL itself is a `std::nullptr_t`).
      */
     bool selectResultNeedsAsOptional(const AstNode& astNode);
     /**

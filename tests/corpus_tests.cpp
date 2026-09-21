@@ -351,8 +351,6 @@ namespace {
         }
     }
 
-    constexpr std::string_view aliasedColumnCard =
-        "card 1868205961584313865: an unqualified result column is generated without the FROM alias";
     constexpr std::string_view typeofNameCard =
         "card 1868206036830127627: sqlite_orm spells TYPEOF `typeof_`, and codegen has no form under the name the "
         "SQL writes, so the expressibility gate leaves the statement out";
@@ -419,9 +417,26 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
              .rows = {"For Those About To Rock (We Salute You)", "Balls to the Wall", "Fast As a Shark"}},
             {.sql = "SELECT Title FROM Album a LEFT JOIN Track t ON a.AlbumId = t.AlbumId WHERE t.TrackId IS NULL "
                     "ORDER BY a.AlbumId LIMIT 3;",
-             .rows = {"Let There Be Rock", "Big Ones"},
-             .knownBad = {.card = aliasedColumnCard,
-                          .rows = {"For Those About To Rock We Salute You", "Balls to the Wall", "Restless and Wild"}}},
+             .rows = {"Let There Be Rock", "Big Ones"}},
+            {.sql = "SELECT COUNT(*) FROM Track t1, Track t2 WHERE t1.TrackId = t2.TrackId;", .rows = {"7"}},
+            {.sql = "SELECT COUNT(*) FROM Album a WHERE a.ArtistId = 1;", .rows = {"2"}},
+            // The `count(*)` of the HAVING is the only thing naming the aliased source, and
+            // `count<alias_a<T>>()` carries no table into the FROM sqlite_orm infers: unless the
+            // source is written out, the select runs with no FROM at all.
+            {.sql = "SELECT 1 FROM Track t GROUP BY 1 HAVING COUNT(*) > 1;", .rows = {"1"}},
+            {.sql = "SELECT GenreId FROM Track t GROUP BY GenreId HAVING COUNT(*) > (SELECT COUNT(*) FROM Album a "
+                    "WHERE a.AlbumId > 2) ORDER BY GenreId;",
+             .rows = {"1"}},
+            {.sql = "SELECT Name FROM Artist ar ORDER BY ar.ArtistId LIMIT 3;",
+             .rows = {"AC/DC", "Accept", "Aerosmith"}},
+            // The aliased source names its columns through the alias while the subquery names the
+            // same table plainly: a FROM left implicit takes both in and answers with the product.
+            {.sql = "SELECT Title FROM Album a WHERE AlbumId IN (SELECT AlbumId FROM Album WHERE ArtistId = 1) "
+                    "ORDER BY AlbumId;",
+             .rows = {"For Those About To Rock We Salute You", "Let There Be Rock"}},
+            {.sql = "SELECT Name FROM Track t WHERE TrackId > (SELECT MIN(TrackId) FROM Track) ORDER BY TrackId "
+                    "LIMIT 3;",
+             .rows = {"Balls to the Wall", "Fast As a Shark", "Restless and Wild"}},
             {.sql = "SELECT TYPEOF(Bytes) FROM Track ORDER BY TrackId;",
              .rows = {"integer", "integer", "integer", "integer", "null", "integer", "integer"},
              .knownBad = {.card = typeofNameCard, .compiles = false, .generated = false}},

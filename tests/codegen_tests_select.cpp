@@ -9,6 +9,15 @@ namespace {
         "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
         "mechanism.";
 
+    /** Must match `kCommentAliasedFromSources` in codegen_utils.cpp. */
+    const std::string kAliasedFromSourcesComment =
+        "A select over aliased FROM sources names them with `from<...>()`: left to itself sqlite_orm "
+        "builds the FROM out of the recordsets the arguments mention, and the two forms that would "
+        "stand for such a source there drop its alias — `cross_join<alias_b<T>>()` serializes as a "
+        "plain `CROSS JOIN \"t\"` (only a join carrying an ON writes an alias out), and "
+        "`count<alias_a<T>>()` names no table at all. The named list is the same FROM the SQL wrote, "
+        "in the same order, a comma between two sources reading as the CROSS JOIN it stands for.";
+
 }  // namespace
 
 TEST_CASE("codegen: SELECT * FROM table") {
@@ -56,10 +65,12 @@ TEST_CASE("codegen: SELECT t.* FROM table alias uses asterisk with alias type") 
     REQUIRE(result == "auto rows = storage.select(asterisk<alias_a<Users>>());");
 }
 
+// The comma names both sources: `cross_join<alias_b<Users>>()` serializes as a plain
+// `CROSS JOIN "users"`, sqlite_orm writing an alias out only for a join that carries an ON.
 TEST_CASE("codegen: self-join with aliases") {
     auto result = generate("SELECT a.name, b.name FROM users a, users b");
     REQUIRE(result == "auto rows = storage.select(columns(alias_column<alias_a<Users>>(&Users::name), "
-                      "alias_column<alias_b<Users>>(&Users::name)), cross_join<alias_b<Users>>());");
+                      "alias_column<alias_b<Users>>(&Users::name)), from<alias_a<Users>, alias_b<Users>>());");
 }
 
 TEST_CASE("codegen: SELECT column via FROM table alias C++20 style") {
@@ -84,7 +95,7 @@ TEST_CASE("codegen: self-join C++20 style") {
     auto result = generateWithPolicy("SELECT a.name, b.name FROM users a, users b", pol);
     REQUIRE(result.code == "constexpr orm_table_alias auto a = \"a\"_alias.for_<Users>();\n"
                            "constexpr orm_table_alias auto b = \"b\"_alias.for_<Users>();\n"
-                           "auto rows = storage.select(columns(a->*&Users::name, b->*&Users::name), cross_join<b>());");
+                           "auto rows = storage.select(columns(a->*&Users::name, b->*&Users::name), from<a, b>());");
 }
 
 TEST_CASE("codegen: table_alias_style decision point present when alias used") {
@@ -1563,18 +1574,17 @@ TEST_CASE("codegen: a star subquery pins its FROM down like any other") {
             "from<Orders>(), where(c(&Orders::uid) == &Users::id)))));");
 }
 
-// A column written without the alias is generated as `&T::x` today (card 1868205961584313865), so
-// it names the base struct while the FROM would name the alias. Pinning the FROM down next to it
-// leaves `SELECT "users"."name" FROM "users" "a"`, which SQLite refuses with `no such column:
-// users.name` — the statement stops running at all, where before it only answered too many rows.
-// So a mention the clauses do not name keeps the FROM implicit, and the widened FROM waits for
-// card 1868827745367099324.
-TEST_CASE("codegen: an unaliased mention of an aliased source keeps the FROM implicit") {
+// Every column of an aliased source now names the alias, whether or not the SQL wrote it out
+// (card 1868205961584313865), so nothing of this select names the base struct any more and the
+// FROM can be spelled out over the alias. That is what the widening case needed to be pinned down
+// here: left implicit, the FROM took the table of the subquery in as a second source.
+TEST_CASE("codegen: an aliased source with a subquery names its alias in the FROM") {
     REQUIRE(generate("SELECT name FROM users u WHERE id IN (SELECT uid FROM orders);") ==
-            "auto rows = storage.select(&Users::name, where(in(&Users::id, select(&Orders::uid))));");
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Orders::uid))));");
     REQUIRE(generate("SELECT name FROM users u WHERE u.id IN (SELECT uid FROM orders);") ==
-            "auto rows = storage.select(&Users::name, where(in(alias_column<alias_a<Users>>(&Users::id), "
-            "select(&Orders::uid))));");
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Orders::uid))));");
 }
 
 // A select reading a CTE is left as it was, subquery or not: `from<cte_0>()` would name that
@@ -1587,6 +1597,255 @@ TEST_CASE("codegen: a select over a CTE keeps its FROM implicit") {
             "using cte_0 = decltype(1_ctealias);\n"
             "auto rows = storage.with(cte<cte_0>().as(select(columns(&Users::id, &Users::name))), "
             "select(column<cte_0>(&Users::name), where(in(column<cte_0>(&Users::id), select(&Orders::uid)))));");
+}
+
+// A column the SQL leaves unqualified belongs to the FROM source all the same, and an aliased
+// source answers to its alias only: written as `&T::x`, the column names the plain table, which
+// sqlite_orm then puts in the FROM it infers next to the alias — `SELECT "Album"."Title" FROM
+// "Album", "Album" "a" LEFT JOIN …`, a cartesian product the SQL never asked for (card
+// 1868205961584313865). The form is the one a column the SQL qualified with that alias takes.
+TEST_CASE("codegen: an unqualified column of an aliased source is generated through the alias") {
+    REQUIRE(generate("SELECT name FROM users u;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name));");
+}
+
+TEST_CASE("codegen: an unqualified column of an aliased source in WHERE and ORDER BY") {
+    REQUIRE(generate("SELECT name FROM users u WHERE id > 5 ORDER BY id;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+            "where(c(alias_column<alias_a<Users>>(&Users::id)) > 5), "
+            "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+}
+
+TEST_CASE("codegen: an unqualified column of an aliased source C++20 style") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT name FROM users u", pol);
+    REQUIRE(result.code == "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+                           "auto rows = storage.select(u->*&Users::name);");
+}
+
+// The card's LEFT JOIN: the result column is the one source the SQL never names, and only the
+// alias keeps the join two tables wide.
+TEST_CASE("codegen: an unqualified column of the left source of a LEFT JOIN") {
+    REQUIRE(generate("SELECT name FROM users a LEFT JOIN orders b ON a.id = b.id WHERE b.id IS NULL "
+                     "ORDER BY a.id;") == "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+                                          "left_join<alias_b<Orders>>(on(alias_column<alias_a<Users>>(&Users::id) == "
+                                          "alias_column<alias_b<Orders>>(&Orders::id))), "
+                                          "where(is_null(alias_column<alias_b<Orders>>(&Orders::id))), "
+                                          "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+}
+
+// A source with no alias is still read from the plain struct: nothing about it is aliased, and the
+// FROM sqlite_orm infers names it exactly once.
+TEST_CASE("codegen: an unqualified column of an unaliased source keeps the member pointer") {
+    REQUIRE(generate("SELECT name FROM users;") == "auto rows = storage.select(&Users::name);");
+    REQUIRE(generate("SELECT name FROM users JOIN orders ON users.id = orders.id;") ==
+            "auto rows = storage.select(&Users::name, join<Orders>(on(c(&Users::id) == &Orders::id)));");
+}
+
+// `count<alias_a<T>>()` names no table in the FROM sqlite_orm infers — `count<T>()` names the
+// plain table, the one the alias replaced — so the sources are written out for it.
+TEST_CASE("codegen: COUNT(*) over an aliased source names the source") {
+    REQUIRE(generate("SELECT COUNT(*) FROM users u;") ==
+            "auto rows = storage.select(count<alias_a<Users>>(), from<alias_a<Users>>());");
+    REQUIRE(generate("SELECT COUNT(*) FROM users u WHERE id > 5;") ==
+            "auto rows = storage.select(count<alias_a<Users>>(), from<alias_a<Users>>(), "
+            "where(c(alias_column<alias_a<Users>>(&Users::id)) > 5));");
+}
+
+TEST_CASE("codegen: COUNT(*) over an unaliased source keeps the table type") {
+    REQUIRE(generate("SELECT COUNT(*) FROM users;") == "auto rows = storage.select(count<Users>());");
+}
+
+// A comma or CROSS JOIN list of aliased sources cannot go through `cross_join<alias_b<T>>()`:
+// sqlite_orm writes that out as a plain `CROSS JOIN "users"`, the alias only being serialized for
+// a join that carries an ON. The sources are named instead, which is the same FROM in the same
+// order — `FROM "users" "a", "users" "b"`.
+TEST_CASE("codegen: a self-join over a comma names both sources") {
+    REQUIRE(generate("SELECT a.name, b.name FROM users a, users b") ==
+            "auto rows = storage.select(columns(alias_column<alias_a<Users>>(&Users::name), "
+            "alias_column<alias_b<Users>>(&Users::name)), from<alias_a<Users>, alias_b<Users>>());");
+}
+
+TEST_CASE("codegen: a CROSS JOIN over aliased sources names both sources") {
+    REQUIRE(generate("SELECT a.name FROM users a CROSS JOIN orders b WHERE a.id = b.id;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+            "from<alias_a<Users>, alias_b<Orders>>(), "
+            "where(alias_column<alias_a<Users>>(&Users::id) == alias_column<alias_b<Orders>>(&Orders::id)));");
+}
+
+TEST_CASE("codegen: a comma join of unaliased sources keeps cross_join") {
+    REQUIRE(generate("SELECT users.name FROM users, orders") ==
+            "auto rows = storage.select(&Users::name, cross_join<Orders>());");
+}
+
+// One aliased source among plain ones is still a source of its own, and the list names each of
+// them the way the SQL wrote it.
+TEST_CASE("codegen: a comma join names a plain source next to an aliased one") {
+    REQUIRE(generate("SELECT a.name FROM users a, orders") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>, Orders>());");
+}
+
+// A join that carries an ON writes its own alias out, so only the comma run ahead of it is named.
+TEST_CASE("codegen: a named comma run keeps a constrained join of its own") {
+    REQUIRE(generate("SELECT a.name FROM users a, users b JOIN orders c ON c.id = a.id;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+            "from<alias_a<Users>, alias_b<Users>>(), "
+            "join<alias_c<Orders>>(on(alias_column<alias_c<Orders>>(&Orders::id) == "
+            "alias_column<alias_a<Users>>(&Users::id))));");
+}
+
+// `SELECT *` reads its row from the plain struct — `asterisk<T>()` names no alias — so naming the
+// sources would leave the star reading a table the select no longer selects from, which SQLite
+// refuses outright. The star keeps the form it had until that slot is fixed too.
+TEST_CASE("codegen: a star over aliased sources is left as it was") {
+    REQUIRE(generate("SELECT * FROM users u;") == "auto rows = storage.get_all<Users>();");
+    REQUIRE(generate("SELECT * FROM users a, users b") ==
+            "auto rows = storage.get_all<Users>(cross_join<alias_b<Users>>());");
+}
+
+// A subquery answers for its own sources, and the enclosing select answers for the widening its
+// mention of them would cause.
+TEST_CASE("codegen: a subquery over aliased sources names its own sources") {
+    REQUIRE(generate("SELECT name FROM users WHERE id IN (SELECT COUNT(*) FROM orders o);") ==
+            "auto rows = storage.select(&Users::name, from<Users>(), where(in(&Users::id, "
+            "select(count<alias_a<Orders>>(), from<alias_a<Orders>>()))));");
+}
+
+// The named FROM is a form the SQL did not write, so the generated code explains itself.
+TEST_CASE("codegen: naming the sources of an aliased select carries its comment") {
+    REQUIRE(generateFull("SELECT COUNT(*) FROM users u;").comments ==
+            std::vector<std::string>{kAliasedFromSourcesComment});
+    REQUIRE(generateFull("SELECT a.name FROM users a, users b").comments ==
+            std::vector<std::string>{kAliasedFromSourcesComment});
+    REQUIRE(generateFull("SELECT u.name FROM users u").comments.empty());
+}
+
+// Whether the sources have to be named is only settled once every clause is generated: a
+// `count(*)` standing in a HAVING or an ORDER BY names the aliased source just as one among the
+// result columns does, and `count<alias_a<T>>()` carries no table into an inferred FROM. Deciding
+// before the tail clauses left such a select with no FROM at all — `SELECT 1 GROUP BY 1 HAVING
+// COUNT(*) > 1` — so the clause is written at one point, after them.
+TEST_CASE("codegen: COUNT(*) in HAVING over an aliased source names the source") {
+    REQUIRE(generate("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1;") ==
+            "auto rows = storage.select(1, from<alias_a<Users>>(), group_by(1).having(count<alias_a<Users>>() > 1));");
+}
+
+TEST_CASE("codegen: COUNT(*) in ORDER BY over an aliased source names the source") {
+    REQUIRE(generate("SELECT name FROM users u GROUP BY name ORDER BY COUNT(*) DESC;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "group_by(alias_column<alias_a<Users>>(&Users::name)), order_by(count<alias_a<Users>>()).desc());");
+}
+
+// The named FROM stands ahead of the clauses that follow it, whichever of them the `count(*)` was
+// generated into.
+TEST_CASE("codegen: a FROM named for a HAVING stands before the clauses that follow") {
+    REQUIRE(generate("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1 LIMIT 1;") ==
+            "auto rows = storage.select(1, from<alias_a<Users>>(), group_by(1).having(count<alias_a<Users>>() > 1), "
+            "limit(1));");
+}
+
+// A subquery in the HAVING answers for its own sources, and the outer select still answers for
+// its own: left unnamed, the outer FROM took in the source of the subquery and gave two sources
+// the one alias `"a"`, which SQLite refuses.
+TEST_CASE("codegen: a subquery in HAVING leaves the outer FROM named") {
+    REQUIRE(generate("SELECT uid FROM orders o GROUP BY uid HAVING COUNT(*) > "
+                     "(SELECT COUNT(*) FROM users u WHERE u.id > 2);") ==
+            "auto rows = storage.select(alias_column<alias_a<Orders>>(&Orders::uid), from<alias_a<Orders>>(), "
+            "group_by(alias_column<alias_a<Orders>>(&Orders::uid)).having(count<alias_a<Orders>>() > "
+            "select(count<alias_a<Users>>(), from<alias_a<Users>>(), "
+            "where(alias_column<alias_a<Users>>(&Users::id) > 2))));");
+}
+
+// A join carrying an ON writes its own alias out, so only the source the `count(*)` stands for is
+// named — and the join keeps its place after it.
+TEST_CASE("codegen: COUNT(*) over an aliased source next to a constrained join") {
+    REQUIRE(generate("SELECT COUNT(*) FROM users u JOIN orders o ON u.id = o.uid;") ==
+            "auto rows = storage.select(count<alias_a<Users>>(), from<alias_a<Users>>(), "
+            "join<alias_b<Orders>>(on(alias_column<alias_a<Users>>(&Users::id) == "
+            "alias_column<alias_b<Orders>>(&Orders::uid))));");
+}
+
+TEST_CASE("codegen: naming the sources for a COUNT(*) in HAVING carries its comment") {
+    REQUIRE(generateFull("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1;").comments ==
+            std::vector<std::string>{kAliasedFromSourcesComment});
+}
+
+// A bare `*` reads its row from the plain struct — `get_all<T>()` and `asterisk<T>()` name no
+// alias — so no reference of such a select may name one either: `ORDER BY "a"."id"` over
+// `FROM "users"` is an alias SQLite never sees declared, and in the `asterisk` alternative the
+// alias arrives as a second, unaliased source and the select answers the product of the two.
+// Every reference of a select has to name the recordset its row is read from.
+TEST_CASE("codegen: a star over an aliased source keeps the plain column form") {
+    REQUIRE(generate("SELECT * FROM users u WHERE id > 1;") ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::id) > 1));");
+    REQUIRE(generate("SELECT * FROM users AS u WHERE id > 1;") ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::id) > 1));");
+    REQUIRE(generate("SELECT * FROM users u ORDER BY id;") ==
+            "auto rows = storage.get_all<Users>(order_by(&Users::id));");
+    REQUIRE(generate("SELECT * FROM users u GROUP BY uid;") ==
+            "auto rows = storage.get_all<Users>(group_by(&Users::uid));");
+}
+
+// The alternative the decision point offers is generated code of its own, and the playground and
+// Studio hand it to their users: it reads the same plain struct the `get_all` form does.
+TEST_CASE("codegen: the asterisk alternative of an aliased star keeps the plain column form") {
+    auto result = generateFull("SELECT * FROM users u WHERE id > 1;");
+    REQUIRE(result.decisionPoints.at(0).options.at(1).code ==
+            "auto rows = storage.select(object<Users>(), where(c(&Users::id) > 1));");
+    REQUIRE(result.decisionPoints.at(0).options.at(2).code ==
+            "auto rows = storage.select(asterisk<Users>(), where(c(&Users::id) > 1));");
+}
+
+// A `*` the SQL qualified with the alias does read the alias — `asterisk<alias_a<T>>()` names it —
+// so there the unqualified column of the same select is the alias's own, and the two agree again.
+TEST_CASE("codegen: a qualified star over an aliased source keeps the alias column form") {
+    REQUIRE(generate("SELECT u.* FROM users u ORDER BY id;") ==
+            "auto rows = storage.select(asterisk<alias_a<Users>>(), "
+            "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+}
+
+// Once the columns of an aliased source name the alias, the base struct is no longer a recordset
+// the clauses of that select leave unnamed — but a subquery over the same table still names it
+// plainly, and that mention was reaching the invariant the pinned FROM rests on and vetoing it.
+// The FROM then stayed implicit, sqlite_orm collected both mentions into it, and
+// `SELECT name FROM users u WHERE id IN (SELECT id FROM users WHERE id > 1)` came back with nine
+// rows where SQLite answers two (card 1868205961584313865). Only the mentions a select makes
+// itself are asked about now: a subquery answers for its own FROM, which the outer one does not
+// reach. Rows checked against sqlite3 3.51 in `codegen_tests_runtime_values.cpp`.
+TEST_CASE("codegen: a subquery over the same table as an aliased source pins the outer FROM down") {
+    REQUIRE(generate("SELECT name FROM users u WHERE id IN (SELECT id FROM users WHERE id > 1);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Users::id, where(c(&Users::id) > 1)))));");
+    REQUIRE(generate("SELECT name FROM users u WHERE id > (SELECT MIN(id) FROM users);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(c(alias_column<alias_a<Users>>(&Users::id)) > select(min(&Users::id))));");
+    REQUIRE(generate("SELECT name, (SELECT COUNT(*) FROM users) FROM users u;") ==
+            "auto rows = storage.select(columns(alias_column<alias_a<Users>>(&Users::name), "
+            "select(count<Users>())), from<alias_a<Users>>());");
+    REQUIRE(generate("SELECT name FROM users u ORDER BY (SELECT COUNT(*) FROM users), name;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "multi_order_by(order_by(select(count<Users>())), "
+            "order_by(alias_column<alias_a<Users>>(&Users::name))));");
+}
+
+// The same with a join beside it: the FROM still names only the source sqlite_orm has to infer,
+// the joined one arriving through its own clause.
+TEST_CASE("codegen: a subquery over the same table names only the inferred aliased source") {
+    REQUIRE(generate("SELECT u.name FROM users u JOIN orders o ON u.id = o.uid "
+                     "WHERE id IN (SELECT id FROM users);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "join<alias_b<Orders>>(on(alias_column<alias_a<Users>>(&Users::id) == "
+            "alias_column<alias_b<Orders>>(&Orders::uid))), "
+            "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Users::id))));");
+}
+
+// The subquery decides for itself, and its own code names the table it reads, so it is left with
+// the FROM sqlite_orm infers for it. The outer FROM does not reach that level either way.
+TEST_CASE("codegen: a subquery over the same table keeps its own FROM implicit") {
+    REQUIRE(generate("SELECT name FROM users u WHERE EXISTS (SELECT 1 FROM users WHERE users.id > 2);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(exists(select(1, where(c(&Users::id) > 2)))));");
 }
 
 // A statement that names no recordset at all leaves sqlite_orm nothing to build a FROM out of, and

@@ -256,6 +256,7 @@ namespace sqlite2orm {
         if (typeName.empty()) {
             return;
         }
+        this->ownEmittedTableTypes.insert(typeName);
         this->emittedTableTypes.insert(std::move(typeName));
     }
 

@@ -448,6 +448,14 @@ namespace sqlite2orm {
         "(SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` "
         "decision point is the classical form and compiles from C++14 on.";
 
+    const std::string kCommentAliasedFromSources =
+        "A select over aliased FROM sources names them with `from<...>()`: left to itself sqlite_orm "
+        "builds the FROM out of the recordsets the arguments mention, and the two forms that would "
+        "stand for such a source there drop its alias — `cross_join<alias_b<T>>()` serializes as a "
+        "plain `CROSS JOIN \"t\"` (only a join carrying an ON writes an alias out), and "
+        "`count<alias_a<T>>()` names no table at all. The named list is the same FROM the SQL wrote, "
+        "in the same order, a comma between two sources reading as the CROSS JOIN it stands for.";
+
     const std::string kCommentViewReflection =
         "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
         "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "

@@ -183,6 +183,19 @@ namespace sqlite2orm {
                 std::string cteCol = "column<" + *this->context.implicitSingleSourceCteTypedef + ">(" + colLit + ")";
                 return CodeGenResult{std::move(cteCol), {}, {}, {}};
             }
+            if (this->context.implicitSourceAlias) {
+                // The source this column belongs to is aliased in the FROM, so the column is one
+                // of the alias, not of the plain table — the same form a column the SQL qualified
+                // with that alias takes, and for the same reason: sqlite_orm reads `&T::x` as a
+                // second, unaliased source and infers a FROM naming both.
+                const auto& info = *this->context.implicitSourceAlias;
+                this->context.recordEmittedTableType(info.ormAliasType);
+                std::string aliasedCode =
+                    this->context.useCpp20TableAliasStyle()
+                        ? info.ormAliasType + "->*&" + info.baseStructName + "::" + cppName
+                        : "alias_column<" + info.ormAliasType + ">(&" + info.baseStructName + "::" + cppName + ")";
+                return CodeGenResult{std::move(aliasedCode), {}, {}, {}, {}};
+            }
             std::string memberPointer = "&" + this->context.structName + "::" + cppName;
             std::string columnPointer = "column<" + this->context.structName + ">(" + memberPointer + ")";
             this->context.emittedTableTypedColumnRef = true;
@@ -1401,9 +1414,19 @@ namespace sqlite2orm {
 
             if (funcCall->star) {
                 if (funcName == "count" && !this->context.fromTableAliasToStructName.empty()) {
-                    const std::string& countRowType = this->context.implicitSingleSourceCteTypedef
-                                                          ? *this->context.implicitSingleSourceCteTypedef
-                                                          : this->context.structName;
+                    // An aliased source is only named here where the select writes its FROM out:
+                    // `count<alias_a<T>>()` carries no table into an inferred FROM, while
+                    // `count<T>()` carries the plain table — the one the alias replaced.
+                    const bool countsAliasedSource = this->context.implicitSourceAlias &&
+                                                     this->context.canNameInferredFromSources &&
+                                                     !this->context.implicitSingleSourceCteTypedef;
+                    const std::string& countRowType =
+                        this->context.implicitSingleSourceCteTypedef ? *this->context.implicitSingleSourceCteTypedef
+                        : countsAliasedSource                        ? this->context.implicitSourceAlias->ormAliasType
+                                                                     : this->context.structName;
+                    if (countsAliasedSource) {
+                        this->context.countedAliasedSource = true;
+                    }
                     baseCode = "count<" + countRowType + ">()";
                     this->context.recordEmittedTableType(countRowType);
                     generatedAsCountAsterisk = true;

@@ -74,6 +74,7 @@ namespace sqlite2orm {
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
+    extern const std::string kCommentAliasedFromSources;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);

@@ -242,6 +242,14 @@ namespace sqlite2orm {
          *  what it mentioned.
          */
         std::set<std::string> emittedTableTypes;
+        /**
+         *  The part of `emittedTableTypes` the clauses of the select at hand named themselves: a
+         *  nested select merges its mentions into the set above, so that this FROM answers for the
+         *  width sqlite_orm infers, but not into this one. The difference is what tells a mention
+         *  this select has to spell out itself from one a subquery already answers for with a FROM
+         *  of its own — a `from<...>()` fixes the level it stands on and no other.
+         */
+        std::set<std::string> ownEmittedTableTypes;
 
         /** Records a recordset the emitter has just named in the code of the select being generated. */
         void recordEmittedTableType(std::string typeName);

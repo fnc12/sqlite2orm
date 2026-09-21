@@ -15,18 +15,26 @@ namespace sqlite2orm {
          *  way out the two are merged: sqlite_orm collects the tables of a nested select into the
          *  enclosing FROM as well — an explicit `from<...>()` fixes the level it stands on and no
          *  other — so whatever a subquery named its parent has to answer for too.
+         *
+         *  The mentions a level made itself are kept apart in `ownEmittedTableTypes`, which is
+         *  restored rather than merged: the parent answers for a subquery's width, but the forms
+         *  that subquery wrote are not forms the parent has to name with its own FROM.
          */
         struct EmittedTableTypeScope {
             CodeGeneratorContext* ctx;
             std::set<std::string> enclosing;
+            std::set<std::string> enclosingOwn;
 
             explicit EmittedTableTypeScope(CodeGeneratorContext* context) :
-                ctx(context), enclosing(std::move(context->emittedTableTypes)) {
+                ctx(context), enclosing(std::move(context->emittedTableTypes)),
+                enclosingOwn(std::move(context->ownEmittedTableTypes)) {
                 ctx->emittedTableTypes.clear();
+                ctx->ownEmittedTableTypes.clear();
             }
 
             ~EmittedTableTypeScope() {
                 ctx->emittedTableTypes.insert(enclosing.begin(), enclosing.end());
+                ctx->ownEmittedTableTypes = std::move(enclosingOwn);
             }
 
             EmittedTableTypeScope(const EmittedTableTypeScope&) = delete;
@@ -54,9 +62,11 @@ namespace sqlite2orm {
         struct SelectFromSources {
             std::vector<std::string> implicitTypes;
             /**
-             *  The leading run of sources — the first item and every one joined to it by a comma
-             *  or a CROSS JOIN, up to the first that carries a join clause of its own. These are
-             *  the items a `from<...>()` can stand for in full: they reach sqlite_orm through
+             *  The leading run of sources — the first item and every one introduced by a comma or
+             *  a CROSS JOIN, up to the first introduced by any other join kind. A CROSS JOIN with
+             *  an ON or a USING of its own stays in the run: the join kind is all this looks at,
+             *  the same way the join loop below does. These are the items a `from<...>()` can
+             *  stand for in full: they reach sqlite_orm through
              *  `cross_join<alias_b<T>>()`, which serializes as a plain `CROSS JOIN "t"` — only a
              *  constrained join writes an alias out — so an aliased run is spelled out instead.
              */
@@ -174,11 +184,17 @@ namespace sqlite2orm {
         }
 
         /**
-         *  Whether the clauses of this select name every recordset its code names — the invariant
-         *  a pinned FROM rests on. A base struct of an aliased source is the case that breaks it:
-         *  where a column of an aliased table still comes out as `&T::x`, a `from<alias_a<T>>()`
-         *  beside it leaves the SQL selecting from a table that column no longer belongs to —
-         *  `no such column`, where the inferred FROM at least ran.
+         *  Whether the clauses of this select name every recordset the code of this select names —
+         *  the invariant a pinned FROM rests on. A base struct of an aliased source is the case
+         *  that breaks it: where a column of an aliased table still comes out as `&T::x`, a
+         *  `from<alias_a<T>>()` beside it leaves the SQL selecting from a table that column no
+         *  longer belongs to — `no such column`, where the inferred FROM at least ran.
+         *
+         *  Only the mentions this level made itself are asked about. A subquery naming the same
+         *  table plainly is the shape `SELECT name FROM users u WHERE id IN (SELECT id FROM
+         *  users)`, and there the outer `from<alias_a<Users>>()` is exactly what is needed: the
+         *  subquery answers for its own FROM, while leaving the outer one implicit collects both
+         *  mentions into it and multiplies the rows.
          */
         bool clausesNameEveryMention(const SelectFromSources& sources, const std::set<std::string>& mentioned) {
             for (const auto& type: mentioned) {
@@ -699,7 +715,7 @@ namespace sqlite2orm {
                                                                             : fromSources.implicitTypes);
             this->context.recordComment(kCommentAliasedFromSources);
         } else if (!fromSources.hasCteSource && !fromSources.implicitTypes.empty() &&
-                   clausesNameEveryMention(fromSources, this->context.emittedTableTypes) &&
+                   clausesNameEveryMention(fromSources, this->context.ownEmittedTableTypes) &&
                    implicitFromWidens(fromSources, this->context.emittedTableTypes)) {
             explicitFrom = explicitFromClause(fromSources.implicitTypes);
         }
@@ -1339,7 +1355,7 @@ namespace sqlite2orm {
                                                                             : fromSources.implicitTypes);
             this->context.recordComment(kCommentAliasedFromSources);
         } else if (!fromSources.hasCteSource && !fromSources.implicitTypes.empty() &&
-                   clausesNameEveryMention(fromSources, this->context.emittedTableTypes) &&
+                   clausesNameEveryMention(fromSources, this->context.ownEmittedTableTypes) &&
                    implicitFromWidens(fromSources, this->context.emittedTableTypes)) {
             explicitFrom = explicitFromClause(fromSources.implicitTypes);
         }

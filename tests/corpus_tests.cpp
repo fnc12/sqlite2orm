@@ -56,6 +56,13 @@ namespace {
         std::vector<std::string> rows;
         /** false: the generated code does not compile at all, and the corpus checks it still does not. */
         bool compiles = true;
+        /**
+         *  false: codegen writes no code for the query at all. The expressibility gate leaves a
+         *  statement holding a call sqlite_orm has no form for out whole rather than hand out a
+         *  header that cannot be built, so there is nothing to compile and the warning is what the
+         *  consumer gets. Only read when `compiles` is false.
+         */
+        bool generated = true;
     };
 
     /** One query of a corpus schema, and the rows it is supposed to produce. */
@@ -272,6 +279,16 @@ namespace {
         return perQuery;
     }
 
+    /** Requires that codegen still writes nothing for `sql`, with the warning saying why, as its card says. */
+    void requireNotGenerated(const CorpusQuery& query) {
+        const ProcessSqlResult pipeline = processSql(query.sql);
+        INFO("`" << query.sql << "` is generated now; " << query.knownBad.card
+                 << " is fixed, so move it out of knownBad and give it the rows SQLite returns");
+        REQUIRE(pipeline.ok());
+        REQUIRE(pipeline.codegen.code.empty());
+        REQUIRE_FALSE(pipeline.codegen.warnings.empty());
+    }
+
     /** Requires that the code generated for `sql` still does not compile, as its card says. */
     void requireStillDoesNotCompile(const std::string& header, const CorpusQuery& query, const fs::path& databasePath) {
         const codegen_test_helpers::TempBuildDir dir;
@@ -323,15 +340,20 @@ namespace {
         }
 
         for (const CorpusQuery& query: queries) {
-            if (!query.knownBad.card.empty() && !query.knownBad.compiles) {
+            if (query.knownBad.card.empty() || query.knownBad.compiles) {
+                continue;
+            }
+            if (query.knownBad.generated) {
                 requireStillDoesNotCompile(header, query, database.path);
+            } else {
+                requireNotGenerated(query);
             }
         }
     }
 
-    constexpr std::string_view aliasedColumnCard =
-        "card 1868205961584313865: an unqualified result column is generated without the FROM alias";
-    constexpr std::string_view typeofNameCard = "card 1868206036830127627: TYPEOF generates `typeof`, not `typeof_`";
+    constexpr std::string_view typeofNameCard =
+        "card 1868206036830127627: sqlite_orm spells TYPEOF `typeof_`, and codegen has no form under the name the "
+        "SQL writes, so the expressibility gate leaves the statement out";
 
 }  // namespace
 
@@ -395,12 +417,29 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
              .rows = {"For Those About To Rock (We Salute You)", "Balls to the Wall", "Fast As a Shark"}},
             {.sql = "SELECT Title FROM Album a LEFT JOIN Track t ON a.AlbumId = t.AlbumId WHERE t.TrackId IS NULL "
                     "ORDER BY a.AlbumId LIMIT 3;",
-             .rows = {"Let There Be Rock", "Big Ones"},
-             .knownBad = {.card = aliasedColumnCard,
-                          .rows = {"For Those About To Rock We Salute You", "Balls to the Wall", "Restless and Wild"}}},
+             .rows = {"Let There Be Rock", "Big Ones"}},
+            {.sql = "SELECT COUNT(*) FROM Track t1, Track t2 WHERE t1.TrackId = t2.TrackId;", .rows = {"7"}},
+            {.sql = "SELECT COUNT(*) FROM Album a WHERE a.ArtistId = 1;", .rows = {"2"}},
+            // The `count(*)` of the HAVING is the only thing naming the aliased source, and
+            // `count<alias_a<T>>()` carries no table into the FROM sqlite_orm infers: unless the
+            // source is written out, the select runs with no FROM at all.
+            {.sql = "SELECT 1 FROM Track t GROUP BY 1 HAVING COUNT(*) > 1;", .rows = {"1"}},
+            {.sql = "SELECT GenreId FROM Track t GROUP BY GenreId HAVING COUNT(*) > (SELECT COUNT(*) FROM Album a "
+                    "WHERE a.AlbumId > 2) ORDER BY GenreId;",
+             .rows = {"1"}},
+            {.sql = "SELECT Name FROM Artist ar ORDER BY ar.ArtistId LIMIT 3;",
+             .rows = {"AC/DC", "Accept", "Aerosmith"}},
+            // The aliased source names its columns through the alias while the subquery names the
+            // same table plainly: a FROM left implicit takes both in and answers with the product.
+            {.sql = "SELECT Title FROM Album a WHERE AlbumId IN (SELECT AlbumId FROM Album WHERE ArtistId = 1) "
+                    "ORDER BY AlbumId;",
+             .rows = {"For Those About To Rock We Salute You", "Let There Be Rock"}},
+            {.sql = "SELECT Name FROM Track t WHERE TrackId > (SELECT MIN(TrackId) FROM Track) ORDER BY TrackId "
+                    "LIMIT 3;",
+             .rows = {"Balls to the Wall", "Fast As a Shark", "Restless and Wild"}},
             {.sql = "SELECT TYPEOF(Bytes) FROM Track ORDER BY TrackId;",
              .rows = {"integer", "integer", "integer", "integer", "null", "integer", "integer"},
-             .knownBad = {.card = typeofNameCard, .compiles = false}},
+             .knownBad = {.card = typeofNameCard, .compiles = false, .generated = false}},
         });
 }
 

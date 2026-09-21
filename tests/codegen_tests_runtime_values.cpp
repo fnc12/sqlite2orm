@@ -1589,3 +1589,25 @@ TEST_CASE("runtime: a select naming no recordset returns the rows SQLite returns
                           });
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "1,2,3", "x,x,x", "1,1"});
 }
+
+// An aliased source names its columns through the alias, while a subquery over the same table
+// names it plainly: two recordsets to sqlite_orm, and a FROM left implicit takes both in and
+// multiplies the rows — three of each where SQLite answers with one (card 1868205961584313865).
+// Expected rows checked against sqlite3 3.51 over `users(a INTEGER)` holding 1, 2 and 3.
+TEST_CASE("runtime: an aliased source with a subquery over its own table returns SQLite's rows") {
+    const std::vector<std::string> statements{
+        generate("SELECT a FROM users u WHERE a IN (SELECT a FROM users WHERE a > 1);"),
+        generate("SELECT a FROM users u WHERE a > (SELECT MIN(a) FROM users);"),
+        generate("SELECT a FROM users u WHERE EXISTS (SELECT 1 FROM users WHERE users.a > 2);"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::a), from<alias_a<Users>>(), "
+                "where(in(alias_column<alias_a<Users>>(&Users::a), select(&Users::a, where(c(&Users::a) > 1)))));",
+                "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::a), from<alias_a<Users>>(), "
+                "where(c(alias_column<alias_a<Users>>(&Users::a)) > select(min(&Users::a))));",
+                "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::a), from<alias_a<Users>>(), "
+                "where(exists(select(1, where(c(&Users::a) > 2)))));",
+            });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"2,3", "2,3", "1,2,3"});
+}

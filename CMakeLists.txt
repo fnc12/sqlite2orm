@@ -184,6 +184,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/schema_pipeline_tests.cpp
         tests/schema_report_tests.cpp
         tests/readme_tests.cpp
+        tests/coverage_doc_tests.cpp
         tests/source_file_text.cpp
         tests/sqlite_orm_revision_tests.cpp
         tests/temp_build_dir.cpp

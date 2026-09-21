@@ -752,6 +752,122 @@ TEST_CASE("codegen: CREATE TABLE - a table-level PRIMARY KEY of a WITHOUT ROWID 
                       "        primary_key(&T::a, &T::b)).without_rowid());");
 }
 
+// A STRICT table is the other place SQLite makes a key implicitly NOT NULL — the pragma reports
+// `notnull = 1` for every PRIMARY KEY column of one. Checked against sqlite3 3.51.0 and 3.45.1.
+TEST_CASE("codegen: CREATE TABLE - a PRIMARY KEY of a STRICT table is NOT NULL") {
+    const auto result = generate("CREATE TABLE t (id TEXT PRIMARY KEY, v TEXT) STRICT;");
+    REQUIRE(result == "struct T {\n"
+                      "    std::string id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - a table-level PRIMARY KEY of a STRICT table is NOT NULL") {
+    const auto result = generate("CREATE TABLE t (a TEXT, b INT, PRIMARY KEY(a, b)) STRICT;");
+    REQUIRE(result == "struct T {\n"
+                      "    std::string a;\n"
+                      "    int64_t b = 0;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"a\", &T::a),\n"
+                      "        make_column(\"b\", &T::b),\n"
+                      "        primary_key(&T::a, &T::b)));");
+}
+
+// The rowid alias is the one PRIMARY KEY a STRICT table leaves nullable: the column is the rowid
+// itself, so SQLite goes on turning an inserted NULL into the next rowid and reports
+// `notnull = 0`.
+TEST_CASE("codegen: CREATE TABLE - the rowid alias of a STRICT table stays nullable") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) STRICT;");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// The alias is a matter of spelling, and these are the spellings that miss it: an ASC keeps the
+// alias, a DESC on the column takes it away, and the declared type has to be INTEGER exactly —
+// `INT PRIMARY KEY` is an ordinary column with a rowid of its own behind it.
+TEST_CASE("codegen: CREATE TABLE - a DESC PRIMARY KEY of a STRICT table is no alias") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY DESC, v TEXT) STRICT;");
+    REQUIRE(result == "struct T {\n"
+                      "    int64_t id = 0;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - an ASC PRIMARY KEY of a STRICT table is still the alias") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY ASC, v TEXT) STRICT;");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - an INT PRIMARY KEY of a STRICT table is no alias") {
+    const auto result = generate("CREATE TABLE t (id INT PRIMARY KEY, v TEXT) STRICT;");
+    REQUIRE(result == "struct T {\n"
+                      "    int64_t id = 0;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// Spelled on the table, a single INTEGER column is the alias just the same.
+TEST_CASE("codegen: CREATE TABLE - a table-level key over one INTEGER column is the alias") {
+    const auto result = generate("CREATE TABLE t (id INTEGER, v TEXT, PRIMARY KEY(id)) STRICT;");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id),\n"
+                      "        make_column(\"v\", &T::v),\n"
+                      "        primary_key(&T::id)));");
+}
+
+// WITHOUT ROWID leaves no rowid to alias, so the exception does not apply and the key is NOT NULL.
+TEST_CASE("codegen: CREATE TABLE - a STRICT WITHOUT ROWID table has no alias to spare") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) STRICT, WITHOUT ROWID;");
+    REQUIRE(result == "struct T {\n"
+                      "    int64_t id = 0;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"v\", &T::v)).without_rowid());");
+}
+
 TEST_CASE("codegen: STRICT table warning") {
     const auto result = generateFull("CREATE TABLE t (a TEXT) STRICT;");
     REQUIRE_FALSE(result.warnings.empty());

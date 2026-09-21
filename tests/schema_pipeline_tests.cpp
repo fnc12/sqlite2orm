@@ -76,13 +76,13 @@ namespace {
     }
 
     /**
-     *  The program the round-trip probe builds around a generated header: it opens the very
-     *  database the header was generated from, runs `sync_schema()` and prints one
-     *  `table=outcome` line per mapped table, then inserts a row through the storage. Spelling the
+     *  The program the round-trip probe builds around a generated header, up to the point the
+     *  caller's own code is spliced in: it opens the very database the header was generated from,
+     *  runs `sync_schema()` and prints one `table=outcome` line per mapped table. Spelling the
      *  outcomes out — rather than printing the enumerator's number — is what makes the expected
      *  text say what the probe proves.
      */
-    constexpr std::string_view kSyncSchemaProbeSource = R"(#include "gen.hpp"
+    constexpr std::string_view kSyncSchemaProbeHead = R"(#include "gen.hpp"
 
 #include <iostream>
 #include <string>
@@ -117,26 +117,32 @@ int main(int argc, char** argv) {
     for (const auto& outcome: storage.sync_schema()) {
         std::cout << outcome.first << "=" << outcomeName(outcome.second) << "\n";
     }
-    AutoincPk inserted;
-    inserted.v = "new";
-    std::cout << "inserted autoinc_pk id=" << storage.insert(inserted) << "\n";
-    return 0;
+)";
+
+    /** What closes the probe's `main` after the caller's own statements. */
+    constexpr std::string_view kSyncSchemaProbeTail = R"(    return 0;
 }
 )";
 
     /**
-     *  Builds that program around `generatedCode`, runs it over `dbPath` and returns what it
-     *  printed. A header that compiles can still be wrong about the database it was generated
+     *  Builds that program around `generatedCode` with `afterSync` spliced into its `main` after
+     *  the sync, runs it over `dbPath` and returns what it printed. A header that compiles can
+     *  still be wrong about the database it was generated
      *  from: sqlite_orm compares a mapped column against what `PRAGMA table_info` reports and
      *  rebuilds the table over any difference, which takes the rows with it, so running
      *  `sync_schema()` is the only thing that answers whether the mapping and the schema SQLite
      *  stores are the same.
      */
     [[nodiscard]] std::string syncSchemaProbeOutput(std::string_view generatedCode,
-                                                    const std::filesystem::path& dbPath) {
+                                                    const std::filesystem::path& dbPath,
+                                                    std::string_view afterSync) {
+        std::string source(kSyncSchemaProbeHead);
+        source += afterSync;
+        source += kSyncSchemaProbeTail;
+
         const codegen_test_helpers::TempBuildDir dir;
         dir.write("gen.hpp", generatedCode);
-        const std::filesystem::path cpppath = dir.write("check.cpp", kSyncSchemaProbeSource);
+        const std::filesystem::path cpppath = dir.write("check.cpp", source);
         const std::filesystem::path binpath = dir.file("check");
         const std::filesystem::path outpath = dir.file("check.out");
 
@@ -1951,16 +1957,22 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over the database the heade
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
     REQUIRE(header.errors.empty());
 
+    // An optional primary key is still a key sqlite_orm fills in, and the insert says so.
+    constexpr std::string_view kInsert = R"(    AutoincPk inserted;
+    inserted.v = "new";
+    std::cout << "inserted autoinc_pk id=" << storage.insert(inserted) << "\n";
+)";
+
     // `sqlite_sequence` is SQLite's own, and AUTOINCREMENT is what makes it exist; it is left out
     // of the storage, so `sync_schema()` says nothing about it either.
-    REQUIRE(syncSchemaProbeOutput(header.code, file.path) == "autoinc_pk=already_in_sync\n"
-                                                             "notnull_pk=already_in_sync\n"
-                                                             "rowid_pk=already_in_sync\n"
-                                                             "table_pk=already_in_sync\n"
-                                                             "text_pk=already_in_sync\n"
-                                                             "wr_pk=already_in_sync\n"
-                                                             "wr_table_pk=already_in_sync\n"
-                                                             "inserted autoinc_pk id=3\n");
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, kInsert) == "autoinc_pk=already_in_sync\n"
+                                                                      "notnull_pk=already_in_sync\n"
+                                                                      "rowid_pk=already_in_sync\n"
+                                                                      "table_pk=already_in_sync\n"
+                                                                      "text_pk=already_in_sync\n"
+                                                                      "wr_pk=already_in_sync\n"
+                                                                      "wr_table_pk=already_in_sync\n"
+                                                                      "inserted autoinc_pk id=3\n");
 
     // The rows the database was seeded with, plus the one the probe inserted through the storage:
     // an optional primary key is still a key sqlite_orm fills in, and nothing was rebuilt.
@@ -1969,4 +1981,67 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over the database the heade
                       "(SELECT count(*) FROM rowid_pk) || ',' || (SELECT count(*) FROM table_pk) || ',' || (SELECT "
                       "count(*) FROM text_pk) || ',' || (SELECT count(*) FROM wr_pk) || ',' || (SELECT count(*) FROM "
                       "wr_table_pk);") == "3,2,2,2,2,2,2");
+}
+
+// The other table option SQLite makes a key implicitly NOT NULL for is STRICT — with one exception
+// this case is about: the rowid alias, which stays nullable there because the column *is* the
+// rowid. Getting the exception wrong in either direction loses rows: ruling the alias NOT NULL
+// rebuilds every STRICT table with an `INTEGER PRIMARY KEY`, and ruling the rest nullable rebuilds
+// every other STRICT table with a key. Every spelling that decides it is probed here on a live
+// database with rows in it. Checked against sqlite3 3.51.0 and libsqlite3 3.45.1.
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keeps the rows") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE s_alias (id INTEGER PRIMARY KEY, v TEXT) STRICT;"
+            "CREATE TABLE s_alias_asc (id INTEGER PRIMARY KEY ASC, v TEXT) STRICT;"
+            "CREATE TABLE s_alias_auto (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT) STRICT;"
+            "CREATE TABLE s_alias_table (id INTEGER, v TEXT, PRIMARY KEY(id)) STRICT;"
+            "CREATE TABLE s_any_pk (id ANY PRIMARY KEY, v TEXT) STRICT;"
+            "CREATE TABLE s_desc_pk (id INTEGER PRIMARY KEY DESC, v TEXT) STRICT;"
+            "CREATE TABLE s_int_pk (id INT PRIMARY KEY, v TEXT) STRICT;"
+            "CREATE TABLE s_table_pk (a TEXT, b INT, v TEXT, PRIMARY KEY(a, b)) STRICT;"
+            "CREATE TABLE s_text_pk (id TEXT PRIMARY KEY, v TEXT) STRICT;"
+            "CREATE TABLE s_wr_pk (id INTEGER PRIMARY KEY, v TEXT) STRICT, WITHOUT ROWID;");
+    execSql(file.path,
+            "INSERT INTO s_alias VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_alias_asc VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_alias_auto VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_alias_table VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_any_pk VALUES ('a', 'keep'), (2, 'me');"
+            "INSERT INTO s_desc_pk VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_int_pk VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_table_pk VALUES ('a', 1, 'keep'), ('b', 2, 'me');"
+            "INSERT INTO s_text_pk VALUES ('a', 'keep'), ('b', 'me');"
+            "INSERT INTO s_wr_pk VALUES (1, 'keep'), (2, 'me');");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    // The alias of a STRICT table is an optional member, and inserting through it still fills the
+    // key in — the exception costs nothing but the spelling.
+    constexpr std::string_view kInsert = R"(    SAliasAuto inserted;
+    inserted.v = "new";
+    std::cout << "inserted s_alias_auto id=" << storage.insert(inserted) << "\n";
+)";
+
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, kInsert) == "s_alias=already_in_sync\n"
+                                                                      "s_alias_asc=already_in_sync\n"
+                                                                      "s_alias_auto=already_in_sync\n"
+                                                                      "s_alias_table=already_in_sync\n"
+                                                                      "s_any_pk=already_in_sync\n"
+                                                                      "s_desc_pk=already_in_sync\n"
+                                                                      "s_int_pk=already_in_sync\n"
+                                                                      "s_table_pk=already_in_sync\n"
+                                                                      "s_text_pk=already_in_sync\n"
+                                                                      "s_wr_pk=already_in_sync\n"
+                                                                      "inserted s_alias_auto id=3\n");
+
+    REQUIRE(queryText(file.path,
+                      "SELECT (SELECT count(*) FROM s_alias) || ',' || (SELECT count(*) FROM s_alias_asc) || ',' || "
+                      "(SELECT count(*) FROM s_alias_auto) || ',' || (SELECT count(*) FROM s_alias_table) || ',' || "
+                      "(SELECT count(*) FROM s_any_pk) || ',' || (SELECT count(*) FROM s_desc_pk) || ',' || (SELECT "
+                      "count(*) FROM s_int_pk) || ',' || (SELECT count(*) FROM s_table_pk) || ',' || (SELECT count(*) "
+                      "FROM s_text_pk) || ',' || (SELECT count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2");
 }

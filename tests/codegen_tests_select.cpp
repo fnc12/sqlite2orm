@@ -908,20 +908,15 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
 }
 
 // SQLite 3.48 added `iif(X, Y)` as a spelling of `iif(X, Y, NULL)`, so the short form answers NULL
-// whenever X is false whatever its arguments hold — `SELECT iif(0, 1)` is NULL in sqlite3 3.51,
-// while libsqlite3 3.45.1, the version this project links, refuses the call — and only the
-// three-argument form propagates a NULL argument and nothing else. The name alone therefore does
-// not answer whether the call can be NULL, in either position: a result column and an operand are
-// both widened for the short form and both left plain for the long one. No runtime case reads the
-// short form back: sqlite_orm declares the three-argument `iif` alone, so `iif(0, 1)` does not
-// compile whether it is widened or not.
-TEST_CASE("codegen: an iif without its ELSE argument is widened, the three-argument one is not") {
-    REQUIRE(generate("SELECT iif(0, 1);") == "auto rows = storage.select(as_optional(iif(0, 1)));");
-    REQUIRE(generate("SELECT iif(0, 1) + 1;") == "auto rows = storage.select(as_optional(iif(0, 1) + 1));");
+// whenever X is false whatever its arguments hold — `SELECT iif(0, 1)` is NULL in sqlite3 3.51 —
+// and only the three-argument form propagates a NULL argument and nothing else. The nullability
+// rule is written over the arity for that reason; what a short form generates is now the
+// expressibility gate's answer, because sqlite_orm declares the three-argument `iif` alone
+// (pinned in "codegen: a built-in written with an argument count sqlite_orm has no overload for is
+// not generated").
+TEST_CASE("codegen: an iif in its three-argument form is not widened") {
     REQUIRE(generate("SELECT iif(0, 1, 2);") == "auto rows = storage.select(iif(0, 1, 2));");
     REQUIRE(generate("SELECT iif(0, 1, 2) + 1;") == "auto rows = storage.select(iif(0, 1, 2) + 1);");
-    // The name is matched without regard to case, the way SQLite resolves it.
-    REQUIRE(generate("SELECT IIF(0, 1) || 'x';") == "auto rows = storage.select(as_optional(iif(0, 1) || \"x\"));");
 }
 
 // The widening stops where SQLite never answers NULL and where sqlite_orm reports a nullable type

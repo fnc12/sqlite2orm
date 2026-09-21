@@ -56,6 +56,13 @@ namespace {
         std::vector<std::string> rows;
         /** false: the generated code does not compile at all, and the corpus checks it still does not. */
         bool compiles = true;
+        /**
+         *  false: codegen writes no code for the query at all. The expressibility gate leaves a
+         *  statement holding a call sqlite_orm has no form for out whole rather than hand out a
+         *  header that cannot be built, so there is nothing to compile and the warning is what the
+         *  consumer gets. Only read when `compiles` is false.
+         */
+        bool generated = true;
     };
 
     /** One query of a corpus schema, and the rows it is supposed to produce. */
@@ -272,6 +279,16 @@ namespace {
         return perQuery;
     }
 
+    /** Requires that codegen still writes nothing for `sql`, with the warning saying why, as its card says. */
+    void requireNotGenerated(const CorpusQuery& query) {
+        const ProcessSqlResult pipeline = processSql(query.sql);
+        INFO("`" << query.sql << "` is generated now; " << query.knownBad.card
+                 << " is fixed, so move it out of knownBad and give it the rows SQLite returns");
+        REQUIRE(pipeline.ok());
+        REQUIRE(pipeline.codegen.code.empty());
+        REQUIRE_FALSE(pipeline.codegen.warnings.empty());
+    }
+
     /** Requires that the code generated for `sql` still does not compile, as its card says. */
     void requireStillDoesNotCompile(const std::string& header, const CorpusQuery& query, const fs::path& databasePath) {
         const codegen_test_helpers::TempBuildDir dir;
@@ -323,13 +340,20 @@ namespace {
         }
 
         for (const CorpusQuery& query: queries) {
-            if (!query.knownBad.card.empty() && !query.knownBad.compiles) {
+            if (query.knownBad.card.empty() || query.knownBad.compiles) {
+                continue;
+            }
+            if (query.knownBad.generated) {
                 requireStillDoesNotCompile(header, query, database.path);
+            } else {
+                requireNotGenerated(query);
             }
         }
     }
 
-    constexpr std::string_view typeofNameCard = "card 1868206036830127627: TYPEOF generates `typeof`, not `typeof_`";
+    constexpr std::string_view typeofNameCard =
+        "card 1868206036830127627: sqlite_orm spells TYPEOF `typeof_`, and codegen has no form under the name the "
+        "SQL writes, so the expressibility gate leaves the statement out";
 
 }  // namespace
 
@@ -415,7 +439,7 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
              .rows = {"Balls to the Wall", "Fast As a Shark", "Restless and Wild"}},
             {.sql = "SELECT TYPEOF(Bytes) FROM Track ORDER BY TrackId;",
              .rows = {"integer", "integer", "integer", "integer", "null", "integer", "integer"},
-             .knownBad = {.card = typeofNameCard, .compiles = false}},
+             .knownBad = {.card = typeofNameCard, .compiles = false, .generated = false}},
         });
 }
 

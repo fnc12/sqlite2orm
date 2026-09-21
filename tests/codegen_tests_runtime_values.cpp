@@ -1611,3 +1611,56 @@ TEST_CASE("runtime: an aliased source with a subquery over its own table returns
             });
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"2,3", "2,3", "1,2,3"});
 }
+
+// A compound SELECT is read back through `std::common_type` of the types its arms come out as, so
+// arms sqlite_orm types `double`, `bool` or `std::string` handed a NULL row back as 0 / false / ""
+// on master, exactly as an unwidened plain SELECT did. Widening every arm at once keeps that common
+// type defined and carries the NULL. Expected rows checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a compound SELECT reads a NULL result column back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 1 UNION SELECT a * 2;"),
+        generate("SELECT a + 1 UNION ALL SELECT a * 2;"),
+        generate("SELECT a + 1 INTERSECT SELECT a + 1;"),
+        generate("SELECT a + 1 EXCEPT SELECT 0 - 1;"),
+        generate("SELECT a > 0 UNION SELECT a < 0;"),
+        generate("SELECT a || 'x' UNION SELECT a || 'y';"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) * 2))));",
+                              "auto rows = storage.select(union_all(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) * 2))));",
+                              "auto rows = storage.select(intersect(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) + 1))));",
+                              "auto rows = storage.select(except(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(0) - 1))));",
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) > 0)), "
+                              "select(as_optional(c(&User::a) < 0))));",
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) || \"x\")), "
+                              "select(as_optional(c(&User::a) || \"y\"))));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"8", "8", "8", "8", "0", "7x"});
+}
+
+// The arms left alone still compile, which is the whole reason they are left alone: an
+// `std::optional<double>` beside the `std::optional<int>` a nullable column carries has no common
+// type, and one beside the `std::optional<int>` an `&` comes out as has none either. What the first
+// pair loses by staying as written is nothing — the column's own type carries the NULL — while the
+// second pair still reads a NULL row back as 0, the hole a widening of `&` to `int64_t` in the arms
+// would have to close. Expected rows checked against sqlite3 3.51 over the same one-row `users`.
+TEST_CASE("runtime: compound arms without one common result type are left compiling as they were") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 1 UNION SELECT a;"),
+        generate("SELECT a & 1 UNION SELECT a + 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(union_(select(c(&User::a) + 1), select(&User::a)));",
+                              "auto rows = storage.select(union_(select(c(&User::a) & 1), select(c(&User::a) + 1)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") == std::vector<std::string>{"NULL", "0"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"7", "1"});
+}

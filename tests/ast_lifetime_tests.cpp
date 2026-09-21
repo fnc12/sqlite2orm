@@ -58,7 +58,8 @@ TEST_CASE("literals and qualified names survive the SQL they were parsed from") 
 }
 
 TEST_CASE("a NEW reference survives the SQL it was parsed from") {
-    REQUIRE(generateAfterScrubbingTheSql("SELECT new.a FROM t;").code == "auto rows = storage.select(new_(&T::a));");
+    REQUIRE(generateAfterScrubbingTheSql("SELECT new.a FROM t;").code ==
+            "auto rows = storage.select(new_(&T::a), from<T>());");
 }
 
 TEST_CASE("the span a warning underlines survives the SQL it was parsed from") {

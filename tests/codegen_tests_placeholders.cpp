@@ -92,7 +92,7 @@ TEST_CASE("codegen: the IS placeholder is underlined on the operator's own expre
                                                                         SourceLocation{1, 1},
                                                                         6}}});
     REQUIRE(generateNodeOnly("SELECT a IS NOT DISTINCT FROM b FROM t") ==
-            CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */);",
+            CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */, from<T>());",
                           {},
                           {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
                                           "is not supported in sqlite_orm",
@@ -104,7 +104,7 @@ TEST_CASE("codegen: the IS placeholder is underlined on the operator's own expre
 // characters written with thirteen bytes, and the warning carries the nine a consumer draws.
 TEST_CASE("codegen: a placeholder over non-ASCII SQL is underlined in characters") {
     REQUIRE(generateNodeOnly("SELECT ключ IS b FROM t") ==
-            CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */);",
+            CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */, from<T>());",
                           {},
                           {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
                                           "is not supported in sqlite_orm",

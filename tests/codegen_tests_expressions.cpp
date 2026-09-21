@@ -1605,6 +1605,11 @@ TEST_CASE("codegen: CASE result type widens over every branch and the ELSE") {
     // A CASE with no ELSE widens over the branches it does have.
     REQUIRE(generate("CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 3000000000 END") ==
             "case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, then(3000000000)).end()");
+    // A CASE standing in a branch of another one answers with a value of its own, so the outer
+    // one widens over everything the nested one can answer with.
+    REQUIRE(generate("CASE WHEN a THEN (CASE WHEN a THEN 9223372036854775807 ELSE 0 END) ELSE 1 END") ==
+            "case_<int64_t>().when(&User::a, then(case_<int64_t>().when(&User::a, "
+            "then(9223372036854775807)).else_(0).end())).else_(1).end()");
     // Branches that all stay inside an int32 keep the readable `int`.
     REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 0 END") ==
             "case_<int>().when(c(&User::a) < 0, then(1)).else_(0).end()");

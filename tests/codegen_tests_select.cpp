@@ -829,7 +829,7 @@ TEST_CASE("codegen: an operator over a NULL test or an EXISTS is not widened") {
             "auto rows = storage.select(cast<int64_t>(is_not_null(&Users::a)) + 1);");
     REQUIRE(generate("SELECT NOT (a IS NULL) FROM users;") == "auto rows = storage.select(not (is_null(&Users::a)));");
     REQUIRE(generate("SELECT EXISTS(SELECT 1) + 1 FROM users;") ==
-            "auto rows = storage.select(exists(select(1)) + 1);");
+            "auto rows = storage.select(exists(select(1)) + 1, from<Users>());");
     REQUIRE(generate("SELECT (a IS NULL) || 'x' FROM users;") ==
             "auto rows = storage.select(cast<int64_t>(is_null(&Users::a)) || \"x\");");
     REQUIRE(generate("SELECT ~(a IS NULL) FROM users;") ==
@@ -866,7 +866,7 @@ TEST_CASE("codegen: a result column typed by a predicate, a CAST or a function c
     REQUIRE(generate("SELECT upper(a) FROM users;") == "auto rows = storage.select(as_optional(upper(&Users::a)));");
     // An aggregate SQLite answers NULL for over an empty rowset is widened whatever its argument
     // holds: `SELECT avg(1) FROM users` over no rows is NULL.
-    REQUIRE(generate("SELECT avg(1) FROM users;") == "auto rows = storage.select(as_optional(avg(1)));");
+    REQUIRE(generate("SELECT avg(1) FROM users;") == "auto rows = storage.select(as_optional(avg(1)), from<Users>());");
     REQUIRE(generate("SELECT group_concat(a) FROM users;") ==
             "auto rows = storage.select(as_optional(group_concat(&Users::a)));");
     // Only the top-level node of a result column decides the type the row is read back with, and a
@@ -971,7 +971,8 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT lag(a) OVER () FROM users;") == "auto rows = storage.select(lag(&Users::a).over());");
     REQUIRE(generate("SELECT lag(a) OVER (ORDER BY a) FROM users;") ==
             "auto rows = storage.select(lag(&Users::a).over(order_by(&Users::a)));");
-    REQUIRE(generate("SELECT row_number() OVER () FROM users;") == "auto rows = storage.select(row_number().over());");
+    REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
+            "auto rows = storage.select(row_number().over(), from<Users>());");
     REQUIRE(generate("SELECT a MATCH 'x' FROM users;") == "auto rows = storage.select(match(&Users::a, \"x\"));");
     REQUIRE(generate("SELECT count(*) FROM users;") == "auto rows = storage.select(count<Users>());");
 }
@@ -1358,17 +1359,19 @@ TEST_CASE("codegen: a unary plus passes on what the generation around it asks of
 // the negation 9.22337203685478e+18 SQLite computes, not a literal it refuses — so only the
 // pluses are stepped through.
 TEST_CASE("codegen: a sign over a unary plus is folded the way SQLite folds it") {
-    REQUIRE(generate("SELECT -1 FROM users;") == "auto rows = storage.select(-1);");
-    REQUIRE(generate("SELECT -+1 FROM users;") == "auto rows = storage.select(-1);");
-    REQUIRE(generate("SELECT - + + 1 FROM users;") == "auto rows = storage.select(-1);");
-    REQUIRE(generate("SELECT -+1.5 FROM users;") == "auto rows = storage.select(-1.5);");
-    REQUIRE(generate("SELECT -+0x10 FROM users;") == "auto rows = storage.select(-0x10);");
-    REQUIRE(generate("SELECT -+2147483648 FROM users;") == "auto rows = storage.select(-2147483648);");
+    REQUIRE(generate("SELECT -1 FROM users;") == "auto rows = storage.select(-1, from<Users>());");
+    REQUIRE(generate("SELECT -+1 FROM users;") == "auto rows = storage.select(-1, from<Users>());");
+    REQUIRE(generate("SELECT - + + 1 FROM users;") == "auto rows = storage.select(-1, from<Users>());");
+    REQUIRE(generate("SELECT -+1.5 FROM users;") == "auto rows = storage.select(-1.5, from<Users>());");
+    REQUIRE(generate("SELECT -+0x10 FROM users;") == "auto rows = storage.select(-0x10, from<Users>());");
+    REQUIRE(generate("SELECT -+2147483648 FROM users;") == "auto rows = storage.select(-2147483648, from<Users>());");
     REQUIRE(generate("SELECT -+9223372036854775807 FROM users;") ==
-            "auto rows = storage.select(-9223372036854775807);");
+            "auto rows = storage.select(-9223372036854775807, from<Users>());");
     // A COLLATE under the plus stops the fold, exactly as it stops it without one.
-    REQUIRE(generate("SELECT -+(1 COLLATE BINARY) FROM users;") == "auto rows = storage.select((c(0) - c(1)));");
-    REQUIRE(generate("SELECT -(1 COLLATE BINARY) FROM users;") == "auto rows = storage.select((c(0) - c(1)));");
+    REQUIRE(generate("SELECT -+(1 COLLATE BINARY) FROM users;") ==
+            "auto rows = storage.select((c(0) - c(1)), from<Users>());");
+    REQUIRE(generate("SELECT -(1 COLLATE BINARY) FROM users;") ==
+            "auto rows = storage.select((c(0) - c(1)), from<Users>());");
 }
 
 // The one thing a unary plus carries that its operand does not: SQLite applies the affinity of a
@@ -1805,4 +1808,62 @@ TEST_CASE("codegen: a qualified star over an aliased source keeps the alias colu
     REQUIRE(generate("SELECT u.* FROM users u ORDER BY id;") ==
             "auto rows = storage.select(asterisk<alias_a<Users>>(), "
             "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+}
+
+// A statement that names no recordset at all leaves sqlite_orm nothing to build a FROM out of, and
+// the table is dropped rather than widened: `SELECT row_number() OVER () FROM users` ran as
+// `SELECT ROW_NUMBER() OVER ()` and answered with one row where SQLite answers with one per row of
+// the table — code that compiles, runs and is silently wrong (card 1868386485619656482). Naming the
+// sources is what brings the table back. Row counts checked against sqlite3 3.51 in
+// `codegen_tests_runtime_values.cpp`.
+TEST_CASE("codegen: a select naming no recordset carries its FROM") {
+    REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
+            "auto rows = storage.select(row_number().over(), from<Users>());");
+    REQUIRE(generate("SELECT 1 FROM users;") == "auto rows = storage.select(1, from<Users>());");
+    REQUIRE(generate("SELECT random() FROM users;") == "auto rows = storage.select(random(), from<Users>());");
+}
+
+// The FROM still names only the sources sqlite_orm has to infer: a joined table arrives through its
+// own clause, and an aliased source is named by the alias the clauses of the select use.
+TEST_CASE("codegen: a select naming no recordset carries the sources it infers") {
+    REQUIRE(generate("SELECT 1 FROM users, orders;") ==
+            "auto rows = storage.select(1, from<Users>(), cross_join<Orders>());");
+    REQUIRE(generate("SELECT 1 FROM users JOIN orders ON 1;") ==
+            "auto rows = storage.select(1, from<Users>(), join<Orders>(on(1)));");
+    REQUIRE(generate("SELECT 1 FROM users u;") == "auto rows = storage.select(1, from<alias_a<Users>>());");
+    REQUIRE(generate("SELECT 1 FROM users LIMIT 2;") == "auto rows = storage.select(1, from<Users>(), limit(2));");
+}
+
+// A select with no FROM of its own has no source to name, and a select whose code does name one is
+// left as it was: the form only changes where the FROM would otherwise be lost.
+TEST_CASE("codegen: a select with nothing to name keeps its FROM implicit") {
+    REQUIRE(generate("SELECT 1;") == "auto rows = storage.select(1);");
+    REQUIRE(generate("SELECT COUNT(*) FROM users;") == "auto rows = storage.select(count<Users>());");
+    REQUIRE(generate("SELECT 1 FROM users WHERE id > 0;") ==
+            "auto rows = storage.select(1, where(c(&Users::id) > 0));");
+}
+
+// Every level decides for itself, so a subquery that names nothing gets its own FROM the same way —
+// the `EXISTS` below answered the same for every row on master because its `SELECT 1 FROM orders`
+// went out with no table at all.
+TEST_CASE("codegen: a subquery naming no recordset carries its own FROM") {
+    REQUIRE(generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM orders);") ==
+            "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Orders>()))));");
+    REQUIRE(generate("SELECT (SELECT 1 FROM orders) FROM users;") ==
+            "auto rows = storage.select(select(1, from<Orders>()), from<Users>());");
+    REQUIRE(generate("SELECT 1 FROM users UNION SELECT 2 FROM orders;") ==
+            "auto rows = storage.select(union_(select(1, from<Users>()), select(2, from<Orders>())));");
+    REQUIRE(generate("INSERT INTO orders SELECT 1 FROM users;") ==
+            "storage.insert(into<Orders>(), select(1, from<Users>()));");
+}
+
+// A select reading a CTE keeps the form it had, the same reservation the widening case makes: a
+// `from<cte_0>()` does answer correctly, but pinning those selects down reaches the `WITH`
+// generator and is a change of its own. So this one still answers one row where SQLite answers
+// three.
+TEST_CASE("codegen: a select over a CTE naming no recordset keeps its FROM implicit") {
+    REQUIRE(generate("WITH recent AS (SELECT id FROM users) SELECT 1 FROM recent;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), select(1));");
 }

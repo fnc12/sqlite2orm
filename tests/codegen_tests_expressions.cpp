@@ -2011,7 +2011,7 @@ TEST_CASE("codegen: a JSON arrow whose path is no literal is reported at the ope
 
 TEST_CASE("codegen: bind parameter anonymous") {
     REQUIRE(generateFull("SELECT ? FROM users;") ==
-            CodeGenResult{"auto rows = storage.select(bindParam1);",
+            CodeGenResult{"auto rows = storage.select(bindParam1, from<Users>());",
                           {},
                           {"bind parameter ? -> C++ variable 'bindParam1'; "
                            "for prepared statements use storage.prepare() + get<N>(stmt)"}});
@@ -2019,7 +2019,7 @@ TEST_CASE("codegen: bind parameter anonymous") {
 
 TEST_CASE("codegen: bind parameter named") {
     REQUIRE(generateFull("SELECT :userId FROM users;") ==
-            CodeGenResult{"auto rows = storage.select(userId);",
+            CodeGenResult{"auto rows = storage.select(userId, from<Users>());",
                           {},
                           {"bind parameter :userId -> C++ variable 'userId'; "
                            "for prepared statements use storage.prepare() + get<N>(stmt)"}});

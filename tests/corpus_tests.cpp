@@ -351,8 +351,6 @@ namespace {
         }
     }
 
-    constexpr std::string_view subqueryHoistsTableCard =
-        "card 1868205864612005383: a subquery in WHERE drags its table into the outer FROM";
     constexpr std::string_view aliasedColumnCard =
         "card 1868205961584313865: an unqualified result column is generated without the FROM alias";
     constexpr std::string_view typeofNameCard =
@@ -415,18 +413,10 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
              .rows = {"NULL", "AC/DC", "Accept", "Aerosmith", "Alanis Morissette", "Jazz", "Metal", "Rock"}},
             {.sql = "SELECT Title FROM Album WHERE ArtistId IN (SELECT ArtistId FROM Artist WHERE Name = 'AC/DC') "
                     "ORDER BY AlbumId LIMIT 3;",
-             .rows = {"For Those About To Rock We Salute You", "Let There Be Rock"},
-             .knownBad = {.card = subqueryHoistsTableCard,
-                          .rows = {"For Those About To Rock We Salute You",
-                                   "For Those About To Rock We Salute You",
-                                   "For Those About To Rock We Salute You"}}},
+             .rows = {"For Those About To Rock We Salute You", "Let There Be Rock"}},
             {.sql = "SELECT Name FROM Track WHERE EXISTS (SELECT 1 FROM Album WHERE Album.AlbumId = Track.AlbumId) "
                     "ORDER BY TrackId LIMIT 3;",
-             .rows = {"For Those About To Rock (We Salute You)", "Balls to the Wall", "Fast As a Shark"},
-             .knownBad = {.card = subqueryHoistsTableCard,
-                          .rows = {"For Those About To Rock (We Salute You)",
-                                   "For Those About To Rock (We Salute You)",
-                                   "For Those About To Rock (We Salute You)"}}},
+             .rows = {"For Those About To Rock (We Salute You)", "Balls to the Wall", "Fast As a Shark"}},
             {.sql = "SELECT Title FROM Album a LEFT JOIN Track t ON a.AlbumId = t.AlbumId WHERE t.TrackId IS NULL "
                     "ORDER BY a.AlbumId LIMIT 3;",
              .rows = {"Let There Be Rock", "Big Ones"},

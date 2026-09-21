@@ -1569,3 +1569,23 @@ TEST_CASE("runtime: a CASE result column that can be NULL reads the NULL back") 
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "7", "1", "2", "4"});
 }
+
+// Code that names no recordset leaves sqlite_orm nothing to build a FROM out of, so the table was
+// dropped and every statement below answered with a single row — code that compiles, runs and is
+// silently wrong (card 1868386485619656482). Expected rows checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding 1, 2 and 3; on master each line reads back as its first value alone.
+TEST_CASE("runtime: a select naming no recordset returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM users;"),
+        generate("SELECT row_number() OVER () FROM users;"),
+        generate("SELECT 'x' FROM users;"),
+        generate("SELECT 1 FROM users LIMIT 2;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(1, from<Users>());",
+                              "auto rows = storage.select(row_number().over(), from<Users>());",
+                              "auto rows = storage.select(\"x\", from<Users>());",
+                              "auto rows = storage.select(1, from<Users>(), limit(2));",
+                          });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "1,2,3", "x,x,x", "1,1"});
+}

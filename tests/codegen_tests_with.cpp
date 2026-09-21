@@ -322,7 +322,7 @@ TEST_CASE("codegen: a star counts as no argument for a window function") {
                 {kStatementNotGenerated}});
 
     const auto nullary = generateFull("SELECT row_number(*) OVER () FROM users;");
-    REQUIRE(nullary.code == "auto rows = storage.select(row_number().over());");
+    REQUIRE(nullary.code == "auto rows = storage.select(row_number().over(), from<Users>());");
     REQUIRE(nullary.warnings == std::vector<CodegenWarning>{});
 }
 

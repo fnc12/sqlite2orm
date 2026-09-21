@@ -109,6 +109,10 @@ namespace sqlite2orm {
             }
             auto cppName = toCppIdentifier(columnRef->columnName);
             this->context.registerPrefixColumn(cppName, this->context.syntheticColumnCppType(cppName));
+            if (this->context.implicitSingleSourceCteTypedef) {
+                // Every form below this point names that CTE, whichever of them the column takes.
+                this->context.recordEmittedTableType(*this->context.implicitSingleSourceCteTypedef);
+            }
             if (this->context.implicitSingleSourceCteTypedef && this->context.implicitCteFromTableKeyNorm) {
                 const std::string colKey = normalizeSqlIdentifier(columnRef->columnName);
                 const std::string pipe = *this->context.implicitCteFromTableKeyNorm + "|" + colKey;
@@ -182,6 +186,7 @@ namespace sqlite2orm {
             std::string memberPointer = "&" + this->context.structName + "::" + cppName;
             std::string columnPointer = "column<" + this->context.structName + ">(" + memberPointer + ")";
             this->context.emittedTableTypedColumnRef = true;
+            this->context.recordEmittedTableType(this->context.structName);
             if (this->context.columnRefUnderLogicalNot) {
                 // Only the column-pointer form survives under a NOT, so there is no style left to
                 // decide between and no decision point to offer.
@@ -217,6 +222,8 @@ namespace sqlite2orm {
             std::string tableKeyNorm = normalizeSqlIdentifier(qualifiedRef->tableName);
             auto cteIt = this->context.activeCteTypedefByTableKey.find(tableKeyNorm);
             if (cteIt != this->context.activeCteTypedefByTableKey.end()) {
+                // Every form below this point names that CTE, whichever of them the column takes.
+                this->context.recordEmittedTableType(cteIt->second);
                 const std::string colKey = normalizeSqlIdentifier(qualifiedRef->columnName);
                 const std::string pipe = tableKeyNorm + "|" + colKey;
                 if (this->context.withCteCpp20Monikers()) {
@@ -294,6 +301,7 @@ namespace sqlite2orm {
                 const auto& info = tableAliasIt->second;
                 const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
                 this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
+                this->context.recordEmittedTableType(info.ormAliasType);
                 std::string code;
                 if (this->context.useCpp20TableAliasStyle()) {
                     code = info.ormAliasType + "->*&" + info.baseStructName + "::" + colCpp;
@@ -308,6 +316,7 @@ namespace sqlite2orm {
                                               : this->context.structNameForTable(qualifiedRef->tableName);
             const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
             this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
+            this->context.recordEmittedTableType(structForColumn);
             std::string memberPointer = "&" + structForColumn + "::" + toCppIdentifier(qualifiedRef->columnName);
             std::string columnPointer = "column<" + structForColumn + ">(" + memberPointer + ")";
             if (this->context.columnRefUnderLogicalNot) {
@@ -343,13 +352,14 @@ namespace sqlite2orm {
             }
             auto tableAliasIt = this->context.activeTableAliases.find(qualifiedAsterisk->tableName);
             if (tableAliasIt != this->context.activeTableAliases.end()) {
+                this->context.recordEmittedTableType(tableAliasIt->second.ormAliasType);
                 return CodeGenResult{"asterisk<" + tableAliasIt->second.ormAliasType + ">()",
                                      {},
                                      std::move(qualifiedAsteriskWarnings)};
             }
-            return CodeGenResult{"asterisk<" + this->context.structNameForTable(qualifiedAsterisk->tableName) + ">()",
-                                 {},
-                                 std::move(qualifiedAsteriskWarnings)};
+            std::string asteriskStruct = this->context.structNameForTable(qualifiedAsterisk->tableName);
+            this->context.recordEmittedTableType(asteriskStruct);
+            return CodeGenResult{"asterisk<" + asteriskStruct + ">()", {}, std::move(qualifiedAsteriskWarnings)};
         } else if (auto* newRef = dynamic_cast<const NewRefNode*>(&astNode)) {
             auto cppName = toCppIdentifier(newRef->columnName);
             this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
@@ -1395,6 +1405,7 @@ namespace sqlite2orm {
                                                           ? *this->context.implicitSingleSourceCteTypedef
                                                           : this->context.structName;
                     baseCode = "count<" + countRowType + ">()";
+                    this->context.recordEmittedTableType(countRowType);
                     generatedAsCountAsterisk = true;
                 } else {
                     baseCode = funcName + "()";

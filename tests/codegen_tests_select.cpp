@@ -1647,3 +1647,37 @@ TEST_CASE("codegen: naming the sources for a COUNT(*) in HAVING carries its comm
     REQUIRE(generateFull("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1;").comments ==
             std::vector<std::string>{kAliasedFromSourcesComment});
 }
+
+// A bare `*` reads its row from the plain struct — `get_all<T>()` and `asterisk<T>()` name no
+// alias — so no reference of such a select may name one either: `ORDER BY "a"."id"` over
+// `FROM "users"` is an alias SQLite never sees declared, and in the `asterisk` alternative the
+// alias arrives as a second, unaliased source and the select answers the product of the two.
+// Every reference of a select has to name the recordset its row is read from.
+TEST_CASE("codegen: a star over an aliased source keeps the plain column form") {
+    REQUIRE(generate("SELECT * FROM users u WHERE id > 1;") ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::id) > 1));");
+    REQUIRE(generate("SELECT * FROM users AS u WHERE id > 1;") ==
+            "auto rows = storage.get_all<Users>(where(c(&Users::id) > 1));");
+    REQUIRE(generate("SELECT * FROM users u ORDER BY id;") ==
+            "auto rows = storage.get_all<Users>(order_by(&Users::id));");
+    REQUIRE(generate("SELECT * FROM users u GROUP BY uid;") ==
+            "auto rows = storage.get_all<Users>(group_by(&Users::uid));");
+}
+
+// The alternative the decision point offers is generated code of its own, and the playground and
+// Studio hand it to their users: it reads the same plain struct the `get_all` form does.
+TEST_CASE("codegen: the asterisk alternative of an aliased star keeps the plain column form") {
+    auto result = generateFull("SELECT * FROM users u WHERE id > 1;");
+    REQUIRE(result.decisionPoints.at(0).options.at(1).code ==
+            "auto rows = storage.select(object<Users>(), where(c(&Users::id) > 1));");
+    REQUIRE(result.decisionPoints.at(0).options.at(2).code ==
+            "auto rows = storage.select(asterisk<Users>(), where(c(&Users::id) > 1));");
+}
+
+// A `*` the SQL qualified with the alias does read the alias — `asterisk<alias_a<T>>()` names it —
+// so there the unqualified column of the same select is the alias's own, and the two agree again.
+TEST_CASE("codegen: a qualified star over an aliased source keeps the alias column form") {
+    REQUIRE(generate("SELECT u.* FROM users u ORDER BY id;") ==
+            "auto rows = storage.select(asterisk<alias_a<Users>>(), "
+            "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+}

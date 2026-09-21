@@ -242,10 +242,16 @@ namespace sqlite2orm {
         };
 
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
+        if (isStar) {
+            // Every reference a select generates has to name the same recordset its row is read
+            // from, and a bare `*` reads the plain struct: `asterisk<T>()` and `get_all<T>()` name
+            // no alias (card 1868205961584313865). An `alias_column<alias_a<T>>` beside one of them
+            // is a second source to sqlite_orm, and the alias it names is declared by nothing.
+            this->context.implicitSourceAlias.reset();
+        }
         // Settled before the result columns are generated, because a `count(*)` among them asks:
-        // it may only name an aliased source where the FROM is written out. A bare `*` reads its
-        // row from the plain struct — `asterisk<T>()` names no alias (card 1868205961584313865) —
-        // so naming the sources there would leave the star reading a table the select dropped.
+        // it may only name an aliased source where the FROM is written out. The star leaves above
+        // for the same reason: naming the sources there would leave it reading a dropped table.
         const InferredFromSources inferredSources = inferredFromSources(this->context, selectNode.fromClause);
         this->context.canNameInferredFromSources =
             inferredSources.anyAliased && !inferredSources.hasCteSource && !isStar;
@@ -907,6 +913,11 @@ namespace sqlite2orm {
         };
 
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
+        if (isStar) {
+            // Same rule as the outer star: the row comes from the plain struct, so no reference of
+            // this select may name the alias.
+            this->context.implicitSourceAlias.reset();
+        }
         // A subquery answers for its own sources the way the outer select does: settled before the
         // result columns, so a `count(*)` among them knows whether the FROM is written out for it.
         const InferredFromSources inferredSources = inferredFromSources(this->context, selectNode.fromClause);

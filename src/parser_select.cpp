@@ -1,6 +1,8 @@
 #include "parser_select.h"
 #include <sqlite2orm/parser.h>
 
+#include <string>
+
 namespace sqlite2orm {
 
     SelectParser::SelectParser(Parser& parser, TokenStream& tokenStream) : parser(parser), tokenStream(tokenStream) {}
@@ -217,7 +219,32 @@ namespace sqlite2orm {
         return compoundSelect;
     }
 
+    bool SelectParser::enterQueryLevel() {
+        ++this->queryDepth;
+        if (this->queryDepth <= kMaxQueryDepth) {
+            return true;
+        }
+        this->parser.reportError(
+            ParseError{"query is nested too deeply (maximum depth " + std::to_string(kMaxQueryDepth) + ")",
+                       current().location});
+        return false;
+    }
+
     AstNodePointer SelectParser::parseSelect() {
+        // Every way down into a nested query — a subquery in FROM, a CTE body, a scalar subquery,
+        // the query an INSERT takes its rows from — comes through here exactly once per level, so
+        // this is where a level is taken and where it is given back.
+        const size_t enclosingDepth = this->queryDepth;
+        if (!enterQueryLevel()) {
+            this->queryDepth = enclosingDepth;
+            return nullptr;
+        }
+        AstNodePointer node = parseSelectStatement();
+        this->queryDepth = enclosingDepth;
+        return node;
+    }
+
+    AstNodePointer SelectParser::parseSelectStatement() {
         const size_t firstTokenIndex = this->tokenStream.currentPosition();
         SourceLocation withLocation = current().location;
         std::optional<WithClause> withClause;
@@ -419,7 +446,16 @@ namespace sqlite2orm {
         auto parseOneUnit = [&](JoinKind leadingJoin, bool expectConstraint) {
             if (check(TokenType::leftParen) && !isFromTableItemStart()) {
                 advanceToken();
+                // A parenthesized join group nests the way a subquery does and is walked the same
+                // way afterwards, so it takes a level of its own; the levels a group holds are
+                // given back once it is read.
+                const size_t enclosingDepth = this->queryDepth;
+                if (!enterQueryLevel()) {
+                    this->queryDepth = enclosingDepth;
+                    return;
+                }
                 auto innerItems = parseFromClause();
+                this->queryDepth = enclosingDepth;
                 match(TokenType::rightParen);
                 if (!innerItems.empty()) {
                     innerItems[0].leadingJoin = leadingJoin;

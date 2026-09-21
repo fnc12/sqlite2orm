@@ -79,3 +79,106 @@ TEST_CASE("parser: comparison to scalar subquery") {
                                 SourceLocation{});
     REQUIRE(requireNode<BinaryOperatorNode>(parseResult) == expected);
 }
+
+// --- Nesting depth ---
+
+namespace {
+    /** `SELECT * FROM (SELECT * FROM (… t …))`, with `queryCount` queries nested in one another. */
+    std::string nestedFromSubqueries(size_t queryCount) {
+        std::string sql = "SELECT * FROM ";
+        for (size_t i = 1; i < queryCount; ++i) {
+            sql += "(SELECT * FROM ";
+        }
+        sql += "t";
+        sql += std::string(queryCount - 1, ')');
+        return sql;
+    }
+
+    /** `SELECT * FROM (t JOIN (t JOIN … t …))`, with `groupCount` join groups nested in one another. */
+    std::string nestedJoinGroups(size_t groupCount) {
+        std::string sql = "SELECT * FROM ";
+        for (size_t i = 0; i < groupCount; ++i) {
+            sql += "(t JOIN ";
+        }
+        sql += "t";
+        sql += std::string(groupCount, ')');
+        return sql;
+    }
+
+    /** `WITH x AS (WITH x AS (… SELECT 1 …) SELECT * FROM x)…`, with `queryCount` queries in all. */
+    std::string nestedWithBodies(size_t queryCount) {
+        std::string sql;
+        for (size_t i = 1; i < queryCount; ++i) {
+            sql += "WITH x AS (";
+        }
+        sql += "SELECT 1";
+        for (size_t i = 1; i < queryCount; ++i) {
+            sql += ") SELECT * FROM x";
+        }
+        return sql;
+    }
+}
+
+TEST_CASE("parser: queries at the nesting depth limit are accepted") {
+    auto parseResult = parse(nestedFromSubqueries(kMaxQueryDepth));
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: FROM subquery nested past the depth limit is refused") {
+    auto parseResult = parse(nestedFromSubqueries(kMaxQueryDepth + 1));
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.astNodePointer == nullptr);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
+}
+
+TEST_CASE("parser: FROM subquery nested far past the depth limit is refused, not crashed on") {
+    // The depth that took the process down with a stack overflow before the limit was there: the
+    // parser has to refuse this without ever recursing that far.
+    auto parseResult = parse(nestedFromSubqueries(20000));
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.astNodePointer == nullptr);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
+}
+
+TEST_CASE("parser: parenthesized join groups at the nesting depth limit are accepted") {
+    auto parseResult = parse(nestedJoinGroups(kMaxQueryDepth - 1));
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: parenthesized join groups nested past the depth limit are refused") {
+    auto parseResult = parse(nestedJoinGroups(kMaxQueryDepth));
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.astNodePointer == nullptr);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
+}
+
+TEST_CASE("parser: CTE bodies at the nesting depth limit are accepted") {
+    auto parseResult = parse(nestedWithBodies(kMaxQueryDepth));
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: CTE bodies nested past the depth limit are refused") {
+    auto parseResult = parse(nestedWithBodies(kMaxQueryDepth + 1));
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.astNodePointer == nullptr);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
+}
+
+TEST_CASE("parser: a query at the nesting depth limit is still parsed in full") {
+    // Refusing one level deeper is the point; what sits just under the limit has to come back
+    // whole, down to the innermost table name.
+    auto parseResult = parse(nestedFromSubqueries(3));
+    const auto& outer = requireNode<SelectNode>(parseResult);
+    REQUIRE(outer.fromClause.size() == 1);
+    const auto* middle = dynamic_cast<const SelectNode*>(outer.fromClause.at(0).table.derivedSelect.get());
+    REQUIRE(middle != nullptr);
+    REQUIRE(middle->fromClause.size() == 1);
+    const auto* inner = dynamic_cast<const SelectNode*>(middle->fromClause.at(0).table.derivedSelect.get());
+    REQUIRE(inner != nullptr);
+    REQUIRE(inner->fromClause.size() == 1);
+    CHECK(inner->fromClause.at(0).table.tableName == "t");
+}

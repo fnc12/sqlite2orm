@@ -405,6 +405,14 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
              .rows = {"1"}},
             {.sql = "SELECT Name FROM Artist ar ORDER BY ar.ArtistId LIMIT 3;",
              .rows = {"AC/DC", "Accept", "Aerosmith"}},
+            // The aliased source names its columns through the alias while the subquery names the
+            // same table plainly: a FROM left implicit takes both in and answers with the product.
+            {.sql = "SELECT Title FROM Album a WHERE AlbumId IN (SELECT AlbumId FROM Album WHERE ArtistId = 1) "
+                    "ORDER BY AlbumId;",
+             .rows = {"For Those About To Rock We Salute You", "Let There Be Rock"}},
+            {.sql = "SELECT Name FROM Track t WHERE TrackId > (SELECT MIN(TrackId) FROM Track) ORDER BY TrackId "
+                    "LIMIT 3;",
+             .rows = {"Balls to the Wall", "Fast As a Shark", "Restless and Wild"}},
             {.sql = "SELECT TYPEOF(Bytes) FROM Track ORDER BY TrackId;",
              .rows = {"integer", "integer", "integer", "integer", "null", "integer", "integer"},
              .knownBad = {.card = typeofNameCard, .compiles = false}},

@@ -1810,6 +1810,49 @@ TEST_CASE("codegen: a qualified star over an aliased source keeps the alias colu
             "order_by(alias_column<alias_a<Users>>(&Users::id)));");
 }
 
+// Once the columns of an aliased source name the alias, the base struct is no longer a recordset
+// the clauses of that select leave unnamed — but a subquery over the same table still names it
+// plainly, and that mention was reaching the invariant the pinned FROM rests on and vetoing it.
+// The FROM then stayed implicit, sqlite_orm collected both mentions into it, and
+// `SELECT name FROM users u WHERE id IN (SELECT id FROM users WHERE id > 1)` came back with nine
+// rows where SQLite answers two (card 1868205961584313865). Only the mentions a select makes
+// itself are asked about now: a subquery answers for its own FROM, which the outer one does not
+// reach. Rows checked against sqlite3 3.51 in `codegen_tests_runtime_values.cpp`.
+TEST_CASE("codegen: a subquery over the same table as an aliased source pins the outer FROM down") {
+    REQUIRE(generate("SELECT name FROM users u WHERE id IN (SELECT id FROM users WHERE id > 1);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Users::id, where(c(&Users::id) > 1)))));");
+    REQUIRE(generate("SELECT name FROM users u WHERE id > (SELECT MIN(id) FROM users);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(c(alias_column<alias_a<Users>>(&Users::id)) > select(min(&Users::id))));");
+    REQUIRE(generate("SELECT name, (SELECT COUNT(*) FROM users) FROM users u;") ==
+            "auto rows = storage.select(columns(alias_column<alias_a<Users>>(&Users::name), "
+            "select(count<Users>())), from<alias_a<Users>>());");
+    REQUIRE(generate("SELECT name FROM users u ORDER BY (SELECT COUNT(*) FROM users), name;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "multi_order_by(order_by(select(count<Users>())), "
+            "order_by(alias_column<alias_a<Users>>(&Users::name))));");
+}
+
+// The same with a join beside it: the FROM still names only the source sqlite_orm has to infer,
+// the joined one arriving through its own clause.
+TEST_CASE("codegen: a subquery over the same table names only the inferred aliased source") {
+    REQUIRE(generate("SELECT u.name FROM users u JOIN orders o ON u.id = o.uid "
+                     "WHERE id IN (SELECT id FROM users);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "join<alias_b<Orders>>(on(alias_column<alias_a<Users>>(&Users::id) == "
+            "alias_column<alias_b<Orders>>(&Orders::uid))), "
+            "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Users::id))));");
+}
+
+// The subquery decides for itself, and its own code names the table it reads, so it is left with
+// the FROM sqlite_orm infers for it. The outer FROM does not reach that level either way.
+TEST_CASE("codegen: a subquery over the same table keeps its own FROM implicit") {
+    REQUIRE(generate("SELECT name FROM users u WHERE EXISTS (SELECT 1 FROM users WHERE users.id > 2);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(exists(select(1, where(c(&Users::id) > 2)))));");
+}
+
 // A statement that names no recordset at all leaves sqlite_orm nothing to build a FROM out of, and
 // the table is dropped rather than widened: `SELECT row_number() OVER () FROM users` ran as
 // `SELECT ROW_NUMBER() OVER ()` and answered with one row where SQLite answers with one per row of

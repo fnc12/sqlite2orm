@@ -1564,3 +1564,29 @@ TEST_CASE("codegen: a star subquery pins its FROM down like any other") {
             "auto rows = storage.select(&Users::id, from<Users>(), where(exists(select(asterisk<Orders>(), "
             "from<Orders>(), where(c(&Orders::uid) == &Users::id)))));");
 }
+
+// A column written without the alias is generated as `&T::x` today (card 1868205961584313865), so
+// it names the base struct while the FROM would name the alias. Pinning the FROM down next to it
+// leaves `SELECT "users"."name" FROM "users" "a"`, which SQLite refuses with `no such column:
+// users.name` — the statement stops running at all, where before it only answered too many rows.
+// So a mention the clauses do not name keeps the FROM implicit, and the widened FROM waits for
+// card 1868827745367099324.
+TEST_CASE("codegen: an unaliased mention of an aliased source keeps the FROM implicit") {
+    REQUIRE(generate("SELECT name FROM users u WHERE id IN (SELECT uid FROM orders);") ==
+            "auto rows = storage.select(&Users::name, where(in(&Users::id, select(&Orders::uid))));");
+    REQUIRE(generate("SELECT name FROM users u WHERE u.id IN (SELECT uid FROM orders);") ==
+            "auto rows = storage.select(&Users::name, where(in(alias_column<alias_a<Users>>(&Users::id), "
+            "select(&Orders::uid))));");
+}
+
+// A select reading a CTE is left as it was, subquery or not: `from<cte_0>()` would name that
+// source too, but pinning those selects down is a change of its own. So this one still answers the
+// four rows of the product where SQLite answers two.
+TEST_CASE("codegen: a select over a CTE keeps its FROM implicit") {
+    REQUIRE(generate("WITH recent AS (SELECT id, name FROM users) "
+                     "SELECT name FROM recent WHERE id IN (SELECT orders.uid FROM orders);") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(columns(&Users::id, &Users::name))), "
+            "select(column<cte_0>(&Users::name), where(in(column<cte_0>(&Users::id), select(&Orders::uid)))));");
+}

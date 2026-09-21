@@ -39,17 +39,31 @@ namespace sqlite2orm {
          *
          *  `implicitTypes` are the sources sqlite_orm has to infer — the first FROM item plus any
          *  the join loop leaves without a `join<T>(...)` clause — spelled the way `from<...>()`
-         *  takes them, so a table with an alias is named by the alias. `covered` adds the base
-         *  struct of an aliased source: a column of it generated without the alias is a source of
-         *  its own today (card 1868205961584313865), and pinning the FROM down while that stands
-         *  would leave the generated SQL naming a table it no longer selects from.
+         *  takes them, so a table with an alias is named by the alias. `covered` is every recordset
+         *  the generated clauses name, joined ones included: a mention outside it is one the
+         *  implicit FROM would widen past.
+         *
+         *  `aliasBaseStructs` are the base structs of the aliased sources, which the clauses do
+         *  not name. A column of an aliased table is generated as `&T::x` rather than
+         *  `alias_column<alias_a<T>>(...)` whenever the statement leaves the alias off (card
+         *  1868205961584313865), and a `from<alias_a<T>>()` beside it leaves the SQL selecting
+         *  from a table that column no longer belongs to — `no such column`, where the implicit
+         *  FROM at least ran. So the FROM is pinned only when every recordset the code of this
+         *  level names is one the clauses name too.
          */
         struct SelectFromSources {
             std::vector<std::string> implicitTypes;
             /** Every source of the clause, joined ones included, as the parent select sees them. */
             std::vector<std::string> allTypes;
+            /** The same set, for looking a mention up. */
             std::set<std::string> covered;
-            /** A CTE among the sources sqlite_orm infers: `from<...>()` has no spelling for it. */
+            /** Base structs of the aliased sources: mentioned by the code, named by no clause. */
+            std::set<std::string> aliasBaseStructs;
+            /**
+             *  A CTE among the sources sqlite_orm infers. `from<cte_0>()` does name one, so the
+             *  widening reaches these selects too; pinning them down is a change of its own and
+             *  they are left as they were here.
+             */
             bool hasCteSource = false;
         };
 
@@ -88,7 +102,10 @@ namespace sqlite2orm {
                 sources.allTypes.push_back(recordsetType(item.table));
                 sources.covered.insert(sources.allTypes.back());
                 if (!isCteSource(item.table.tableName)) {
-                    sources.covered.insert(context.structNameForTable(item.table.tableName));
+                    std::string structName = context.structNameForTable(item.table.tableName);
+                    if (structName != sources.allTypes.back()) {
+                        sources.aliasBaseStructs.insert(std::move(structName));
+                    }
                 }
             }
             if (fromClause.empty()) {
@@ -119,21 +136,28 @@ namespace sqlite2orm {
                    sources.implicitTypes.end();
         }
 
-        /** The `from<...>()` for `sources`, or nothing when every recordset mentioned is covered. */
+        /**
+         *  The `from<...>()` for `sources`, or nothing when the clause would not shrink the FROM
+         *  sqlite_orm infers — or when it would name sources the emitted code does not use.
+         */
         std::string explicitFromClause(const SelectFromSources& sources, const std::set<std::string>& mentioned) {
             if (sources.hasCteSource || sources.implicitTypes.empty()) {
                 return {};
             }
             bool widensFrom = false;
             for (const auto& type: mentioned) {
+                if (sources.aliasBaseStructs.find(type) != sources.aliasBaseStructs.end()) {
+                    return {};
+                }
                 if (sources.covered.find(type) == sources.covered.end()) {
                     widensFrom = true;
-                    break;
                 }
             }
             if (!widensFrom) {
                 return {};
             }
+            // Only a CTE source puts a second recordset in `implicitTypes`, and those leave above,
+            // so the list is one long today; the loop spells whatever a later source rule adds.
             std::string clause = "from<";
             for (size_t i = 0; i < sources.implicitTypes.size(); ++i) {
                 if (i > 0) {

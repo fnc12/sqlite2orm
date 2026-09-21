@@ -338,11 +338,32 @@ namespace sqlite2orm {
         "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
         "mechanism.";
 
+    bool columnMemberIsNullable(const CreateTableNode& createTable, const ColumnDef& column) {
+        if (column.notNull) {
+            return false;
+        }
+        if (!createTable.withoutRowid) {
+            return true;
+        }
+        if (column.primaryKey) {
+            return false;
+        }
+        const std::string columnName = normalizeSqlName(column.name);
+        for (const TablePrimaryKey& primaryKey: createTable.primaryKeys) {
+            for (const std::string& keyColumn: primaryKey.columns) {
+                if (normalizeSqlName(keyColumn) == columnName) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable) {
         std::vector<SourceTableColumn> columns;
         for (const ColumnDef& column: createTable.columns) {
             const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
-            const bool nullable = !column.primaryKey && !column.notNull;
+            const bool nullable = columnMemberIsNullable(createTable, column);
             // The expression is what makes a column generated; `generatedStorage` only tells
             // VIRTUAL from STORED, and stays `none` for the bare `AS (...)` spelling SQLite
             // documents as the default.

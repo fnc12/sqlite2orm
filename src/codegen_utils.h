@@ -75,6 +75,22 @@ namespace sqlite2orm {
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
 
+    /**
+     *  Whether the member `column` is mapped to holds a `std::optional`. The answer belongs to the
+     *  database column alone: `sync_schema()` compares a mapped column against `PRAGMA
+     *  table_info`'s `notnull` flag, and sqlite_orm reads that flag off the member's type, so a
+     *  member promising more than the stored column does makes sqlite_orm see a changed column and
+     *  drop the table to rebuild it — with everything in it.
+     *
+     *  A PRIMARY KEY is not NOT NULL by itself: in a rowid table SQLite keeps the historical
+     *  behaviour of letting a NULL into a PRIMARY KEY column (an INTEGER PRIMARY KEY, being the
+     *  rowid alias, turns it into the next rowid instead), and `PRAGMA table_info` reports
+     *  `notnull = 0` for it. A WITHOUT ROWID table is the exception SQLite documents: its PRIMARY
+     *  KEY columns are implicitly NOT NULL, whether the key is spelled on the column or on the
+     *  table, and the pragma reports `notnull = 1`.
+     */
+    bool columnMemberIsNullable(const CreateTableNode& createTable, const ColumnDef& column);
+
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 

@@ -75,7 +75,7 @@ TEST_CASE("codegen: CREATE VIEW - field types from CREATE TABLE in same batch") 
                                       "CREATE VIEW adults AS SELECT id, name FROM users WHERE age >= 18;");
     REQUIRE(result.code ==
             "struct [[= \"adults\"_orm_name]] Adults {\n"
-            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> id;\n"
             "    std::optional<std::string> name;\n"
             "};\n"
             "\n"

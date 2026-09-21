@@ -1153,7 +1153,7 @@ namespace sqlite2orm {
         for (const auto& column: createTable.columns) {
             const auto cppName = toCppIdentifier(column.name);
             const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
-            const bool nullable = !column.primaryKey && !column.notNull;
+            const bool nullable = columnMemberIsNullable(createTable, column);
             std::string memberDeclaration = nullable ? "std::optional<" + cppType + "> " + cppName + ";\n"
                                                      : cppType + " " + cppName + defaultInitializer(cppType) + ";\n";
             structDeclaration += "    " + memberDeclaration;

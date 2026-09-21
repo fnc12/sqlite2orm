@@ -170,13 +170,13 @@ TEST_CASE("joinGeneratedCode: DDL statements merge into a single make_storage") 
                         "CREATE VIEW adults AS SELECT id, name FROM users WHERE age >= 18;");
     REQUIRE(joinGeneratedCode(results) ==
             "struct Users {\n"
-            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> id;\n"
             "    std::optional<std::string> name;\n"
             "    int64_t age = 0;\n"
             "};\n"
             "\n"
             "struct [[= \"adults\"_orm_name]] Adults {\n"
-            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> id;\n"
             "    std::optional<std::string> name;\n"
             "};\n"
             "\n"
@@ -193,7 +193,7 @@ TEST_CASE("joinGeneratedCode: index merges into make_storage, DML follows after 
                                          "CREATE INDEX idx ON t(x);"
                                          "SELECT x FROM t;");
     REQUIRE(joinGeneratedCode(results) == "struct T {\n"
-                                          "    int64_t id = 0;\n"
+                                          "    std::optional<int64_t> id;\n"
                                           "    std::optional<int64_t> x;\n"
                                           "};\n"
                                           "\n"
@@ -552,7 +552,7 @@ TEST_CASE("processMultiSql: a table that cannot be mapped takes what names it wi
                         "DELETE FROM gen;");
     REQUIRE(results.size() == 5);
     REQUIRE(joinGeneratedCode(results) == "struct Child {\n"
-                                          "    int64_t id = 0;\n"
+                                          "    std::optional<int64_t> id;\n"
                                           "    std::optional<int64_t> gid;\n"
                                           "};\n"
                                           "\n"
@@ -590,7 +590,7 @@ TEST_CASE("processMultiSql: a table that cannot be mapped is taken out of an ear
                         "CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);");
     REQUIRE(results.size() == 2);
     REQUIRE(joinGeneratedCode(results) == "struct Child {\n"
-                                          "    int64_t id = 0;\n"
+                                          "    std::optional<int64_t> id;\n"
                                           "    std::optional<int64_t> gid;\n"
                                           "};\n"
                                           "\n"
@@ -616,7 +616,7 @@ TEST_CASE("processMultiSql: a view that cannot be generated takes its dependents
                                          "CREATE TRIGGER trv INSTEAD OF INSERT ON v1 BEGIN DELETE FROM ok1; END;");
     REQUIRE(results.size() == 4);
     REQUIRE(joinGeneratedCode(results) == "struct Ok1 {\n"
-                                          "    int64_t a = 0;\n"
+                                          "    std::optional<int64_t> a;\n"
                                           "};\n"
                                           "\n"
                                           "auto storage = make_storage(\"\",\n"
@@ -646,7 +646,7 @@ TEST_CASE("processMultiSql: a dropped statement leaves no gap in the result vari
                         "SELECT * FROM gen;\n"
                         "SELECT a FROM ok;");
     REQUIRE(joinGeneratedCode(results) == "struct Ok {\n"
-                                          "    int64_t a = 0;\n"
+                                          "    std::optional<int64_t> a;\n"
                                           "};\n"
                                           "\n"
                                           "auto storage = make_storage(\"\",\n"

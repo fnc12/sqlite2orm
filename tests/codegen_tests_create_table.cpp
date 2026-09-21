@@ -70,7 +70,7 @@ TEST_CASE("codegen: CREATE TABLE - VARCHAR(255) maps to string") {
 TEST_CASE("codegen: CREATE TABLE - PRIMARY KEY") {
     auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY)");
     REQUIRE(result == "struct T {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "};\n"
                       "\n"
                       "auto storage = make_storage(\"\",\n"
@@ -81,7 +81,7 @@ TEST_CASE("codegen: CREATE TABLE - PRIMARY KEY") {
 TEST_CASE("codegen: CREATE TABLE - PRIMARY KEY AUTOINCREMENT") {
     auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)");
     REQUIRE(result == "struct T {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "};\n"
                       "\n"
                       "auto storage = make_storage(\"\",\n"
@@ -117,7 +117,7 @@ TEST_CASE("codegen: CREATE TABLE - mixed constraints") {
                            "name TEXT NOT NULL, "
                            "email TEXT)");
     REQUIRE(result == "struct Users {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "    std::string name;\n"
                       "    std::optional<std::string> email;\n"
                       "};\n"
@@ -132,7 +132,7 @@ TEST_CASE("codegen: CREATE TABLE - mixed constraints") {
 TEST_CASE("codegen: CREATE TABLE - PRIMARY KEY ON CONFLICT") {
     auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY ON CONFLICT REPLACE)");
     REQUIRE(result == "struct T {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "};\n"
                       "\n"
                       "auto storage = make_storage(\"\",\n"
@@ -143,7 +143,7 @@ TEST_CASE("codegen: CREATE TABLE - PRIMARY KEY ON CONFLICT") {
 TEST_CASE("codegen: CREATE TABLE - PRIMARY KEY ON CONFLICT + AUTOINCREMENT") {
     auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY ON CONFLICT ABORT AUTOINCREMENT)");
     REQUIRE(result == "struct T {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "};\n"
                       "\n"
                       "auto storage = make_storage(\"\",\n"
@@ -405,7 +405,7 @@ TEST_CASE("codegen: CREATE TABLE - all constraints combined") {
                            "name TEXT NOT NULL DEFAULT 'unnamed', "
                            "email TEXT UNIQUE)");
     REQUIRE(result == "struct Users {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "    std::string name;\n"
                       "    std::optional<std::string> email;\n"
                       "};\n"
@@ -485,7 +485,7 @@ TEST_CASE("codegen: CREATE TABLE - all column constraints") {
                            "name TEXT NOT NULL DEFAULT 'unnamed' CHECK(length(name) > 0) COLLATE NOCASE, "
                            "email TEXT UNIQUE)");
     REQUIRE(result == "struct Users {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "    std::string name;\n"
                       "    std::optional<std::string> email;\n"
                       "};\n"
@@ -542,7 +542,7 @@ TEST_CASE("codegen: CREATE TABLE - REFERENCES with PK and other columns") {
                            "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
                            "title TEXT NOT NULL)");
     REQUIRE(result == "struct Posts {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "    int64_t user_id = 0;\n"
                       "    std::string title;\n"
                       "};\n"
@@ -561,7 +561,7 @@ TEST_CASE("codegen: CREATE TABLE - table-level FOREIGN KEY") {
                            "user_id INTEGER, "
                            "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)");
     REQUIRE(result == "struct Posts {\n"
-                      "    int64_t id = 0;\n"
+                      "    std::optional<int64_t> id;\n"
                       "    std::optional<int64_t> user_id;\n"
                       "};\n"
                       "\n"
@@ -577,7 +577,7 @@ TEST_CASE("codegen: CREATE TABLE - GENERATED ALWAYS AS STORED") {
         generate("CREATE TABLE t (id INTEGER PRIMARY KEY, full_name TEXT GENERATED ALWAYS AS (id + 1) STORED)");
     REQUIRE(result ==
             "struct T {\n"
-            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> id;\n"
             "    std::optional<std::string> full_name;\n"
             "};\n"
             "\n"
@@ -717,6 +717,41 @@ TEST_CASE("codegen: CREATE TABLE - WITHOUT ROWID") {
                       "        make_column(\"name\", &T::name)).without_rowid());");
 }
 
+// SQLite leaves a PRIMARY KEY column of a rowid table nullable — `PRAGMA table_info` reports
+// `notnull = 0` for it, and an INTEGER PRIMARY KEY turns an inserted NULL into the next rowid — so
+// the member it is mapped to is an optional like any other column the schema does not declare NOT
+// NULL. A member that promised more would make sqlite_orm emit `NOT NULL` and `sync_schema()` drop
+// the user's table to rebuild it.
+TEST_CASE("codegen: CREATE TABLE - a table-level PRIMARY KEY leaves its columns nullable") {
+    const auto result = generate("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY(a, b));");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> a;\n"
+                      "    std::optional<int64_t> b;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"a\", &T::a),\n"
+                      "        make_column(\"b\", &T::b),\n"
+                      "        primary_key(&T::a, &T::b)));");
+}
+
+// A WITHOUT ROWID table is where SQLite documents the other answer: its PRIMARY KEY columns are
+// implicitly NOT NULL, the pragma reports `notnull = 1` for them, and the members follow.
+TEST_CASE("codegen: CREATE TABLE - a table-level PRIMARY KEY of a WITHOUT ROWID table is NOT NULL") {
+    const auto result = generate("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY(a, b)) WITHOUT ROWID;");
+    REQUIRE(result == "struct T {\n"
+                      "    int64_t a = 0;\n"
+                      "    int64_t b = 0;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"a\", &T::a),\n"
+                      "        make_column(\"b\", &T::b),\n"
+                      "        primary_key(&T::a, &T::b)).without_rowid());");
+}
+
 TEST_CASE("codegen: STRICT table warning") {
     const auto result = generateFull("CREATE TABLE t (a TEXT) STRICT;");
     REQUIRE_FALSE(result.warnings.empty());
@@ -784,7 +819,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++20 offers no table_mapping_style
                                            "NULL, score INTEGER DEFAULT 0, handle TEXT COLLATE NOCASE);",
                                            policy);
     REQUIRE(result == CodeGenResult{"struct Users {\n"
-                                    "    int64_t id = 0;\n"
+                                    "    std::optional<int64_t> id;\n"
                                     "    std::string name;\n"
                                     "    std::optional<int64_t> score;\n"
                                     "    std::optional<std::string> handle;\n"
@@ -802,7 +837,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
     const auto result = generateTargetingCpp26("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT "
                                                "NOT NULL, score INTEGER DEFAULT 0, handle TEXT COLLATE NOCASE);");
     const std::string classicalCode = "struct Users {\n"
-                                      "    int64_t id = 0;\n"
+                                      "    std::optional<int64_t> id;\n"
                                       "    std::string name;\n"
                                       "    std::optional<int64_t> score;\n"
                                       "    std::optional<std::string> handle;\n"
@@ -814,7 +849,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
                                       "        make_column(\"score\", &Users::score, default_value(0)),\n"
                                       "        make_column(\"handle\", &Users::handle, collate_nocase()))";
     const std::string reflectedCode = "struct [[= \"users\"_orm_name]] Users {\n"
-                                      "    [[= primary_key().autoincrement()]] int64_t id = 0;\n"
+                                      "    [[= primary_key().autoincrement()]] std::optional<int64_t> id;\n"
                                       "    std::string name;\n"
                                       "    [[= default_value(0)]] std::optional<int64_t> score;\n"
                                       "    [[= collate_nocase()]] std::optional<std::string> handle;\n"
@@ -825,7 +860,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
     reflectedOption.comments.push_back(kTableReflectionComment);
     reflectedOption.minCppStandard = 26;
     REQUIRE(result == CodeGenResult{"struct [[= \"users\"_orm_name]] Users {\n"
-                                    "    [[= primary_key().autoincrement()]] int64_t id = 0;\n"
+                                    "    [[= primary_key().autoincrement()]] std::optional<int64_t> id;\n"
                                     "    std::string name;\n"
                                     "    [[= default_value(0)]] std::optional<int64_t> score;\n"
                                     "    [[= collate_nocase()]] std::optional<std::string> handle;\n"
@@ -853,13 +888,13 @@ TEST_CASE("codegen: CREATE TABLE - an explicit make_table policy keeps the class
     policy.chosenAlternativeValueByCategory["table_mapping_style"] = "make_table";
     const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER PRIMARY KEY);", policy);
     const std::string classicalCode = "struct T {\n"
-                                      "    int64_t a = 0;\n"
+                                      "    std::optional<int64_t> a;\n"
                                       "};\n"
                                       "\n"
                                       "make_table(\"t\",\n"
                                       "        make_column(\"a\", &T::a, primary_key()))";
     const std::string reflectedCode = "struct [[= \"t\"_orm_name]] T {\n"
-                                      "    [[= primary_key()]] int64_t a = 0;\n"
+                                      "    [[= primary_key()]] std::optional<int64_t> a;\n"
                                       "};\n"
                                       "\n"
                                       "make_table<T>()";
@@ -867,7 +902,7 @@ TEST_CASE("codegen: CREATE TABLE - an explicit make_table policy keeps the class
     reflectedOption.comments.push_back(kTableReflectionComment);
     reflectedOption.minCppStandard = 26;
     REQUIRE(result == CodeGenResult{"struct T {\n"
-                                    "    int64_t a = 0;\n"
+                                    "    std::optional<int64_t> a;\n"
                                     "};\n"
                                     "\n"
                                     "auto storage = make_storage(\"\",\n"
@@ -889,7 +924,7 @@ TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy is overridden b
     policy.chosenAlternativeValueByCategory["table_mapping_style"] = "reflection";
     const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER PRIMARY KEY);", policy);
     REQUIRE(result == CodeGenResult{"struct T {\n"
-                                    "    int64_t a = 0;\n"
+                                    "    std::optional<int64_t> a;\n"
                                     "};\n"
                                     "\n"
                                     "auto storage = make_storage(\"\",\n"
@@ -927,8 +962,8 @@ TEST_CASE("codegen: CREATE TABLE - table-level constraints stay arguments of the
     const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY(a, b)) WITHOUT "
                                                "ROWID;");
     REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
-                           "    std::optional<int64_t> a;\n"
-                           "    std::optional<int64_t> b;\n"
+                           "    int64_t a = 0;\n"
+                           "    int64_t b = 0;\n"
                            "};\n"
                            "\n"
                            "auto storage = make_storage(\"\",\n"
@@ -937,8 +972,8 @@ TEST_CASE("codegen: CREATE TABLE - table-level constraints stay arguments of the
     REQUIRE(result.decisionPoints.size() == 1);
     REQUIRE(result.decisionPoints.at(0).chosenValue == "reflection");
     REQUIRE(result.decisionPoints.at(0).options.at(0).code == "struct T {\n"
-                                                              "    std::optional<int64_t> a;\n"
-                                                              "    std::optional<int64_t> b;\n"
+                                                              "    int64_t a = 0;\n"
+                                                              "    int64_t b = 0;\n"
                                                               "};\n"
                                                               "\n"
                                                               "make_table(\"t\",\n"
@@ -977,7 +1012,7 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is no C++ identifier keeps
     const auto result = generateTargetingCpp26("CREATE TABLE t (\"first name\" TEXT, id INTEGER PRIMARY KEY);");
     const std::string classicalCode = "struct T {\n"
                                       "    std::optional<std::string> first_name;\n"
-                                      "    int64_t id = 0;\n"
+                                      "    std::optional<int64_t> id;\n"
                                       "};\n"
                                       "\n"
                                       "make_table(\"t\",\n"
@@ -985,7 +1020,7 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is no C++ identifier keeps
                                       "        make_column(\"id\", &T::id, primary_key()))";
     REQUIRE(result == CodeGenResult{"struct T {\n"
                                     "    std::optional<std::string> first_name;\n"
-                                    "    int64_t id = 0;\n"
+                                    "    std::optional<int64_t> id;\n"
                                     "};\n"
                                     "\n"
                                     "auto storage = make_storage(\"\",\n"

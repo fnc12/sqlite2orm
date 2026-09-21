@@ -118,7 +118,7 @@ TEST_CASE("reportSqliteSchema: a schema that generates returns the header and ex
 #include <vector>
 
 struct T {
-    int64_t id = 0;
+    std::optional<int64_t> id;
 };
 
 
@@ -152,7 +152,7 @@ TEST_CASE("reportSqliteSchema: a view body sqlite2orm refuses keeps the other ta
 #include <vector>
 
 struct T {
-    int64_t id = 0;
+    std::optional<int64_t> id;
 };
 
 
@@ -186,7 +186,7 @@ TEST_CASE("reportSqliteSchema: a trigger on a view that did not generate goes wi
 #include <vector>
 
 struct T {
-    int64_t id = 0;
+    std::optional<int64_t> id;
 };
 
 
@@ -221,7 +221,7 @@ TEST_CASE("reportSqliteSchema: a view on a table that did not generate goes with
 #include <vector>
 
 struct T {
-    int64_t id = 0;
+    std::optional<int64_t> id;
 };
 
 

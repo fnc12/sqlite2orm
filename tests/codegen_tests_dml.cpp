@@ -391,9 +391,103 @@ TEST_CASE("codegen: CREATE INDEX over an arithmetic expression") {
     REQUIRE(generate("CREATE INDEX i ON t ((a + 1))") == "make_index<T>(\"i\", indexed_column(c(&T::a) + 1));");
 }
 
-TEST_CASE("codegen: CREATE INDEX over an expression keeps its COLLATE and its order") {
-    REQUIRE(generate("CREATE INDEX i ON t ((a + 1) COLLATE NOCASE DESC)") ==
-            "make_index<T>(\"i\", indexed_column(c(&T::a) + 1).collate(\"nocase\").desc());");
+// sqlite_orm serializes an indexed column's collation as a bare COLLATE after the expression, with
+// no parentheses around it, and SQLite binds COLLATE tighter than every operator an expression is
+// built of. `indexed_column(c(&T::a) + 1).collate("nocase")` therefore stores
+// `CREATE INDEX "i" ON "t" ("a" + 1 COLLATE nocase)`, which SQLite reads as `"a" + (1 COLLATE
+// nocase)`: the collation lands on the literal, and `pragma_index_xinfo` answers BINARY for the
+// indexed expression where the schema the code was generated from answers NOCASE (checked against
+// sqlite3 3.51.0). The collation is left out and warned about rather than generated onto part of
+// the expression. The order the same indexed column carries is not affected and stays.
+TEST_CASE("codegen: CREATE INDEX over an expression leaves out a COLLATE the serialized SQL rebinds") {
+    const CodeGenResult expected{
+        "make_index<T>(\"i\", indexed_column(c(&T::a) + 1).desc());",
+        expectedBinaryLeaf("&T::a", "1", " + ", "add").decisionPoints,
+        {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs from "
+         "serialized output",
+         CodegenWarning{"COLLATE NOCASE over an expression in index i is not generated: sqlite_orm serializes an "
+                        "indexed column's collation as a bare COLLATE after the expression, and SQLite binds "
+                        "COLLATE tighter than the operators in it, so the collation would apply to part of the "
+                        "expression rather than to the indexed value",
+                        SourceLocation{1, 22},
+                        7}}};
+    REQUIRE(generateFull("CREATE INDEX i ON t ((a + 1) COLLATE NOCASE DESC)") == expected);
+}
+
+// The same over a concatenation, the operator SQLite binds tightest of all and still looser than
+// COLLATE, in an index that starts with a column — the form that compiles on its own.
+TEST_CASE("codegen: CREATE INDEX over a concatenation leaves out its COLLATE") {
+    const CodeGenResult codeGenResult = generateFull("CREATE INDEX i ON t (a, (b || 'x') COLLATE NOCASE)");
+    REQUIRE(codeGenResult.code == "make_index(\"i\", indexed_column(&T::a), indexed_column(c(&T::b) || \"x\"));");
+    REQUIRE(codeGenResult.warnings ==
+            std::vector<CodegenWarning>{
+                {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                 "from serialized output"},
+                {"COLLATE NOCASE over an expression in index i is not generated: sqlite_orm serializes an indexed "
+                 "column's collation as a bare COLLATE after the expression, and SQLite binds COLLATE tighter than "
+                 "the operators in it, so the collation would apply to part of the expression rather than to the "
+                 "indexed value",
+                 SourceLocation{1, 25},
+                 10}});
+}
+
+// A negation is generated as the `0 - x` subtraction SQLite computes for it, and the parentheses
+// that subtraction reads with elsewhere are the enclosing binary serializer's: as the argument of
+// `indexed_column` it comes out bare, `0 - "a"`, which a trailing COLLATE splits like any other
+// binary operator.
+TEST_CASE("codegen: CREATE INDEX over a negation leaves out its COLLATE") {
+    const CodeGenResult codeGenResult = generateFull("CREATE INDEX IF NOT EXISTS i ON t ((-a) COLLATE NOCASE)");
+    REQUIRE(codeGenResult.code == "make_index<T>(\"i\", indexed_column((c(0) - c(&T::a))));");
+    REQUIRE(codeGenResult.warnings ==
+            std::vector<CodegenWarning>{
+                {"COLLATE NOCASE over an expression in index i is not generated: sqlite_orm serializes an indexed "
+                 "column's collation as a bare COLLATE after the expression, and SQLite binds COLLATE tighter than "
+                 "the operators in it, so the collation would apply to part of the expression rather than to the "
+                 "indexed value",
+                 SourceLocation{1, 36},
+                 4}});
+}
+
+// A collation that is not built in is left out the same way: what the expression does to a trailing
+// COLLATE is decided before it is decided how the collation would be spelled, so this index does
+// not warn about a literal collation name it no longer generates.
+TEST_CASE("codegen: CREATE INDEX over an expression leaves out a collation that is not built in") {
+    const CodeGenResult codeGenResult = generateFull("CREATE INDEX IF NOT EXISTS i ON t ((a IS NULL) COLLATE MYCOLL)");
+    REQUIRE(codeGenResult.code == "make_index<T>(\"i\", indexed_column(is_null(&T::a)));");
+    REQUIRE(codeGenResult.warnings ==
+            std::vector<CodegenWarning>{
+                {"COLLATE MYCOLL over an expression in index i is not generated: sqlite_orm serializes an indexed "
+                 "column's collation as a bare COLLATE after the expression, and SQLite binds COLLATE tighter than "
+                 "the operators in it, so the collation would apply to part of the expression rather than to the "
+                 "indexed value",
+                 SourceLocation{1, 36},
+                 11}});
+}
+
+// An expression that ends in no operand of its own takes the trailing COLLATE whole, so its
+// collation is generated: `LOWER("a") COLLATE nocase` indexes the call the SQL collates, and
+// `pragma_index_xinfo` answers NOCASE for it (checked against sqlite3 3.51.0).
+TEST_CASE("codegen: CREATE INDEX over a call keeps its COLLATE") {
+    const CodeGenResult codeGenResult = generateFull("CREATE INDEX IF NOT EXISTS i ON t ((lower(a)) COLLATE NOCASE)");
+    REQUIRE(codeGenResult.code == "make_index<T>(\"i\", indexed_column(lower(&T::a)).collate(\"nocase\"));");
+    REQUIRE(codeGenResult.warnings.empty());
+}
+
+// A prefix operator is the one shape SQLite binds tighter than COLLATE, so `~"a" COLLATE nocase`
+// collates the whole of it and the collation is generated.
+TEST_CASE("codegen: CREATE INDEX over a bitwise NOT keeps its COLLATE") {
+    const CodeGenResult codeGenResult = generateFull("CREATE INDEX IF NOT EXISTS i ON t ((~a) COLLATE NOCASE)");
+    REQUIRE(codeGenResult.code == "make_index<T>(\"i\", indexed_column(~c(&T::a)).collate(\"nocase\"));");
+    REQUIRE(codeGenResult.warnings.empty());
+}
+
+// An IN ends in its value list, which is no expression for a trailing COLLATE to attach to: SQLite
+// reads `"a" IN (1, 2) COLLATE nocase` as the collation of the whole IN, so it is generated.
+TEST_CASE("codegen: CREATE INDEX over an IN over a value list keeps its COLLATE") {
+    const CodeGenResult codeGenResult =
+        generateFull("CREATE INDEX IF NOT EXISTS i ON t ((a IN (1, 2)) COLLATE NOCASE)");
+    REQUIRE(codeGenResult.code == "make_index<T>(\"i\", indexed_column(in(&T::a, {1, 2})).collate(\"nocase\"));");
+    REQUIRE(codeGenResult.warnings.empty());
 }
 
 TEST_CASE("codegen: CREATE INDEX over an expression keeps its partial WHERE") {

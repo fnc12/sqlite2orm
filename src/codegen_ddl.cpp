@@ -212,18 +212,34 @@ namespace sqlite2orm {
                             std::make_move_iterator(expressionResult.warnings.end()));
             std::string part = "indexed_column(" + expressionResult.code + ")";
             if (!indexedColumn.collation.empty()) {
-                std::string collationLower = toLowerAscii(indexedColumn.collation);
-                if (collationLower == "nocase") {
-                    part += ".collate(\"nocase\")";
-                } else if (collationLower == "binary") {
-                    part += ".collate(\"binary\")";
-                } else if (collationLower == "rtrim") {
-                    part += ".collate(\"rtrim\")";
+                if (trailingCollateBindsWholeExpression(*indexedColumn.expression)) {
+                    std::string collationLower = toLowerAscii(indexedColumn.collation);
+                    if (collationLower == "nocase") {
+                        part += ".collate(\"nocase\")";
+                    } else if (collationLower == "binary") {
+                        part += ".collate(\"binary\")";
+                    } else if (collationLower == "rtrim") {
+                        part += ".collate(\"rtrim\")";
+                    } else {
+                        warnings.push_back("COLLATE " + indexedColumn.collation +
+                                           " is not a built-in collation; generated .collate(...) uses literal "
+                                           "name as in SQL");
+                        part += ".collate(" + identifierToCppStringLiteral(indexedColumn.collation) + ")";
+                    }
                 } else {
-                    warnings.push_back("COLLATE " + indexedColumn.collation +
-                                       " is not a built-in collation; generated .collate(...) uses literal "
-                                       "name as in SQL");
-                    part += ".collate(" + identifierToCppStringLiteral(indexedColumn.collation) + ")";
+                    // `.collate(…)` is serialized as a bare COLLATE after the expression, with no
+                    // parentheses around it, and SQLite binds COLLATE tighter than the operators an
+                    // expression is built of. Generating it would leave the collation on part of the
+                    // expression, which indexes the key the way no collation at all does and stores
+                    // an index the schema it was generated from does not describe.
+                    warnings.push_back(sourceSpanWarning(
+                        "COLLATE " + indexedColumn.collation + " over an expression in index " +
+                            stripIdentifierQuotes(createIndex.indexName) +
+                            " is not generated: sqlite_orm serializes an indexed column's collation as a bare "
+                            "COLLATE after the expression, and SQLite binds COLLATE tighter than the operators "
+                            "in it, so the collation would apply to part of the expression rather than to the "
+                            "indexed value",
+                        *indexedColumn.expression));
                 }
             }
             if (indexedColumn.sortDirection == SortDirection::asc) {

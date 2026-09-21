@@ -992,6 +992,48 @@ namespace sqlite2orm {
         return serializedSqlPrecedence(astNode);
     }
 
+    bool trailingCollateBindsWholeExpression(const AstNode& astNode) {
+        // A COLLATE and a unary plus generate their operand and nothing else, so what a trailing
+        // COLLATE lands on is decided by the node under them.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            // The JSON arrows are the one binary operator serialized as a call, `json_extract(…)`,
+            // which ends in no operand of its own; every other one ends in its right-hand side.
+            return binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
+                   binaryOp->binaryOperator == BinaryOperator::jsonArrow2;
+        }
+        if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            if (unaryOp->unaryOperator == UnaryOperator::logicalNot) {
+                // `NOT` is the one prefix operator SQLite binds looser than COLLATE:
+                // `NOT "a" COLLATE nocase` is `NOT ("a" COLLATE nocase)`.
+                return false;
+            }
+            if (unaryOp->unaryOperator == UnaryOperator::minus) {
+                switch (negationFormFor(*unaryOp->operand)) {
+                    case NegationForm::foldedIntoConstant:
+                        return true;
+                    case NegationForm::zeroMinusSubtraction:
+                        // The parentheses that subtraction reads with elsewhere are the enclosing
+                        // binary serializer's, and this slot is not one: it comes out `0 - "a"`.
+                        return false;
+                    case NegationForm::unaryOverPredicate:
+                        // The minus stays unary, so the predicate under it is what ends the SQL.
+                        return trailingCollateBindsWholeExpression(*unaryOp->operand);
+                }
+            }
+            // `~x`, which SQLite binds tighter than COLLATE.
+            return true;
+        }
+        if (dynamic_cast<const InNode*>(&generatedNode)) {
+            // An IN ends in its value list, which is no expression for a COLLATE to attach to.
+            return true;
+        }
+        // The predicates left end in an expression of their own — the upper bound of a BETWEEN, the
+        // pattern of a LIKE, the NULL of an IS NULL. Everything else is one term: a literal, a
+        // column, a call, CAST, CASE.
+        return sqlPredicateLooserThanMinus(generatedNode).empty();
+    }
+
     bool predicateArgumentNeedsGroupingCast(const AstNode& astNode) {
         return serializedSqlPrecedence(astNode) >= kSqlPrecedenceAnd;
     }

@@ -118,6 +118,7 @@ Statuses:
 - [x] `CASE WHEN cond THEN result ... ELSE ... END`
 - [x] `CASE expr WHEN value THEN result ... ELSE ... END`
 - [x] CASE without ELSE
+- [x] result type — `case_<R>` reads every row of the column through the one `R`, while SQLite answers a CASE with the value of whichever branch matched, so `R` is the widest type over all the branch results and the ELSE (the operand of a simple CASE is compared against rather than answered with, so it is not one of them): `bool` widens to `int`, `int` to `int64_t`, an integer to `double`, and anything to `std::string`, which reads back every storage class. An `int64_t` branch beside a REAL one still comes back through the `double` that holds no int64 past 2^53 exactly — the widest type is the one C++ has, not one that carries both
 
 ### CAST
 - [x] `CAST(expr AS type-name)`

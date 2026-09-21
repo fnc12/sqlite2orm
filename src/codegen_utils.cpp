@@ -332,6 +332,34 @@ namespace sqlite2orm {
         return "int";
     }
 
+    std::string widerInferredCppType(std::string_view left, std::string_view right) {
+        // The order the types widen in. `bool` sits below `int` because SQLite spells TRUE as the
+        // integer 1, and `std::string` sits above everything: sqlite3_column_text renders an
+        // INTEGER and a REAL as the text SQLite prints for them, while a number read out of a TEXT
+        // value is 0.
+        static constexpr std::array<std::string_view, 5> kWideningOrder{{
+            "bool",
+            "int",
+            "int64_t",
+            "double",
+            "std::string",
+        }};
+        const auto rank = [](std::string_view type) -> std::optional<std::size_t> {
+            for (std::size_t index = 0; index < kWideningOrder.size(); ++index) {
+                if (kWideningOrder.at(index) == type) {
+                    return index;
+                }
+            }
+            return std::nullopt;
+        };
+        const std::optional<std::size_t> leftRank = rank(left);
+        const std::optional<std::size_t> rightRank = rank(right);
+        if (!leftRank || !rightRank) {
+            return std::string(left);
+        }
+        return std::string(kWideningOrder.at(std::max(*leftRank, *rightRank)));
+    }
+
     const std::string kCommentCpp20ColumnAliases =
         "C++20 literal column aliases (`orm_column_alias`, string literal `_col`) require sqlite_orm to be "
         "built with the preprocessor macro SQLITE_ORM_WITH_CPP20_ALIASES defined. Your project may enable "

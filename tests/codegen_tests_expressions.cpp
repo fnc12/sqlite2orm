@@ -1579,6 +1579,37 @@ TEST_CASE("codegen: CASE without ELSE") {
             "case_<std::string>().when(c(&User::a) == 1, then(\"one\")).end()");
 }
 
+// SQLite types a value rather than an expression: a CASE answers with the value of whichever
+// branch matched, while `case_<R>` reads every row of the column through the one `R`. Taken from
+// the first branch alone, `R` truncated every wider branch silently — `CASE WHEN a < 0 THEN 1 ELSE
+// 9223372036854775807 END` came out `case_<int>` and read that ELSE back as -1. `R` is the widest
+// type over all the branch results and the ELSE instead: `bool` widens to `int`, `int` to
+// `int64_t`, an integer to `double`, and anything to `std::string`.
+TEST_CASE("codegen: CASE result type widens over every branch and the ELSE") {
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END") ==
+            "case_<int64_t>().when(c(&User::a) < 0, then(1)).else_(9223372036854775807).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 3000000000 ELSE 0 END") ==
+            "case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, then(3000000000)).else_(0).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 1.5 END") ==
+            "case_<double>().when(c(&User::a) < 0, then(1)).else_(1.5).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 3000000000 ELSE 1.5 END") ==
+            "case_<double>().when(c(&User::a) < 0, then(3000000000)).else_(1.5).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 'x' END") ==
+            "case_<std::string>().when(c(&User::a) < 0, then(1)).else_(\"x\").end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 'x' ELSE 1 END") ==
+            "case_<std::string>().when(c(&User::a) < 0, then(\"x\")).else_(1).end()");
+    // The operand of a simple CASE is compared against, not answered with, so it is not one of
+    // the values `R` has to hold.
+    REQUIRE(generate("CASE a WHEN 1 THEN 2 ELSE 9223372036854775807 END") ==
+            "case_<int64_t>(&User::a).when(1, then(2)).else_(9223372036854775807).end()");
+    // A CASE with no ELSE widens over the branches it does have.
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 3000000000 END") ==
+            "case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, then(3000000000)).end()");
+    // Branches that all stay inside an int32 keep the readable `int`.
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 0 END") ==
+            "case_<int>().when(c(&User::a) < 0, then(1)).else_(0).end()");
+}
+
 TEST_CASE("codegen: blob literal") {
     REQUIRE(generate("X'48656C6C6F'") == "std::vector<char>{'\\x48', '\\x65', '\\x6C', '\\x6C', '\\x6F'}");
     REQUIRE(generate("x'AB'") == "std::vector<char>{'\\xAB'}");

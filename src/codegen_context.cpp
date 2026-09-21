@@ -206,6 +206,18 @@ namespace sqlite2orm {
         return "int";
     }
 
+    std::string CodeGeneratorContext::inferWidestTypeFromNodes(const std::vector<const AstNode*>& nodes) const {
+        std::string widest;
+        for (const AstNode* node: nodes) {
+            if (!node) {
+                continue;
+            }
+            const std::string nodeType = this->inferTypeFromNode(*node);
+            widest = widest.empty() ? nodeType : widerInferredCppType(widest, nodeType);
+        }
+        return widest.empty() ? "int" : widest;
+    }
+
     std::string CodeGeneratorContext::generatePrefix() const {
         if (this->columnTypes.empty()) {
             return "";

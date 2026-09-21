@@ -1611,3 +1611,31 @@ TEST_CASE("runtime: an aliased source with a subquery over its own table returns
             });
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"2,3", "2,3", "1,2,3"});
 }
+
+// `case_<R>` reads every row of the column through the one `R`, while SQLite answers the CASE with
+// the value of whichever branch matched. `R` taken from the first branch alone truncated every
+// wider branch silently: `CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END` came out
+// `case_<int>` and read that ELSE back as -1 (card 1866790966522808145). Expected values checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7; on master every line is
+// generated `case_<int>` and reads back as -1, -1, 1, 1 and 0.
+TEST_CASE("runtime: a CASE reads back the widest branch it can answer with") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 9223372036854775807 ELSE 0 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 1.5 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN 1 ELSE 'x' END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 'x' END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) < 0, "
+                "then(1)).else_(9223372036854775807).end());",
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, "
+                "then(9223372036854775807)).else_(0).end());",
+                "auto rows = storage.select(case_<double>().when(c(&User::a) < 0, then(1)).else_(1.5).end());",
+                "auto rows = storage.select(case_<std::string>().when(c(&User::a) > 0, then(1)).else_(\"x\").end());",
+                "auto rows = storage.select(case_<std::string>().when(c(&User::a) < 0, then(1)).else_(\"x\").end());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"9223372036854775807", "9223372036854775807", "1.5", "1", "x"});
+}

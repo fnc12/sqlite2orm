@@ -2,12 +2,17 @@
 #include <sqlite2orm/schema_reader.h>
 #include <sqlite2orm/schema_report.h>
 
+#include "temp_build_dir.hpp"
+
 #include <catch2/catch_all.hpp>
 #include <sqlite3.h>
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -43,6 +48,11 @@ namespace {
         sqlite3_close(db);
         INFO(errCopy);
         REQUIRE(rc == SQLITE_OK);
+    }
+
+    [[nodiscard]] std::string fileText(const std::filesystem::path& path) {
+        std::ifstream stream{path, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
     }
 
     [[nodiscard]] SchemaReport report(const std::filesystem::path& dbPath, bool jsonOnly) {
@@ -241,4 +251,96 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
                           "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not supported in "
                           "sqlite_orm\n");
     REQUIRE(result.exitCode == 1);
+}
+
+// A database with an AUTOINCREMENT key is not only the user's schema: SQLite adds
+// `sqlite_sequence` to it on its own, as a plain `CREATE TABLE` row of `sqlite_master`, and
+// `--db` reads the schema out of exactly that table. The row is left out of `make_storage()`
+// because SQLite keeps every `sqlite_...` name for itself — sqlite3 3.51.0 answers
+// `CREATE TABLE sqlite_sequence(name,seq)` with "object name reserved for internal use" — so a
+// storage holding it stops on the first `sync_schema()`. Reading it as a table of the user's own
+// left `struct SqliteSequence` in the header of every schema with an AUTOINCREMENT key.
+TEST_CASE("reportSqliteSchema: the sqlite_sequence behind AUTOINCREMENT is left out of the header") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);");
+    const SchemaReport result = report(file.path, false);
+    REQUIRE(result.out == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct Users {
+    int64_t id = 0;
+    std::string name;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("users",
+        make_column("id", &Users::id, primary_key().autoincrement()),
+        make_column("name", &Users::name)));
+}
+)");
+    REQUIRE(result.err == "warning: CREATE TABLE `sqlite_sequence` is reserved for SQLite's own use and is not "
+                          "merged into make_storage()\n");
+    REQUIRE(result.exitCode == 0);
+}
+
+// The header of such a schema compiles whatever it holds, and the reported failure was a runtime
+// one: `make_sqlite_schema_storage(path).sync_schema()` threw `SQL logic error` on the first call.
+// So this builds the header `--db` printed for the schema above and runs it against a database of
+// its own, the way a user runs the generated code. The storage creates `users`, SQLite adds
+// `sqlite_sequence` beside it by itself, and the AUTOINCREMENT key comes back from the insert.
+// A `sqlite_sequence` back in the storage shows up here whichever table it is mapped before:
+// either the run throws, or the whole of what it printed no longer reads like the text below.
+TEST_CASE("reportSqliteSchema: the header of an AUTOINCREMENT schema creates its database and inserts") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);");
+    const SchemaReport result = report(file.path, false);
+    REQUIRE(result.exitCode == 0);
+
+    const codegen_test_helpers::TempBuildDir dir;
+    dir.write("schema.hpp", result.out);
+    const std::filesystem::path generatedDbPath = dir.file("generated.db");
+    std::ostringstream program;
+    program << "#include \"schema.hpp\"\n"
+               "\n"
+               "#include <iostream>\n"
+               "\n"
+               "int main() {\n"
+               "    auto storage = make_sqlite_schema_storage(\""
+            << generatedDbPath.string()
+            << "\");\n"
+               "    for (const auto& [table, syncResult]: storage.sync_schema()) {\n"
+               "        std::cout << table << \": \" << syncResult << '\\n';\n"
+               "    }\n"
+               "    Users user;\n"
+               "    user.name = \"first\";\n"
+               "    std::cout << \"inserted \" << storage.insert(user) << '\\n';\n"
+               "    return 0;\n"
+               "}\n";
+    const std::filesystem::path sourcePath = dir.write("probe.cpp", program.str());
+    const std::filesystem::path binaryPath = dir.file("probe");
+    const std::filesystem::path compilerLogPath = dir.file("compiler.log");
+    const std::filesystem::path outputPath = dir.file("probe.out");
+
+    std::ostringstream compile;
+    compile << codegen_test_helpers::TempBuildDir::compilerCommand() << ' ' << sourcePath.string() << " -I"
+            << dir.path().string() << ' ' << codegen_test_helpers::TempBuildDir::sqlite3LinkFlags() << " -o "
+            << binaryPath.string() << " > " << compilerLogPath.string() << " 2>&1";
+    if (codegen_test_helpers::TempBuildDir::run(compile.str()) != 0) {
+        FAIL("the generated header does not compile:\n" << fileText(compilerLogPath));
+    }
+
+    const std::string run = binaryPath.string() + " > " + outputPath.string() + " 2>&1";
+    const int exitCode = codegen_test_helpers::TempBuildDir::run(run);
+    const std::string output = fileText(outputPath);
+    INFO("the generated storage printed:\n" << output);
+    REQUIRE(exitCode == 0);
+    REQUIRE(output == "users: new table created\ninserted 1\n");
 }

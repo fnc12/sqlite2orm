@@ -74,6 +74,7 @@ namespace sqlite2orm {
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
+    extern const std::string kCommentAliasedFromSources;
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -91,48 +92,6 @@ namespace sqlite2orm {
      *  produces a `binary_operator` and the JSON arrows a `builtin_function_t`, which do not.
      */
     std::string_view binaryOperatorWithoutDefaultConstructor(BinaryOperator binaryOperator);
-
-    /**
-     *  True when a call of `lowerFunctionName` — written with a star for its argument list or with
-     *  arguments of its own — is generated as a sqlite_orm type that has a default constructor. Most
-     *  functions are generated as a `builtin_function_t` or a `built_in_aggregate_function_t`, which
-     *  declare a constructor and no default one; the window functions are each generated as an
-     *  aggregate of their own — `row_number_t`, `lag_t` and the rest — and a MATCH in its function
-     *  spelling as `match_t`, an aggregate too. `count(*)` is a `count_asterisk_t`, which holds
-     *  nothing. A star under any other name is generated as `name()`, a form only the window
-     *  functions that take no argument have.
-     */
-    bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star);
-
-    /**
-     *  True when a call of `lowerFunctionName` is generated as a form sqlite_orm gives no
-     *  `filter()`. sqlite_orm declares one on `count_asterisk_t` and on the built-in aggregate
-     *  function calls alone, so a scalar function, a window function, a MATCH in its function
-     *  spelling and a user-defined function — written as a `func<…>()` call — all carry none.
-     *  Three names are answered by what the call holds rather than by the name: `count(*)`, which
-     *  the generator writes as `count<T>()`, is the one star with a `filter()` — hence
-     *  `generatedAsCountAsterisk`, false for the same star over no FROM clause — while the
-     *  argument-less `count()` is a `count_asterisk_without_type`, which has none, and MAX and MIN
-     *  are the aggregates in their one-argument form only, `argumentCount` telling the two apart.
-     */
-    bool functionCallFormHasNoFilter(std::string_view lowerFunctionName,
-                                     size_t argumentCount,
-                                     bool generatedAsCountAsterisk);
-
-    /**
-     *  The warning a FILTER over a call `functionCallFormHasNoFilter` answers true for carries.
-     *  `functionName` is spelled as the SQL writes it, which is how SQLite echoes a function name
-     *  in the diagnostics quoted here — checked against sqlite3 3.51.0, which refuses such a call
-     *  at prepare yet stores a trigger or a view holding one. Which diagnostic it is follows from
-     *  the call: a window function is `misuse of window function name()` on its own and `FILTER
-     *  clause may only be used with aggregate window functions` under an OVER, every other
-     *  non-aggregate `FILTER may not be used with non-aggregate name()` and `name() may not be
-     *  used as a window function`. The two forms SQLite does take — the argument-less `count()`
-     *  and a `userDefinedFunction` registered as an aggregate — say so instead: there the
-     *  generated code alone is at fault.
-     */
-    std::string
-    filterOnCallWithoutFilterWarning(std::string_view functionName, bool hasOverClause, bool userDefinedFunction);
 
     /**
      *  The result type a generated call of `lowerFunctionName` spells between angle brackets —
@@ -174,21 +133,6 @@ namespace sqlite2orm {
      *  left unexpanded, along with every operand that is not a literal at all.
      */
     std::optional<std::string> jsonArrowPathExpansion(const AstNode& pathOperand);
-
-    /**
-     *  The warning a call of `lowerFunctionName` earns when it is written with an argument count
-     *  the sqlite_orm form has no overload for, and nothing when the count is one it takes or the
-     *  name is not one of those forms. The window functions and a MATCH in its function spelling
-     *  declare exactly one overload per argument count SQLite itself accepts — none for
-     *  `row_number` and the other ranking functions, one for `ntile`, `first_value` and
-     *  `last_value`, one to three for `lag` and `lead`, two for `nth_value` and `match` — so a
-     *  call written with any other count generates a call no overload matches. A star counts as no
-     *  argument here, as it does in SQLite. SQLite refuses such a call — `wrong number of arguments
-     *  to function` — but stores a trigger or a view that holds one, so it reaches codegen and the
-     *  warning says so instead of the generated code failing silently.
-     */
-    std::optional<CodegenWarning> functionCallArityWarning(const FunctionCallNode& functionCall,
-                                                           std::string_view lowerFunctionName);
 
     /**
      *  True when the node generates a sqlite_orm condition, i.e. a type deriving from

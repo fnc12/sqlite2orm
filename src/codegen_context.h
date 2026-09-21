@@ -209,6 +209,28 @@ namespace sqlite2orm {
          */
         bool emittedTableTypedColumnRef = false;
         /**
+         *  The alias of the FROM source a reference that names no table binds to — the source
+         *  `structName` was taken from — or nothing when that source carries no SQL alias. An
+         *  aliased source is a recordset of its own to sqlite_orm: a column of it written as
+         *  `&T::x` names the plain table instead, which sqlite_orm then adds to the FROM it infers
+         *  (`FROM "Album", "Album" "a"`), and the select reads rows the SQL never asked for.
+         */
+        std::optional<TableAliasInfo> implicitSourceAlias;
+        /**
+         *  Set by the select generator while a select that will spell its FROM sources out with
+         *  `from<...>()` is generated. Two of the forms that stand for a source lose its alias on
+         *  the way into an inferred FROM — `cross_join<alias_b<T>>()` serializes as a plain
+         *  `CROSS JOIN "t"`, and `count<alias_a<T>>()` names no table at all — so a form that has
+         *  to name an alias asks first whether the FROM is going to be written out for it.
+         */
+        bool canNameInferredFromSources = false;
+        /**
+         *  Set by the `count(*)` branch when it took `canNameInferredFromSources` up and named an
+         *  aliased source, which leaves the inferred FROM with nothing standing for that source.
+         *  The select generator reads it back: a `from<...>()` is what puts the source there.
+         */
+        bool countedAliasedSource = false;
+        /**
          *  The sqlite_orm recordsets the emitter has named while the select at hand was generated —
          *  `&T::x`, `alias_column<alias_a<T>>(&T::x)`, `asterisk<T>()`, `count<T>()` and the rest.
          *  A select that carries no `from<...>()` gets its FROM from sqlite_orm, built out of every
@@ -220,6 +242,14 @@ namespace sqlite2orm {
          *  what it mentioned.
          */
         std::set<std::string> emittedTableTypes;
+        /**
+         *  The part of `emittedTableTypes` the clauses of the select at hand named themselves: a
+         *  nested select merges its mentions into the set above, so that this FROM answers for the
+         *  width sqlite_orm infers, but not into this one. The difference is what tells a mention
+         *  this select has to spell out itself from one a subquery already answers for with a FROM
+         *  of its own — a `from<...>()` fixes the level it stands on and no other.
+         */
+        std::set<std::string> ownEmittedTableTypes;
 
         /** Records a recordset the emitter has just named in the code of the select being generated. */
         void recordEmittedTableType(std::string typeName);

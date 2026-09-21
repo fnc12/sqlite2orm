@@ -638,7 +638,37 @@ TEST_CASE("codegen: CREATE TABLE - table-level UNIQUE") {
                       "    make_table(\"t\",\n"
                       "        make_column(\"a\", &T::a),\n"
                       "        make_column(\"b\", &T::b),\n"
-                      "        unique(&T::a, &T::b)));");
+                      "        sqlite_orm::unique(&T::a, &T::b)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - table-level UNIQUE over same-typed columns") {
+    auto result = generate("CREATE TABLE t (a INTEGER, b INTEGER, UNIQUE (a, b))");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> a;\n"
+                      "    std::optional<int64_t> b;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"a\", &T::a),\n"
+                      "        make_column(\"b\", &T::b),\n"
+                      "        sqlite_orm::unique(&T::a, &T::b)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - table-level UNIQUE over three columns") {
+    auto result = generate("CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER, UNIQUE (a, b, c))");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> a;\n"
+                      "    std::optional<int64_t> b;\n"
+                      "    std::optional<int64_t> c;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"a\", &T::a),\n"
+                      "        make_column(\"b\", &T::b),\n"
+                      "        make_column(\"c\", &T::c),\n"
+                      "        sqlite_orm::unique(&T::a, &T::b, &T::c)));");
 }
 
 TEST_CASE("codegen: CREATE TABLE - table-level CHECK") {
@@ -670,7 +700,7 @@ TEST_CASE("codegen: CREATE TABLE - mixed table-level constraints") {
                       "        make_column(\"c\", &T::c),\n"
                       "        foreign_key(&T::c).references(&Other::id),\n"
                       "        primary_key(&T::a, &T::b),\n"
-                      "        unique(&T::b, &T::c),\n"
+                      "        sqlite_orm::unique(&T::b, &T::c),\n"
                       "        check(c(&T::a) > 0)));");
 }
 

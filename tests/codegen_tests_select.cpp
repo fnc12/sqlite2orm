@@ -1465,3 +1465,128 @@ TEST_CASE("codegen: a unary plus that costs no affinity is not reported") {
     REQUIRE(generateFull("SELECT * FROM users WHERE +a BETWEEN 1 AND 2;").warnings.empty());
     REQUIRE(generateFull("SELECT * FROM users WHERE +a IN (1, 2);").warnings.empty());
 }
+
+// A select that hands sqlite_orm no `from<...>()` gets the FROM sqlite_orm builds out of every
+// recordset its arguments name, and the tables of a subquery in the WHERE are named as plainly as
+// the outer ones: `SELECT Title FROM Album WHERE ArtistId IN (SELECT ArtistId FROM Artist ...)`
+// came out as `FROM "Album", "Artist"`, a cartesian product the SQL never asked for (card
+// 1868205864612005383). The sources are spelled out whenever what the arguments name reaches past
+// them, and left implicit whenever it does not, so the form only changes where it has to.
+TEST_CASE("codegen: a subquery in WHERE pins the outer FROM down") {
+    REQUIRE(generate("SELECT id FROM users WHERE id IN (SELECT id FROM orders);") ==
+            "auto rows = storage.select(&Users::id, from<Users>(), where(in(&Users::id, select(&Orders::id))));");
+}
+
+TEST_CASE("codegen: a subquery over the outer table leaves the FROM implicit") {
+    REQUIRE(generate("SELECT id FROM users WHERE id IN (SELECT id FROM users);") ==
+            "auto rows = storage.select(&Users::id, where(in(&Users::id, select(&Users::id))));");
+}
+
+// A correlated subquery reaches out to the enclosing table, so the subquery needs its own FROM as
+// badly as the outer select does: without one, `EXISTS (SELECT 1 FROM Album WHERE Album.AlbumId =
+// Track.AlbumId)` becomes an EXISTS over `FROM "Album", "Track"`, which answers the same for every
+// row it is asked about.
+TEST_CASE("codegen: a correlated EXISTS subquery pins both FROM clauses down") {
+    REQUIRE(generate("SELECT name FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.uid = users.id);") ==
+            "auto rows = storage.select(&Users::name, from<Users>(), where(exists(select(1, from<Orders>(), "
+            "where(c(&Orders::uid) == &Users::id)))));");
+}
+
+TEST_CASE("codegen: a scalar subquery result column pins the outer FROM down") {
+    REQUIRE(generate("SELECT id, (SELECT COUNT(*) FROM orders) FROM users;") ==
+            "auto rows = storage.select(columns(&Users::id, select(count<Orders>())), from<Users>());");
+}
+
+TEST_CASE("codegen: a subquery in ORDER BY pins the outer FROM down") {
+    REQUIRE(generate("SELECT id FROM users ORDER BY (SELECT COUNT(*) FROM orders);") ==
+            "auto rows = storage.select(&Users::id, from<Users>(), order_by(select(count<Orders>())));");
+}
+
+// The FROM names only the sources sqlite_orm has to infer. A joined table arrives through its own
+// `join<T>(...)` clause, and naming it twice would join it to itself.
+TEST_CASE("codegen: a subquery next to a JOIN names only the inferred source") {
+    REQUIRE(generate("SELECT users.name FROM users JOIN orders ON users.id = orders.uid "
+                     "WHERE users.id IN (SELECT uid FROM payments);") ==
+            "auto rows = storage.select(&Users::name, from<Users>(), join<Orders>(on(c(&Users::id) == "
+            "&Orders::uid)), where(in(&Users::id, select(&Payments::uid))));");
+}
+
+TEST_CASE("codegen: an aliased source is named by its alias") {
+    REQUIRE(generate("SELECT u.name FROM users u WHERE u.id IN (SELECT uid FROM orders);") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>>(), "
+            "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Orders::uid))));");
+}
+
+// `storage.get_all<T>()` reads its row type off its own template argument, so nothing a subquery
+// names can widen it and it stays as it was. The two `storage.select(...)` variants of the same
+// statement are built the way every other select is, and do carry the FROM.
+TEST_CASE("codegen: a star select carries the FROM only in its select(...) variants") {
+    const std::string trailing = "where(in(&Users::id, select(&Orders::uid)))";
+    const std::string codeGetAll = "auto rows = storage.get_all<Users>(" + trailing + ");";
+    const std::string codeSelectObject =
+        "auto rows = storage.select(object<Users>(), from<Users>(), " + trailing + ");";
+    const std::string codeSelectAsterisk =
+        "auto rows = storage.select(asterisk<Users>(), from<Users>(), " + trailing + ");";
+    const DecisionPoint apiLevel{
+        1,
+        "api_level",
+        "get_all",
+        codeGetAll,
+        {Option{"get_all", codeGetAll, "get_all<T>(...) returns full row objects"},
+         Option{"select_object", codeSelectObject, "select(object<T>(), ...) returns std::tuple of columns"},
+         Option{"select_asterisk", codeSelectAsterisk, "select(asterisk<T>(), ...) returns full row objects"}}};
+    REQUIRE(generateFull("SELECT * FROM users WHERE id IN (SELECT uid FROM orders);") ==
+            CodeGenResult{codeGetAll,
+                          {apiLevel, columnRefStyleDp(2, "&Users::id"), columnRefStyleDp(3, "&Orders::uid")},
+                          {}});
+}
+
+// A `*` is read back as a row of the type `asterisk<T>()` names, and an aliased source is not
+// named by it today (card 1868205961584313865). A FROM naming the alias would leave the star
+// reading a table the select no longer names — `SELECT "users".* FROM "users" "a"`, which SQLite
+// refuses with `no such table: users` — so where the two disagree the star keeps its old form and
+// the cartesian product waits for that card.
+TEST_CASE("codegen: a star over an aliased source keeps its FROM implicit") {
+    auto result = generateFull("SELECT * FROM users u WHERE id IN (SELECT uid FROM orders);");
+    REQUIRE(result.code == "auto rows = storage.get_all<Users>(where(in(&Users::id, select(&Orders::uid))));");
+    REQUIRE(result.decisionPoints.at(0).options.at(2).code ==
+            "auto rows = storage.select(asterisk<Users>(), where(in(&Users::id, select(&Orders::uid))));");
+}
+
+TEST_CASE("codegen: a star subquery over an aliased source keeps its FROM implicit") {
+    REQUIRE(generate("SELECT id FROM users WHERE EXISTS (SELECT * FROM orders o WHERE o.uid = users.id);") ==
+            "auto rows = storage.select(&Users::id, from<Users>(), where(exists(select(asterisk<Orders>(), "
+            "where(alias_column<alias_a<Orders>>(&Orders::uid) == &Users::id)))));");
+}
+
+TEST_CASE("codegen: a star subquery pins its FROM down like any other") {
+    REQUIRE(generate("SELECT id FROM users WHERE EXISTS (SELECT * FROM orders WHERE orders.uid = users.id);") ==
+            "auto rows = storage.select(&Users::id, from<Users>(), where(exists(select(asterisk<Orders>(), "
+            "from<Orders>(), where(c(&Orders::uid) == &Users::id)))));");
+}
+
+// A column written without the alias is generated as `&T::x` today (card 1868205961584313865), so
+// it names the base struct while the FROM would name the alias. Pinning the FROM down next to it
+// leaves `SELECT "users"."name" FROM "users" "a"`, which SQLite refuses with `no such column:
+// users.name` — the statement stops running at all, where before it only answered too many rows.
+// So a mention the clauses do not name keeps the FROM implicit, and the widened FROM waits for
+// card 1868827745367099324.
+TEST_CASE("codegen: an unaliased mention of an aliased source keeps the FROM implicit") {
+    REQUIRE(generate("SELECT name FROM users u WHERE id IN (SELECT uid FROM orders);") ==
+            "auto rows = storage.select(&Users::name, where(in(&Users::id, select(&Orders::uid))));");
+    REQUIRE(generate("SELECT name FROM users u WHERE u.id IN (SELECT uid FROM orders);") ==
+            "auto rows = storage.select(&Users::name, where(in(alias_column<alias_a<Users>>(&Users::id), "
+            "select(&Orders::uid))));");
+}
+
+// A select reading a CTE is left as it was, subquery or not: `from<cte_0>()` would name that
+// source too, but pinning those selects down is a change of its own. So this one still answers the
+// four rows of the product where SQLite answers two.
+TEST_CASE("codegen: a select over a CTE keeps its FROM implicit") {
+    REQUIRE(generate("WITH recent AS (SELECT id, name FROM users) "
+                     "SELECT name FROM recent WHERE id IN (SELECT orders.uid FROM orders);") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(columns(&Users::id, &Users::name))), "
+            "select(column<cte_0>(&Users::name), where(in(column<cte_0>(&Users::id), select(&Orders::uid)))));");
+}

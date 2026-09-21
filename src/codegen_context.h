@@ -208,6 +208,21 @@ namespace sqlite2orm {
          *  that starts with anything else has to spell that table out.
          */
         bool emittedTableTypedColumnRef = false;
+        /**
+         *  The sqlite_orm recordsets the emitter has named while the select at hand was generated —
+         *  `&T::x`, `alias_column<alias_a<T>>(&T::x)`, `asterisk<T>()`, `count<T>()` and the rest.
+         *  A select that carries no `from<...>()` gets its FROM from sqlite_orm, built out of every
+         *  recordset its arguments mention, and a subquery's tables are mentioned just as plainly as
+         *  the outer ones: that is what turns a WHERE subquery into a cartesian product. The select
+         *  generator compares this with its own FROM clause and writes the `from<...>()` out when
+         *  they differ. Each select saves, clears and merges this back the way a subselect does with
+         *  the alias maps, so a nested select decides for itself and its parent still answers for
+         *  what it mentioned.
+         */
+        std::set<std::string> emittedTableTypes;
+
+        /** Records a recordset the emitter has just named in the code of the select being generated. */
+        void recordEmittedTableType(std::string typeName);
 
         /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
         std::vector<CustomFunctionUse> customFunctions;

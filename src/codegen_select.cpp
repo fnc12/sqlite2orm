@@ -137,14 +137,19 @@ namespace sqlite2orm {
         }
 
         /**
-         *  The `from<...>()` for `sources`, or nothing when the clause would not shrink the FROM
-         *  sqlite_orm infers — or when it would name sources the emitted code does not use.
+         *  The `from<...>()` for `sources`, or nothing when the clause would neither shrink nor
+         *  restore the FROM sqlite_orm infers — or when it would name sources the emitted code
+         *  does not use.
          */
         std::string explicitFromClause(const SelectFromSources& sources, const std::set<std::string>& mentioned) {
             if (sources.hasCteSource || sources.implicitTypes.empty()) {
                 return {};
             }
-            bool widensFrom = false;
+            // Code that names no recordset at all leaves sqlite_orm nothing to infer a FROM from,
+            // and the table is dropped rather than widened: `SELECT row_number() OVER () FROM users`
+            // runs as `SELECT ROW_NUMBER() OVER ()` and answers with one row where SQLite answers
+            // with one per row of the table. Naming the sources is what brings the table back.
+            bool widensFrom = mentioned.empty();
             for (const auto& type: mentioned) {
                 if (sources.aliasBaseStructs.find(type) != sources.aliasBaseStructs.end()) {
                     return {};
@@ -611,6 +616,17 @@ namespace sqlite2orm {
             appendClause(limitCode);
         }
 
+        const std::string& starRowType = this->context.implicitSingleSourceCteTypedef
+                                             ? *this->context.implicitSingleSourceCteTypedef
+                                             : this->context.structName;
+        // A `*` names the row it reads in the code it generates — `asterisk<T>()`, `object<T>()`,
+        // the template argument of `get_all<T>()` — but it is built here rather than by the
+        // expression emitter the other result columns go through, so it is recorded here to be
+        // weighed like any other mention.
+        if (isStar) {
+            this->context.recordEmittedTableType(starRowType);
+        }
+
         // Every clause has been generated, so what the arguments of this select name is settled.
         // Left implicit, the FROM sqlite_orm builds covers all of it — the tables of a subquery in
         // the WHERE included, which is a cartesian product the SQL never asked for — so the sources
@@ -637,9 +653,6 @@ namespace sqlite2orm {
         }
 
         if (isStar) {
-            const std::string& starRowType = this->context.implicitSingleSourceCteTypedef
-                                                 ? *this->context.implicitSingleSourceCteTypedef
-                                                 : this->context.structName;
             // `asterisk<T>()` names the row the star reads, and an aliased source is not named by
             // it today (card 1868205961584313865). Where the two disagree the FROM would pin the
             // select to a source the star does not read — `SELECT "users".* FROM "users" "a"`,
@@ -1202,6 +1215,15 @@ namespace sqlite2orm {
             tailParts.push_back(std::move(limitPart));
         }
 
+        const std::string& subStarRowType = this->context.implicitSingleSourceCteTypedef
+                                                ? *this->context.implicitSingleSourceCteTypedef
+                                                : this->context.structName;
+        // The star of a subquery names its row the same way the outer one does, and is recorded
+        // here for the same reason.
+        if (isStar) {
+            this->context.recordEmittedTableType(subStarRowType);
+        }
+
         // The subquery names its own sources for the same reason the outer select does: sqlite_orm
         // fills a FROM left implicit with every recordset the arguments mention, and a correlated
         // reference to the enclosing table is one of them.
@@ -1215,9 +1237,6 @@ namespace sqlite2orm {
         // Same reservation as the outer star: where `asterisk<T>()` does not name the source the
         // FROM would, pinning it down would leave the star reading a table the select no longer
         // names, so the subquery keeps the form it had.
-        const std::string& subStarRowType = this->context.implicitSingleSourceCteTypedef
-                                                ? *this->context.implicitSingleSourceCteTypedef
-                                                : this->context.structName;
         const bool starDisagreesWithFrom = isStar && !namesInferredSource(fromSources, subStarRowType);
         if (!explicitFrom.empty() && !starDisagreesWithFrom) {
             code += ", " + explicitFrom;

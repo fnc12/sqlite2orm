@@ -332,7 +332,7 @@ TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm can default-constr
         const auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT row_number() "
                                          "OVER () FROM t) BEGIN DELETE FROM t; END");
         REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
-                               "select(row_number().over())).begin(remove_all<T>()));");
+                               "select(row_number().over(), from<T>())).begin(remove_all<T>()));");
         REQUIRE(result.warnings.empty());
     }
     SECTION("a window function over an argument, whose lag_t keeps it in a tuple") {

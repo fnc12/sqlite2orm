@@ -277,7 +277,7 @@ TEST_CASE("codegen: a window function taking no argument called with one warns")
 
 TEST_CASE("codegen: a window function called with too few arguments warns") {
     const auto result = generateFull("SELECT lag() OVER () FROM users;");
-    REQUIRE(result.code == "auto rows = storage.select(lag().over());");
+    REQUIRE(result.code == "auto rows = storage.select(lag().over(), from<Users>());");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
                 {"lag() takes 1 to 3 arguments in sqlite_orm, and the call is written with 0 arguments: each "
@@ -305,7 +305,7 @@ TEST_CASE("codegen: a window function called with too many arguments warns") {
 // `row_number(*)` is accepted exactly as `row_number()` is and generates the same call.
 TEST_CASE("codegen: a star counts as no argument for a window function") {
     const auto starred = generateFull("SELECT ntile(*) OVER () FROM users;");
-    REQUIRE(starred.code == "auto rows = storage.select(ntile().over());");
+    REQUIRE(starred.code == "auto rows = storage.select(ntile().over(), from<Users>());");
     REQUIRE(starred.warnings ==
             std::vector<CodegenWarning>{
                 {"ntile() takes 1 argument in sqlite_orm, and the call is written with a star, which counts as "
@@ -316,7 +316,7 @@ TEST_CASE("codegen: a star counts as no argument for a window function") {
                  16}});
 
     const auto nullary = generateFull("SELECT row_number(*) OVER () FROM users;");
-    REQUIRE(nullary.code == "auto rows = storage.select(row_number().over());");
+    REQUIRE(nullary.code == "auto rows = storage.select(row_number().over(), from<Users>());");
     REQUIRE(nullary.warnings == std::vector<CodegenWarning>{});
 }
 

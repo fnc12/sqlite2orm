@@ -85,7 +85,7 @@ cat > "$dir/view.expected" <<'EOF'
 #include <vector>
 
 struct T {
-    int64_t id = 0;
+    std::optional<int64_t> id;
 };
 
 

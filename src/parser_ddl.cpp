@@ -167,8 +167,11 @@ namespace sqlite2orm {
                 advanceToken();
                 match(TokenType::kwKey);
                 columnDef.primaryKey = true;
-                if (check(TokenType::kwAsc) || check(TokenType::kwDesc))
+                if (check(TokenType::kwAsc) || check(TokenType::kwDesc)) {
+                    columnDef.primaryKeySortDirection =
+                        check(TokenType::kwAsc) ? SortDirection::asc : SortDirection::desc;
                     advanceToken();
+                }
                 columnDef.primaryKeyConflict = parseConflictClause();
                 if (match(TokenType::kwAutoincrement)) {
                     columnDef.autoincrement = true;

@@ -28,6 +28,13 @@ namespace sqlite2orm {
         bool autoincrement = false;
         bool notNull = false;
         ConflictClause primaryKeyConflict = ConflictClause::none;
+        /**
+         *  The direction a column-level `PRIMARY KEY` was spelled with. It is what tells an
+         *  `INTEGER PRIMARY KEY` from an `INTEGER PRIMARY KEY DESC`: the first is the rowid alias,
+         *  the second is an ordinary column with an index over it. Stays `none` for a key spelled
+         *  on the table, whose direction never takes the alias away.
+         */
+        SortDirection primaryKeySortDirection = SortDirection::none;
         std::shared_ptr<AstNode> defaultValue;
         bool unique = false;
         ConflictClause uniqueConflict = ConflictClause::none;
@@ -42,7 +49,8 @@ namespace sqlite2orm {
         bool operator==(const ColumnDef& other) const {
             if (this->name != other.name || this->typeName != other.typeName || this->primaryKey != other.primaryKey ||
                 this->autoincrement != other.autoincrement || this->notNull != other.notNull ||
-                this->primaryKeyConflict != other.primaryKeyConflict || this->unique != other.unique ||
+                this->primaryKeyConflict != other.primaryKeyConflict ||
+                this->primaryKeySortDirection != other.primaryKeySortDirection || this->unique != other.unique ||
                 this->uniqueConflict != other.uniqueConflict || this->collation != other.collation ||
                 this->foreignKey != other.foreignKey || this->generatedAlways != other.generatedAlways ||
                 this->generatedStorage != other.generatedStorage)

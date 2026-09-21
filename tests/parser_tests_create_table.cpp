@@ -70,6 +70,31 @@ TEST_CASE("parser: CREATE TABLE - PRIMARY KEY AUTOINCREMENT") {
             CreateTableNode("t", {ColumnDef{"id", "INTEGER", true, true, false}}, false, {}));
 }
 
+// The direction of a column-level PRIMARY KEY is kept, because it is what tells an
+// `INTEGER PRIMARY KEY` — the rowid alias — from an `INTEGER PRIMARY KEY DESC`, which is an
+// ordinary column with an index over it.
+TEST_CASE("parser: CREATE TABLE - PRIMARY KEY DESC") {
+    auto parseResult = parse("CREATE TABLE t (id INTEGER PRIMARY KEY DESC)");
+    REQUIRE(parseResult);
+    ColumnDef idColumn;
+    idColumn.name = "id";
+    idColumn.typeName = "INTEGER";
+    idColumn.primaryKey = true;
+    idColumn.primaryKeySortDirection = SortDirection::desc;
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(idColumn)}, false, {}));
+}
+
+TEST_CASE("parser: CREATE TABLE - PRIMARY KEY ASC") {
+    auto parseResult = parse("CREATE TABLE t (id INTEGER PRIMARY KEY ASC)");
+    REQUIRE(parseResult);
+    ColumnDef idColumn;
+    idColumn.name = "id";
+    idColumn.typeName = "INTEGER";
+    idColumn.primaryKey = true;
+    idColumn.primaryKeySortDirection = SortDirection::asc;
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(idColumn)}, false, {}));
+}
+
 TEST_CASE("parser: CREATE TABLE - NOT NULL") {
     auto parseResult = parse("CREATE TABLE t (name TEXT NOT NULL)");
     REQUIRE(requireNode<CreateTableNode>(parseResult) ==

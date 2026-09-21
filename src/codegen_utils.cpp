@@ -338,11 +338,83 @@ namespace sqlite2orm {
         "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
         "mechanism.";
 
+    namespace {
+
+        /** Whether `column` is one of the columns the PRIMARY KEY of `createTable` is over. */
+        bool columnIsInPrimaryKey(const CreateTableNode& createTable, const ColumnDef& column) {
+            if (column.primaryKey) {
+                return true;
+            }
+            const std::string columnName = normalizeSqlName(column.name);
+            for (const TablePrimaryKey& primaryKey: createTable.primaryKeys) {
+                for (const std::string& keyColumn: primaryKey.columns) {
+                    if (normalizeSqlName(keyColumn) == columnName) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /**
+         *  Whether `column` is the rowid alias of `createTable` — the column SQLite stores the
+         *  rowid itself in rather than beside. Everything about it is spelling: the declared type
+         *  has to be INTEGER and nothing else (an `INT PRIMARY KEY` is an ordinary column with a
+         *  rowid of its own behind it), the key has to be over this column alone, and a DESC
+         *  spelled on the column takes the alias away while an ASC, or a DESC spelled in the
+         *  table-level `PRIMARY KEY(x DESC)` form, leaves it. A WITHOUT ROWID table has no rowid
+         *  to alias at all. Checked against sqlite3 3.51.0 through `PRAGMA table_info`.
+         */
+        bool columnIsRowidAlias(const CreateTableNode& createTable, const ColumnDef& column) {
+            if (createTable.withoutRowid) {
+                return false;
+            }
+            if (normalizeSqlName(column.typeName) != "integer") {
+                return false;
+            }
+            size_t columnKeyCount = 0;
+            for (const ColumnDef& other: createTable.columns) {
+                if (other.primaryKey) {
+                    ++columnKeyCount;
+                }
+            }
+            if (column.primaryKey) {
+                // A table spelling a second key, on another column or on the table, is one SQLite
+                // refuses outright — no column of it is the rowid.
+                return columnKeyCount == 1 && createTable.primaryKeys.empty() &&
+                       column.primaryKeySortDirection != SortDirection::desc;
+            }
+            if (columnKeyCount != 0 || createTable.primaryKeys.size() != 1) {
+                return false;
+            }
+            const TablePrimaryKey& primaryKey = createTable.primaryKeys.front();
+            return primaryKey.columns.size() == 1 &&
+                   normalizeSqlName(primaryKey.columns.front()) == normalizeSqlName(column.name);
+        }
+
+    }  // namespace
+
+    bool columnMemberIsNullable(const CreateTableNode& createTable, const ColumnDef& column) {
+        if (column.notNull) {
+            return false;
+        }
+        if (!createTable.withoutRowid && !createTable.strict) {
+            return true;
+        }
+        if (!columnIsInPrimaryKey(createTable, column)) {
+            return true;
+        }
+        // A WITHOUT ROWID table makes every column of its key NOT NULL. A STRICT table does the
+        // same, except for the rowid alias: there SQLite keeps turning an inserted NULL into the
+        // next rowid, and reports `notnull = 0`.
+        return createTable.strict && columnIsRowidAlias(createTable, column);
+    }
+
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable) {
         std::vector<SourceTableColumn> columns;
         for (const ColumnDef& column: createTable.columns) {
             const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
-            const bool nullable = !column.primaryKey && !column.notNull;
+            const bool nullable = columnMemberIsNullable(createTable, column);
             // The expression is what makes a column generated; `generatedStorage` only tells
             // VIRTUAL from STORED, and stays `none` for the bare `AS (...)` spelling SQLite
             // documents as the default.

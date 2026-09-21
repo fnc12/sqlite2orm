@@ -9,6 +9,15 @@ namespace {
         "that via CMake target_compile_definitions, compiler `-D`, a config header, or any other suitable "
         "mechanism.";
 
+    /** Must match `kCommentAliasedFromSources` in codegen_utils.cpp. */
+    const std::string kAliasedFromSourcesComment =
+        "A select over aliased FROM sources names them with `from<...>()`: left to itself sqlite_orm "
+        "builds the FROM out of the recordsets the arguments mention, and the two forms that would "
+        "stand for such a source there drop its alias — `cross_join<alias_b<T>>()` serializes as a "
+        "plain `CROSS JOIN \"t\"` (only a join carrying an ON writes an alias out), and "
+        "`count<alias_a<T>>()` names no table at all. The named list is the same FROM the SQL wrote, "
+        "in the same order, a comma between two sources reading as the CROSS JOIN it stands for.";
+
 }  // namespace
 
 TEST_CASE("codegen: SELECT * FROM table") {
@@ -56,10 +65,12 @@ TEST_CASE("codegen: SELECT t.* FROM table alias uses asterisk with alias type") 
     REQUIRE(result == "auto rows = storage.select(asterisk<alias_a<Users>>());");
 }
 
+// The comma names both sources: `cross_join<alias_b<Users>>()` serializes as a plain
+// `CROSS JOIN "users"`, sqlite_orm writing an alias out only for a join that carries an ON.
 TEST_CASE("codegen: self-join with aliases") {
     auto result = generate("SELECT a.name, b.name FROM users a, users b");
     REQUIRE(result == "auto rows = storage.select(columns(alias_column<alias_a<Users>>(&Users::name), "
-                      "alias_column<alias_b<Users>>(&Users::name)), cross_join<alias_b<Users>>());");
+                      "alias_column<alias_b<Users>>(&Users::name)), from<alias_a<Users>, alias_b<Users>>());");
 }
 
 TEST_CASE("codegen: SELECT column via FROM table alias C++20 style") {
@@ -84,7 +95,7 @@ TEST_CASE("codegen: self-join C++20 style") {
     auto result = generateWithPolicy("SELECT a.name, b.name FROM users a, users b", pol);
     REQUIRE(result.code == "constexpr orm_table_alias auto a = \"a\"_alias.for_<Users>();\n"
                            "constexpr orm_table_alias auto b = \"b\"_alias.for_<Users>();\n"
-                           "auto rows = storage.select(columns(a->*&Users::name, b->*&Users::name), cross_join<b>());");
+                           "auto rows = storage.select(columns(a->*&Users::name, b->*&Users::name), from<a, b>());");
 }
 
 TEST_CASE("codegen: table_alias_style decision point present when alias used") {
@@ -1464,4 +1475,125 @@ TEST_CASE("codegen: a unary plus that costs no affinity is not reported") {
     REQUIRE(generateFull("SELECT * FROM users WHERE +a GLOB 'x';").warnings.empty());
     REQUIRE(generateFull("SELECT * FROM users WHERE +a BETWEEN 1 AND 2;").warnings.empty());
     REQUIRE(generateFull("SELECT * FROM users WHERE +a IN (1, 2);").warnings.empty());
+}
+
+// A column the SQL leaves unqualified belongs to the FROM source all the same, and an aliased
+// source answers to its alias only: written as `&T::x`, the column names the plain table, which
+// sqlite_orm then puts in the FROM it infers next to the alias — `SELECT "Album"."Title" FROM
+// "Album", "Album" "a" LEFT JOIN …`, a cartesian product the SQL never asked for (card
+// 1868205961584313865). The form is the one a column the SQL qualified with that alias takes.
+TEST_CASE("codegen: an unqualified column of an aliased source is generated through the alias") {
+    REQUIRE(generate("SELECT name FROM users u;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name));");
+}
+
+TEST_CASE("codegen: an unqualified column of an aliased source in WHERE and ORDER BY") {
+    REQUIRE(generate("SELECT name FROM users u WHERE id > 5 ORDER BY id;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+            "where(c(alias_column<alias_a<Users>>(&Users::id)) > 5), "
+            "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+}
+
+TEST_CASE("codegen: an unqualified column of an aliased source C++20 style") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT name FROM users u", pol);
+    REQUIRE(result.code == "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+                           "auto rows = storage.select(u->*&Users::name);");
+}
+
+// The card's LEFT JOIN: the result column is the one source the SQL never names, and only the
+// alias keeps the join two tables wide.
+TEST_CASE("codegen: an unqualified column of the left source of a LEFT JOIN") {
+    REQUIRE(generate("SELECT name FROM users a LEFT JOIN orders b ON a.id = b.id WHERE b.id IS NULL "
+                     "ORDER BY a.id;") == "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+                                          "left_join<alias_b<Orders>>(on(alias_column<alias_a<Users>>(&Users::id) == "
+                                          "alias_column<alias_b<Orders>>(&Orders::id))), "
+                                          "where(is_null(alias_column<alias_b<Orders>>(&Orders::id))), "
+                                          "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+}
+
+// A source with no alias is still read from the plain struct: nothing about it is aliased, and the
+// FROM sqlite_orm infers names it exactly once.
+TEST_CASE("codegen: an unqualified column of an unaliased source keeps the member pointer") {
+    REQUIRE(generate("SELECT name FROM users;") == "auto rows = storage.select(&Users::name);");
+    REQUIRE(generate("SELECT name FROM users JOIN orders ON users.id = orders.id;") ==
+            "auto rows = storage.select(&Users::name, join<Orders>(on(c(&Users::id) == &Orders::id)));");
+}
+
+// `count<alias_a<T>>()` names no table in the FROM sqlite_orm infers — `count<T>()` names the
+// plain table, the one the alias replaced — so the sources are written out for it.
+TEST_CASE("codegen: COUNT(*) over an aliased source names the source") {
+    REQUIRE(generate("SELECT COUNT(*) FROM users u;") ==
+            "auto rows = storage.select(count<alias_a<Users>>(), from<alias_a<Users>>());");
+    REQUIRE(generate("SELECT COUNT(*) FROM users u WHERE id > 5;") ==
+            "auto rows = storage.select(count<alias_a<Users>>(), from<alias_a<Users>>(), "
+            "where(c(alias_column<alias_a<Users>>(&Users::id)) > 5));");
+}
+
+TEST_CASE("codegen: COUNT(*) over an unaliased source keeps the table type") {
+    REQUIRE(generate("SELECT COUNT(*) FROM users;") == "auto rows = storage.select(count<Users>());");
+}
+
+// A comma or CROSS JOIN list of aliased sources cannot go through `cross_join<alias_b<T>>()`:
+// sqlite_orm writes that out as a plain `CROSS JOIN "users"`, the alias only being serialized for
+// a join that carries an ON. The sources are named instead, which is the same FROM in the same
+// order — `FROM "users" "a", "users" "b"`.
+TEST_CASE("codegen: a self-join over a comma names both sources") {
+    REQUIRE(generate("SELECT a.name, b.name FROM users a, users b") ==
+            "auto rows = storage.select(columns(alias_column<alias_a<Users>>(&Users::name), "
+            "alias_column<alias_b<Users>>(&Users::name)), from<alias_a<Users>, alias_b<Users>>());");
+}
+
+TEST_CASE("codegen: a CROSS JOIN over aliased sources names both sources") {
+    REQUIRE(generate("SELECT a.name FROM users a CROSS JOIN orders b WHERE a.id = b.id;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+            "from<alias_a<Users>, alias_b<Orders>>(), "
+            "where(alias_column<alias_a<Users>>(&Users::id) == alias_column<alias_b<Orders>>(&Orders::id)));");
+}
+
+TEST_CASE("codegen: a comma join of unaliased sources keeps cross_join") {
+    REQUIRE(generate("SELECT users.name FROM users, orders") ==
+            "auto rows = storage.select(&Users::name, cross_join<Orders>());");
+}
+
+// One aliased source among plain ones is still a source of its own, and the list names each of
+// them the way the SQL wrote it.
+TEST_CASE("codegen: a comma join names a plain source next to an aliased one") {
+    REQUIRE(generate("SELECT a.name FROM users a, orders") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), from<alias_a<Users>, Orders>());");
+}
+
+// A join that carries an ON writes its own alias out, so only the comma run ahead of it is named.
+TEST_CASE("codegen: a named comma run keeps a constrained join of its own") {
+    REQUIRE(generate("SELECT a.name FROM users a, users b JOIN orders c ON c.id = a.id;") ==
+            "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+            "from<alias_a<Users>, alias_b<Users>>(), "
+            "join<alias_c<Orders>>(on(alias_column<alias_c<Orders>>(&Orders::id) == "
+            "alias_column<alias_a<Users>>(&Users::id))));");
+}
+
+// `SELECT *` reads its row from the plain struct — `asterisk<T>()` names no alias — so naming the
+// sources would leave the star reading a table the select no longer selects from, which SQLite
+// refuses outright. The star keeps the form it had until that slot is fixed too.
+TEST_CASE("codegen: a star over aliased sources is left as it was") {
+    REQUIRE(generate("SELECT * FROM users u;") == "auto rows = storage.get_all<Users>();");
+    REQUIRE(generate("SELECT * FROM users a, users b") ==
+            "auto rows = storage.get_all<Users>(cross_join<alias_b<Users>>());");
+}
+
+// A subquery answers for its own sources the same way; the enclosing select is untouched by it.
+TEST_CASE("codegen: a subquery over aliased sources names its own sources") {
+    REQUIRE(generate("SELECT name FROM users WHERE id IN (SELECT COUNT(*) FROM orders o);") ==
+            "auto rows = storage.select(&Users::name, where(in(&Users::id, select(count<alias_a<Orders>>(), "
+            "from<alias_a<Orders>>()))));");
+}
+
+// The named FROM is a form the SQL did not write, so the generated code explains itself.
+TEST_CASE("codegen: naming the sources of an aliased select carries its comment") {
+    REQUIRE(generateFull("SELECT COUNT(*) FROM users u;").comments ==
+            std::vector<std::string>{kAliasedFromSourcesComment});
+    REQUIRE(generateFull("SELECT a.name FROM users a, users b").comments ==
+            std::vector<std::string>{kAliasedFromSourcesComment});
+    REQUIRE(generateFull("SELECT u.name FROM users u").comments.empty());
 }

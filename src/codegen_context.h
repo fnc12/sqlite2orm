@@ -208,6 +208,28 @@ namespace sqlite2orm {
          *  that starts with anything else has to spell that table out.
          */
         bool emittedTableTypedColumnRef = false;
+        /**
+         *  The alias of the FROM source a reference that names no table binds to — the source
+         *  `structName` was taken from — or nothing when that source carries no SQL alias. An
+         *  aliased source is a recordset of its own to sqlite_orm: a column of it written as
+         *  `&T::x` names the plain table instead, which sqlite_orm then adds to the FROM it infers
+         *  (`FROM "Album", "Album" "a"`), and the select reads rows the SQL never asked for.
+         */
+        std::optional<TableAliasInfo> implicitSourceAlias;
+        /**
+         *  Set by the select generator while a select that will spell its FROM sources out with
+         *  `from<...>()` is generated. Two of the forms that stand for a source lose its alias on
+         *  the way into an inferred FROM — `cross_join<alias_b<T>>()` serializes as a plain
+         *  `CROSS JOIN "t"`, and `count<alias_a<T>>()` names no table at all — so a form that has
+         *  to name an alias asks first whether the FROM is going to be written out for it.
+         */
+        bool canNameInferredFromSources = false;
+        /**
+         *  Set by the `count(*)` branch when it took `canNameInferredFromSources` up and named an
+         *  aliased source, which leaves the inferred FROM with nothing standing for that source.
+         *  The select generator reads it back: a `from<...>()` is what puts the source there.
+         */
+        bool countedAliasedSource = false;
 
         /** User-defined / extension functions used in the current statement (deduplicated by struct name). */
         std::vector<CustomFunctionUse> customFunctions;

@@ -331,8 +331,6 @@ namespace {
 
     constexpr std::string_view subqueryHoistsTableCard =
         "card 1868205864612005383: a subquery in WHERE drags its table into the outer FROM";
-    constexpr std::string_view aliasedColumnCard =
-        "card 1868205961584313865: an unqualified result column is generated without the FROM alias";
     constexpr std::string_view typeofNameCard = "card 1868206036830127627: TYPEOF generates `typeof`, not `typeof_`";
 
 }  // namespace
@@ -405,9 +403,11 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
                                    "For Those About To Rock (We Salute You)"}}},
             {.sql = "SELECT Title FROM Album a LEFT JOIN Track t ON a.AlbumId = t.AlbumId WHERE t.TrackId IS NULL "
                     "ORDER BY a.AlbumId LIMIT 3;",
-             .rows = {"Let There Be Rock", "Big Ones"},
-             .knownBad = {.card = aliasedColumnCard,
-                          .rows = {"For Those About To Rock We Salute You", "Balls to the Wall", "Restless and Wild"}}},
+             .rows = {"Let There Be Rock", "Big Ones"}},
+            {.sql = "SELECT COUNT(*) FROM Track t1, Track t2 WHERE t1.TrackId = t2.TrackId;", .rows = {"7"}},
+            {.sql = "SELECT COUNT(*) FROM Album a WHERE a.ArtistId = 1;", .rows = {"2"}},
+            {.sql = "SELECT Name FROM Artist ar ORDER BY ar.ArtistId LIMIT 3;",
+             .rows = {"AC/DC", "Accept", "Aerosmith"}},
             {.sql = "SELECT TYPEOF(Bytes) FROM Track ORDER BY TrackId;",
              .rows = {"integer", "integer", "integer", "integer", "null", "integer", "integer"},
              .knownBad = {.card = typeofNameCard, .compiles = false}},

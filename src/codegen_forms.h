@@ -24,7 +24,16 @@ namespace sqlite2orm {
     /** The `maximum` of a form that takes any number of arguments from its `minimum` on. */
     inline constexpr size_t kVariadicArity = static_cast<size_t>(-1);
 
-    /** Argument counts a form declares an overload for. */
+    /**
+     *  Argument counts a form declares an overload for.
+     *
+     *  A single stretch, which is every form's shape but three: `json_insert`, `json_replace` and
+     *  `json_set` take a path and a value per pair, so their overload is the odd counts from three
+     *  on, and `json_object` the even ones. Their rows are recorded as the whole stretch and are
+     *  knowingly wider than the declaration — the gate lets an even `json_insert` through, as it
+     *  did before there was a gate — because a stretch cannot say "every other one". Narrowing
+     *  them is a card of its own.
+     */
     struct ArityRange {
         size_t minimum = 0;
         size_t maximum = 0;
@@ -51,6 +60,14 @@ namespace sqlite2orm {
         countAsterisk,
         /** `count_asterisk_without_type`, what the argument-less `count()` becomes; it holds nothing. */
         countWithoutType,
+        /**
+         *  An FTS5 auxiliary function — `highlight()` — which sqlite_orm declares, and declares
+         *  over the table's hidden column: `highlight(posts, 0, '<b>', '</b>')` names the table in
+         *  its first argument, and the library takes that argument as an `fts5::hidden::any`
+         *  column of the mapped virtual table. Codegen writes no such column, so no call it can
+         *  write resolves to the form, whatever the argument count.
+         */
+        fts5Auxiliary,
         /** sqlite_orm has no form under this name at all, whatever the call is written with. */
         notMapped,
     };

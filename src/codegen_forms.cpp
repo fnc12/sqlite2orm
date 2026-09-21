@@ -18,16 +18,31 @@ namespace sqlite2orm {
 
         /**
          *  Every SQL function name codegen may write a call of, with the sqlite_orm form it becomes.
-         *  `ormArity` is read off the sqlite_orm headers (the pinned revision the build fetches),
-         *  `sqliteArity` off sqlite3 3.51.0 — every name was prepared with 0 to 6 arguments, the
-         *  math and SOUNDEX ones against an amalgamation built with SQLITE_ENABLE_MATH_FUNCTIONS
-         *  and SQLITE_SOUNDEX, and what is written here is what it accepted. The two are recorded
-         *  apart because they disagree: sqlite_orm declares the three-argument `iif` alone while
-         *  SQLite has taken `iif(X, Y)` and the n-ary form since 3.48, and sqlite_orm's `coalesce`
-         *  takes one argument where SQLite wants two. `kAcceptsNothing` in the sqlite_orm column
-         *  means the library spells no call of that name at all; in the SQLite column it means
-         *  SQLite has no such function either, i.e. `json_each` and `json_tree`, which are
-         *  table-valued and refused as `no such function` in an expression.
+         *
+         *  `ormArity` is read off the FORM's declaration in the sqlite_orm headers (the pinned
+         *  revision the build fetches) — the `"NAME"_builtin.scalar<…>()` and `.aggregate<…>()`
+         *  blocks, where an overload is a signature and a trailing `variadic<…>` is what makes one
+         *  open-ended. It is not read off the public wrapper: a wrapper such as
+         *  `template<class R = void, class... Args> coalesce(Args... args)` is variadic whatever
+         *  the form behind it takes, so reading it answers "any number of arguments" for every
+         *  name it fronts. Where the C++17 branch of the headers declares the same name as a
+         *  legacy factory of its own, the two are intersected, because the generated code has to
+         *  build on both branches — and that branch is the wider of the two throughout: its
+         *  `coalesce`, `json_extract`, `printf` and `strftime` factories are plain variadic
+         *  templates, so the narrower C++20 declaration is what a row records.
+         *  `codegen: the registry's argument counts are the ones the sqlite_orm headers declare`
+         *  reads the same blocks out of the fetched headers and holds this column to them.
+         *
+         *  `sqliteArity` is read off sqlite3 3.51.0 — every name was prepared with 0 to 6
+         *  arguments, the math and SOUNDEX ones against an amalgamation built with
+         *  SQLITE_ENABLE_MATH_FUNCTIONS and SQLITE_SOUNDEX, and what is written here is what it
+         *  accepted. The two are recorded apart because they disagree: sqlite_orm declares the
+         *  three-argument `iif` alone while SQLite has taken `iif(X, Y)` and the n-ary form since
+         *  3.48, and sqlite_orm's `coalesce` wants two arguments where SQLite refuses fewer at
+         *  prepare. `kAcceptsNothing` in the sqlite_orm column means the library spells no call of
+         *  that name codegen can write; in the SQLite column it means SQLite has no such function
+         *  either, i.e. `json_each` and `json_tree`, which are table-valued and refused as `no
+         *  such function` in an expression.
          *
          *  `count`, `max` and `min` carry the form their NAME resolves to most often; the call
          *  picks between their overloads in `resolveFunctionCallForm`, the one place that split
@@ -47,7 +62,7 @@ namespace sqlite2orm {
             {"ceiling", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"changes", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
             {"char", SqliteOrmFormKind::notMapped, kAcceptsNothing, {0, kVariadicArity}, "char_"},
-            {"coalesce", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {2, kVariadicArity}},
+            {"coalesce", SqliteOrmFormKind::builtinScalar, {2, kVariadicArity}, {2, kVariadicArity}},
             {"cos", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"cosh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"count", SqliteOrmFormKind::builtinAggregate, {1, 1}, {0, 1}},
@@ -62,7 +77,7 @@ namespace sqlite2orm {
             {"glob", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
             {"group_concat", SqliteOrmFormKind::builtinAggregate, {1, 2}, {1, 2}},
             {"hex", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"highlight", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
+            {"highlight", SqliteOrmFormKind::fts5Auxiliary, kAcceptsNothing, {0, kVariadicArity}},
             {"ifnull", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
             {"iif", SqliteOrmFormKind::builtinScalar, {3, 3}, {2, kVariadicArity}},
             {"instr", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
@@ -70,16 +85,20 @@ namespace sqlite2orm {
             {"json_array", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
             {"json_array_length", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
             {"json_each", SqliteOrmFormKind::notMapped, kAcceptsNothing, kAcceptsNothing},
-            {"json_extract", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
+            {"json_extract", SqliteOrmFormKind::builtinScalar, {2, kVariadicArity}, {0, kVariadicArity}},
             {"json_group_array", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}},
             {"json_group_object", SqliteOrmFormKind::builtinAggregate, {2, 2}, {2, 2}},
-            {"json_insert", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
+            // This row, `json_object`, `json_replace` and `json_set` take their arguments in
+            // pairs, so what the library declares is every other count from the minimum on; a
+            // range cannot say that, and `ArityRange` carries why these four are knowingly the
+            // wider stretch.
+            {"json_insert", SqliteOrmFormKind::builtinScalar, {3, kVariadicArity}, {0, kVariadicArity}},
             {"json_object", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
             {"json_patch", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
             {"json_quote", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"json_remove", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
-            {"json_replace", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
-            {"json_set", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
+            {"json_replace", SqliteOrmFormKind::builtinScalar, {3, kVariadicArity}, {0, kVariadicArity}},
+            {"json_set", SqliteOrmFormKind::builtinScalar, {3, kVariadicArity}, {0, kVariadicArity}},
             {"json_tree", SqliteOrmFormKind::notMapped, kAcceptsNothing, kAcceptsNothing},
             {"json_type", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
             {"json_valid", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
@@ -109,7 +128,7 @@ namespace sqlite2orm {
             {"pi", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
             {"pow", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
             {"power", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"printf", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
+            {"printf", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
             {"quote", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"radians", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"random", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
@@ -124,7 +143,7 @@ namespace sqlite2orm {
             {"sinh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"soundex", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"sqrt", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"strftime", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
+            {"strftime", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
             {"substr", SqliteOrmFormKind::builtinScalar, {2, 3}, {2, 3}},
             {"substring", SqliteOrmFormKind::builtinScalar, {2, 3}, {2, 3}},
             {"sum", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}},
@@ -225,6 +244,26 @@ namespace sqlite2orm {
             }
             return preamble + "SQLite refuses the same call — " + refusal +
                    " — but stores a trigger or a view holding it";
+        }
+
+        /**
+         *  Why an FTS5 auxiliary function cannot be generated. sqlite_orm declares `highlight()`,
+         *  and declares it over the FTS5 table's hidden column — `highlight(posts, 0, '<b>',
+         *  '</b>')` reads `posts` as a column reference, and the library's factory takes an
+         *  `fts5::hidden::any` column of the mapped virtual table there. Codegen writes an ordinary
+         *  column or expression for every argument it generates, so no call it writes resolves to
+         *  the form, whatever the argument count — which is why the row accepts none.
+         */
+        std::string fts5AuxiliaryRefusal(const FunctionCallNode& functionCall) {
+            const std::string name(functionCall.name);
+            return name +
+                   "() is an FTS5 auxiliary function: sqlite_orm takes the FTS5 table's hidden column for "
+                   "its first argument, the way " +
+                   name +
+                   "(posts, …) names the table, and codegen writes no such column, so there is no form to "
+                   "generate the call as. SQLite prepares the same call whatever it is written with — an FTS5 "
+                   "auxiliary function is registered for any argument list — and answers `unable to use function " +
+                   toLowerAscii(functionCall.name) + " in the requested context` outside a query over the table";
         }
 
         /**
@@ -340,6 +379,9 @@ namespace sqlite2orm {
         }
         if (form->kind == SqliteOrmFormKind::notMapped) {
             return notMappedRefusal(*form, functionCall);
+        }
+        if (form->kind == SqliteOrmFormKind::fts5Auxiliary) {
+            return fts5AuxiliaryRefusal(functionCall);
         }
         if (!form->ormArity.accepts(writtenArgumentCount(functionCall))) {
             return std::string(functionCall.name) + "() takes " + acceptedArgumentCountText(form->ormArity) +

@@ -1460,7 +1460,9 @@ namespace sqlite2orm {
             tableConstraints.push_back(std::move(constraint));
         }
         for (const auto& tableUnique: createTable.uniques) {
-            std::string constraint = "unique(";
+            // Qualified on purpose: an unqualified unique() with two or more member pointers of the same
+            // type is hijacked by std::unique via ADL, because mapped fields live in namespace std.
+            std::string constraint = "sqlite_orm::unique(";
             for (size_t columnIndex = 0; columnIndex < tableUnique.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
                     constraint += ", ";

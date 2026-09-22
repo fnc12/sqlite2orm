@@ -515,7 +515,7 @@ a compound of bitwise branches is still read back through `int`.
 ### Core scalar functions
 - [x] abs(X)
 - [x] changes()
-- [x] char(X1,X2,...,XN)
+- [x] char(X1,X2,...,XN) — generated as `char_(...)`, the name sqlite_orm declares it under, `char` being a type in C++
 - [x] coalesce(X,Y,...)
 - [!] concat(X,...) — not in sqlite_orm (SQLite 3.44+)
 - [!] concat_ws(SEP,X,...) — not in sqlite_orm (SQLite 3.44+)
@@ -563,7 +563,7 @@ a compound of bitwise branches is still read back through `int`.
 - [x] total_changes()
 - [x] trim(X)
 - [x] trim(X,Y)
-- [x] typeof(X)
+- [x] typeof(X) — generated as `typeof_(...)`, the name sqlite_orm declares it under, `typeof` being a compiler extension in C++
 - [!] unhex(X) — not in sqlite_orm (SQLite 3.41+)
 - [!] unhex(X,Y) — not in sqlite_orm (SQLite 3.41+)
 - [x] unicode(X)
@@ -611,7 +611,7 @@ a compound of bitwise branches is still read back through `int`.
 - [x] log(B,X)
 - [x] log2(X)
 - [x] log10(X)
-- [x] mod(X,Y)
+- [x] mod(X,Y) — generated as `mod_f(...)`, the name sqlite_orm declares the MOD function under; the library's `mod()` is the `%` operator, which is a different function (`mod(7.5, 2)` is 1.5 and `7.5 % 2` is 1.0)
 - [x] pi()
 - [x] pow(X,Y) / power(X,Y)
 - [x] radians(X)

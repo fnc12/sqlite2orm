@@ -993,7 +993,11 @@ TEST_CASE("codegen: unary minus over a predicate warns instead") {
           "BETWEEN");
     check("SELECT -(a LIKE 'x') FROM users;", "auto rows = storage.select(-(like(&Users::a, \"x\")));", "LIKE");
     check("SELECT -(a GLOB 'x') FROM users;", "auto rows = storage.select(-(glob(&Users::a, \"x\")));", "GLOB");
-    check("SELECT -(a MATCH 'x') FROM users;", "auto rows = storage.select(-(match(&Users::a, \"x\")));", "MATCH");
+    // The MATCH is the one predicate here whose table reaches sqlite_orm through nothing, so the
+    // FROM comes out written: `ast_iterator<match_t<Field, X>>` walks the pattern alone.
+    check("SELECT -(a MATCH 'x') FROM users;",
+          "auto rows = storage.select(-(match(&Users::a, \"x\")), from<Users>());",
+          "MATCH");
     check("SELECT -(a IS NULL) FROM users;", "auto rows = storage.select(-(is_null(&Users::a)));", "IS NULL");
     check("SELECT -(a NOTNULL) FROM users;", "auto rows = storage.select(-(is_not_null(&Users::a)));", "IS NOT NULL");
     check("SELECT - NOT a FROM users;", "auto rows = storage.select(-(not column<Users>(&Users::a)));", "NOT");

@@ -279,7 +279,15 @@ namespace sqlite2orm {
         if (typeName.empty()) {
             return;
         }
+        if (this->emittingMatchField) {
+            // Hidden from sqlite_orm's ast_iterator, so it widens no inferred FROM and is no FROM
+            // to infer from either: it goes only into the set the FROM this select writes out has
+            // to name.
+            this->ownEmittedTableTypes.insert(std::move(typeName));
+            return;
+        }
         this->ownEmittedTableTypes.insert(typeName);
+        this->ownVisibleEmittedTableTypes.insert(typeName);
         this->emittedTableTypes.insert(std::move(typeName));
     }
 

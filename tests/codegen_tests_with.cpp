@@ -688,6 +688,152 @@ TEST_CASE("codegen: a FILTER over a built-in aggregate call warns of nothing") {
     }
 }
 
+// The `over()` sqlite_orm declares is the other half of the same gate, and it was the half nobody
+// asked about: a FILTER over a form without a `filter()` was refused while an OVER over a form
+// without an `over()` was written out all the same, so `abs(id) OVER ()` came out as
+// `abs(&Users::id).over()` — code no compiler takes — with nothing warned. sqlite_orm gives
+// `over()` to the window functions, to `count(*)` and to the aggregate function calls (and to the
+// `filtered_aggregate_function` a FILTER over one returns), so a scalar function, a MATCH in its
+// function spelling, the argument-less `count()` and the `func<…>()` a user-defined function is
+// written as all carry none. SQLite refuses a windowed non-aggregate too — `upper() may not be
+// used as a window function`, checked against sqlite3 3.51.0 — but stores a trigger or a view
+// holding one, which is how such a call reaches codegen.
+TEST_CASE("codegen: an OVER over a scalar function is not generated") {
+    const auto result = generateFull("SELECT upper(name) OVER () FROM users;");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"upper() has no over() in sqlite_orm: only the window functions, the aggregate function calls and "
+                 "count(*) take an OVER, so there is no form to generate the call as. SQLite refuses the same call — "
+                 "upper() may not be used as a window function — but stores a trigger or a view holding it",
+                 SourceLocation{1, 8},
+                 19},
+                {kStatementNotGenerated}});
+}
+
+// An OVER naming a window of the WINDOW clause is the same refusal over a shorter span: what the
+// warning underlines is the call as written, and SQLite answers a named window the same way.
+TEST_CASE("codegen: an OVER naming a window is refused for a form without one") {
+    const auto result = generateFull("SELECT upper(name) OVER w FROM users WINDOW w AS (ORDER BY id);");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"upper() has no over() in sqlite_orm: only the window functions, the aggregate function calls and "
+                 "count(*) take an OVER, so there is no form to generate the call as. SQLite refuses the same call — "
+                 "upper() may not be used as a window function — but stores a trigger or a view holding it",
+                 SourceLocation{1, 8},
+                 18},
+                {kStatementNotGenerated}});
+}
+
+TEST_CASE("codegen: an OVER over a function-spelled MATCH is not generated") {
+    const auto result = generateFull("SELECT match(name, 'x') OVER () FROM users;");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"match() has no over() in sqlite_orm: only the window functions, the aggregate function calls and "
+                 "count(*) take an OVER, so there is no form to generate the call as. SQLite refuses the same call — "
+                 "match() may not be used as a window function — but stores a trigger or a view holding it",
+                 SourceLocation{1, 8},
+                 24},
+                {kStatementNotGenerated}});
+}
+
+// The same one-argument split the FILTER refusal makes: MAX is the aggregate, which windows, up to
+// a second argument, and the scalar overload from there on, which does not.
+TEST_CASE("codegen: an OVER over MAX is refused for its scalar form only") {
+    SECTION("aggregate form") {
+        const auto result = generateFull("SELECT max(id) OVER (ORDER BY id) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(max(&Users::id).over(order_by(&Users::id)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("scalar form") {
+        const auto result = generateFull("SELECT max(id, size) OVER () FROM users;");
+        REQUIRE(result.code.empty());
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"max() has no over() in sqlite_orm: only the window functions, the aggregate function calls and "
+                     "count(*) take an OVER, so there is no form to generate the call as. SQLite refuses the same "
+                     "call — max() may not be used as a window function — but stores a trigger or a view holding it",
+                     SourceLocation{1, 8},
+                     21},
+                    {kStatementNotGenerated}});
+    }
+}
+
+// `count(*)` comes out a `count_asterisk_t`, which windows; the argument-less `count()` SQLite
+// counts the same rows with comes out a `count_asterisk_without_type`, which holds nothing at all.
+// SQLite windows either, so the warning says the generated code alone is at fault.
+TEST_CASE("codegen: an OVER over the argument-less count() is refused, over count(*) it is not") {
+    SECTION("count(*)") {
+        const auto result = generateFull("SELECT count(*) OVER () FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(count<Users>().over());");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("count()") {
+        const auto result = generateFull("SELECT count() OVER () FROM users;");
+        REQUIRE(result.code.empty());
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"count() has no over() in sqlite_orm: only the window functions, the aggregate function calls and "
+                     "count(*) take an OVER, so there is no form to generate the call as. SQLite takes the same call — "
+                     "count() counts the rows count(*) does — so the SQL is well formed and the generated code alone "
+                     "is not",
+                     SourceLocation{1, 8},
+                     15},
+                    {kStatementNotGenerated}});
+    }
+}
+
+// A user-defined function is written as a `func<…>()` call, which sqlite_orm gives no `over()`
+// whatever the function is registered as — while SQLite windows one registered through
+// `sqlite3_create_window_function` (and refuses a plain aggregate or scalar, checked by
+// registering all three against sqlite3 3.51.0), so the SQL itself may be perfectly well formed.
+TEST_CASE("codegen: an OVER over a user-defined function is not generated") {
+    const auto result = generateFull("SELECT myagg(id) OVER () FROM users;");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"myagg() has no over() in sqlite_orm: only the window functions, the aggregate function calls and "
+                 "count(*) take an OVER, so there is no form to generate the call as. SQLite takes an OVER over a "
+                 "user-defined window function, so the SQL may well be fine while the func<Myagg>() call standing for "
+                 "myagg() is not",
+                 SourceLocation{1, 8},
+                 17},
+                {kStatementNotGenerated}});
+}
+
+// And the forms that do carry an `over()` go on generating with nothing to warn about — the
+// aggregate with a FILTER under it included, because `filter()` returns a
+// `filtered_aggregate_function`, which declares one of its own.
+TEST_CASE("codegen: an OVER over a form that carries one warns of nothing") {
+    SECTION("built-in aggregate") {
+        const auto result = generateFull("SELECT sum(id) OVER (PARTITION BY name) FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(sum(&Users::id).over(partition_by(&Users::name)));");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("aggregate under a FILTER") {
+        const auto result = generateFull("SELECT sum(id) FILTER (WHERE id > 0) OVER () FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(sum(&Users::id).filter(where(c(&Users::id) > 0)).over());");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("count over DISTINCT") {
+        const auto result = generateFull("SELECT count(DISTINCT id) OVER () FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(count(distinct(&Users::id)).over());");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+
+    SECTION("window function taking an argument") {
+        const auto result = generateFull("SELECT lag(id) OVER () FROM users;");
+        REQUIRE(result.code == "auto rows = storage.select(lag(&Users::id).over());");
+        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+}
+
 TEST_CASE("codegen: WINDOW clause maps to window(...) on select") {
     REQUIRE(generate("SELECT row_number() OVER w FROM users WINDOW w AS (ORDER BY id);") ==
             "auto rows = storage.select(row_number().over(window_ref(\"w\")), "

@@ -344,6 +344,15 @@ namespace sqlite2orm {
             "double",
             "std::string",
         }};
+        // `int64_t` and `double` hold values the other one does not, so neither widens into the
+        // other: a `double` loses every integer past 2^53 — `9007199254740993` read through one
+        // comes back as `9007199254740992` — while an `int64_t` loses the fractional part of a
+        // REAL. The two are siblings in the order above rather than neighbours, and the type that
+        // holds both is the `std::string` over them. `int` and `bool` do widen into a `double`,
+        // which holds every value an int32 has exactly.
+        if ((left == "int64_t" && right == "double") || (left == "double" && right == "int64_t")) {
+            return "std::string";
+        }
         const auto rank = [](std::string_view type) -> std::optional<std::size_t> {
             for (std::size_t index = 0; index < kWideningOrder.size(); ++index) {
                 if (kWideningOrder.at(index) == type) {
@@ -355,6 +364,11 @@ namespace sqlite2orm {
         const std::optional<std::size_t> leftRank = rank(left);
         const std::optional<std::size_t> rightRank = rank(right);
         if (!leftRank || !rightRank) {
+            // Neither caller hands over a type the order above does not name: the five are every
+            // type `CodeGeneratorContext::inferTypeFromNode` answers with, and the view field
+            // inferrer, whose own vocabulary holds `std::vector<char>` as well, settles a BLOB
+            // against a non-BLOB before it asks. This keeps the fold total rather than describing
+            // a widening of its own: what the caller accumulated so far comes back unchanged.
             return std::string(left);
         }
         return std::string(kWideningOrder.at(std::max(*leftRank, *rightRank)));
@@ -2725,8 +2739,9 @@ namespace sqlite2orm {
             return expressionMayBeNull(generatedNode);
         }
         if (dynamic_cast<const CaseNode*>(&generatedNode)) {
-            // `case_t<R, …>` is typed R, and R is the type inferred for the first branch's result —
-            // `int` for a branch holding a NULL — so a CASE that answers NULL was read back as 0:
+            // `case_t<R, …>` is typed R, and R is the widest type inferred over the branch results
+            // and the ELSE — `int` where one of them holds a NULL — so a CASE that answers NULL
+            // was read back as 0:
             // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
             // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
             // NULL. The inference never names a nullable type, so nothing here is already widened.

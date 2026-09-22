@@ -19,10 +19,12 @@ namespace {
                                      std::string_view rowValue) {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <cstdio>\n"
                    "#include <iostream>\n"
                    "#include <limits>\n"
                    "#include <memory>\n"
                    "#include <optional>\n"
+                   "#include <vector>\n"
                    "\n"
                    "struct User {\n"
                    "    "
@@ -32,6 +34,19 @@ namespace {
                    "\n"
                    "void printValue(std::nullptr_t) {\n"
                    "    std::cout << \"NULL\" << '\\n';\n"
+                   "}\n"
+                   "\n"
+                   // A BLOB is printed the way SQLite writes one, so that every byte of it is
+                   // compared: a value read back through a `std::string` is cut at the first NUL
+                   // byte and still prints as a plausible text.
+                   "void printValue(const std::vector<char>& value) {\n"
+                   "    std::cout << \"x'\";\n"
+                   "    for(unsigned char byte: value) {\n"
+                   "        char digits[3];\n"
+                   "        std::snprintf(digits, sizeof(digits), \"%02X\", byte);\n"
+                   "        std::cout << digits;\n"
+                   "    }\n"
+                   "    std::cout << \"'\" << '\\n';\n"
                    "}\n"
                    "\n"
                    "template<class T>\n"
@@ -1577,6 +1592,159 @@ TEST_CASE("runtime: IN list values beside a bind parameter are widened the calle
                           });
     REQUIRE(compilesWithInt64Spelled(statements, "long", "int64_t bindParam1{};") == 0);
     REQUIRE(compilesWithInt64Spelled(statements, "long long", "int64_t bindParam1{};") == 0);
+}
+
+// sqlite_orm types COALESCE, IFNULL, NULLIF and IIF as the common C++ type of their arguments, so
+// a call over arguments with no common type took the whole `storage.select(...)` down with it:
+// `no type named 'type' in 'sqlite_orm::internal::column_result_t<…, common_argument_type<>…>'`.
+// The generated type is `std::string`, which reads every storage class back as its text. Every
+// value below is what libsqlite3 answers for the generated SQL over the same row — checked
+// against sqlite3 3.51 — and the two column rows are the ones that show which branch was
+// answered: over `a = NULL` the COALESCE falls through to the 1 and the NULLIF answers NULL,
+// while over `a = 'hi'` both answer the text.
+TEST_CASE("runtime: a call typed by the common type of its arguments reads its value back as text") {
+    const std::vector<std::string> statements{
+        generate("SELECT coalesce('x', 1);"),
+        generate("SELECT ifnull('x', 2);"),
+        generate("SELECT nullif('x', 1);"),
+        generate("SELECT nullif('x', 'x');"),
+        generate("SELECT iif(1, 'x', 2);"),
+        generate("SELECT iif(0, 'x', 2);"),
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT coalesce(a, 1) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT nullif(a, 1) FROM user;").code,
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(coalesce<std::string>(\"x\", 1));",
+                              "auto rows = storage.select(ifnull<std::string>(\"x\", 2));",
+                              "auto rows = storage.select(as_optional(nullif<std::string>(\"x\", 1)));",
+                              // Two arguments of one type keep the type sqlite_orm deduces, and for
+                              // NULLIF that one is an `std::optional` already.
+                              "auto rows = storage.select(nullif(\"x\", \"x\"));",
+                              "auto rows = storage.select(iif<std::string>(1, \"x\", 2));",
+                              "auto rows = storage.select(iif<std::string>(0, \"x\", 2));",
+                              "auto rows = storage.select(as_optional(coalesce<std::string>(&User::a, 1)));",
+                              "auto rows = storage.select(as_optional(nullif<std::string>(&User::a, 1)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<std::string>", "std::nullopt") ==
+            std::vector<std::string>{"x", "x", "x", "NULL", "x", "2", "1", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<std::string>", "\"hi\"") ==
+            std::vector<std::string>{"x", "x", "x", "NULL", "x", "2", "hi", "hi"});
+}
+
+// A NULL carries no value of its own — SQLite answers such a call with one of the other arguments
+// — and an `std::optional` is a wrapper around a value, not a value. So where every argument that
+// carries one carries a NUMBER, the call is read back as the number those reduce to, and not as
+// its digits through the text fallback: the generated type is the very one `std::common_type`
+// would have answered had the NULL and the wrappers not been in the way. Every value below is what
+// libsqlite3 answers for the generated SQL over the same row, checked against sqlite3 3.51.
+TEST_CASE("runtime: a call whose arguments all carry a number reads that number back") {
+    const std::vector<std::string> statements{
+        generate("SELECT coalesce(NULL, 1);"),
+        generate("SELECT coalesce(NULL, 2.5);"),
+        generate("SELECT coalesce(NULL, 1, 2.5);"),
+        generate("SELECT ifnull(NULL, 3);"),
+        generate("SELECT iif(1, NULL, 2);"),
+        generate("SELECT iif(0, NULL, 2);"),
+        generate("SELECT nullif(NULL, 1);"),
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT coalesce(NULL, a) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT nullif(NULL, a) FROM user;").code,
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(coalesce<int>(nullptr, 1)));",
+                              "auto rows = storage.select(as_optional(coalesce<double>(nullptr, 2.5)));",
+                              "auto rows = storage.select(as_optional(coalesce<double>(nullptr, 1, 2.5)));",
+                              "auto rows = storage.select(as_optional(ifnull<int>(nullptr, 3)));",
+                              "auto rows = storage.select(as_optional(iif<int>(1, nullptr, 2)));",
+                              "auto rows = storage.select(as_optional(iif<int>(0, nullptr, 2)));",
+                              "auto rows = storage.select(as_optional(nullif<int>(nullptr, 1)));",
+                              "auto rows = storage.select(as_optional(coalesce<int64_t>(nullptr, &User::a)));",
+                              "auto rows = storage.select(as_optional(nullif<int64_t>(nullptr, &User::a)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int64_t>", "std::nullopt") ==
+            std::vector<std::string>{"1", "2.5", "1", "3", "NULL", "2", "NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int64_t>", "7") ==
+            std::vector<std::string>{"1", "2.5", "1", "3", "NULL", "2", "NULL", "7", "NULL"});
+}
+
+// `int64_t` and `double` carry nothing of each other, so a call holding both is read back as
+// text rather than as one of them. A `double` would take every integer past 2^53 down with it —
+// the counterfactual statement below is the very code the other reduction would have generated,
+// and it answers 9.0072e+15 where sqlite3 3.51 answers 9007199254740993 with typeof `integer`.
+// The text fallback carries the value whole, and the report at the result column says the digits
+// are what comes back.
+TEST_CASE("runtime: an integer beside a REAL is read back through text without rounding") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT coalesce(NULL, a, 1.5) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT coalesce(NULL, a, 1) FROM user;").code,
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, &User::a, 1.5)));",
+                              "auto rows = storage.select(as_optional(coalesce<int64_t>(nullptr, &User::a, 1)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int64_t>", "9007199254740993") ==
+            std::vector<std::string>{"9007199254740993", "9007199254740993"});
+
+    // What the same call spelled `<double>` reads back: the value is off by one and nothing says so.
+    REQUIRE(selectedValues({"auto rows = storage.select(as_optional(coalesce<double>(nullptr, &User::a, 1.5)));"},
+                           "std::optional<int64_t>",
+                           "9007199254740993") == std::vector<std::string>{"9.0072e+15"});
+}
+
+// A subquery with no FROM clause of its own reads its references over the scope around it, which
+// is where the emitter writes them too, so the call in it spells its result type exactly as the
+// same call spells it under a FROM written out — and the result column is widened around it just
+// the same. Left unwidened, the spelled `std::string` read the NULL back as the empty string:
+// sqlite3 3.51 answers NULL for `(SELECT nullif(a, 1))` over a row holding NULL, and NULLIF
+// answers NULL for a NULL first argument. The second statement is the counterfactual — the very
+// code the missing widening generated — and it prints the empty line the value came back as.
+TEST_CASE("runtime: a subquery with no FROM of its own reads its NULL back") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT nullif(a, 1)) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT nullif(a, 1) FROM user) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT coalesce(a, 1)) FROM user;").code,
+    };
+    // The form with the FROM spelled out generates the same bytes: the scope is the same one.
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(select(nullif<std::string>(&User::a, 1))), from<User>());",
+                "auto rows = storage.select(as_optional(select(nullif<std::string>(&User::a, 1))), from<User>());",
+                "auto rows = storage.select(as_optional(select(coalesce<std::string>(&User::a, 1))), from<User>());",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<std::string>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "1"});
+    REQUIRE(selectedValues(statements, "std::optional<std::string>", "\"hi\"") ==
+            std::vector<std::string>{"hi", "hi", "hi"});
+
+    // What the same statement read back without the widening hands the caller: an empty string
+    // where the row held NULL, and nothing says so.
+    REQUIRE(selectedValues({"auto rows = storage.select(select(nullif<std::string>(&User::a, 1)), from<User>());"},
+                           "std::optional<std::string>",
+                           "std::nullopt") == std::vector<std::string>{""});
+}
+
+// A BLOB among the arguments makes the generated type `std::vector<char>` rather than
+// `std::string`: sqlite_orm reads a `std::string` through `sqlite3_column_text`, which stops at
+// the first NUL byte a BLOB holds, and x'004100' would have come back as the empty text. Every
+// value is what sqlite3 3.51 answers for the generated SQL.
+TEST_CASE("runtime: a call typed by the common type of its arguments reads a BLOB back whole") {
+    const std::vector<std::string> statements{
+        generate("SELECT coalesce(x'004100', 1);"),
+        generate("SELECT ifnull(x'004100', 1);"),
+        generate("SELECT coalesce(NULL, x'004100');"),
+        generate("SELECT iif(0, x'004100', 65);"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(coalesce<std::vector<char>>(std::vector<char>{'\\x00', '\\x41', "
+                "'\\x00'}, 1));",
+                "auto rows = storage.select(ifnull<std::vector<char>>(std::vector<char>{'\\x00', '\\x41', "
+                "'\\x00'}, 1));",
+                "auto rows = storage.select(as_optional(coalesce<std::vector<char>>(nullptr, "
+                "std::vector<char>{'\\x00', '\\x41', '\\x00'})));",
+                "auto rows = storage.select(iif<std::vector<char>>(0, std::vector<char>{'\\x00', '\\x41', "
+                "'\\x00'}, 65));",
+            });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"x'004100'", "x'004100'", "x'004100'", "x'3635'"});
 }
 
 // sqlite_orm's `json_extract` and `json_quote` take the type the row is read back into as a

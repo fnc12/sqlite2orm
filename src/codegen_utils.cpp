@@ -1,6 +1,7 @@
 #include "codegen_utils.h"
 #include "codegen_context.h"
 #include "codegen_forms.h"
+#include "select_scope_columns.h"
 
 #include <sqlite2orm/utils.h>
 #include <sqlite2orm/validator.h>
@@ -2053,6 +2054,379 @@ namespace sqlite2orm {
         return "a sqlite_orm expression";
     }
 
+    namespace {
+
+        /**
+         *  The kind of C++ type a call argument is read back as, at the granularity
+         *  `std::common_type` reduces over. Every arithmetic type converts to every other one; a
+         *  `std::string` converts to a `std::nullptr_t` and back, its `const char*` constructor
+         *  taking one; a `std::vector<char>` converts to nothing else at all. Checked against the
+         *  pinned sqlite_orm headers over every pair of constants and field types codegen writes.
+         */
+        enum class ArgumentTypeKind { arithmetic, text, blob, null };
+
+        /** The C++ type the generated code hands sqlite_orm for one argument of a call. */
+        struct ArgumentCppType {
+            ArgumentTypeKind kind = ArgumentTypeKind::arithmetic;
+            /**
+             *  The type a nullable column's field holds inside its `std::optional<…>`, and empty
+             *  for every other argument. Two `std::optional`s of different types have no common
+             *  type — each converts to the other, so neither is the common one — while an
+             *  `std::optional` next to a plain type has the `std::optional` for a common type.
+             */
+            std::string optionalFieldType;
+            /**
+             *  The arithmetic C++ type the value has — `bool`, `int`, `int64_t` or `double`, the
+             *  inner type where the argument is a nullable column — and empty for a text, a BLOB
+             *  or a NULL. Arithmetic types reduce to one whatever wrapper they arrive in, so this
+             *  is what a call whose arguments have no common type can still be read back as.
+             */
+            std::string arithmeticType;
+            /** How a warning names this type, e.g. "an `int`". */
+            std::string description;
+        };
+
+        /**
+         *  The width a value read back as a number is read back at, ordered by what carries what.
+         *  A `bool` is carried by an `int`, and an `int` by both an `int64_t` and a `double` —
+         *  every 32-bit integer is exact in one. `int64_t` and `double` are SIBLINGS and carry
+         *  nothing of each other: a double loses every integer past 2^53 (9007199254740993 read
+         *  through one comes back as 9007199254740992) and an int64_t loses the fractional part
+         *  of a REAL. The pair reduces to `noNumber`, the same answer the widening of a CASE
+         *  gives the same pair, and a call whose arguments reduce to that is read back as text
+         *  instead — which renders both an INTEGER and a REAL the way SQLite prints them.
+         */
+        enum class NumberWidth { boolean, integer32, integer64, real, noNumber };
+
+        /** The width a generated C++ type is read back at, and `noNumber` for every other type. */
+        NumberWidth numberWidthOf(std::string_view cppType) {
+            if (cppType == "bool") {
+                return NumberWidth::boolean;
+            }
+            if (cppType == "int") {
+                return NumberWidth::integer32;
+            }
+            if (cppType == "int64_t") {
+                return NumberWidth::integer64;
+            }
+            if (cppType == "double") {
+                return NumberWidth::real;
+            }
+            return NumberWidth::noNumber;
+        }
+
+        /** How such a width is spelled, and an empty view for `noNumber`, which spells no number. */
+        std::string_view numberWidthType(NumberWidth width) {
+            switch (width) {
+                case NumberWidth::boolean:
+                    return "bool";
+                case NumberWidth::integer32:
+                    return "int";
+                case NumberWidth::integer64:
+                    return "int64_t";
+                case NumberWidth::real:
+                    return "double";
+                case NumberWidth::noNumber:
+                    return {};
+            }
+            return {};
+        }
+
+        /**
+         *  The width two of them reduce to. Total, commutative and associative — `noNumber` takes
+         *  everything in — so folding it over a call's arguments answers the same whatever order
+         *  they are written in and whatever types they have.
+         */
+        NumberWidth widerNumberWidth(NumberWidth first, NumberWidth second) {
+            if (first == second) {
+                return first;
+            }
+            if (first == NumberWidth::noNumber || second == NumberWidth::noNumber) {
+                return NumberWidth::noNumber;
+            }
+            if (first == NumberWidth::boolean) {
+                return second;
+            }
+            if (second == NumberWidth::boolean) {
+                return first;
+            }
+            if (first == NumberWidth::integer32) {
+                return second;
+            }
+            if (second == NumberWidth::integer32) {
+                return first;
+            }
+            // An `int64_t` next to a `double`, the one pair with nothing above it.
+            return NumberWidth::noNumber;
+        }
+
+        /**
+         *  The kind of a C++ type a generated struct declares a field as. The spellings answered
+         *  for are the closed set `sqliteTypeToCpp` and `CodeGeneratorContext::inferTypeFromNode`
+         *  produce; any other one is a type this file does not know and says nothing about.
+         */
+        std::optional<ArgumentTypeKind> cppFieldTypeKind(std::string_view cppType) {
+            if (cppType == "bool" || cppType == "int" || cppType == "int64_t" || cppType == "double") {
+                return ArgumentTypeKind::arithmetic;
+            }
+            if (cppType == "std::string") {
+                return ArgumentTypeKind::text;
+            }
+            if (cppType == "std::vector<char>") {
+                return ArgumentTypeKind::blob;
+            }
+            return std::nullopt;
+        }
+
+        /** The arithmetic C++ type a generated constant holds, and empty for every other one. */
+        std::string_view constantArithmeticType(GeneratedValueCppType valueType) {
+            switch (valueType) {
+                case GeneratedValueCppType::integer32:
+                    return "int";
+                case GeneratedValueCppType::integer64Literal:
+                case GeneratedValueCppType::integer64Cast:
+                    return "int64_t";
+                case GeneratedValueCppType::boolean:
+                    return "bool";
+                case GeneratedValueCppType::real:
+                    return "double";
+                case GeneratedValueCppType::text:
+                case GeneratedValueCppType::blob:
+                case GeneratedValueCppType::null:
+                    return {};
+            }
+            return {};
+        }
+
+        std::optional<ArgumentTypeKind> constantValueKind(GeneratedValueCppType valueType) {
+            switch (valueType) {
+                case GeneratedValueCppType::integer32:
+                case GeneratedValueCppType::integer64Literal:
+                case GeneratedValueCppType::integer64Cast:
+                case GeneratedValueCppType::boolean:
+                case GeneratedValueCppType::real:
+                    return ArgumentTypeKind::arithmetic;
+                case GeneratedValueCppType::text:
+                    return ArgumentTypeKind::text;
+                case GeneratedValueCppType::blob:
+                    return ArgumentTypeKind::blob;
+                case GeneratedValueCppType::null:
+                    return ArgumentTypeKind::null;
+            }
+            return std::nullopt;
+        }
+
+        /**
+         *  The C++ type a call argument is generated as, for the two kinds of argument the
+         *  generated code names the type of: a constant, spelled out in the call itself, and a
+         *  column, read back as the field the generated struct declares for it. Every other
+         *  argument — a nested call, an operator, a bind parameter, a subquery — is typed by
+         *  sqlite_orm out of what it is built over, which is not answered here, and a call holding
+         *  one is left as it is generated.
+         */
+        std::optional<ArgumentCppType> generatedArgumentCppType(const AstNode& argument,
+                                                                const ReferencedColumnResolver& resolveColumn) {
+            if (const std::optional<GeneratedValueCppType> valueType = generatedValueCppType(argument)) {
+                const std::optional<ArgumentTypeKind> kind = constantValueKind(*valueType);
+                if (!kind) {
+                    return std::nullopt;
+                }
+                return ArgumentCppType{*kind,
+                                       {},
+                                       std::string(constantArithmeticType(*valueType)),
+                                       generatedValueTypeDescription(argument)};
+            }
+            const SourceTableColumn* column = resolveColumn(argument);
+            if (!column) {
+                return std::nullopt;
+            }
+            const std::optional<ArgumentTypeKind> kind = cppFieldTypeKind(column->cppType);
+            if (!kind) {
+                return std::nullopt;
+            }
+            const std::string fieldType = column->nullable ? "std::optional<" + column->cppType + ">" : column->cppType;
+            return ArgumentCppType{*kind,
+                                   column->nullable ? column->cppType : std::string(),
+                                   *kind == ArgumentTypeKind::arithmetic ? column->cppType : std::string(),
+                                   "a column typed `" + fieldType + "`"};
+        }
+
+        /** Whether `std::common_type` reduces these two argument types to one. */
+        bool argumentTypesHaveACommonType(const ArgumentCppType& first, const ArgumentCppType& second) {
+            if (first.kind != second.kind) {
+                // A `std::string` is constructible from a `std::nullptr_t` through its
+                // `const char*` constructor, which makes the two one type; nothing else here
+                // converts across kinds.
+                return (first.kind == ArgumentTypeKind::text && second.kind == ArgumentTypeKind::null) ||
+                       (first.kind == ArgumentTypeKind::null && second.kind == ArgumentTypeKind::text);
+            }
+            if (first.optionalFieldType.empty() || second.optionalFieldType.empty() ||
+                first.optionalFieldType == second.optionalFieldType) {
+                return true;
+            }
+            // Two `std::optional`s of different types convert to each other both ways, which
+            // leaves neither of them the common type — except where one is an
+            // `std::optional<bool>`: a `bool` is constructible from any `std::optional` through
+            // its explicit `operator bool`, and that rules the converting constructor INTO the
+            // `std::optional<bool>` out, leaving the one direction. Checked against the pinned
+            // headers: `coalesce(std::optional<int>, std::optional<bool>)` compiles,
+            // `coalesce(std::optional<int>, std::optional<int64_t>)` does not.
+            return first.optionalFieldType == "bool" || second.optionalFieldType == "bool";
+        }
+
+        /**
+         *  The arguments sqlite_orm reduces to one type when it deduces the result type of a call
+         *  of `lowerFunctionName`, and an empty list for every other name. Read off the
+         *  declarations in the pinned headers: COALESCE is `common_argument_type<>` — all of them —
+         *  IFNULL and NULLIF `common_argument_type<0, 1>`, and IIF `common_argument_type<1, 2>`,
+         *  the two branches and not the condition. IIF is declared in its three-argument form
+         *  alone, so SQLite's two-argument and n-ary forms name no indexes here; the arity check in
+         *  `functionCallFormRefusal` is what reports them.
+         */
+        std::vector<size_t> commonArgumentTypeIndexes(std::string_view lowerFunctionName, size_t argumentCount) {
+            if (lowerFunctionName == "coalesce") {
+                std::vector<size_t> indexes(argumentCount);
+                for (size_t index = 0; index < argumentCount; ++index) {
+                    indexes[index] = index;
+                }
+                return indexes;
+            }
+            if ((lowerFunctionName == "ifnull" || lowerFunctionName == "nullif") && argumentCount == 2) {
+                return {0, 1};
+            }
+            if (lowerFunctionName == "iif" && argumentCount == 3) {
+                return {1, 2};
+            }
+            return {};
+        }
+
+        /** The first pair of a call's reduced arguments that has no common C++ type. */
+        struct CommonArgumentTypeClash {
+            ArgumentCppType first;
+            ArgumentCppType second;
+            /** Whether a BLOB takes part anywhere in the reduced arguments. */
+            bool holdsBlob = false;
+            /**
+             *  The one number every reduced argument that carries a value fits in, where there is
+             *  one, and empty where a text, a BLOB, an argument of an unknown type or a pair with
+             *  no number above it — an `int64_t` next to a `double` — takes part. A NULL carries
+             *  no value type — SQLite's answer for such a call is always another argument — so it
+             *  does not take part in this, and neither does the `std::optional` wrapper a nullable
+             *  column arrives in: the value read back is the number either way. Where this is set
+             *  the call is read back as that very number, and nothing about it is worth reporting.
+             */
+            std::string narrowedResultType;
+        };
+
+        std::optional<CommonArgumentTypeClash> commonArgumentTypeClash(const FunctionCallNode& functionCall,
+                                                                       const ReferencedColumnResolver& resolveColumn) {
+            if (functionCall.star || functionCall.over || functionCall.filterWhere) {
+                // A star names no arguments to reduce at all, and a call written with an OVER or a
+                // FILTER comes out wrapped in an `over_t` or a `filtered_aggregate_function_t`
+                // rather than as the plain call this types. SQLite refuses both over these four
+                // names anyway: `coalesce(1, 2) OVER ()` is `coalesce() may not be used as a
+                // window function` and `coalesce(1, 2) FILTER (WHERE 1)` is `FILTER may not be
+                // used with non-aggregate coalesce()` (3.51).
+                return std::nullopt;
+            }
+            const std::string lowerName = toLowerAscii(functionCall.name);
+            const std::vector<size_t> indexes = commonArgumentTypeIndexes(lowerName, functionCall.arguments.size());
+            std::vector<ArgumentCppType> types;
+            for (size_t index: indexes) {
+                const AstNodePointer& argument = functionCall.arguments.at(index);
+                if (!argument) {
+                    return std::nullopt;
+                }
+                std::optional<ArgumentCppType> type = generatedArgumentCppType(*argument, resolveColumn);
+                if (!type) {
+                    // One argument left untyped is enough to leave the whole call alone: the type
+                    // it brings can be the one every other argument reduces to.
+                    return std::nullopt;
+                }
+                types.push_back(std::move(*type));
+            }
+            // The first pair without a common type is the one the report names; a COALESCE can
+            // be written with more arguments than two, and every pair of them has to reduce.
+            std::optional<CommonArgumentTypeClash> clash;
+            for (size_t first = 0; first < types.size() && !clash; ++first) {
+                for (size_t second = first + 1; second < types.size(); ++second) {
+                    if (!argumentTypesHaveACommonType(types[first], types[second])) {
+                        clash = CommonArgumentTypeClash{types[first], types[second]};
+                        break;
+                    }
+                }
+            }
+            if (!clash) {
+                return std::nullopt;
+            }
+            for (const ArgumentCppType& type: types) {
+                clash->holdsBlob = clash->holdsBlob || type.kind == ArgumentTypeKind::blob;
+            }
+            // Where every argument that carries a value carries a number they all fit in, the call
+            // answers one of those numbers, and that is what the row holds and what the code reads
+            // it back as. Arguments that are all NULL fold to nothing, and they have a common type
+            // anyway.
+            std::optional<NumberWidth> narrowed;
+            for (const ArgumentCppType& type: types) {
+                if (type.kind == ArgumentTypeKind::null) {
+                    // A NULL is no value of its own: SQLite answers with one of the others.
+                    continue;
+                }
+                const NumberWidth width = numberWidthOf(type.arithmeticType);
+                narrowed = narrowed ? widerNumberWidth(*narrowed, width) : width;
+            }
+            if (narrowed) {
+                clash->narrowedResultType = std::string(numberWidthType(*narrowed));
+            }
+            return clash;
+        }
+
+        /**
+         *  The type such a call spells its result as: the number every argument of it carries
+         *  where they all carry one, bytes where a BLOB takes part, and text otherwise.
+         */
+        std::string_view clashResultType(const CommonArgumentTypeClash& clash) {
+            if (!clash.narrowedResultType.empty()) {
+                return clash.narrowedResultType;
+            }
+            // `std::string` is read through `sqlite3_column_text`, which stops at the first NUL
+            // byte a BLOB holds, while `std::vector<char>` carries every byte of one — and reads a
+            // text or a number back as its bytes just as well.
+            return clash.holdsBlob ? "std::vector<char>" : "std::string";
+        }
+
+    }  // namespace
+
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const ReferencedColumnResolver& resolveColumn) {
+        if (const std::string_view byName = functionCallResultTypeArgument(toLowerAscii(functionCall.name));
+            !byName.empty()) {
+            // `"<std::string>"` without the brackets the caller of the other form wants.
+            return std::string(byName.substr(1, byName.size() - 2));
+        }
+        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(functionCall, resolveColumn);
+        if (!clash) {
+            return {};
+        }
+        return std::string(clashResultType(*clash));
+    }
+
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const CodeGeneratorContext& context) {
+        return functionCallSpelledResultType(functionCall, [&context](const AstNode& argument) {
+            return context.findReferencedColumn(argument);
+        });
+    }
+
+    std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
+                                               const CodeGeneratorContext& context) {
+        const std::string spelledType = functionCallSpelledResultType(functionCall, context);
+        if (spelledType.empty()) {
+            return {};
+        }
+        return "<" + spelledType + ">";
+    }
+
     bool generatesNegatedCondition(const AstNode& astNode) {
         const AstNode& generatedNode = generatedOperandNode(astNode);
         if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
@@ -2226,10 +2600,21 @@ namespace sqlite2orm {
          *  `CAST(a AS INT)` are typed `int` however NULL the row is, so `iif(1, length(a), 2)` and
          *  `likely(length(a))` are typed `int` too and read a NULL back as 0. Asking the argument
          *  rather than the name is a rule of its own; a known hole, carded separately.
+         *  `coalesce`, `ifnull`, `nullif` and `iif` drop out of the list where the call spells its
+         *  own result type: what sqlite_orm deduces from the arguments is then not what the row is
+         *  read back into — see `functionCallResultTypeArgument`.
          */
-        bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall) {
+        bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall,
+                                                      const ReferencedColumnResolver& resolveColumn) {
             const std::string functionLower = toLowerAscii(functionCall.name);
             if (iifNotInItsThreeArgumentForm(functionCall, functionLower)) {
+                return false;
+            }
+            if (!functionCallSpelledResultType(functionCall, resolveColumn).empty()) {
+                // A call that spells its result type is read back as exactly that type, and none of
+                // the types spelled holds a NULL — neither the `std::string` or `std::vector<char>`
+                // of the fallbacks nor the `bool`, `int`, `int64_t` or `double` a call whose
+                // arguments all carry a number spells — so the widening this answers for is back on.
                 return false;
             }
             return isOneOfFunctions(functionLower,
@@ -2814,101 +3199,179 @@ namespace sqlite2orm {
                               underlineLengthOf(writtenText)};
     }
 
-    bool selectResultNeedsAsOptional(const AstNode& astNode) {
-        // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
-        // the result column comes out as — and with it the type the row is read back into — is the
-        // one the operand under them comes out as.
-        const AstNode& generatedNode = generatedOperandNode(astNode);
-        if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
-            switch (binaryOp->binaryOperator) {
-                case BinaryOperator::isOp:
-                case BinaryOperator::isNot:
-                case BinaryOperator::isDistinctFrom:
-                case BinaryOperator::isNotDistinctFrom:
-                    // Not generated as a C++ binary operator, and never reaching codegen at all:
-                    // the validator rejects the IS family.
+    std::optional<CodegenWarning> commonArgumentTypeWarning(const AstNode& astNode,
+                                                            std::string_view subject,
+                                                            const ReferencedColumnResolver& resolveColumn) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the call the value is
+        // read back through is the one the operand under them comes out as.
+        auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedOperandNode(astNode));
+        if (!functionCall) {
+            return std::nullopt;
+        }
+        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(*functionCall, resolveColumn);
+        if (!clash || !clash->narrowedResultType.empty()) {
+            // A call whose arguments all carry a number is read back as that number, which is
+            // what a call with a common type would have answered too; there is nothing lost to
+            // report.
+            return std::nullopt;
+        }
+        const std::string lowerName = toLowerAscii(functionCall->name);
+        const std::string resultType(clashResultType(*clash));
+        std::string message(subject);
+        message += " computed with `";
+        message += lowerName;
+        message += "` comes back as ";
+        message += clash->holdsBlob ? "bytes" : "text";
+        message += ": sqlite_orm types the call as the common C++ type of its arguments, and ";
+        message += clash->first.description;
+        message += " next to ";
+        message += clash->second.description;
+        message += " has none, so the call is generated as `";
+        message += lowerName;
+        message += "<" + resultType + ">(…)` — a number comes back as ";
+        message += clash->holdsBlob ? "the bytes of its digits" : "its digits";
+        message += ". Spell the result type the call answers with where it is known";
+        // The call is located at its name, and the name is what the message repeats.
+        return CodegenWarning{std::move(message), functionCall->location, underlineLengthOf(functionCall->name)};
+    }
+
+    std::optional<CodegenWarning> selectResultCommonArgumentTypeWarning(const AstNode& astNode,
+                                                                        const CodeGeneratorContext& context) {
+        return commonArgumentTypeWarning(astNode, "result column", [&context](const AstNode& argument) {
+            return context.findReferencedColumn(argument);
+        });
+    }
+
+    namespace {
+
+        /**
+         *  `selectResultNeedsAsOptional` over one scope: `resolveColumn` answers what the emitter
+         *  writes a reference of the select the column belongs to as, which is the select this
+         *  stands in and not always the one the context holds — a scalar subquery carries a scope
+         *  of its own, and the descent into it swaps the resolver for that scope's.
+         */
+        bool resultNeedsAsOptional(const AstNode& astNode,
+                                   const CodeGeneratorContext& context,
+                                   const ReferencedColumnResolver& resolveColumn) {
+            // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
+            // the result column comes out as — and with it the type the row is read back into — is the
+            // one the operand under them comes out as.
+            const AstNode& generatedNode = generatedOperandNode(astNode);
+            if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+                switch (binaryOp->binaryOperator) {
+                    case BinaryOperator::isOp:
+                    case BinaryOperator::isNot:
+                    case BinaryOperator::isDistinctFrom:
+                    case BinaryOperator::isNotDistinctFrom:
+                        // Not generated as a C++ binary operator, and never reaching codegen at all:
+                        // the validator rejects the IS family.
+                        return false;
+                    default:
+                        // The JSON arrows are generated as a `json_extract<std::string>()` call, whose
+                        // result type is as much the type the row is read back into as an operator's
+                        // is, and a `std::string` reads a NULL back as an empty string.
+                        return expressionMayBeNull(generatedNode);
+                }
+            }
+            if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+                // A unary operator is typed from the operator alone too — `-x` is generated as the
+                // subtraction `(c(0) - x)`, `~x` as a `bitwise_not_t`. A sign folded into a numeric
+                // constant leaves no operator behind, but a constant is never NULL either, so
+                // `expressionMayBeNull` already answers no for it.
+                if (unaryOp->unaryOperator == UnaryOperator::minus &&
+                    negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate) {
+                    // The one form codegen already warns has no working sqlite_orm spelling: it does
+                    // not compile at all, so there is no result type to widen.
                     return false;
-                default:
-                    // The JSON arrows are generated as a `json_extract<std::string>()` call, whose
-                    // result type is as much the type the row is read back into as an operator's
-                    // is, and a `std::string` reads a NULL back as an empty string.
-                    return expressionMayBeNull(generatedNode);
+                }
+                return expressionMayBeNull(generatedNode);
             }
-        }
-        if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
-            // A unary operator is typed from the operator alone too — `-x` is generated as the
-            // subtraction `(c(0) - x)`, `~x` as a `bitwise_not_t`. A sign folded into a numeric
-            // constant leaves no operator behind, but a constant is never NULL either, so
-            // `expressionMayBeNull` already answers no for it.
-            if (unaryOp->unaryOperator == UnaryOperator::minus &&
-                negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate) {
-                // The one form codegen already warns has no working sqlite_orm spelling: it does
-                // not compile at all, so there is no result type to widen.
-                return false;
+            if (dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
+                dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
+                // sqlite_orm types `between_t`, `in_t`, `like_t` and `glob_t` — and the
+                // `negated_condition_t` a NOT form comes out as — as `bool`, so a NULL row was read
+                // back as false. A MATCH is left out: SQLite refuses `a MATCH 'x'` as a result column
+                // outside an FTS table, and sqlite_orm has no result type for `match_t` either.
+                return expressionMayBeNull(generatedNode);
             }
-            return expressionMayBeNull(generatedNode);
-        }
-        if (dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
-            dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
-            // sqlite_orm types `between_t`, `in_t`, `like_t` and `glob_t` — and the
-            // `negated_condition_t` a NOT form comes out as — as `bool`, so a NULL row was read
-            // back as false. A MATCH is left out: SQLite refuses `a MATCH 'x'` as a result column
-            // outside an FTS table, and sqlite_orm has no result type for `match_t` either.
-            return expressionMayBeNull(generatedNode);
-        }
-        if (dynamic_cast<const CastNode*>(&generatedNode)) {
-            // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
-            // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
-            return expressionMayBeNull(generatedNode);
-        }
-        if (dynamic_cast<const CaseNode*>(&generatedNode)) {
-            // `case_t<R, …>` is typed R, and R is the widest type inferred over the branch results
-            // and the ELSE — `int` where one of them holds a NULL — so a CASE that answers NULL
-            // was read back as 0:
-            // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
-            // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
-            // NULL. The inference never names a nullable type, so nothing here is already widened.
-            return expressionMayBeNull(generatedNode);
-        }
-        if (auto* subquery = dynamic_cast<const SubqueryNode*>(&generatedNode)) {
-            // A scalar subquery is read back through the type its own result column comes out as:
-            // `(SELECT 1 / 0)` is generated as the nested `select(c(1) / 0)`, and sqlite_orm types
-            // a `select_t` as the column list it carries, so the `double` of the division is what
-            // the outer row holds. The widening belongs here rather than inside the nested
-            // `select(...)`: `as_optional` is the widening of a RESULT column, and the generator
-            // the nested select shares with a view body, a CTE, an IN and an INSERT ... SELECT
-            // hands its columns to no caller. Wrapping the subquery keeps its SQL byte for byte —
-            // `as_optional` serializes its operand and nothing else.
-            auto* nestedSelect = dynamic_cast<const SelectNode*>(subquery->select.get());
-            // A compound subquery is typed from the common type of its parts, and a nested WITH is
-            // not mapped to sqlite_orm codegen at all. Both are left to the arms that own them.
-            if (!nestedSelect || nestedSelect->columns.size() != 1u || !nestedSelect->columns.at(0).expression) {
-                return false;
+            if (dynamic_cast<const CastNode*>(&generatedNode)) {
+                // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
+                // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
+                return expressionMayBeNull(generatedNode);
             }
-            // What this arm does not cover is the NULL the subquery itself answers: SQLite reads a
-            // scalar subquery over an empty rowset as NULL, so `(SELECT a FROM t)` over a NOT NULL
-            // column is NULL on an empty `t` and still reads back as 0. Whether the column the
-            // nested select names is already nullable is the table's to answer, and no schema
-            // reaches this layer. A known hole, carded separately.
-            return selectResultNeedsAsOptional(*nestedSelect->columns.at(0).expression);
-        }
-        if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
-            if (functionCall->over) {
-                // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
-                // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
-                // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
-                // nullable argument carries its nullability through on its own. What this arm does
-                // not cover is the NULL the window itself answers: over a NOT NULL column the
-                // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
-                // first row, and that NULL still reads back as 0. A known hole, carded separately.
-                return false;
+            if (dynamic_cast<const CaseNode*>(&generatedNode)) {
+                // `case_t<R, …>` is typed R, and R is the widest type inferred over the branch results
+                // and the ELSE — `int` where one of them holds a NULL — so a CASE that answers NULL
+                // was read back as 0:
+                // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
+                // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
+                // NULL. The inference never names a nullable type, so nothing here is already widened.
+                return expressionMayBeNull(generatedNode);
             }
-            if (generatedFunctionResultIsAlreadyNullable(*functionCall)) {
-                return false;
+            if (auto* subquery = dynamic_cast<const SubqueryNode*>(&generatedNode)) {
+                // A scalar subquery is read back through the type its own result column comes out as:
+                // `(SELECT 1 / 0)` is generated as the nested `select(c(1) / 0)`, and sqlite_orm types
+                // a `select_t` as the column list it carries, so the `double` of the division is what
+                // the outer row holds. The widening belongs here rather than inside the nested
+                // `select(...)`: `as_optional` is the widening of a RESULT column, and the generator
+                // the nested select shares with a view body, a CTE, an IN and an INSERT ... SELECT
+                // hands its columns to no caller. Wrapping the subquery keeps its SQL byte for byte —
+                // `as_optional` serializes its operand and nothing else.
+                auto* nestedSelect = dynamic_cast<const SelectNode*>(subquery->select.get());
+                // A compound subquery is typed from the common type of its parts, and a nested WITH is
+                // not mapped to sqlite_orm codegen at all. Both are left to the arms that own them.
+                if (!nestedSelect || nestedSelect->columns.size() != 1u || !nestedSelect->columns.at(0).expression) {
+                    return false;
+                }
+                // What this arm does not cover is the NULL the subquery itself answers: SQLite reads a
+                // scalar subquery over an empty rowset as NULL, so `(SELECT a FROM t)` over a NOT NULL
+                // column is NULL on an empty `t` and still reads back as 0. Whether the column the
+                // nested select names is already nullable is the table's to answer, and no schema
+                // reaches this layer. A known hole, carded separately.
+                // The nested select names its own sources, so what its column is read back through is
+                // answered over ITS FROM clause: asking the outer scope resolved a name of the inner
+                // select to a same-named column of an outer table and typed the call from a field the
+                // generated code does not read.
+                if (nestedSelect->fromClause.empty()) {
+                    // A select with no FROM of its own names no scope: every reference in it is
+                    // correlated and read over the scope around it, which is the scope this stands
+                    // in — `SELECT (SELECT coalesce(b, c)) FROM t` comes out as
+                    // `select(coalesce<std::string>(&T::b, &T::c))`, the same bytes the form with
+                    // `FROM t` written out comes out as. Swapping the resolver for a scope that
+                    // names nothing answered `nullptr` for every reference, so the spelled result
+                    // type went unseen and the call stayed on the already-nullable list: the
+                    // wrapping form got its `as_optional` and this one did not, reading the NULL of
+                    // a `coalesce<std::string>` back as the empty string.
+                    return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, resolveColumn);
+                }
+                const SelectScopeColumns nestedScope(*nestedSelect, context);
+                return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, nestedScope.resolver());
             }
-            return expressionMayBeNull(generatedNode);
+            if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+                if (functionCall->over) {
+                    // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
+                    // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
+                    // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
+                    // nullable argument carries its nullability through on its own. What this arm does
+                    // not cover is the NULL the window itself answers: over a NOT NULL column the
+                    // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
+                    // first row, and that NULL still reads back as 0. A known hole, carded separately.
+                    return false;
+                }
+                if (generatedFunctionResultIsAlreadyNullable(*functionCall, resolveColumn)) {
+                    return false;
+                }
+                return expressionMayBeNull(generatedNode);
+            }
+            return false;
         }
-        return false;
+
+    }  // namespace
+
+    bool selectResultNeedsAsOptional(const AstNode& astNode, const CodeGeneratorContext& context) {
+        return resultNeedsAsOptional(astNode, context, [&context](const AstNode& argument) {
+            return context.findReferencedColumn(argument);
+        });
     }
 
     std::optional<std::string> generatedResultColumnCppType(const AstNode& astNode) {
@@ -2992,7 +3455,8 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
-    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode) {
+    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
+                                                   const CodeGeneratorContext& context) {
         std::vector<const SelectNode*> arms;
         arms.reserve(compoundNode.selects.size());
         for (const auto& select: compoundNode.selects) {
@@ -3034,7 +3498,7 @@ namespace sqlite2orm {
                     sameTypeEverywhere = false;
                     break;
                 }
-                someArmNeedsWidening = someArmNeedsWidening || selectResultNeedsAsOptional(columnExpression);
+                someArmNeedsWidening = someArmNeedsWidening || selectResultNeedsAsOptional(columnExpression, context);
             }
             widenedColumns[columnIndex] = sameTypeEverywhere && someArmNeedsWidening;
             widensAnyColumn = widensAnyColumn || widenedColumns[columnIndex];

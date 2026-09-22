@@ -351,10 +351,6 @@ namespace {
         }
     }
 
-    constexpr std::string_view typeofNameCard =
-        "card 1868206036830127627: sqlite_orm spells TYPEOF `typeof_`, and codegen has no form under the name the "
-        "SQL writes, so the expressibility gate leaves the statement out";
-
 }  // namespace
 
 TEST_CASE("corpus: Chinook", "[.corpus]") {
@@ -437,9 +433,15 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
             {.sql = "SELECT Name FROM Track t WHERE TrackId > (SELECT MIN(TrackId) FROM Track) ORDER BY TrackId "
                     "LIMIT 3;",
              .rows = {"Balls to the Wall", "Fast As a Shark", "Restless and Wild"}},
+            // sqlite_orm spells TYPEOF `typeof_`, a name C++ does not already mean something by, and
+            // the call is generated under that spelling: the row with no Bytes answers the text
+            // `null` rather than a NULL, which is why nothing here is an optional.
             {.sql = "SELECT TYPEOF(Bytes) FROM Track ORDER BY TrackId;",
-             .rows = {"integer", "integer", "integer", "integer", "null", "integer", "integer"},
-             .knownBad = {.card = typeofNameCard, .compiles = false, .generated = false}},
+             .rows = {"integer", "integer", "integer", "integer", "null", "integer", "integer"}},
+            // CHAR is the other name the library spells otherwise, `char_`; it answers the text of
+            // the code points it is handed, one per argument.
+            {.sql = "SELECT CHAR(64 + TrackId, 64 + GenreId) FROM Track ORDER BY TrackId LIMIT 4;",
+             .rows = {"AA", "BA", "CA", "DC"}},
         });
 }
 

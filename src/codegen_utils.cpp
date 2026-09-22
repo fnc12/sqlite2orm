@@ -445,7 +445,49 @@ namespace sqlite2orm {
                    normalizeSqlName(primaryKey.columns.front()) == normalizeSqlName(column.name);
         }
 
+        /**
+         *  Whether `column` is declared `ANY`. SQLite takes the name in every quoting it takes an
+         *  identifier in — `"ANY"`, `[ANY]`, `` `ANY` `` and `'ANY'` are all accepted in a STRICT
+         *  table — and in any case, while `ANY(10)` and `COMPANY` are refused there, so the name
+         *  is matched whole rather than as the affinity rule matches its substrings.
+         */
+        bool columnTypeIsAny(const ColumnDef& column) {
+            return normalizeSqlName(column.typeName) == "any";
+        }
+
     }  // namespace
+
+    std::string sqliteColumnTypeToCpp(const CreateTableNode& createTable, const ColumnDef& column) {
+        if (createTable.strict && columnTypeIsAny(column)) {
+            return "std::vector<char>";
+        }
+        return column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+    }
+
+    std::optional<CodegenWarning> anyColumnTypeWarning(const CreateTableNode& createTable, const ColumnDef& column) {
+        if (!columnTypeIsAny(column)) {
+            return std::nullopt;
+        }
+        const std::string columnName = stripIdentifierQuotes(column.name);
+        std::string message = "column `" + columnName + "` is declared ANY";
+        if (createTable.strict) {
+            message += ", which in a STRICT table holds a value of any storage class and stores it as it came. "
+                       "sqlite_orm has no type that carries a storage class, so the column is mapped to "
+                       "std::vector<char>, whose extractor reads every one of them rather than zeroing the ones it "
+                       "cannot use: a stored INTEGER or REAL comes back as the bytes of the text SQLite renders it "
+                       "as — a REAL keeps 15 significant digits that way, so 1.0/3 reads back as `0.333333333333333` "
+                       "— and a value written back through the member is stored as a BLOB, whatever it was before";
+        } else {
+            message += ", which is a datatype of STRICT tables only: this table is not STRICT, so SQLite reads ANY as "
+                       "a type name it does not know and gives the column NUMERIC affinity, which is why the column "
+                       "is mapped to double. Affinity is not a constraint — text NUMERIC affinity cannot convert is "
+                       "still stored as text, and `'x'` in this column reads back through the member as 0";
+        }
+        if (!column.typeNameLocation) {
+            return CodegenWarning{std::move(message)};
+        }
+        return CodegenWarning{std::move(message), *column.typeNameLocation, underlineLengthOf(column.typeName)};
+    }
 
     bool columnMemberIsNullable(const CreateTableNode& createTable, const ColumnDef& column) {
         if (column.notNull) {
@@ -466,7 +508,7 @@ namespace sqlite2orm {
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable) {
         std::vector<SourceTableColumn> columns;
         for (const ColumnDef& column: createTable.columns) {
-            const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+            const auto cppType = sqliteColumnTypeToCpp(createTable, column);
             const bool nullable = columnMemberIsNullable(createTable, column);
             // The expression is what makes a column generated; `generatedStorage` only tells
             // VIRTUAL from STORED, and stays `none` for the bare `AS (...)` spelling SQLite

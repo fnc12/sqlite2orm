@@ -872,6 +872,126 @@ TEST_CASE("codegen: CREATE TABLE - a column constraint over a column the table d
                                          "generated"}});
 }
 
+// A key back into the table's own primary key names no column of the parent, so the member it
+// references is the one that key stands over — and that key spells its column the way its own
+// constraint was written. sqlite3 3.51.0 takes both statements and enforces the key with PRAGMA
+// foreign_keys=ON. Written from the constraint's spelling, the two came out as `references(&T::ID)`
+// beside `primary_key(&T::Id)`: one column of one table written as two different members.
+TEST_CASE("codegen: CREATE TABLE - a FOREIGN KEY into a table key naming its column in another case") {
+    const std::string expected = "struct T {\n"
+                                 "    std::optional<int64_t> Id;\n"
+                                 "    std::optional<std::string> v;\n"
+                                 "};\n"
+                                 "\n"
+                                 "auto storage = make_storage(\"\",\n"
+                                 "    make_table(\"t\",\n"
+                                 "        make_column(\"Id\", &T::Id),\n"
+                                 "        make_column(\"v\", &T::v),\n"
+                                 "        foreign_key(&T::v).references(&T::Id),\n"
+                                 "        primary_key(&T::Id)));";
+
+    auto tableLevel = generateFull("CREATE TABLE t (\"Id\" INTEGER, v TEXT, PRIMARY KEY(ID), "
+                                   "FOREIGN KEY(v) REFERENCES t)");
+    REQUIRE(tableLevel.code == expected);
+    REQUIRE(tableLevel.warnings.empty());
+
+    auto columnLevel = generateFull("CREATE TABLE t (\"Id\" INTEGER, v TEXT REFERENCES t, PRIMARY KEY(ID))");
+    REQUIRE(columnLevel.code == expected);
+    REQUIRE(columnLevel.warnings.empty());
+}
+
+// `rowid`, `oid` and `_rowid_` are the implicit row id of a rowid table rather than a column it
+// declares, and what SQLite does with a constraint over one depends on the constraint and on the
+// table: sqlite3 3.51.0 takes `CHECK(rowid > 0)` on a rowid table, refuses it on a WITHOUT ROWID one
+// ("no such column: rowid"), and refuses `PRIMARY KEY(rowid)` and a generated column over `rowid`
+// either way. So the warning speaks for sqlite_orm, which maps no member onto a row id the table
+// never declared, and says nothing about the statement SQLite was handed.
+TEST_CASE("codegen: CREATE TABLE - a constraint over the implicit row id") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<int64_t> a;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"a\", &T::a)));";
+
+    auto tableCheck = generateFull("CREATE TABLE t (a INTEGER, CHECK(rowid > 0))");
+    REQUIRE(tableCheck.code == table);
+    REQUIRE(tableCheck.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK constraint of table t names column 'rowid', which the table does "
+                                         "not declare: sqlite_orm maps no member onto the implicit row id, so the "
+                                         "generated table has no check()"}});
+
+    auto columnCheck = generateFull("CREATE TABLE t (a INTEGER CHECK(_rowid_ > 0))");
+    REQUIRE(columnCheck.code == table);
+    REQUIRE(columnCheck.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK on column 'a' of table t names column '_rowid_', which the table "
+                                         "does not declare: sqlite_orm maps no member onto the implicit row id, so "
+                                         "the generated column has no check()"}});
+
+    auto primaryKey = generateFull("CREATE TABLE t (a INTEGER, PRIMARY KEY(oid))");
+    REQUIRE(primaryKey.code == table);
+    REQUIRE(primaryKey.warnings ==
+            std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column 'oid', which the table does not "
+                                         "declare: sqlite_orm maps no member onto the implicit row id, so the "
+                                         "generated table has no primary_key()"}});
+}
+
+// A DEFAULT holds the last kind of expression a column declaration can carry, and a column reference
+// in it is resolved the same way. SQLite refuses a DEFAULT naming any column at all ("default value
+// of column [b] is not constant"), so the statement is invalid either way; the half this generator
+// answers for is that `default_value(&T::zz)` names a member the struct does not declare.
+TEST_CASE("codegen: CREATE TABLE - a DEFAULT over a column the table does not declare") {
+    auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER DEFAULT (zz))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"the DEFAULT of column 'b' of table t names column 'zz', which the table "
+                                         "does not declare: SQLite refuses such a CREATE TABLE, so the generated "
+                                         "column has no default_value()"}});
+}
+
+// A WITHOUT ROWID table has no row id to fall back on, so one whose only PRIMARY KEY was left out
+// has nothing left to identify a row by: the mapping would compile and the CREATE TABLE sync_schema
+// runs from it is one sqlite3 3.51.0 refuses ("PRIMARY KEY missing on table t"). It is left out
+// whole instead, the same answer a generated column that lost its `as(...)` gets.
+TEST_CASE("codegen: CREATE TABLE - WITHOUT ROWID whose PRIMARY KEY was left out") {
+    auto result = generateFull("CREATE TABLE t (a INTEGER, PRIMARY KEY(zz)) WITHOUT ROWID");
+    REQUIRE(result.code == "/* CREATE TABLE t \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column 'zz', which the table does not "
+                                         "declare: SQLite refuses such a CREATE TABLE, so the generated table has "
+                                         "no primary_key()"},
+                                        {"table t is WITHOUT ROWID and the PRIMARY KEY it declares was left out, so "
+                                         "the table is not generated"}});
+}
+
+// A CHECK qualified with a table other than the one it is declared on is that other table's column,
+// and is written as that table declares it rather than as this one does — the declarations of the
+// table being generated answer for its own name only. sqlite3 3.51.0 refuses such a CREATE TABLE
+// ("no such column: o.k"), so there is no valid statement behind this shape; the member written
+// stays the one `o` declares rather than a member of `O` picked from `t`'s columns.
+TEST_CASE("codegen: CREATE TABLE - a CHECK qualified with another table") {
+    auto result = generateLastOfBatch("CREATE TABLE o (\"K\" INTEGER);"
+                                      "CREATE TABLE t (a INTEGER, CHECK(o.k > 0));");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        check(c(&O::K) > 0)));");
+    REQUIRE(result.warnings.empty());
+}
+
 TEST_CASE("codegen: CREATE TABLE - WITHOUT ROWID") {
     auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID");
     REQUIRE(result == "struct T {\n"

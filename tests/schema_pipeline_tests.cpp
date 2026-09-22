@@ -1271,6 +1271,18 @@ TEST_CASE("processMultiSql: a table constraint spelling its column otherwise com
                                    "CREATE TABLE t (\"Id\" INTEGER, v TEXT, FOREIGN KEY(ID) REFERENCES o(K));")));
     requireCompiles(prologue +
                     joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, CHECK(ID > 0));")));
+
+    // A key back into the table's own PRIMARY KEY without naming the parent's column takes the
+    // spelling from that key's constraint, in both the places a key can be written. sqlite3 3.51.0
+    // takes both statements and enforces the key with PRAGMA foreign_keys=ON, and this is the last
+    // place inside a CREATE TABLE that wrote a member from a constraint's own spelling: the two
+    // forms came out as `references(&T::ID)` beside `primary_key(&T::Id)` — one column of one table
+    // written as two different members of one `make_table`, and only a compiler ever saw it.
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, PRIMARY KEY(ID), "
+                                                      "FOREIGN KEY(v) REFERENCES t);")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql(
+                                   "CREATE TABLE t (\"Id\" INTEGER, v TEXT REFERENCES t, PRIMARY KEY(ID));")));
 }
 
 // The same two spellings a column constraint can be written with: a CHECK that qualifies the column

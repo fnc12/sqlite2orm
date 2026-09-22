@@ -4,6 +4,8 @@
 
 #include <sqlite2orm/utils.h>
 
+#include <utility>
+
 namespace sqlite2orm {
 
     bool CodeGeneratorContext::useCpp20ColumnAliasStyle() const {
@@ -71,16 +73,44 @@ namespace sqlite2orm {
         return nullptr;
     }
 
-    std::string CodeGeneratorContext::constraintColumnMember(std::string_view columnName) {
-        if (this->constraintColumnMemberByNormalizedName.empty()) {
+    std::optional<std::string> CodeGeneratorContext::constraintColumnMember(std::string_view columnName) const {
+        if (!this->constraintColumnsTableIsBeingGenerated()) {
             return toCppIdentifier(columnName);
         }
         const auto memberIterator =
             this->constraintColumnMemberByNormalizedName.find(normalizeSqlIdentifier(columnName));
-        if (memberIterator != this->constraintColumnMemberByNormalizedName.end()) {
-            return memberIterator->second;
+        if (memberIterator == this->constraintColumnMemberByNormalizedName.end()) {
+            return std::nullopt;
         }
-        this->unknownConstraintColumns.push_back(stripIdentifierQuotes(columnName));
+        return memberIterator->second;
+    }
+
+    std::string CodeGeneratorContext::clauseColumnMember(std::string_view columnName) {
+        if (const auto member = this->constraintColumnMember(columnName)) {
+            return *member;
+        }
+        this->unresolvedClauseColumns.push_back(stripIdentifierQuotes(columnName));
+        return toCppIdentifier(columnName);
+    }
+
+    std::vector<std::string> CodeGeneratorContext::takeUnresolvedClauseColumns() {
+        return std::exchange(this->unresolvedClauseColumns, {});
+    }
+
+    bool CodeGeneratorContext::constraintColumnsTableIsBeingGenerated() const {
+        return !this->constraintColumnTableNameNormalized.empty();
+    }
+
+    bool CodeGeneratorContext::constraintColumnsAreOfTable(std::string_view tableName) const {
+        return this->constraintColumnsTableIsBeingGenerated() &&
+               normalizeSqlIdentifier(tableName) == this->constraintColumnTableNameNormalized;
+    }
+
+    std::string CodeGeneratorContext::sourceColumnMember(std::string_view tableName,
+                                                         std::string_view columnName) const {
+        if (const SourceTableColumn* declared = this->findSourceTableColumn(tableName, columnName)) {
+            return toCppIdentifier(declared->sqlName);
+        }
         return toCppIdentifier(columnName);
     }
 

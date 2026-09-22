@@ -337,6 +337,13 @@ namespace sqlite2orm {
 
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 
+    /**
+     *  Whether a column name is one of the three names SQLite answers a rowid table's implicit row id
+     *  with — `rowid`, `oid`, `_rowid_` — and no column of that name was declared. Quoting them
+     *  changes nothing, `CHECK("rowid" > 0)` is the row id as much as `CHECK(rowid > 0)` is.
+     */
+    bool isImplicitRowIdName(std::string_view sqlIdentifier);
+
     bool endsWith(std::string_view text, std::string_view suffix);
     /** The `...` of `auto <variableName> = storage.select(...);`, if `generated` has exactly that form. */
     std::optional<std::string> extractStorageSelectArgument(std::string_view generated, std::string_view variableName);

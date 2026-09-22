@@ -1046,6 +1046,11 @@ namespace sqlite2orm {
         return toLowerAscii(stripIdentifierQuotes(sqlIdentifier));
     }
 
+    bool isImplicitRowIdName(std::string_view sqlIdentifier) {
+        const auto normalized = normalizeSqlIdentifier(sqlIdentifier);
+        return normalized == "rowid" || normalized == "oid" || normalized == "_rowid_";
+    }
+
     bool endsWith(std::string_view text, std::string_view suffix) {
         return text.size() >= suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
     }

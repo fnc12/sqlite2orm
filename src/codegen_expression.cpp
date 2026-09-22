@@ -1005,29 +1005,19 @@ namespace sqlite2orm {
             // sqlite_orm deduces one `T` from both bounds of `between(A, T, T)`, so bounds
             // generated as different C++ types do not compile — and SQLite takes the SQL either
             // way, `a BETWEEN 1 AND 3000000000` as readily as `a BETWEEN 1 AND 'x'`.
-            switch (betweenBoundsForm(*betweenNode->low, *betweenNode->high)) {
-                case BetweenBoundsForm::asWritten:
+            switch (oneDeducedTypeForm({betweenNode->low.get(), betweenNode->high.get()})) {
+                case OneDeducedTypeForm::asWritten:
                     break;
-                case BetweenBoundsForm::widenedToInt64: {
-                    // Only a bound the generated code already casts carries the type `int64_t`
-                    // itself; a constant past the `int` range is typed by its magnitude, as the
-                    // `long` that is not the `long long` an `int64_t` is on macOS. So every bound
-                    // but that one is cast, rather than the narrower of the two.
-                    const auto widened = [](const AstNode& bound, std::string code) {
-                        return generatedValueCppType(bound) == GeneratedValueCppType::integer64Cast
-                                   ? code
-                                   : "static_cast<int64_t>(" + code + ")";
-                    };
-                    lowCode = widened(*betweenNode->low, std::move(lowCode));
-                    highCode = widened(*betweenNode->high, std::move(highCode));
+                case OneDeducedTypeForm::widenedToInt64:
+                    lowCode = widenToInt64(*betweenNode->low, std::move(lowCode));
+                    highCode = widenToInt64(*betweenNode->high, std::move(highCode));
                     this->context.recordComment(kCommentBetweenBoundsWidened);
                     break;
-                }
-                case BetweenBoundsForm::noCommonType:
+                case OneDeducedTypeForm::noCommonType:
                     warnings.push_back(sourceSpanWarning(
                         "sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and " +
-                            betweenBoundTypeDescription(*betweenNode->low) + " next to " +
-                            betweenBoundTypeDescription(*betweenNode->high) +
+                            generatedValueTypeDescription(*betweenNode->low) + " next to " +
+                            generatedValueTypeDescription(*betweenNode->high) +
                             " is not one type, so the generated code does not compile",
                         *betweenNode));
                     break;
@@ -1193,6 +1183,7 @@ namespace sqlite2orm {
             }
             auto operandResult = this->coordinator.generateNode(*inNode->operand);
             auto decisionPoints = std::move(operandResult.decisionPoints);
+            auto warnings = std::move(operandResult.warnings);
 
             if (auto* col = dynamic_cast<const ColumnRefNode*>(&generatedOperandNode(*inNode->operand))) {
                 // Every value of the list is compared against the column, not just the first one,
@@ -1203,25 +1194,65 @@ namespace sqlite2orm {
                 }
             }
 
+            std::vector<const AstNode*> valueNodes;
+            valueNodes.reserve(inNode->values.size());
+            for (const auto& value: inNode->values) {
+                valueNodes.push_back(value.get());
+            }
+            // sqlite_orm deduces one `E` from the whole of `in(A, std::initializer_list<E>)`, so
+            // values generated as different C++ types do not compile — and SQLite takes the SQL
+            // either way, `x IN (1, 3000000000)` as readily as `x IN (1, 'a')`.
+            const OneDeducedTypeForm valuesForm = oneDeducedTypeForm(valueNodes);
+
             std::string valuesList;
             for (size_t valueIndex = 0; valueIndex < inNode->values.size(); ++valueIndex) {
-                auto valueResult = this->coordinator.generateNode(*inNode->values.at(valueIndex));
+                const AstNode& value = *inNode->values.at(valueIndex);
+                auto valueResult = this->coordinator.generateNode(value);
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(valueResult.decisionPoints.begin()),
                                       std::make_move_iterator(valueResult.decisionPoints.end()));
+                appendUniqueWarnings(warnings, valueResult.warnings);
                 if (valueIndex > 0)
                     valuesList += ", ";
-                valuesList += valueResult.code;
+                valuesList += valuesForm == OneDeducedTypeForm::widenedToInt64
+                                  ? widenToInt64(value, std::move(valueResult.code))
+                                  : valueResult.code;
             }
+            switch (valuesForm) {
+                case OneDeducedTypeForm::asWritten:
+                    break;
+                case OneDeducedTypeForm::widenedToInt64:
+                    this->context.recordComment(kCommentInValuesWidened);
+                    break;
+                case OneDeducedTypeForm::noCommonType: {
+                    // The warning names the pair of values that proves the list has no one type,
+                    // which in a longer list is not necessarily the first two of them.
+                    const auto [firstValue, secondValue] = firstNoCommonTypePair(valueNodes);
+                    warnings.push_back(sourceSpanWarning(
+                        "sqlite_orm's in(A, std::initializer_list<E>) deduces one C++ type from every value of an IN "
+                        "list, and " +
+                            generatedValueTypeDescription(*firstValue) + " next to " +
+                            generatedValueTypeDescription(*secondValue) +
+                            " is not one type, so the generated code does not compile",
+                        *inNode));
+                    break;
+                }
+            }
+
+            // An empty list has no value to deduce that `E` from at all — `in(&User::x, {})` does
+            // not compile — while SQLite reads `x IN ()` as a test that is simply always false.
+            // An empty vector names a type instead, and sqlite_orm serializes it to the same
+            // `IN ()`, binding nothing.
+            const std::string valuesCode = inNode->values.empty() ? "std::vector<int64_t>{}" : "{" + valuesList + "}";
 
             // Every value of the list is delimited by the commas around it, so only the operand
             // stands where the SQL an AND or an OR serializes into would run into the predicate.
             std::string inOperandCode =
                 groupPredicateArgument(std::move(operandResult.code), *inNode->operand, this->context);
             this->context.recordFormWithoutDefaultConstructor("IN");
-            std::string inCode = "in(" + inOperandCode + ", {" + valuesList + "})";
+            std::string inCode = "in(" + inOperandCode + ", " + valuesCode + ")";
             if (inNode->negated) {
-                std::string notInCode = "not_in(" + inOperandCode + ", {" + valuesList + "})";
+                std::string notInCode = "not_in(" + inOperandCode + ", " + valuesCode + ")";
                 std::string negatedInCode = "!" + inCode;
                 const bool useOperator = policyEquals(this->context.codeGenPolicy, "negation_style", "operator_excl");
                 const std::string& chosenNegation = useOperator ? negatedInCode : notInCode;
@@ -1232,9 +1263,9 @@ namespace sqlite2orm {
                                                        chosenNegation,
                                                        {Option{"not_in", notInCode, "use not_in()"},
                                                         Option{"operator_excl", negatedInCode, "use the ! operator"}}});
-                return CodeGenResult{chosenNegation, std::move(decisionPoints)};
+                return CodeGenResult{chosenNegation, std::move(decisionPoints), std::move(warnings)};
             }
-            return CodeGenResult{inCode, std::move(decisionPoints)};
+            return CodeGenResult{inCode, std::move(decisionPoints), std::move(warnings)};
         } else if (auto* likeNode = dynamic_cast<const LikeNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*likeNode->operand);
             auto patternResult = this->coordinator.generateNode(*likeNode->pattern);

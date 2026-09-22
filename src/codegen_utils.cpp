@@ -504,6 +504,16 @@ namespace sqlite2orm {
         "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
         "signed 64-bit number anyway, TRUE and FALSE among them.";
 
+    const std::string kCommentInValuesWidened =
+        "The values of an IN list are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`in(A, std::initializer_list<E>)` deduces one C++ type from the whole list, and C++ types "
+        "an integer constant by its magnitude, so `in(&User::a, {1, 3000000000})` is an `int` next "
+        "to a 64-bit constant and does not compile. The cast goes on every value that is not "
+        "already an `int64_t`, rather than on the narrower ones: the type a 64-bit constant is "
+        "given is `long` where an `int64_t` is a `long long`, and the two are distinct types even "
+        "where both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as "
+        "a signed 64-bit number anyway, TRUE and FALSE among them.";
+
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
         "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
@@ -1830,42 +1840,85 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
-    BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high) {
-        const std::optional<GeneratedValueCppType> lowType = generatedValueCppType(low);
-        const std::optional<GeneratedValueCppType> highType = generatedValueCppType(high);
-        if (lowType && highType) {
-            if (*lowType == *highType) {
-                return BetweenBoundsForm::asWritten;
+    OneDeducedTypeForm oneDeducedTypeForm(const std::vector<const AstNode*>& nodes) {
+        bool everyTypedNodeInteger = true;
+        bool everyTypedNodeOneType = true;
+        std::optional<GeneratedValueCppType> firstType;
+        bool bindParameterSeen = false;
+        bool columnPointerSeen = false;
+        bool expressionNodeSeen = false;
+        for (const AstNode* node: nodes) {
+            const std::optional<GeneratedValueCppType> type = generatedValueCppType(*node);
+            if (type) {
+                if (!firstType) {
+                    firstType = type;
+                } else if (*firstType != *type) {
+                    everyTypedNodeOneType = false;
+                }
+                if (!isIntegerCppType(*type)) {
+                    everyTypedNodeInteger = false;
+                }
+            } else if (generatesBindParameter(*node)) {
+                // The bind parameter is typed by the caller, who declares `bindParamN` himself, so
+                // nothing said about the other members rules its type out.
+                bindParameterSeen = true;
+            } else if (generatesColumnPointer(*node)) {
+                columnPointerSeen = true;
+            } else {
+                expressionNodeSeen = true;
             }
-            // Two integer constants of different types are the one case with a type to widen to:
+        }
+        // A member that names something sqlite_orm serializes — a column pointer, an expression
+        // node — shares a type with no constant beside it.
+        if (firstType && (columnPointerSeen || expressionNodeSeen)) {
+            return OneDeducedTypeForm::noCommonType;
+        }
+        if (!everyTypedNodeOneType) {
+            // Integer constants of different types are the one case with a type to widen to:
             // every INTEGER SQLite carries fits an int64, and a value bound as one is the value
-            // bound as an `int` or as a `bool` — same storage class, same number.
-            return isIntegerCppType(*lowType) && isIntegerCppType(*highType) ? BetweenBoundsForm::widenedToInt64
-                                                                             : BetweenBoundsForm::noCommonType;
+            // bound as an `int` or as a `bool` — same storage class, same number. What is left
+            // unwidened beside them is a bind parameter, whose type this does not decide.
+            return everyTypedNodeInteger ? OneDeducedTypeForm::widenedToInt64 : OneDeducedTypeForm::noCommonType;
         }
-        // The bind parameter is typed by the caller, who declares `bindParamN` himself, so nothing
-        // said about the other bound rules its type out.
-        if (generatesBindParameter(low) || generatesBindParameter(high)) {
-            return BetweenBoundsForm::asWritten;
+        if (firstType || bindParameterSeen) {
+            return OneDeducedTypeForm::asWritten;
         }
-        if (!lowType && !highType) {
-            // A pointer to a member is never one of the node types sqlite_orm builds from an
-            // expression, so those two never meet. Two columns, on the other hand, are typed by
-            // the schema and two expression nodes by what they are built over, and neither is
-            // known here — `abs(&User::a)` and `abs(&User::b)` are the same type when the two
-            // columns are.
-            return generatesColumnPointer(low) != generatesColumnPointer(high) ? BetweenBoundsForm::noCommonType
-                                                                               : BetweenBoundsForm::asWritten;
-        }
-        // One bound is a constant and the other names something sqlite_orm serializes — a column
-        // pointer, an expression node — and no constant shares a type with one of those.
-        return BetweenBoundsForm::noCommonType;
+        // Nothing here is typed. A pointer to a member is never one of the node types sqlite_orm
+        // builds from an expression, so those two never meet. Members of one of those kinds, on
+        // the other hand, are typed by the schema and by what they are built over, and neither is
+        // known here — `abs(&User::a)` and `abs(&User::b)` are the same type when the two columns
+        // are.
+        return columnPointerSeen && expressionNodeSeen ? OneDeducedTypeForm::noCommonType
+                                                       : OneDeducedTypeForm::asWritten;
     }
 
-    std::string betweenBoundTypeDescription(const AstNode& bound) {
-        const std::optional<GeneratedValueCppType> type = generatedValueCppType(bound);
+    std::string widenToInt64(const AstNode& node, std::string code) {
+        const std::optional<GeneratedValueCppType> type = generatedValueCppType(node);
+        // A member this cannot type is a bind parameter the caller declares himself, and a cast
+        // over one would change the value it binds rather than only its type — `bindParam1` held
+        // as a `double` would reach SQLite truncated. It is left as written, and the widening of
+        // the constants beside it is what a declaration of `int64_t` meets.
+        if (!type || *type == GeneratedValueCppType::integer64Cast) {
+            return code;
+        }
+        return "static_cast<int64_t>(" + code + ")";
+    }
+
+    std::pair<const AstNode*, const AstNode*> firstNoCommonTypePair(const std::vector<const AstNode*>& nodes) {
+        for (size_t firstIndex = 0; firstIndex + 1 < nodes.size(); ++firstIndex) {
+            for (size_t secondIndex = firstIndex + 1; secondIndex < nodes.size(); ++secondIndex) {
+                if (oneDeducedTypeForm({nodes[firstIndex], nodes[secondIndex]}) == OneDeducedTypeForm::noCommonType) {
+                    return {nodes[firstIndex], nodes[secondIndex]};
+                }
+            }
+        }
+        return {nullptr, nullptr};
+    }
+
+    std::string generatedValueTypeDescription(const AstNode& node) {
+        const std::optional<GeneratedValueCppType> type = generatedValueCppType(node);
         if (!type) {
-            return generatesColumnPointer(bound) ? "a pointer to a column" : "a sqlite_orm expression";
+            return generatesColumnPointer(node) ? "a pointer to a column" : "a sqlite_orm expression";
         }
         switch (*type) {
             case GeneratedValueCppType::integer32:

@@ -1390,8 +1390,158 @@ TEST_CASE("codegen: NOT IN with the operator_excl negation policy") {
                            Option{"operator_excl", "!in(&User::a, {1, 2})", "use the ! operator"}}});
 }
 
+// sqlite_orm's `in(A, std::initializer_list<E>)` deduces one `E` from the whole list, and C++
+// types an integer constant by its magnitude, so `in(&User::a, {1, 3000000000})` is an `int` next
+// to a 64-bit constant and does not compile — while sqlite3 3.45.1 and 3.51 both take the SQL and
+// answer 0 for it. The cast gives every value one type; the values it carries are pinned in
+// "runtime: IN list values of two integer widths read back as SQLite computes them".
+TEST_CASE("codegen: IN list values of two integer widths are widened to one") {
+    // The cast goes on every value rather than on the narrower ones: a 64-bit constant is given
+    // the first of `long` and `long long` it fits in, which is the `long` that is not the
+    // `long long` an `int64_t` is on macOS, so casting only the `int`s leaves two types behind.
+    REQUIRE(generate("a IN (1, 3000000000)") ==
+            "in(&User::a, {static_cast<int64_t>(1), static_cast<int64_t>(3000000000)})");
+    REQUIRE(generate("a IN (3000000000, 1)") ==
+            "in(&User::a, {static_cast<int64_t>(3000000000), static_cast<int64_t>(1)})");
+    REQUIRE(generate("a IN (-1, 3000000000)") ==
+            "in(&User::a, {static_cast<int64_t>(-1), static_cast<int64_t>(3000000000)})");
+    REQUIRE(generate("a NOT IN (1, 3000000000)") ==
+            "not_in(&User::a, {static_cast<int64_t>(1), static_cast<int64_t>(3000000000)})");
+    // A list longer than two takes the widening whichever of its values is the wide one — this is
+    // the hex form the card reports, an `int` next to an `int64_t` the generated code already
+    // casts, which joins the cast rather than taking a second one of its own.
+    REQUIRE(generate("a IN (1, 2, 0xDEADBEEF)") ==
+            "in(&User::a, {static_cast<int64_t>(1), static_cast<int64_t>(2), static_cast<int64_t>(0xDEADBEEF)})");
+    // TRUE is the integer 1 for SQLite, so a `bool` value widens with the rest of them.
+    REQUIRE(generate("a IN (1, TRUE)") == "in(&User::a, {static_cast<int64_t>(1), static_cast<int64_t>(true)})");
+    // A 64-bit constant and a cast hex literal are 64 bits wide both, and still two types: the
+    // `long` of the one is not the `int64_t` of the other wherever `int64_t` is a `long long`.
+    REQUIRE(generate("a IN (3000000000, 0xFFFFFFFF)") ==
+            "in(&User::a, {static_cast<int64_t>(3000000000), static_cast<int64_t>(0xFFFFFFFF)})");
+    // A hex literal that stays signed is typed by its digits rather than by a cast, and nine
+    // significant digits is where it stops being an `int`, so both sides of that line are pinned
+    // here: `0x100000000` next to an `int` is two types and takes the cast…
+    REQUIRE(generate("a IN (1, 0x100000000)") ==
+            "in(&User::a, {static_cast<int64_t>(1), static_cast<int64_t>(0x100000000)})");
+    // …while next to a 64-bit decimal constant it is the same type already — both are the first
+    // of `long` and `long long` that holds them — so that list is left alone.
+    REQUIRE(generate("a IN (0x100000000, 3000000000)") == "in(&User::a, {0x100000000, 3000000000})");
+    // Values that are one type already are left as written, whichever type that is.
+    REQUIRE(generate("a IN (1, 2, 3)") == "in(&User::a, {1, 2, 3})");
+    REQUIRE(generate("a IN (1, 0x7FFFFFFF)") == "in(&User::a, {1, 0x7FFFFFFF})");
+    REQUIRE(generate("a IN (3000000000, 4000000000)") == "in(&User::a, {3000000000, 4000000000})");
+    REQUIRE(generate("a IN (0xFFFFFFFF, 0xFFFFFFFF)") ==
+            "in(&User::a, {static_cast<int64_t>(0xFFFFFFFF), static_cast<int64_t>(0xFFFFFFFF)})");
+    // A single value deduces `E` by itself and has nothing to disagree with.
+    REQUIRE(generate("a IN (3000000000)") == "in(&User::a, {3000000000})");
+}
+
+// Values with no C++ type to widen to have no working form at all: the initializer list takes one
+// type, and an integer next to a text, a real, a NULL, a blob, a column pointer or an expression
+// node is two. SQLite takes every one of these (`SELECT 1 IN (1, 'x')` answers 1 on 3.45.1 and on
+// 3.51), so the statement is generated and the warning says what the code does.
+TEST_CASE("codegen: IN list values with no common C++ type warn") {
+    const auto valuesWarning = [](const std::string& first, const std::string& second, size_t length) {
+        return std::vector<CodegenWarning>{
+            {"sqlite_orm's in(A, std::initializer_list<E>) deduces one C++ type from every value of an IN list, and " +
+                 first + " next to " + second + " is not one type, so the generated code does not compile",
+             SourceLocation{1, 1},
+             length}};
+    };
+    auto result = generateFull("a IN (1, 'x')");
+    REQUIRE(result.code == "in(&User::a, {1, \"x\"})");
+    REQUIRE(result.warnings == valuesWarning("an `int`", "a `const char*`", 13));
+
+    result = generateFull("a IN (1, 2.5)");
+    REQUIRE(result.code == "in(&User::a, {1, 2.5})");
+    REQUIRE(result.warnings == valuesWarning("an `int`", "a `double`", 13));
+
+    result = generateFull("a IN (NULL, 1)");
+    REQUIRE(result.code == "in(&User::a, {nullptr, 1})");
+    REQUIRE(result.warnings == valuesWarning("a `std::nullptr_t`", "an `int`", 14));
+
+    result = generateFull("a IN (x'41', 1)");
+    REQUIRE(result.code == "in(&User::a, {std::vector<char>{'\\x41'}, 1})");
+    REQUIRE(result.warnings == valuesWarning("a `std::vector<char>`", "an `int`", 15));
+
+    result = generateFull("a IN (b, 3)");
+    REQUIRE(result.code == "in(&User::a, {&User::b, 3})");
+    REQUIRE(result.warnings == valuesWarning("a pointer to a column", "an `int`", 11));
+
+    result = generateFull("a IN (1, abs(b))");
+    REQUIRE(result.code == "in(&User::a, {1, abs(&User::b)})");
+    REQUIRE(result.warnings == valuesWarning("an `int`", "a sqlite_orm expression", 16));
+
+    // A pointer to a member is none of the node types sqlite_orm builds an expression out of,
+    // whichever column and whichever expression the two values stand for.
+    result = generateFull("a IN (b, abs(b))");
+    REQUIRE(result.code == "in(&User::a, {&User::b, abs(&User::b)})");
+    REQUIRE(result.warnings == valuesWarning("a pointer to a column", "a sqlite_orm expression", 16));
+
+    // The warning names the pair that proves the list has no one type, which in a longer list is
+    // not the first two values: `1` and `3000000000` would have been widened together, and it is
+    // the text beside them that no cast reaches.
+    result = generateFull("a IN (1, 3000000000, 'x')");
+    REQUIRE(result.code == "in(&User::a, {1, 3000000000, \"x\"})");
+    REQUIRE(result.warnings == valuesWarning("an `int`", "a `const char*`", 25));
+
+    // A bind parameter is typed by the caller and proves nothing, so it is not the value named
+    // either — nor does its presence hide a conflict the other two values do prove.
+    result = generateFull("a IN (1, ?, 'x')");
+    REQUIRE(result.code == "in(&User::a, {1, bindParam1, \"x\"})");
+    REQUIRE(result.warnings.size() == 2);
+    REQUIRE(result.warnings.at(1) == valuesWarning("an `int`", "a `const char*`", 16).at(0));
+
+    // Two integer values that would have been widened together do not hide what stands beside
+    // them: nothing widens to a pointer to a member, so this list is warned about rather than
+    // cast.
+    result = generateFull("a IN (1, 3000000000, b)");
+    REQUIRE(result.code == "in(&User::a, {1, 3000000000, &User::b})");
+    REQUIRE(result.warnings == valuesWarning("an `int`", "a pointer to a column", 23));
+
+    // A decimal literal past the int64 range is a REAL for SQLite and a `double` here, so it is
+    // the integer value beside it that has nothing to meet.
+    result = generateFull("a IN (1, 99999999999999999999)");
+    REQUIRE(result.code == "in(&User::a, {1, 99999999999999999999.0})");
+    REQUIRE(result.warnings == valuesWarning("an `int`", "a `double`", 30));
+
+    // The two 64-bit integer types are named apart, because they are two types: a constant past
+    // the `int` range is given the first of `long` and `long long` it fits in, while the cast a
+    // hex literal carries names `int64_t` itself.
+    result = generateFull("a IN (3000000000, 2.5)");
+    REQUIRE(result.code == "in(&User::a, {3000000000, 2.5})");
+    REQUIRE(result.warnings == valuesWarning("a 64-bit integer constant", "a `double`", 22));
+
+    result = generateFull("a IN (0xFFFFFFFF, 'x')");
+    REQUIRE(result.code == "in(&User::a, {static_cast<int64_t>(0xFFFFFFFF), \"x\"})");
+    REQUIRE(result.warnings == valuesWarning("an `int64_t`", "a `const char*`", 22));
+}
+
+// Values whose type this cannot know are left alone rather than warned about: two columns are
+// typed by the schema and two expression nodes by what they are built over — `abs(&User::a)` and
+// `abs(&User::b)` are the same type when the two columns are — and a bind parameter is typed by
+// the caller, who declares `bindParam1` himself.
+TEST_CASE("codegen: IN list values this cannot type are left as written") {
+    REQUIRE(generateFull("a IN (b, b)").warnings.empty());
+    REQUIRE(generateFull("a IN (b, c)").warnings.empty());
+    REQUIRE(generateFull("a IN (abs(b), abs(c))").warnings.empty());
+    REQUIRE(generateFull("a IN ('x', 'y')").warnings.empty());
+    REQUIRE(generate("a IN (1, ?)") == "in(&User::a, {1, bindParam1})");
+    // A bind parameter is not cast along with the constants beside it: the cast would change the
+    // value a `double` variable binds rather than only its type, and the widening it meets is the
+    // `int64_t` the caller declares.
+    REQUIRE(generate("a IN (1, ?, 3000000000)") ==
+            "in(&User::a, {static_cast<int64_t>(1), bindParam1, static_cast<int64_t>(3000000000)})");
+}
+
+// An empty list has no value to deduce `E` from, so `in(&User::a, {})` does not compile at all:
+// `no matching function for call to 'in(int User::*, <brace-enclosed initializer list>)'`. SQLite
+// takes `a IN ()` and answers 0 for it, so the list is spelled as an empty vector, which names a
+// type and serializes to the same `IN ()`. What it reads back is pinned in
+// "runtime: IN list values of two integer widths read back as SQLite computes them".
 TEST_CASE("codegen: IN with empty list") {
-    REQUIRE(generate("a IN ()") == "in(&User::a, {})");
+    REQUIRE(generate("a IN ()") == "in(&User::a, std::vector<int64_t>{})");
+    REQUIRE(generate("a NOT IN ()") == "not_in(&User::a, std::vector<int64_t>{})");
 }
 
 TEST_CASE("codegen: LIKE") {

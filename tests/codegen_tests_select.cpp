@@ -942,7 +942,8 @@ TEST_CASE("codegen: an iif in its three-argument form is not widened") {
 // "codegen: an argument under a dropped COLLATE keeps its name and type" spells out in full.
 TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL keeps the type sqlite_orm gives it") {
     REQUIRE(generate("SELECT 1 BETWEEN 2 AND 3;") == "auto rows = storage.select(between(1, 2, 3));");
-    REQUIRE(generate("SELECT a IN () FROM users;") == "auto rows = storage.select(in(&Users::a, {}));");
+    REQUIRE(generate("SELECT a IN () FROM users;") ==
+            "auto rows = storage.select(in(&Users::a, std::vector<int64_t>{}));");
     REQUIRE(generate("SELECT CAST(1 AS TEXT);") == "auto rows = storage.select(cast<std::string>(1));");
     REQUIRE(generate("SELECT length('x');") == "auto rows = storage.select(length(\"x\"));");
     REQUIRE(generate("SELECT upper('a') || 'x';") == "auto rows = storage.select(upper(\"a\") || \"x\");");

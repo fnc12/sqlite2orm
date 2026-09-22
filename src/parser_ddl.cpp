@@ -153,7 +153,19 @@ namespace sqlite2orm {
             auto operand = this->parser.parsePrimary();
             return std::make_unique<UnaryOperatorNode>(op, std::move(operand), location);
         }
-        return this->parser.parsePrimary();
+        auto value = this->parser.parsePrimary();
+        // Without the parentheses a DEFAULT is a literal value and not an expression, so an
+        // identifier written there names no column: SQLite reads it as a string, in every spelling
+        // and whether or not the table declares a column of that name. sqlite3 3.51.0 stores 'abc'
+        // for `DEFAULT abc`, `DEFAULT "abc"`, ``DEFAULT `abc` `` and `DEFAULT [abc]` alike, and
+        // stores 'a' for `DEFAULT a` beside a column named `a`.
+        if (const auto* columnRef = dynamic_cast<const ColumnRefNode*>(value.get())) {
+            auto literal =
+                std::make_unique<StringLiteralNode>(identifierAsStringLiteral(columnRef->columnName), value->location);
+            literal->sourceSpan = value->sourceSpan;
+            return literal;
+        }
+        return value;
     }
 
     void DdlParser::parseColumnConstraints(ColumnDef& columnDef) {

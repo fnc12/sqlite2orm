@@ -86,15 +86,36 @@ namespace sqlite2orm {
     }
 
     std::string CodeGeneratorContext::clauseColumnMember(std::string_view columnName) {
-        if (const auto member = this->constraintColumnMember(columnName)) {
+        if (!this->constraintColumnsTableIsBeingGenerated()) {
+            return toCppIdentifier(columnName);
+        }
+        const auto member = this->constraintColumnMember(columnName);
+        if (member && this->clauseColumnRule == ClauseColumnRule::columnOrDoubleQuotedString) {
             return *member;
         }
-        this->unresolvedClauseColumns.push_back(stripIdentifierQuotes(columnName));
-        return toCppIdentifier(columnName);
+        // Either the table declares no column of that name, or the clause takes no column reference
+        // at all: there is no member this clause may be written from, and the site that asked for
+        // the expression answers with a diagnostic instead of with the clause.
+        this->refusedClauseColumns.push_back(stripIdentifierQuotes(columnName));
+        return member.value_or(toCppIdentifier(columnName));
     }
 
-    std::vector<std::string> CodeGeneratorContext::takeUnresolvedClauseColumns() {
-        return std::exchange(this->unresolvedClauseColumns, {});
+    std::optional<std::string> CodeGeneratorContext::clauseColumnAsStringLiteral(std::string_view columnName) const {
+        if (!this->constraintColumnsTableIsBeingGenerated() ||
+            this->clauseColumnRule != ClauseColumnRule::columnOrDoubleQuotedString) {
+            return std::nullopt;
+        }
+        if (columnName.size() < 2 || columnName.front() != '"' || columnName.back() != '"') {
+            return std::nullopt;
+        }
+        if (this->constraintColumnMember(columnName)) {
+            return std::nullopt;
+        }
+        return sqlStringLiteralText(columnName);
+    }
+
+    std::vector<std::string> CodeGeneratorContext::takeRefusedClauseColumns() {
+        return std::exchange(this->refusedClauseColumns, {});
     }
 
     bool CodeGeneratorContext::constraintColumnsTableIsBeingGenerated() const {

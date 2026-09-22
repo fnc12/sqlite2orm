@@ -130,6 +130,13 @@ namespace sqlite2orm {
                     return CodeGenResult{"get<" + aliasIt->second + ">()", {}};
                 }
             }
+            // A double-quoted name a CHECK or a generated column of the table being generated
+            // writes, and that table declares no column of, is no column reference at all: SQLite
+            // reads it as a string literal and takes the statement. A qualified one it does not
+            // ("no such column: t.zz"), which is why this stands under the bare form alone.
+            if (const auto text = this->context.clauseColumnAsStringLiteral(columnRef->columnName)) {
+                return CodeGenResult{cppStringLiteral(*text), {}};
+            }
             // Inside a CREATE TABLE — a CHECK, a generated column or a DEFAULT — the name is resolved
             // against the columns that table declares, so a spelling SQLite reads as the same column is
             // written as the member the declaration produced. Anywhere else the name itself.

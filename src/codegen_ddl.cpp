@@ -1242,24 +1242,27 @@ namespace sqlite2orm {
         // compiles at CREATE TABLE time, so it is generated as an ordinary expression.
         //
         // A column reference in such a clause is resolved against the columns this table declares
-        // (see the map filled below), and a name no declaration answers has no member pointer to be
-        // written as. There is no code for that case, so it is handed back instead of the code: a
-        // caller cannot reach the generated text without saying what its clause becomes without it.
+        // (see the map filled below) under the `ClauseColumnRule` the caller names, because what a
+        // name written in one stands for is not the same in every clause. A name the rule leaves no
+        // member to be written from is handed back instead of the code, so that a caller cannot
+        // reach the generated text without saying what its clause becomes without it.
         struct ClauseExpression {
-            /** Generated code, or nothing when `unresolvedColumns` is not empty. */
+            /** Generated code, or nothing when `refusedColumns` is not empty. */
             std::optional<std::string> code;
-            /** Names the clause referenced that this table declares no column of. */
-            std::vector<std::string> unresolvedColumns;
+            /** Names the clause referenced that no member may be written from under its rule. */
+            std::vector<std::string> refusedColumns;
         };
-        auto clauseExpressionCode = [this, &warnings](const AstNode& expression, bool stored) -> ClauseExpression {
+        auto clauseExpressionCode =
+            [this, &warnings](const AstNode& expression, bool stored, ClauseColumnRule rule) -> ClauseExpression {
+            this->context.clauseColumnRule = rule;
             auto result = stored ? this->coordinator.generateStoredExpression(expression)
                                  : this->coordinator.generateNode(expression);
             warnings.insert(warnings.end(),
                             std::make_move_iterator(result.warnings.begin()),
                             std::make_move_iterator(result.warnings.end()));
-            auto unresolvedColumns = this->context.takeUnresolvedClauseColumns();
-            if (!unresolvedColumns.empty()) {
-                return {std::nullopt, std::move(unresolvedColumns)};
+            auto refusedColumns = this->context.takeRefusedClauseColumns();
+            if (!refusedColumns.empty()) {
+                return {std::nullopt, std::move(refusedColumns)};
             }
             return {std::move(result.code), {}};
         };
@@ -1311,7 +1314,8 @@ namespace sqlite2orm {
             ~ClearConstraintColumnMembers() {
                 context->constraintColumnMemberByNormalizedName.clear();
                 context->constraintColumnTableNameNormalized.clear();
-                context->unresolvedClauseColumns.clear();
+                context->refusedClauseColumns.clear();
+                context->clauseColumnRule = ClauseColumnRule::columnOrDoubleQuotedString;
             }
         } clearConstraintColumnMembers{&this->context};
 
@@ -1384,15 +1388,20 @@ namespace sqlite2orm {
                 primaryKeyGenerated = true;
             }
             if (column.defaultValue) {
-                const auto defaultClause = clauseExpressionCode(*column.defaultValue, true);
+                // Only a parenthesized DEFAULT reaches here as an expression — an identifier written
+                // without the parentheses is a string to SQLite and the parser reads it as one — and
+                // an expression DEFAULT has to be constant, so SQLite refuses every column reference
+                // in it, in every spelling and whether or not the table declares such a column.
+                const auto defaultClause = clauseExpressionCode(*column.defaultValue, true, ClauseColumnRule::noColumn);
                 if (!defaultClause.code) {
-                    // SQLite refuses a DEFAULT naming any column at all ("default value of column
-                    // [b] is not constant"), so this is an invalid statement either way; a member
-                    // pointer into a member that does not exist is the half of it this generator
-                    // can answer for.
-                    warnUnresolvedConstraintColumns(defaultClause.unresolvedColumns,
-                                                    "the DEFAULT of column '" + rawColumnName + "'",
-                                                    "the generated column has no default_value()");
+                    for (const std::string& columnName: defaultClause.refusedColumns) {
+                        warnings.push_back("the DEFAULT of column '" + rawColumnName + "' of table " + rawTableName +
+                                           " names column '" + columnName +
+                                           "': SQLite refuses a DEFAULT that is not constant (\"default value of "
+                                           "column [" +
+                                           rawColumnName +
+                                           "] is not constant\"), so the generated column has no default_value()");
+                    }
                 } else if (this->context.storedHexLiteralsTooBig.empty()) {
                     const std::string& defaultCode = *defaultClause.code;
                     makeExpression += ", default_value(" + defaultCode + ")";
@@ -1428,9 +1437,10 @@ namespace sqlite2orm {
                 }
             }
             if (column.checkExpression) {
-                const auto checkClause = clauseExpressionCode(*column.checkExpression, true);
+                const auto checkClause =
+                    clauseExpressionCode(*column.checkExpression, true, ClauseColumnRule::columnOrDoubleQuotedString);
                 if (!checkClause.code) {
-                    warnUnresolvedConstraintColumns(checkClause.unresolvedColumns,
+                    warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK on column '" + rawColumnName + "'",
                                                     "the generated column has no check()");
                 } else if (this->context.storedHexLiteralsTooBig.empty()) {
@@ -1472,12 +1482,14 @@ namespace sqlite2orm {
                 // it, and a column that lost its as(...) would be an ordinary column instead of a
                 // generated one, so the whole table is left out rather than reshaped.
                 const bool storedGenerated = column.generatedStorage == ColumnDef::GeneratedStorage::stored;
-                const auto generatedClause = clauseExpressionCode(*column.generatedExpression, storedGenerated);
+                const auto generatedClause = clauseExpressionCode(*column.generatedExpression,
+                                                                  storedGenerated,
+                                                                  ClauseColumnRule::columnOrDoubleQuotedString);
                 if (!generatedClause.code) {
                     // A generated column that lost its `as(...)` would be an ordinary column, which
                     // is a table SQLite does not have — the same reason the hex-literal case below
                     // leaves the whole table out rather than reshaping it.
-                    warnUnresolvedConstraintColumns(generatedClause.unresolvedColumns,
+                    warnUnresolvedConstraintColumns(generatedClause.refusedColumns,
                                                     "generated column '" + rawColumnName + "'",
                                                     "the table is not generated");
                     tableIsGeneratable = false;
@@ -1731,9 +1743,10 @@ namespace sqlite2orm {
         }
         for (const auto& tableCheck: createTable.checks) {
             if (tableCheck.expression) {
-                const auto checkClause = clauseExpressionCode(*tableCheck.expression, true);
+                const auto checkClause =
+                    clauseExpressionCode(*tableCheck.expression, true, ClauseColumnRule::columnOrDoubleQuotedString);
                 if (!checkClause.code) {
-                    warnUnresolvedConstraintColumns(checkClause.unresolvedColumns,
+                    warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK constraint",
                                                     "the generated table has no check()");
                     continue;

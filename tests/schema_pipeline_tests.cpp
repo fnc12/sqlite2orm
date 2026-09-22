@@ -1403,6 +1403,49 @@ TEST_CASE("processMultiSql: a table constraint spelling its column otherwise com
                                    "CREATE TABLE t (\"Id\" INTEGER, v TEXT REFERENCES t, PRIMARY KEY(ID));")));
 }
 
+// The names inside a table declaration that are not columns at all, and that the resolution above
+// had turned into member pointers into members no struct declares. A DEFAULT written without
+// parentheses is a string to SQLite in every spelling, and a double-quoted name no column answers
+// in a CHECK or a generated column is a string too — sqlite3 3.51.0 takes every statement below and
+// stores 'A' for the default, computes 'a' || 'zz' for the generated column and enforces the CHECK.
+// A literal test says what came out; only a compiler says whether `default_value("A")`,
+// `check(c(&T::v) != "zz")` and `as(c(&T::v) || "zz")` are things sqlite_orm can be handed.
+TEST_CASE("processMultiSql: a name in a table declaration that is not a column compiles") {
+    const std::string prologue = "#include <sqlite_orm/sqlite_orm.h>\n"
+                                 "#include <cstdint>\n"
+                                 "#include <optional>\n"
+                                 "#include <string>\n"
+                                 "#include <vector>\n"
+                                 "using namespace sqlite_orm;\n";
+
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql(
+                                   "CREATE TABLE t (\"a\" INT, b TEXT DEFAULT A, c TEXT DEFAULT \"a\"\"b\");")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql("CREATE TABLE t (v TEXT, CHECK(v <> \"zz\"));")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql("CREATE TABLE t (v TEXT CHECK(v <> \"zz\"));")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql("CREATE TABLE t (v TEXT, g TEXT AS (v || \"zz\"));")));
+}
+
+// A generated column is the one clause whose loss takes the whole table with it, and everything
+// that rests on the table goes along — so reading a double-quoted string as a column cost this
+// batch the table and the index as well as the child's foreign key. sqlite3 3.51.0 takes all three
+// statements and computes `g` as 'a' || 'sfx'.
+TEST_CASE("processMultiSql: a batch resting on a table with a double-quoted string compiles") {
+    const auto results = processMultiSql("CREATE TABLE t (v TEXT, g TEXT AS (v || \"sfx\"));\n"
+                                         "CREATE TABLE d (x INTEGER REFERENCES t(v));\n"
+                                         "CREATE INDEX ix ON t(v);");
+
+    REQUIRE(results.size() == 3);
+    REQUIRE(results[0].codegen.warnings.empty());
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 // The same two spellings a column constraint can be written with: a CHECK that qualifies the column
 // with the table it is declared on, and a generated column over one. SQLite takes both.
 TEST_CASE("processMultiSql: a column constraint spelling its column otherwise compiles") {

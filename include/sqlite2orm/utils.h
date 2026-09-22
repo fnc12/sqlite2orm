@@ -11,6 +11,14 @@ namespace sqlite2orm {
     std::string normalizeSqlName(std::string_view identifier);
 
     /**
+     *  The SQL string literal for what an identifier stands for where SQLite reads no name: the
+     *  quotes come off, a quote doubled inside a quoted identifier collapses, and the text is
+     *  written back between single quotes. `abc`, `"abc"`, `` `abc` `` and `[abc]` all give
+     *  `'abc'`, and `"a""b"` gives `'a"b'`.
+     */
+    std::string identifierAsStringLiteral(std::string_view identifier);
+
+    /**
      *  Correct spelling for a recognized glued/hyphenated/partial keyword typo
      *  (e.g. `PRIMARY_KEY` → `PRIMARY KEY`, `EXIST` → `EXISTS`), or empty if the token
      *  is not a known typo. Used to attach a "did you mean …?" suggestion to an error.

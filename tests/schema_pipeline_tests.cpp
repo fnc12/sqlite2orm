@@ -1247,6 +1247,50 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
                     joinGeneratedCode(results));
 }
 
+// A table constraint names its columns in whatever case and quoting the SQL was written with, while
+// the member each of them has to be written as is named after the column's declaration. SQLite reads
+// `ID`, `"Id"` and `[id]` as one and the same column and takes every statement below (checked against
+// sqlite3 3.51.0); before the constraint's column was resolved against the declarations, each of the
+// four generated a member pointer into a member the struct never declared — `&T::ID` beside
+// `std::optional<int64_t> Id` — and only a compiler ever saw it, the CLI having exited 0 with no
+// warning. A literal test cannot stand in for this one: it would fix whatever text came out.
+TEST_CASE("processMultiSql: a table constraint spelling its column otherwise compiles") {
+    const std::string prologue = "#include <sqlite_orm/sqlite_orm.h>\n"
+                                 "#include <cstdint>\n"
+                                 "#include <optional>\n"
+                                 "#include <string>\n"
+                                 "#include <vector>\n"
+                                 "using namespace sqlite_orm;\n";
+
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, PRIMARY KEY(ID));")));
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, UNIQUE(ID));")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql(
+                                   "CREATE TABLE o (k INTEGER PRIMARY KEY);\n"
+                                   "CREATE TABLE t (\"Id\" INTEGER, v TEXT, FOREIGN KEY(ID) REFERENCES o(K));")));
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, CHECK(ID > 0));")));
+}
+
+// The same two spellings a column constraint can be written with: a CHECK that qualifies the column
+// with the table it is declared on, and a generated column over one. SQLite takes both.
+TEST_CASE("processMultiSql: a column constraint spelling its column otherwise compiles") {
+    const auto results = processMultiSql("CREATE TABLE t (\"Id\" INTEGER CHECK(t.ID > 0), g INTEGER AS (ID + 1));");
+
+    for (const auto& result: results) {
+        REQUIRE(result.codegen.warnings.empty());
+    }
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 // A trigger's WHEN expression lives in an `optional_container`, which default-constructs it, so
 // only a WHEN clause whose every sqlite_orm type has a default constructor compiles. These are the
 // forms codegen claims are safe, and the claim is worth nothing unless a compiler agrees: before

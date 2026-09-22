@@ -130,7 +130,10 @@ namespace sqlite2orm {
                     return CodeGenResult{"get<" + aliasIt->second + ">()", {}};
                 }
             }
-            auto cppName = toCppIdentifier(columnRef->columnName);
+            // Inside a CREATE TABLE — a CHECK or a generated column — the name is resolved against the
+            // columns that table declares, so a spelling SQLite reads as the same column is written as
+            // the member the declaration produced. Anywhere else the name itself.
+            auto cppName = this->context.constraintColumnMember(columnRef->columnName);
             this->context.registerPrefixColumn(cppName, this->context.syntheticColumnCppType(cppName));
             if (this->context.implicitSingleSourceCteTypedef) {
                 // Every form below this point names that CTE, whichever of them the column takes.
@@ -350,10 +353,11 @@ namespace sqlite2orm {
             std::string structForColumn = aliasIt != this->context.fromTableAliasToStructName.end()
                                               ? aliasIt->second
                                               : this->context.structNameForTable(qualifiedRef->tableName);
-            const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+            // A CHECK may qualify the column with the table it is declared on; same resolution as above.
+            const std::string colCpp = this->context.constraintColumnMember(qualifiedRef->columnName);
             this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
             this->context.recordEmittedTableType(structForColumn);
-            std::string memberPointer = "&" + structForColumn + "::" + toCppIdentifier(qualifiedRef->columnName);
+            std::string memberPointer = "&" + structForColumn + "::" + colCpp;
             std::string columnPointer = "column<" + structForColumn + ">(" + memberPointer + ")";
             if (this->context.columnRefUnderLogicalNot) {
                 // Only the column-pointer form survives under a NOT, so there is no style left to

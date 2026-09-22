@@ -71,6 +71,19 @@ namespace sqlite2orm {
         return nullptr;
     }
 
+    std::string CodeGeneratorContext::constraintColumnMember(std::string_view columnName) {
+        if (this->constraintColumnMemberByNormalizedName.empty()) {
+            return toCppIdentifier(columnName);
+        }
+        const auto memberIterator =
+            this->constraintColumnMemberByNormalizedName.find(normalizeSqlIdentifier(columnName));
+        if (memberIterator != this->constraintColumnMemberByNormalizedName.end()) {
+            return memberIterator->second;
+        }
+        this->unknownConstraintColumns.push_back(stripIdentifierQuotes(columnName));
+        return toCppIdentifier(columnName);
+    }
+
     const SourceTableColumn* CodeGeneratorContext::findReferencedColumn(const AstNode& node) const {
         // A COLLATE or a unary plus generates its operand and nothing else, so the column named
         // under one is the column the expression is built over.

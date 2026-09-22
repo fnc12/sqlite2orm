@@ -166,6 +166,21 @@ namespace sqlite2orm {
         /** Normalized table/view name → columns; filled from CREATE TABLE statements seen in this batch. */
         std::map<std::string, std::vector<SourceTableColumn>> sourceTableColumnsByNormalizedName;
 
+        /**
+         *  Columns of the table whose own constraints are being generated: normalized SQL name →
+         *  the member the column's declaration produced. SQLite matches a column name written in a
+         *  table or column constraint against the declarations ignoring case and quotes, while the
+         *  member it has to be written as is named after the declaration — so `PRIMARY KEY(ID)` over
+         *  a column declared `"Id"` is the member `Id`. Filled for one CREATE TABLE and empty
+         *  everywhere else: a CHECK constraint and a generated column are the only expressions a
+         *  table declaration holds, and SQLite forbids a subquery in either, so every column
+         *  reference under one is a column of that very table.
+         */
+        std::map<std::string, std::string> constraintColumnMemberByNormalizedName;
+
+        /** Constraint column names asked for that the table declares no column of; drained by the caller. */
+        std::vector<std::string> unknownConstraintColumns;
+
         /** Struct of the table a trigger is ON; OLD/NEW refs bind to it, not to the DML target table. */
         std::optional<std::string> triggerSubjectStructName;
 
@@ -386,6 +401,14 @@ namespace sqlite2orm {
         std::string structNameForTable(std::string_view tableName);
 
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName, std::string_view columnName) const;
+
+        /**
+         *  The member a column name written in a constraint of the table being generated refers to.
+         *  A name the table declares no column of is recorded in `unknownConstraintColumns` and
+         *  answered with itself: SQLite refuses such a CREATE TABLE ("no such column"), so what the
+         *  caller does with it is a diagnostic, not code. Outside a CREATE TABLE the name itself.
+         */
+        std::string constraintColumnMember(std::string_view columnName);
 
         /**
          *  The schema column an expression is generated as a member of, or `nullptr` where the

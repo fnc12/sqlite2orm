@@ -302,9 +302,9 @@ namespace sqlite2orm {
         // widened here, at the one point that knows they are — and not in the generator the arms
         // share with a subquery, a view body, a CTE and an INSERT ... SELECT, whose columns go to
         // SQL itself and are read back by nobody.
-        auto inner =
-            this->coordinator.tryCodegenCompoundSelectSubexpression(compoundNode,
-                                                                    compoundSelectResultWidening(compoundNode));
+        auto inner = this->coordinator.tryCodegenCompoundSelectSubexpression(
+            compoundNode,
+            compoundSelectResultWidening(compoundNode, this->context));
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if (inner.code.empty()) {
             auto placeholder = unsupportedStatementPlaceholder(this->context,
@@ -527,13 +527,16 @@ namespace sqlite2orm {
                     colCode = "cast<int64_t>(" + colCode + ")";
                     this->context.recordComment(kCommentBitwiseResultCast);
                 }
-                if (selectResultNeedsAsOptional(*column.expression)) {
+                if (selectResultNeedsAsOptional(*column.expression, this->context)) {
                     colCode = "as_optional(" + colCode + ")";
                 }
                 if (auto warning = selectResultDoublePrecisionWarning(*column.expression)) {
                     appendUniqueWarnings(selectWarnings, {std::move(*warning)});
                 }
                 if (auto warning = selectResultJsonExtractTypeWarning(*column.expression)) {
+                    appendUniqueWarnings(selectWarnings, {std::move(*warning)});
+                }
+                if (auto warning = selectResultCommonArgumentTypeWarning(*column.expression, this->context)) {
                     appendUniqueWarnings(selectWarnings, {std::move(*warning)});
                 }
                 return wrapWithColumnAlias(colCode, column.alias, cpp20ColumnAliases);

@@ -398,7 +398,7 @@ a compound of bitwise branches is still read back through `int`.
 - [x] CREATE INDEX IF NOT EXISTS
 - [x] indexed-column: column-name
 - [x] indexed-column: expr
-- [x] indexed-column COLLATE collation-name
+- [~] indexed-column COLLATE collation-name — generated as `.collate("…")` over a column, and over an expression that takes a trailing COLLATE whole: a call, `CAST`, `CASE`, a literal, `~x`, a JSON arrow (generated as a `JSON_EXTRACT` call), an `IN` over a value list. Over an expression that ends in an operand of its own — every other binary operator, `NOT`, `BETWEEN`, `LIKE`, `GLOB`, `IS [NOT] NULL`, and the `0 - x` subtraction a negation is generated as — the collation is left out and codegen warns: sqlite_orm serializes an indexed column's collation as a bare COLLATE after the expression, with no parentheses around it, and SQLite binds COLLATE tighter than those operators, so `indexed_column(c(&T::b) || "x").collate("nocase")` stores `CREATE INDEX "i" ON "t" ("b" || 'x' COLLATE nocase)`, which SQLite reads as `"b" || ('x' COLLATE nocase)` and indexes a BINARY key where the schema it was generated from asks for a NOCASE one (`pragma_index_xinfo`, checked against sqlite3 3.51.0)
 - [x] indexed-column ASC
 - [x] indexed-column DESC
 - [x] WHERE expr (partial index)

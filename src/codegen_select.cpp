@@ -171,15 +171,28 @@ namespace sqlite2orm {
         /**
          *  Whether the FROM sqlite_orm infers would differ from the one the SQL asked for — wider,
          *  because the code names a recordset no source of this FROM clause stands for, or gone
-         *  altogether, because it names none. A subquery in the WHERE names its own tables just as
-         *  plainly as the outer ones, and that is what turns it into a cartesian product.
+         *  altogether, because the code of this select names none. A subquery in the WHERE names
+         *  its own tables just as plainly as the outer ones, and that is what turns it into a
+         *  cartesian product, so the widening half weighs `mentioned`, the mentions of this select
+         *  and of every select nested in it alike.
+         *
+         *  The losing half weighs `ownMentions` instead. A mention that reached this level out of a
+         *  nested scope is no FROM for this one to infer from: the subquery answers for it with a
+         *  `from<...>()` of its own, and a `from<...>()` fixes the level it stands on and no other.
+         *  With `SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users)` the two halves used to
+         *  cancel out — the inherited mention of `Users` is one this FROM covers, so nothing looked
+         *  wider, and nothing looked lost either — and the outer select went out with no table at
+         *  all, answering one row where SQLite answers one per row of the table.
          */
-        bool implicitFromDiffers(const SelectFromSources& sources, const std::set<std::string>& mentioned) {
-            // Code that names no recordset at all leaves sqlite_orm nothing to infer a FROM from,
-            // and the table is dropped rather than widened: `SELECT row_number() OVER () FROM users`
-            // runs as `SELECT ROW_NUMBER() OVER ()` and answers with one row where SQLite answers
-            // with one per row of the table. Naming the sources is what brings the table back.
-            if (mentioned.empty()) {
+        bool implicitFromDiffers(const SelectFromSources& sources,
+                                 const std::set<std::string>& mentioned,
+                                 const std::set<std::string>& ownMentions) {
+            // Code that names no recordset of its own leaves sqlite_orm nothing to infer a FROM
+            // from, and the table is dropped rather than widened: `SELECT row_number() OVER () FROM
+            // users` runs as `SELECT ROW_NUMBER() OVER ()` and answers with one row where SQLite
+            // answers with one per row of the table. Naming the sources is what brings the table
+            // back.
+            if (ownMentions.empty()) {
                 return true;
             }
             for (const auto& type: mentioned) {
@@ -239,9 +252,9 @@ namespace sqlite2orm {
          *
          *  The FROM is spelled out when leaving it implicit would get it wrong in either of two
          *  ways — it would DIFFER from what the SQL asked for (a subquery in the WHERE names its
-         *  own tables, and sqlite_orm collects them into this FROM; code naming no recordset at
-         *  all leaves it with no FROM to infer), or it would LOSE an alias this select has already
-         *  named. The second half cannot be vetoed: the forms that took `canNameInferredFromSources`
+         *  own tables, and sqlite_orm collects them into this FROM; code naming no recordset of
+         *  its own leaves it with no FROM to infer), or it would LOSE an alias this select has
+         *  already named. The second half cannot be vetoed: the forms that took `canNameInferredFromSources`
          *  up are already generated, and `count<alias_a<T>>()` carries no table at all, so without
          *  the clause the select would go out with no FROM whatsoever.
          */
@@ -261,7 +274,7 @@ namespace sqlite2orm {
                 context.recordComment(kCommentAliasedFromSources);
             } else if (!sources.hasCteSource && !sources.implicitTypes.empty() &&
                        clausesNameEveryMention(sources, context.ownEmittedTableTypes) &&
-                       implicitFromDiffers(sources, context.emittedTableTypes)) {
+                       implicitFromDiffers(sources, context.emittedTableTypes, context.ownEmittedTableTypes)) {
                 explicitFrom = explicitFromClause(sources.implicitTypes);
             }
             for (const auto& sourceType: sources.allTypes) {

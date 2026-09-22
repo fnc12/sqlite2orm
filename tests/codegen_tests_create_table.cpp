@@ -2,6 +2,30 @@
 
 #include <sqlite2orm/json_emit.h>
 
+namespace {
+
+    /** What a column declared ANY in a STRICT table is reported as; only the name of it varies. */
+    [[nodiscard]] std::string kAnyInStrictWarning(std::string_view columnName) {
+        return "column `" + std::string(columnName) +
+               "` is declared ANY, which in a STRICT table holds a value of any storage class and stores it as it "
+               "came. sqlite_orm has no type that carries a storage class, so the column is mapped to "
+               "std::vector<char>, whose extractor reads every one of them rather than zeroing the ones it cannot "
+               "use: a stored INTEGER or REAL comes back as the bytes of the text SQLite renders it as — a REAL "
+               "keeps 15 significant digits that way, so 1.0/3 reads back as `0.333333333333333` — and a value "
+               "written back through the member is stored as a BLOB, whatever it was before";
+    }
+
+    /** The same column outside a STRICT table, where ANY is a name SQLite does not know. */
+    [[nodiscard]] std::string kAnyOutsideStrictWarning(std::string_view columnName) {
+        return "column `" + std::string(columnName) +
+               "` is declared ANY, which is a datatype of STRICT tables only: this table is not STRICT, so SQLite "
+               "reads ANY as a type name it does not know and gives the column NUMERIC affinity, which is why the "
+               "column is mapped to double. Affinity is not a constraint — text NUMERIC affinity cannot convert is "
+               "still stored as text, and `'x'` in this column reads back through the member as 0";
+    }
+
+}  // namespace
+
 TEST_CASE("codegen: CREATE TABLE - basic") {
     auto result = generate("CREATE TABLE users (id INTEGER, name TEXT)");
     REQUIRE(result == "struct Users {\n"
@@ -866,6 +890,107 @@ TEST_CASE("codegen: CREATE TABLE - a STRICT WITHOUT ROWID table has no alias to 
                       "    make_table(\"t\",\n"
                       "        make_column(\"id\", &T::id, primary_key()),\n"
                       "        make_column(\"v\", &T::v)).without_rowid());");
+}
+
+// ANY is a datatype of STRICT tables, and it is the one type name that is not an affinity: the
+// column takes a value of any storage class and stores it as it came. The affinity rule has
+// nothing for the name and falls through to NUMERIC, so `ANY` used to map to `double` and read
+// every text and blob in the column back as 0, silently — see the round-trip case in
+// schema_pipeline_tests. `std::vector<char>` is the one mapped type whose extractor reads every
+// storage class, and what it costs is in the warning.
+TEST_CASE("codegen: CREATE TABLE - an ANY column of a STRICT table") {
+    const auto result = generateFull("CREATE TABLE s (id ANY PRIMARY KEY, v ANY) STRICT;");
+    REQUIRE(result.code == "struct S {\n"
+                           "    std::vector<char> id;\n"
+                           "    std::optional<std::vector<char>> v;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"s\",\n"
+                           "        make_column(\"id\", &S::id, primary_key()),\n"
+                           "        make_column(\"v\", &S::v)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kAnyInStrictWarning("id"), SourceLocation{1, 20}, 3},
+                                   {kAnyInStrictWarning("v"), SourceLocation{1, 39}, 3},
+                                   {"STRICT is not yet supported in sqlite_orm and was ignored for table s "
+                                    "(converted as a regular table)"},
+                               });
+    REQUIRE(result.errors.empty());
+}
+
+// SQLite takes the datatype in every quoting it takes an identifier in — `CREATE TABLE s(a "ANY")
+// STRICT` is accepted by sqlite3 3.51, while `ANY(10)` and `COMPANY` are `unknown datatype` — so
+// the name is matched whole and unquoted, and the span covers the text as written.
+TEST_CASE("codegen: CREATE TABLE - a quoted ANY column of a STRICT table") {
+    const auto result = generateFull("CREATE TABLE s (a \"ANY\", b [any], c `Any`) STRICT;");
+    REQUIRE(result.code == "struct S {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "    std::optional<std::vector<char>> b;\n"
+                           "    std::optional<std::vector<char>> c;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"s\",\n"
+                           "        make_column(\"a\", &S::a),\n"
+                           "        make_column(\"b\", &S::b),\n"
+                           "        make_column(\"c\", &S::c)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kAnyInStrictWarning("a"), SourceLocation{1, 19}, 5},
+                                   {kAnyInStrictWarning("b"), SourceLocation{1, 28}, 5},
+                                   {kAnyInStrictWarning("c"), SourceLocation{1, 37}, 5},
+                                   {"STRICT is not yet supported in sqlite_orm and was ignored for table s "
+                                    "(converted as a regular table)"},
+                               });
+    REQUIRE(result.errors.empty());
+}
+
+// Outside a STRICT table ANY is a type name SQLite does not know, which is NUMERIC affinity — the
+// same the column would have with DECIMAL or DATE on it — so the mapping stays `double` and only
+// the report is new. Affinity converts what it can and stores the rest as it is: sqlite3 3.51
+// stores `'2.5'` in such a column as the REAL 2.5 and `'x'` as the text 'x', and the text is the
+// one a `double` member reads back as 0.
+TEST_CASE("codegen: CREATE TABLE - an ANY column outside a STRICT table") {
+    const auto result = generateFull("CREATE TABLE t (a ANY, b DECIMAL(10, 2));");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<double> a;\n"
+                           "    std::optional<double> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kAnyOutsideStrictWarning("a"), SourceLocation{1, 19}, 3},
+                               });
+    REQUIRE(result.errors.empty());
+}
+
+// The affinity rule reads its names as substrings, and this is where the two rules part: `COMPANY`
+// holds `any` and is an ordinary NUMERIC-affinity name — sqlite3 3.51 refuses it in a STRICT table
+// outright — so neither the mapping nor the report is the one ANY gets.
+TEST_CASE("codegen: CREATE TABLE - a type name holding `any` is not ANY") {
+    const auto result = generateFull("CREATE TABLE t (a COMPANY, b ANYTHING);");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<double> a;\n"
+                           "    std::optional<double> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A CAST keeps the affinity rule, because there ANY really is one: sqlite3 3.51 answers
+// `CAST('x' AS ANY)` with the integer 0, exactly as it answers `CAST('x' AS NUMERIC)`. Only the
+// column mapping moved.
+TEST_CASE("codegen: CAST to ANY stays the NUMERIC cast it is") {
+    const auto result = generateFull("SELECT CAST(a AS ANY) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(cast<double>(&T::a)));");
+    REQUIRE(result.warnings.empty());
 }
 
 TEST_CASE("codegen: STRICT table warning") {

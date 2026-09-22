@@ -2045,3 +2045,75 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                       "count(*) FROM s_int_pk) || ',' || (SELECT count(*) FROM s_table_pk) || ',' || (SELECT count(*) "
                       "FROM s_text_pk) || ',' || (SELECT count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2");
 }
+
+// sqlite_orm syncs the database objects of a storage in declaration order only since the v1.9.1
+// release: the release itself walks them backwards, so an index or a trigger written after the
+// table it is made for reaches SQLite before that table exists and `sync_schema()` throws
+// `no such table: main.t` on the very first call, leaving the database empty. The order written
+// here is the one both take — every index and trigger first, the tables they are made for after
+// them — and these two cases pin it, over two tables so that "last argument" cannot pass for it.
+TEST_CASE("generateSqliteSchemaHeader: an index and a trigger stand before the table they are made for") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT);"
+            "CREATE TABLE u (id INTEGER PRIMARY KEY);"
+            "CREATE INDEX t_a_idx ON t (a);"
+            "CREATE TRIGGER t_trg AFTER INSERT ON t BEGIN DELETE FROM u; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::string> a;\n"
+                           "};\n\n"
+                           "struct U {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_index(\"t_a_idx\", indexed_column(&T::a)),\n"
+                           "        make_trigger(\"t_trg\", after().insert().on<T>().begin(remove_all<U>())),\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"id\", &T::id, primary_key()),\n"
+                           "        make_column(\"a\", &T::a)),\n"
+                           "        make_table(\"u\",\n"
+                           "        make_column(\"id\", &U::id, primary_key())));\n"
+                           "}\n");
+    REQUIRE(header.errors.empty());
+}
+
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() creates the index and the trigger over an empty database") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT);"
+            "CREATE TABLE u (id INTEGER PRIMARY KEY);"
+            "CREATE INDEX t_a_idx ON t (a);"
+            "CREATE TRIGGER t_trg AFTER INSERT ON t BEGIN DELETE FROM u; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    // A database that holds nothing at all is where the order decides everything: every object is
+    // created, so an index reaching SQLite before its table has nothing to attach to.
+    TempDbFile empty{makeTempDbPath()};
+    REQUIRE(syncSchemaProbeOutput(header.code, empty.path, "") == "t=new_table_created\n"
+                                                                  "t_a_idx=new_table_created\n"
+                                                                  "t_trg=new_table_created\n"
+                                                                  "u=new_table_created\n");
+
+    REQUIRE(queryText(empty.path,
+                      "SELECT group_concat(type || ':' || name, ',') FROM (SELECT type, name FROM sqlite_master "
+                      "ORDER BY name);") == "table:t,index:t_a_idx,trigger:t_trg,table:u");
+}

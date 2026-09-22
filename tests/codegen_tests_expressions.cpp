@@ -3,6 +3,8 @@
 #include <sqlite2orm/parser.h>
 #include <sqlite2orm/tokenizer.h>
 
+#include <chrono>
+
 namespace {
 
     // The hint attached to every negation generated as a subtraction from zero; spelled out once
@@ -1580,6 +1582,50 @@ TEST_CASE("codegen: IN list values this cannot type are left as written") {
     // `int64_t` the caller declares.
     REQUIRE(generate("a IN (1, ?, 3000000000)") ==
             "in(&User::a, {static_cast<int64_t>(1), bindParam1, static_cast<int64_t>(3000000000)})");
+}
+
+// The pair a warning names is looked for among the values that can be half of one rather than
+// among every pair of them: a bind parameter is typed by the caller and so meets every value in
+// one type, which makes a list of them ahead of the two values that do prove the conflict a walk
+// over the whole list per parameter. An IN list is as long as a statement is — 5000 bind
+// parameters are the 10 kB of SQL the playground takes in one request — so that walk cost seconds
+// where the rest of the work on the same list costs milliseconds. The bound is measured against
+// the same list without the conflict, which is the same parse, the same values and the same
+// warnings and only no pair to look for, so it is the shape of the search that is pinned here
+// rather than the speed of the machine running it.
+TEST_CASE("codegen: the pair an IN warning names is found without a pass over every pair") {
+    const size_t bindParameterCount = 5000;
+    std::string values;
+    std::string expectedValues;
+    for (size_t parameter = 1; parameter <= bindParameterCount; ++parameter) {
+        values += "?, ";
+        expectedValues += "bindParam" + std::to_string(parameter) + ", ";
+    }
+    const std::string withoutConflict = "a IN (" + values + "1)";
+    const std::string withConflict = "a IN (" + values + "1, 'x')";
+
+    const auto generateTook = [](const std::string& sql) {
+        const auto startedAt = std::chrono::steady_clock::now();
+        CodeGenResult result = generateFull(sql);
+        return std::pair{std::chrono::steady_clock::now() - startedAt, std::move(result)};
+    };
+    const auto [withoutConflictTook, withoutConflictResult] = generateTook(withoutConflict);
+    const auto [withConflictTook, withConflictResult] = generateTook(withConflict);
+
+    REQUIRE(withoutConflictResult.code == "in(&User::a, {" + expectedValues + "1})");
+    REQUIRE(withoutConflictResult.warnings.size() == bindParameterCount);
+    REQUIRE(withConflictResult.code == "in(&User::a, {" + expectedValues + "1, \"x\"})");
+    REQUIRE(withConflictResult.warnings.size() == bindParameterCount + 1);
+    REQUIRE(withConflictResult.warnings.back() ==
+            CodegenWarning{"sqlite_orm's in(A, std::initializer_list<E>) deduces one C++ type from every value of an "
+                           "IN list, and an `int` next to a `const char*` is not one type, so the generated code does "
+                           "not compile",
+                           SourceLocation{1, 1},
+                           withConflict.size()});
+    // Fivefold of a run that looks for no pair at all, against the thirtyfold the pass over every
+    // pair of this list cost; the half second on top is there so that a machine that stalls in the
+    // middle of a run this short is not what reports the search back.
+    REQUIRE(withConflictTook < 5 * withoutConflictTook + std::chrono::milliseconds(500));
 }
 
 // An empty list has no value to deduce `E` from, so `in(&User::a, {})` does not compile at all:

@@ -1810,6 +1810,23 @@ namespace sqlite2orm {
                    dynamic_cast<const ExcludedRefNode*>(&generatedNode);
         }
 
+        /**
+         *  Everything `oneDeducedTypeForm` reads off one member of a group, and nothing that tells
+         *  two members it reads the same way apart. Two members of one kind are interchangeable in
+         *  every group either of them belongs to.
+         */
+        struct OneTypeGroupMemberKind {
+            std::optional<GeneratedValueCppType> type;
+            bool bindParameter;
+            bool columnPointer;
+
+            bool operator==(const OneTypeGroupMemberKind&) const = default;
+        };
+
+        OneTypeGroupMemberKind oneTypeGroupMemberKind(const AstNode& node) {
+            return {generatedValueCppType(node), generatesBindParameter(node), generatesColumnPointer(node)};
+        }
+
     }  // namespace
 
     std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode) {
@@ -1932,10 +1949,36 @@ namespace sqlite2orm {
     }
 
     std::pair<const AstNode*, const AstNode*> firstNoCommonTypePair(const std::vector<const AstNode*>& nodes) {
-        for (size_t firstIndex = 0; firstIndex + 1 < nodes.size(); ++firstIndex) {
-            for (size_t secondIndex = firstIndex + 1; secondIndex < nodes.size(); ++secondIndex) {
-                if (oneDeducedTypeForm({nodes[firstIndex], nodes[secondIndex]}) == OneDeducedTypeForm::noCommonType) {
-                    return {nodes[firstIndex], nodes[secondIndex]};
+        // An IN list holds as many values as a statement is long, and a value that meets every
+        // other one in a type — a bind parameter above all — is passed over by the search rather
+        // than ending it, so a look at every pair of them is a walk over the whole list per value.
+        // Members of one kind stand in for each other: were a third member of a kind half of the
+        // pair, the first member of that kind would be half of a pair with the same partner and an
+        // earlier one, which is the pair this answers instead. So the first two members of each
+        // kind hold every pair there is to find, and a group has as many kinds as there are C++
+        // types here — the search below is over a handful of members whatever the list's length.
+        std::vector<std::pair<OneTypeGroupMemberKind, int>> memberCountByKind;
+        std::vector<const AstNode*> candidates;
+        for (const AstNode* node: nodes) {
+            const OneTypeGroupMemberKind kind = oneTypeGroupMemberKind(*node);
+            const auto counted =
+                std::find_if(memberCountByKind.begin(), memberCountByKind.end(), [&kind](const auto& countedKind) {
+                    return countedKind.first == kind;
+                });
+            if (counted == memberCountByKind.end()) {
+                memberCountByKind.emplace_back(kind, 1);
+            } else if (counted->second == 2) {
+                continue;
+            } else {
+                ++counted->second;
+            }
+            candidates.push_back(node);
+        }
+        for (size_t firstIndex = 0; firstIndex + 1 < candidates.size(); ++firstIndex) {
+            for (size_t secondIndex = firstIndex + 1; secondIndex < candidates.size(); ++secondIndex) {
+                if (oneDeducedTypeForm({candidates[firstIndex], candidates[secondIndex]}) ==
+                    OneDeducedTypeForm::noCommonType) {
+                    return {candidates[firstIndex], candidates[secondIndex]};
                 }
             }
         }

@@ -28,6 +28,28 @@ namespace sqlite2orm {
             return sourceTables;
         }
 
+        /**
+         *  Every name this batch creates a table, a virtual table or a view by, so that a
+         *  reference to a name the batch never creates can be told apart from a reference to one
+         *  it does. An `ALTER TABLE ... RENAME TO` is not among them — its tail is not modeled —
+         *  and does not need to be: a batch generates a struct for the names it creates, so a
+         *  name only a rename brings about has none either way.
+         */
+        std::set<std::string> collectSchemaObjectNames(const std::vector<ParseResult>& parseResults) {
+            std::set<std::string> names;
+            for (const ParseResult& parseResult: parseResults) {
+                const AstNode* root = parseResult.astNodePointer.get();
+                if (const auto* createTable = dynamic_cast<const CreateTableNode*>(root)) {
+                    names.insert(normalizeSqlIdentifier(createTable->tableName));
+                } else if (const auto* createVirtualTable = dynamic_cast<const CreateVirtualTableNode*>(root)) {
+                    names.insert(normalizeSqlIdentifier(createVirtualTable->tableName));
+                } else if (const auto* createView = dynamic_cast<const CreateViewNode*>(root)) {
+                    names.insert(normalizeSqlIdentifier(createView->viewName));
+                }
+            }
+            return names;
+        }
+
     }  // namespace
 
     ProcessSqlResult processSql(std::string_view sql) {
@@ -112,6 +134,7 @@ namespace sqlite2orm {
                       const std::vector<std::vector<ValidationError>>& validationErrors,
                       const CodeGenPolicy* policy,
                       const std::map<std::string, std::vector<SourceTableColumn>>& sourceTables,
+                      const std::set<std::string>& schemaObjectNames,
                       UngeneratableNames& ungeneratable) {
             std::vector<CodeGenResult> generated(parseResults.size());
             std::map<std::string, int> batchVariableUses;
@@ -124,6 +147,7 @@ namespace sqlite2orm {
                 codeGenerator.codeGenPolicy = policy;
                 CodeGeneratorContext& context = codeGenerator.context();
                 context.sourceTableColumnsByNormalizedName = sourceTables;
+                context.schemaObjectNames = schemaObjectNames;
                 context.batchVariableUses = batchVariableUses;
                 context.ungeneratableTables = ungeneratable.all;
                 context.ungeneratableViews = ungeneratable.views;
@@ -177,6 +201,7 @@ namespace sqlite2orm {
         }
 
         const auto sourceTables = collectSourceTables(parseResults);
+        const auto schemaObjectNames = collectSchemaObjectNames(parseResults);
         std::vector<std::vector<ValidationError>> validationErrors(parseResults.size());
         for (size_t index = 0; index < parseResults.size(); ++index) {
             if (!parseResults[index].astNodePointer) {
@@ -197,7 +222,8 @@ namespace sqlite2orm {
         std::vector<CodeGenResult> generated;
         for (;;) {
             const size_t knownBefore = ungeneratable.all.size();
-            generated = generateBatch(parseResults, validationErrors, policy, sourceTables, ungeneratable);
+            generated =
+                generateBatch(parseResults, validationErrors, policy, sourceTables, schemaObjectNames, ungeneratable);
             if (ungeneratable.all.size() == knownBefore) {
                 break;
             }

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -454,6 +455,30 @@ namespace sqlite2orm {
      *  that belongs here.
      */
     size_t underlineLengthOf(std::string_view sourceText);
+    /**
+     *  Records in `membersByName` that the member `memberName` of the struct generated for `owner`
+     *  (`"table t"`, `"view v"`) holds the column `sqlName`, and answers with what that name has
+     *  to be reported as, anchored at `nameSpan` when the parse recorded one.
+     *
+     *  Two things are worth a warning here. A member whose name is not the column's own tells the
+     *  reader which member a column ended up in — SQL takes names C++ has no letters for, so
+     *  `toCppIdentifier()` rewrites them. And a member two columns are both rewritten to is a
+     *  member the struct declares twice, which does not compile at all: the generated code looks
+     *  fine and only a compiler ever says so, which is why the collision is reported here, where
+     *  the struct is being named. The collision is what gets reported when a name does both, as
+     *  it names the member the rewriting would have named anyway.
+     *
+     *  `mappedByMemberName` says that the mapping reads the column's SQL name off the member
+     *  rather than being given it, which is what sqlite_orm's reflected `make_view<V>()` does: a
+     *  rewritten member there renames the column in the mapping as well, so the warning says so.
+     *  A classical `make_column("…", &T::x)` is handed the name and leaves it alone.
+     */
+    std::optional<CodegenWarning> recordMemberName(std::string_view owner,
+                                                   std::string_view sqlName,
+                                                   std::string_view memberName,
+                                                   const SourceSpan& nameSpan,
+                                                   std::map<std::string, std::string>& membersByName,
+                                                   bool mappedByMemberName = false);
     /**
      *  `message` anchored at the source span `astNode` was parsed from, so that a consumer
      *  underlines the very SQL the message is about. Unanchored for a node carrying no span, which

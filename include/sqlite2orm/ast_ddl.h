@@ -45,6 +45,15 @@ namespace sqlite2orm {
         bool generatedAlways = false;
         enum class GeneratedStorage { none, stored, virtual_ };
         GeneratedStorage generatedStorage = GeneratedStorage::none;
+        /**
+         *  The column's name as the source spells it, quotes and all, so a warning about the
+         *  member the column is mapped to underlines the name it is about. It is last because
+         *  everything before it is what a braced `ColumnDef{name, type, …}` fills, and a span is
+         *  no part of what such a column says. Empty for a column built by hand rather than
+         *  parsed, which leaves such a warning unanchored; it takes no part in equality, exactly
+         *  as `AstNode::sourceSpan` does not.
+         */
+        SourceSpan nameSpan;
 
         bool operator==(const ColumnDef& other) const {
             if (this->name != other.name || this->typeName != other.typeName || this->primaryKey != other.primaryKey ||
@@ -237,6 +246,12 @@ namespace sqlite2orm {
         std::optional<std::string> viewSchemaName;
         std::string viewName;
         std::vector<std::string> columnNames;
+        /**
+         *  Where each name of `columnNames` stands in the source, for a warning about the member
+         *  that name is mapped to. Empty — rather than one empty span per name — for a node built
+         *  by hand; a reader takes the span of a name only when it has one at that index.
+         */
+        std::vector<SourceSpan> columnNameSpans;
         AstNodePointer selectQuery;
         /**
          *  The statement's opening keywords as written, from `CREATE` through `VIEW`, which a

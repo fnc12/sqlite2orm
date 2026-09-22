@@ -1317,6 +1317,37 @@ namespace sqlite2orm {
         return utf8CharacterCount(lineBreak == std::string_view::npos ? sourceText : sourceText.substr(0, lineBreak));
     }
 
+    std::optional<CodegenWarning> recordMemberName(std::string_view owner,
+                                                   std::string_view sqlName,
+                                                   std::string_view memberName,
+                                                   const SourceSpan& nameSpan,
+                                                   std::map<std::string, std::string>& membersByName,
+                                                   bool mappedByMemberName) {
+        const auto anchored = [&nameSpan](std::string message) {
+            if (nameSpan.text.empty()) {
+                return CodegenWarning{std::move(message)};
+            }
+            return CodegenWarning{std::move(message), nameSpan.location, underlineLengthOf(nameSpan.text)};
+        };
+        const auto [iterator, inserted] = membersByName.emplace(std::string(memberName), std::string(sqlName));
+        if (!inserted) {
+            return anchored(std::string(owner) + ": columns `" + iterator->second + "` and `" + std::string(sqlName) +
+                            "` are both named `" + std::string(memberName) +
+                            "` in C++; the generated struct declares that member twice and does not compile");
+        }
+        if (sqlName != memberName) {
+            std::string message = std::string(owner) + ": column `" + std::string(sqlName) +
+                                  "` is not a C++ identifier; the member holding it is named `" +
+                                  std::string(memberName) + "`";
+            if (mappedByMemberName) {
+                message += ", and a view is mapped with the names of its members, so the column is named that in "
+                           "the mapping too";
+            }
+            return anchored(std::move(message));
+        }
+        return std::nullopt;
+    }
+
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
         if (astNode.sourceSpan.text.empty()) {
             return CodegenWarning{std::move(message)};

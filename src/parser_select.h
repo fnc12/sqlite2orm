@@ -33,6 +33,19 @@ namespace sqlite2orm {
         bool isFromTableItemStartOrParen() const;
 
       private:
+        /** `parseSelect` without the nesting level it takes: an optional WITH clause and its body. */
+        AstNodePointer parseSelectStatement();
+
+        /**
+         *  Takes the level the query about to be parsed will sit on, and answers whether there is
+         *  one left. On `false` the statement is refused with a parse error instead of recursing
+         *  until the stack runs out.
+         */
+        bool enterQueryLevel();
+
+        /** Queries already on the path from the statement down to what is parsed now. */
+        size_t queryDepth = 0;
+
         Parser& parser;
         TokenStream& tokenStream;
 

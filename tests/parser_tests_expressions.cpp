@@ -922,6 +922,8 @@ TEST_CASE("parser: prefix NOT nested past the depth limit is refused") {
 }
 
 TEST_CASE("parser: subqueries nested past the depth limit are refused") {
+    // A subquery costs an expression level and a query level at once, and the limit on nested
+    // queries is the tighter of the two, so that is the one this runs into first.
     std::string sql = "SELECT ";
     for (size_t i = 0; i < kMaxExpressionDepth; ++i) {
         sql += "(SELECT ";
@@ -931,7 +933,7 @@ TEST_CASE("parser: subqueries nested past the depth limit are refused") {
     auto parseResult = parse(sql);
     REQUIRE_FALSE(parseResult);
     REQUIRE(parseResult.errors.size() == 1);
-    CHECK(parseResult.errors.front().message == "expression tree is too large (maximum depth 1000)");
+    CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
 }
 
 // --- IS / IS NOT / IS [NOT] DISTINCT FROM ---

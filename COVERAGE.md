@@ -244,11 +244,19 @@ Statuses:
 - [~] INTERSECT
 - [~] EXCEPT
 
-Each branch is generated through the subexpression path, which is shared with subqueries, so a
-result column of a compound SELECT is not widened to `as_optional` the way a plain SELECT's is: a
-branch like `SELECT a + 1 FROM users UNION SELECT a FROM users` still reads a NULL row back as 0.
-Widening compiles only if every branch is widened together — sqlite_orm requires the branches to
-share one result type — so it needs a decision taken across the branches at once.
+A result column of a compound SELECT is widened to `as_optional` the way a plain SELECT's is, and
+widened in every branch at once: sqlite_orm reads a compound back through `std::common_type` of the
+types its branches come out as, so `SELECT a + 1 FROM users UNION SELECT a * 2 FROM users` now reads
+a NULL row back as an empty optional rather than as 0.
+
+What is still `[~]`: the widening needs one common type across the branches, so branches whose types
+differ — `SELECT a & 1 FROM users UNION SELECT a + 1 FROM users`, where sqlite_orm types `&` as
+`int` and `+` as `double` — are left as written and still read a NULL row back as 0. Widening one of
+them alone is what has no common type at all (`std::optional<int>` beside an
+`std::optional<double>`), and the generated code would stop compiling. A branch whose type only the
+schema knows — a column reference, a call, a literal — is left alone for the same reason. The
+`cast<int64_t>` a plain SELECT puts on a bitwise result column is not placed in a branch either, so
+a compound of bitwise branches is still read back through `int`.
 
 ### WITH (CTE)
 - [x] WITH cte AS (select-stmt)

@@ -1,6 +1,7 @@
 #include "codegen_ddl.h"
 #include "codegen_context.h"
 #include "codegen_utils.h"
+#include "select_scope_columns.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
@@ -689,40 +690,19 @@ namespace sqlite2orm {
         /** Resolves view SELECT output expressions to C++ field types using tables known to the context. */
         struct ViewFieldTypeInferrer {
             const CodeGeneratorContext& context;
-            /** Raw FROM table names in order; aliases resolved separately. */
-            std::vector<std::string> fromTables;
-            std::map<std::string, std::string> tableByAliasNorm;
+            /** The sources the view's own SELECT names, which is the scope its expressions read. */
+            SelectScopeColumns scope;
 
             explicit ViewFieldTypeInferrer(const CodeGeneratorContext& context, const SelectNode& selectNode) :
-                context(context) {
-                for (const FromClauseItem& fromItem: selectNode.fromClause) {
-                    if (fromItem.table.derivedSelect || !fromItem.table.tableFunctionArgs.empty()) {
-                        continue;
-                    }
-                    const std::string rawTable = stripIdentifierQuotes(fromItem.table.tableName);
-                    this->fromTables.push_back(rawTable);
-                    if (fromItem.table.alias) {
-                        this->tableByAliasNorm[normalizeSqlIdentifier(*fromItem.table.alias)] = rawTable;
-                    }
-                }
-            }
+                context(context), scope(selectNode, context) {}
 
             const SourceTableColumn* resolveQualified(std::string_view tableOrAlias,
                                                       std::string_view columnName) const {
-                const auto aliasIterator = this->tableByAliasNorm.find(normalizeSqlIdentifier(tableOrAlias));
-                const std::string_view tableName = aliasIterator != this->tableByAliasNorm.end()
-                                                       ? std::string_view(aliasIterator->second)
-                                                       : tableOrAlias;
-                return this->context.findSourceTableColumn(tableName, columnName);
+                return this->scope.findQualified(tableOrAlias, columnName);
             }
 
             const SourceTableColumn* resolveUnqualified(std::string_view columnName) const {
-                for (const std::string& tableName: this->fromTables) {
-                    if (const SourceTableColumn* column = this->context.findSourceTableColumn(tableName, columnName)) {
-                        return column;
-                    }
-                }
-                return nullptr;
+                return this->scope.findUnqualified(columnName);
             }
 
             std::optional<InferredFieldType> inferFunctionCall(const FunctionCallNode& functionCall) const {
@@ -763,14 +743,32 @@ namespace sqlite2orm {
                 if (lower == "randomblob" || lower == "zeroblob") {
                     return InferredFieldType{"std::vector<char>"};
                 }
+                // A call generated with its result type spelled out — COALESCE, IFNULL, NULLIF or
+                // IIF over arguments with no common C++ type — is read back as exactly that type,
+                // so the field follows it rather than the argument the call is otherwise typed
+                // as. The two answers live in one `make_view<V>(select(…))` and cannot be allowed
+                // to disagree, and the same function answers both. A column argument is resolved
+                // here against the FROM clause of the view's own SELECT: that select is generated
+                // as a subquery, which leaves the context with none of the scope it named, so
+                // asking the context would answer nothing for every column of a view body. That
+                // resolution is `SelectScopeColumns`, shared with the one other model standing
+                // outside the scope it asks about — a result column deciding about a scalar
+                // subquery nested in it.
+                auto spelledOr = [&](std::optional<InferredFieldType> deduced) -> std::optional<InferredFieldType> {
+                    const std::string spelledType = functionCallSpelledResultType(functionCall, this->scope.resolver());
+                    if (spelledType.empty()) {
+                        return deduced;
+                    }
+                    return InferredFieldType{spelledType, deduced && deduced->nullable};
+                };
                 if (lower == "abs" || lower == "min" || lower == "max" || lower == "coalesce" || lower == "ifnull" ||
                     lower == "nullif" || lower == "lag" || lower == "lead" || lower == "first_value" ||
                     lower == "last_value" || lower == "nth_value") {
-                    return firstArgument();
+                    return spelledOr(firstArgument());
                 }
                 if (lower == "iif") {
                     if (functionCall.arguments.size() >= 2 && functionCall.arguments.at(1)) {
-                        return this->infer(*functionCall.arguments.at(1));
+                        return spelledOr(this->infer(*functionCall.arguments.at(1)));
                     }
                     return std::nullopt;
                 }
@@ -1093,12 +1091,12 @@ namespace sqlite2orm {
                 const SelectColumn& selectColumn = firstSelect->columns.at(columnIndex);
                 if (!selectColumn.expression) {
                     // Bare `SELECT *`: expand every FROM table's columns.
-                    if (inferrer.fromTables.empty()) {
+                    if (inferrer.scope.sourceNames().empty()) {
                         parts.warnings.push_back("CREATE VIEW " + displayName +
                                                  ": cannot derive view columns from SELECT *");
                         return parts;
                     }
-                    for (const std::string& tableName: inferrer.fromTables) {
+                    for (const std::string& tableName: inferrer.scope.sourceNames()) {
                         if (!expandAllColumnsOf(tableName)) {
                             parts.warnings.push_back("CREATE VIEW " + displayName + ": columns of table `" + tableName +
                                                      "` are unknown; cannot derive view columns from SELECT *");
@@ -1109,11 +1107,7 @@ namespace sqlite2orm {
                 }
                 if (auto* qualifiedAsterisk =
                         dynamic_cast<const QualifiedAsteriskNode*>(selectColumn.expression.get())) {
-                    std::string_view sourceTable = qualifiedAsterisk->tableName;
-                    const auto aliasIterator = inferrer.tableByAliasNorm.find(normalizeSqlIdentifier(sourceTable));
-                    if (aliasIterator != inferrer.tableByAliasNorm.end()) {
-                        sourceTable = aliasIterator->second;
-                    }
+                    const std::string_view sourceTable = inferrer.scope.sourceForAlias(qualifiedAsterisk->tableName);
                     if (!expandAllColumnsOf(sourceTable)) {
                         parts.warnings.push_back("CREATE VIEW " + displayName + ": columns of table `" +
                                                  std::string(sourceTable) +
@@ -1152,6 +1146,17 @@ namespace sqlite2orm {
                     if (const auto* columnRef = dynamic_cast<const ColumnRefNode*>(selectColumn.expression.get())) {
                         columnLocation = columnRef->location;
                         underlineLength = underlineLengthOf(columnRef->columnName);
+                    }
+                }
+                // A field read back through a call whose result type the generated code spells
+                // out carries that type, exactly as a SELECT result column does — a view's struct
+                // is a reading surface of its own — so the same report is made for it, named by
+                // the field it is about and anchored at the call in the view's body.
+                if (selectColumn.expression) {
+                    if (auto warning = commonArgumentTypeWarning(*selectColumn.expression,
+                                                                 "view " + rawViewName + ": column `" + sqlName + "`",
+                                                                 inferrer.scope.resolver())) {
+                        parts.warnings.push_back(std::move(*warning));
                     }
                 }
                 appendField(std::move(sqlName), inferred, columnLocation, underlineLength);

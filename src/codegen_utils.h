@@ -15,6 +15,7 @@
 namespace sqlite2orm {
 
     class CodeGeneratorContext;
+    struct SourceTableColumn;
 
     bool policyEquals(const CodeGenPolicy* policy, std::string_view category, std::string_view value);
     CodeGenPolicy policyWithOverride(const CodeGenPolicy* base, std::string_view category, std::string_view value);
@@ -135,6 +136,55 @@ namespace sqlite2orm {
      *  JSON_QUOTE ever answers.
      */
     std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName);
+
+    /**
+     *  The result type a generated call of `functionCall` spells between angle brackets, and an
+     *  empty string for a call that spells none. On top of the two names above, this answers for
+     *  the four builtins sqlite_orm declares as the COMMON TYPE of their arguments — COALESCE
+     *  (`common_argument_type<>`), IFNULL and NULLIF (`common_argument_type<0, 1>`) and IIF
+     *  (`common_argument_type<1, 2>`, the two branches and not the condition). SQLite takes any
+     *  arguments there, its own result type being whichever branch it answers with, while
+     *  `std::common_type` reduces the C++ types of two arguments only where one converts to the
+     *  other: a text next to a number has no common type, and neither has a BLOB next to anything
+     *  else, so the call — and with it the whole `storage.select(...)` around it — does not
+     *  compile. Where the generated types say there is no common type, the call spells a type of
+     *  its own, picked over the arguments that carry a value — a NULL carries none, SQLite
+     *  answering such a call with one of the others, and the `std::optional` a nullable column
+     *  arrives in is a wrapper around a value rather than a value:
+     *  - where every one of them carries a NUMBER, the number they reduce to over the lattice
+     *    `bool` < `int` < {`int64_t`, `double`} — the very type `std::common_type` would have
+     *    answered had the NULLs and the wrappers not been in the way. `int64_t` and `double` are
+     *    siblings with nothing above them: a `double` loses every integer past 2^53 and an
+     *    `int64_t` the fractional part of a REAL, so that pair carries no number at all;
+     *  - `std::vector<char>` where a BLOB takes part, which carries its bytes whole;
+     *  - `std::string` otherwise, which reads every storage class back as its text — a number
+     *    comes back as its digits, which is what `commonArgumentTypeWarning` reports.
+     */
+    std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
+                                               const CodeGeneratorContext& context);
+
+    /**
+     *  How a caller answers the schema column an argument of a call is read back through, and
+     *  `nullptr` where it names none. The two models that ask for a spelled result type resolve a
+     *  name differently — the emitter by the struct it writes the reference as a member of, the
+     *  inferrer of a view's fields by the FROM clause of the view's own SELECT, which it holds
+     *  and the context does not — while the rule that reduces the argument types to one is the
+     *  same for both and lives in one place.
+     */
+    using ReferencedColumnResolver = std::function<const SourceTableColumn*(const AstNode&)>;
+
+    /**
+     *  The same answer without the angle brackets — `"std::string"`, and an empty string for a
+     *  call that spells no result type. This is the type the row is read back into, so it is also
+     *  the type a field holding that value has to be: a view column computed with such a call is
+     *  inferred from here rather than from the argument the call is otherwise typed as.
+     */
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const CodeGeneratorContext& context);
+
+    /** The same answer, resolving a column argument with `resolveColumn` instead of the emitter's rule. */
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const ReferencedColumnResolver& resolveColumn);
 
     /** `"->"`, `"->>"` or an empty view for any other operator — the text a JSON arrow is written as. */
     std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator);
@@ -543,8 +593,8 @@ namespace sqlite2orm {
     };
     /** The shape the bounds of a BETWEEN are generated in — the single home of that rule. */
     BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high);
-    /** How a BETWEEN bound is named in the warning about the two types, e.g. "an `int`". */
-    std::string betweenBoundTypeDescription(const AstNode& bound);
+    /** How a generated value is named in a warning about the C++ types that met, e.g. "an `int`". */
+    std::string generatedValueTypeDescription(const AstNode& bound);
     /**
      *  True for a node generated as sqlite_orm's `negated_condition_t`: a logical NOT, and the
      *  `!predicate` spelling a negated BETWEEN, LIKE, GLOB or MATCH takes. sqlite_orm classifies
@@ -593,7 +643,7 @@ namespace sqlite2orm {
      *  `abs(...)` is a `std::unique_ptr`, `max(...)` and `coalesce(...)` carry the type of an
      *  argument, NULL itself is a `std::nullptr_t`).
      */
-    bool selectResultNeedsAsOptional(const AstNode& astNode);
+    bool selectResultNeedsAsOptional(const AstNode& astNode, const CodeGeneratorContext& context);
     /**
      *  The C++ type sqlite_orm reads a result column back through, spelled the way the generated
      *  code spells it, for the expressions whose type the operator or the CAST alone settles;
@@ -619,7 +669,8 @@ namespace sqlite2orm {
      *  they carry are left alone too: SQLite refuses such a compound outright ("SELECTs to the
      *  left and right of UNION do not have the same number of result columns").
      */
-    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode);
+    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
+                                                   const CodeGeneratorContext& context);
     /**
      *  Whether a SELECT result column has to be generated as `cast<int64_t>(...)` for the integer
      *  SQLite computes to reach the caller whole. sqlite_orm types the bitwise operators `int`, so
@@ -657,6 +708,25 @@ namespace sqlite2orm {
      *  `jsonTextArrowWarning` already reports, at the same two characters.
      */
     std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode);
+    /**
+     *  The warning a column read back through a COALESCE, IFNULL, NULLIF or IIF call whose
+     *  arguments have no common C++ type carries, and nullopt for every other column. Such a call
+     *  spells its result type (see `functionCallResultTypeArgument`) to compile at all, and where
+     *  that type is the text fallback it reads every storage class back as its text — a number
+     *  comes back as its digits — while the type sqlite_orm deduces for the same call over
+     *  arguments of one type carries the value as it is. A call whose arguments all carry a number
+     *  spells that number instead and has nothing to lose, so it carries no warning either. The report belongs to the column rather than to the call: the type is what
+     *  a value is read back into, and a call in a WHERE or an ORDER BY hands its value to nobody.
+     *  `subject` names the column the message opens with — `"result column"` for a column of a
+     *  SELECT, `"view v: column `c`"` for a field of a view's struct, which is read back through
+     *  that same spelled type.
+     */
+    std::optional<CodegenWarning> commonArgumentTypeWarning(const AstNode& astNode,
+                                                            std::string_view subject,
+                                                            const ReferencedColumnResolver& resolveColumn);
+    /** `commonArgumentTypeWarning` for a SELECT result column, resolving columns the emitter's way. */
+    std::optional<CodegenWarning> selectResultCommonArgumentTypeWarning(const AstNode& astNode,
+                                                                        const CodeGeneratorContext& context);
     /**
      *  The report for a unary plus that stands over a column reference on one side of a comparison,
      *  if `astNode` is one. A unary plus is an identity for the value, which is why codegen emits

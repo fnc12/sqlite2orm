@@ -29,6 +29,10 @@ namespace sqlite2orm {
      *  outer table, and the call typed from a column that is not in it. The lattice reducing the
      *  argument types to one stays where it is; resolving the NAME is what each scope does for
      *  itself, and that resolution is written here, once.
+     *
+     *  A select with no FROM clause of its own names no scope at all: every reference in it is
+     *  correlated and read over the scope around it, which is what the emitter does too. Such a
+     *  select is not given a scope of this class — the caller keeps the one it stands in.
      */
     class SelectScopeColumns {
       public:

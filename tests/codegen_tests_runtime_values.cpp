@@ -1584,6 +1584,38 @@ TEST_CASE("runtime: an integer beside a REAL is read back through text without r
                            "9007199254740993") == std::vector<std::string>{"9.0072e+15"});
 }
 
+// A subquery with no FROM clause of its own reads its references over the scope around it, which
+// is where the emitter writes them too, so the call in it spells its result type exactly as the
+// same call spells it under a FROM written out — and the result column is widened around it just
+// the same. Left unwidened, the spelled `std::string` read the NULL back as the empty string:
+// sqlite3 3.51 answers NULL for `(SELECT nullif(a, 1))` over a row holding NULL, and NULLIF
+// answers NULL for a NULL first argument. The second statement is the counterfactual — the very
+// code the missing widening generated — and it prints the empty line the value came back as.
+TEST_CASE("runtime: a subquery with no FROM of its own reads its NULL back") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT nullif(a, 1)) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT nullif(a, 1) FROM user) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT coalesce(a, 1)) FROM user;").code,
+    };
+    // The form with the FROM spelled out generates the same bytes: the scope is the same one.
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(select(nullif<std::string>(&User::a, 1))), from<User>());",
+                "auto rows = storage.select(as_optional(select(nullif<std::string>(&User::a, 1))), from<User>());",
+                "auto rows = storage.select(as_optional(select(coalesce<std::string>(&User::a, 1))), from<User>());",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<std::string>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "1"});
+    REQUIRE(selectedValues(statements, "std::optional<std::string>", "\"hi\"") ==
+            std::vector<std::string>{"hi", "hi", "hi"});
+
+    // What the same statement read back without the widening hands the caller: an empty string
+    // where the row held NULL, and nothing says so.
+    REQUIRE(selectedValues({"auto rows = storage.select(select(nullif<std::string>(&User::a, 1)), from<User>());"},
+                           "std::optional<std::string>",
+                           "std::nullopt") == std::vector<std::string>{""});
+}
+
 // A BLOB among the arguments makes the generated type `std::vector<char>` rather than
 // `std::string`: sqlite_orm reads a `std::string` through `sqlite3_column_text`, which stops at
 // the first NUL byte a BLOB holds, and x'004100' would have come back as the empty text. Every

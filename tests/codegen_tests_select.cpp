@@ -1191,6 +1191,77 @@ TEST_CASE("codegen: a call inside a scalar subquery is typed by the subquery's o
     REQUIRE(result.warnings.empty());
 }
 
+// A subquery with no FROM clause of its own is the one that carries no scope: every reference in
+// it is correlated, read over the scope around it, and that is the scope the emitter writes it in
+// too — `(SELECT coalesce(b, c))` under `FROM t` comes out `coalesce<std::string>(&T::b, &T::c)`,
+// the same bytes as the form with `FROM t` spelled out. Handing such a select a scope of its own
+// named nothing, so every reference answered `nullptr`, the spelled result type went unseen and
+// the call stayed on the list of the already-nullable ones: the two forms below differed by the
+// `as_optional` alone, and the one without a FROM read the NULL of a `coalesce<std::string>` back
+// as the empty string. Both compile, so the difference only ever showed up in the value.
+TEST_CASE("codegen: a subquery with no FROM of its own is typed by the scope around it") {
+    // sqlite3 3.51 answers NULL for both forms over a row holding (NULL, NULL); the runtime test
+    // "runtime: a subquery with no FROM of its own reads its NULL back" pins the value.
+    auto result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT coalesce(b, c)) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as_optional(select(coalesce<std::string>(&T::b, &T::c))), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT coalesce(b, c) FROM t) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as_optional(select(coalesce<std::string>(&T::b, &T::c))), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    // The three other builtins typed by the common type of their arguments, over the same form.
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT ifnull(b, c)) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as_optional(select(ifnull<std::string>(&T::b, &T::c))), from<T>());");
+
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT nullif(b, c)) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as_optional(select(nullif<std::string>(&T::b, &T::c))), from<T>());");
+
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT iif(1, b, c)) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as_optional(select(iif<std::string>(1, &T::b, &T::c))), from<T>());");
+
+    // The scope kept is the nearest one that names sources, not the outermost: the innermost select
+    // has no FROM, so it reads `FROM u` around it, which is the struct `&U::b` the emitter writes —
+    // `t` declares a `b` of its own and typing from it would answer for a field the code never
+    // reads.
+    result = generateLastOfBatch("CREATE TABLE t(b INTEGER); CREATE TABLE u(b TEXT); "
+                                 "SELECT (SELECT (SELECT coalesce(b, 1)) FROM u) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(select(select(coalesce<std::string>(&U::b, 1)), "
+                           "from<U>())), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    // What decides is the FROM clause being written at all, not the sources in it being ones the
+    // schema answers for: a subquery reading a CTE names a scope of its own, whose column comes out
+    // `column<cte_0>(…)` and is typed by the SELECT the CTE was built from, so the outer table's
+    // same-named column answers nothing for it. Falling back to the outer scope here would have
+    // spelled nothing — the emitter asks the same scope — and widened the row all the same.
+    result = generateLastOfBatch("CREATE TABLE t(a TEXT); WITH k(a) AS (SELECT 1) "
+                                 "SELECT (SELECT coalesce(a, 1) FROM k) FROM t;");
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte_0 = decltype(1_ctealias);\n"
+                           "constexpr auto k__a = colalias_a{};\n"
+                           "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= k__a)), "
+                           "select(select(coalesce(column<cte_0>(k__a), 1)), from<T>()));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using "
+                 "namespace sqlite_orm::literals` scope for `_ctealias`"}});
+
+    // And a scope around it that answers for nothing keeps answering for nothing: over a view
+    // source the column is typed by the SELECT the view was built from, which no CREATE TABLE of
+    // the batch answers for, so the subquery under it spells no type either — the hole COVERAGE.md
+    // names, the same as it stands on master.
+    result = generateLastOfBatch(
+        "CREATE TABLE t(b TEXT); CREATE VIEW v AS SELECT 'x' AS a; SELECT (SELECT coalesce(a, 1)) FROM v;");
+    REQUIRE(result.code == "auto rows = storage.select(select(coalesce(&V::a, 1)), from<V>());");
+    REQUIRE(result.warnings.empty());
+}
+
 // The numbers a value is read back as form a lattice rather than a line: `bool` under `int`, `int`
 // under both `int64_t` and `double`, and `int64_t` and `double` beside each other with nothing
 // above them — a double loses every integer past 2^53 and an int64_t the fractional part of a

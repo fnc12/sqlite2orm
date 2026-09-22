@@ -3208,6 +3208,18 @@ namespace sqlite2orm {
                 // answered over ITS FROM clause: asking the outer scope resolved a name of the inner
                 // select to a same-named column of an outer table and typed the call from a field the
                 // generated code does not read.
+                if (nestedSelect->fromClause.empty()) {
+                    // A select with no FROM of its own names no scope: every reference in it is
+                    // correlated and read over the scope around it, which is the scope this stands
+                    // in — `SELECT (SELECT coalesce(b, c)) FROM t` comes out as
+                    // `select(coalesce<std::string>(&T::b, &T::c))`, the same bytes the form with
+                    // `FROM t` written out comes out as. Swapping the resolver for a scope that
+                    // names nothing answered `nullptr` for every reference, so the spelled result
+                    // type went unseen and the call stayed on the already-nullable list: the
+                    // wrapping form got its `as_optional` and this one did not, reading the NULL of
+                    // a `coalesce<std::string>` back as the empty string.
+                    return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, resolveColumn);
+                }
                 const SelectScopeColumns nestedScope(*nestedSelect, context);
                 return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, nestedScope.resolver());
             }

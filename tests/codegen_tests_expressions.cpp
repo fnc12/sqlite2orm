@@ -1449,6 +1449,39 @@ TEST_CASE("codegen: an IN list of bool values is widened to one a statement can 
     REQUIRE(generate("a IN (TRUE)") == "in(&User::a, {static_cast<int64_t>(true)})");
     REQUIRE(generate("a NOT IN (FALSE)") == "not_in(&User::a, {static_cast<int64_t>(false)})");
     REQUIRE(generate("a BETWEEN TRUE AND FALSE") == "between(&User::a, true, false)");
+    // A bind parameter beside them is typed by the caller and rules nothing out, so the widening
+    // reaches this list too — and it has to, because no declaration makes the list as written
+    // compile: `bool bindParam1` is the `std::vector<bool>` above, and `int64_t bindParam1` is a
+    // second type beside the `bool` values. Widened, the caller declares `int64_t bindParam1` and
+    // the list is one type.
+    REQUIRE(generate("a IN (TRUE, ?)") == "in(&User::a, {static_cast<int64_t>(true), bindParam1})");
+    REQUIRE(generate("a IN (?, FALSE)") == "in(&User::a, {bindParam1, static_cast<int64_t>(false)})");
+    REQUIRE(generate("a IN (TRUE, FALSE, ?)") ==
+            "in(&User::a, {static_cast<int64_t>(true), static_cast<int64_t>(false), bindParam1})");
+    REQUIRE(generate("a NOT IN (?, TRUE)") == "not_in(&User::a, {bindParam1, static_cast<int64_t>(true)})");
+    // Bind parameters alone are not booleans this knows of, so nothing here asks for a cast that
+    // would change the value they bind — nor is the widening reported for a list nothing was cast
+    // in. The comment says what was done and what the caller has to declare beside it.
+    const std::string valuesWidenedComment =
+        "The values of an IN list are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`in(A, std::initializer_list<E>)` deduces one C++ type from the whole list, and C++ types "
+        "an integer constant by its magnitude, so `in(&User::a, {1, 3000000000})` is an `int` next "
+        "to a 64-bit constant and does not compile. The cast goes on every value that is not "
+        "already an `int64_t`, rather than on the narrower ones: the type a 64-bit constant is "
+        "given is `long` where an `int64_t` is a `long long`, and the two are distinct types even "
+        "where both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as "
+        "a signed 64-bit number anyway, TRUE and FALSE among them. A `bindParamN` beside them is "
+        "not cast: its type is the one you declare, and a cast there would change the value it "
+        "binds rather than only its type, so declare it `int64_t`.";
+    REQUIRE(generate("a IN (?, ?)") == "in(&User::a, {bindParam1, bindParam2})");
+    REQUIRE(generateFull("a IN (?, ?)").comments.empty());
+    // Values of one type that is not `bool` are left alone: only the vector of `bool` is the one
+    // a statement cannot hold.
+    REQUIRE(generate("a IN ('x', 'y')") == "in(&User::a, {\"x\", \"y\"})");
+    REQUIRE(generateFull("a IN ('x', 'y')").comments.empty());
+    REQUIRE(generateFull("a IN (b, c)").comments.empty());
+    REQUIRE(generateFull("a IN (TRUE, ?)").comments == std::vector<std::string>{valuesWidenedComment});
+    REQUIRE(generateFull("a IN (TRUE, FALSE)").comments == std::vector<std::string>{valuesWidenedComment});
 }
 
 // Values with no C++ type to widen to have no working form at all: the initializer list takes one

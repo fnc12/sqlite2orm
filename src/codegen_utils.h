@@ -549,6 +549,9 @@ namespace sqlite2orm {
      *  take (`cannot bind non-const lvalue reference of type 'bool&'`). `in(&User::a, {true})`
      *  builds as an expression on its own and fails the moment a statement holds it, so such a
      *  list is widened as well: SQLite carries TRUE and FALSE as the integers 1 and 0 anyway.
+     *  A bind parameter beside those values does not stop the widening, the way it does not stop
+     *  the widening of two integer widths: it is typed by the caller, and the `int64_t` he
+     *  declares is what the cast on the values beside it meets.
      */
     OneDeducedTypeForm inValuesForm(const std::vector<const AstNode*>& values);
     /** How a member of such a group is named in the warning about the two types, e.g. "an `int`". */
@@ -558,7 +561,9 @@ namespace sqlite2orm {
      *  proves `oneDeducedTypeForm` answered `noCommonType`, and so the pair a warning names. A
      *  group of more than two has members that are not the reason it has no common type: a bind
      *  parameter is typed by the caller, and two integer constants of different widths would have
-     *  been widened were they alone. `{nullptr, nullptr}` when there is no such pair.
+     *  been widened were they alone. Every reason `oneDeducedTypeForm` has to answer `noCommonType`
+     *  today is proven by such a pair; `{nullptr, nullptr}` when a reason without one is added, so
+     *  that a caller can say less rather than read through nothing.
      */
     std::pair<const AstNode*, const AstNode*> firstNoCommonTypePair(const std::vector<const AstNode*>& nodes);
     /**

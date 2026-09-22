@@ -133,8 +133,14 @@ namespace {
      *  constant, so a pair of bounds that deduces one `T` here can be two types there. The alias
      *  stands in for the platform: the generated code names `int64_t` unqualified, and inside the
      *  namespace that name is whichever of the two types the probe asks for.
+     *
+     *  `callerDeclarations` stands for the caller himself, who declares the `bindParamN` variables
+     *  the generated code names before he runs the statement; inside the namespace those
+     *  declarations name `int64_t` the same way the generated code does.
      */
-    int compilesWithInt64Spelled(const std::vector<std::string>& selectStatements, std::string_view int64Spelling) {
+    int compilesWithInt64Spelled(const std::vector<std::string>& selectStatements,
+                                 std::string_view int64Spelling,
+                                 std::string_view callerDeclarations = "") {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <optional>\n"
@@ -149,13 +155,14 @@ namespace {
                 << ";\n"
                    "    using namespace sqlite_orm;\n"
                    "\n";
+        const std::string declarations =
+            callerDeclarations.empty() ? std::string{} : "        " + std::string(callerDeclarations) + "\n";
         for (std::size_t index = 0; index < selectStatements.size(); ++index) {
             program << "    void statement" << index
                     << "() {\n"
                        "        auto storage = make_storage(\"\", make_table(\"users\", make_column(\"a\", "
                        "&User::a)));\n"
-                       "        "
-                    << selectStatements[index]
+                    << declarations << "        " << selectStatements[index]
                     << "\n"
                        "        (void)rows;\n"
                        "    }\n";
@@ -1470,6 +1477,37 @@ TEST_CASE("runtime: IN list values of two integer widths read back as SQLite com
     // `long long`. Both spellings have to compile, whichever one this platform uses itself.
     REQUIRE(compilesWithInt64Spelled(statements, "long") == 0);
     REQUIRE(compilesWithInt64Spelled(statements, "long long") == 0);
+}
+
+// A bind parameter carries no type of its own, and the values beside it are widened all the same.
+// It has to be that way for a list of `bool` values: `in(&User::a, {true, bindParam1})` has no
+// working declaration at all — `bool bindParam1` builds the `std::vector<bool>` a statement cannot
+// hold, and `int64_t bindParam1` is a second type beside the `bool`, `no matching function for
+// call to 'in(...)'` — so leaving that list as written is a form nobody can run. Widened, the
+// caller declares `int64_t bindParam1` and the whole list is one type, which is the contract the
+// integer widths already give. Checked against the pinned sqlite_orm in both spellings of
+// `int64_t`, because which of them a platform uses is what made these lists two types to begin
+// with. SQLite carries TRUE and FALSE as the integers 1 and 0 (`SELECT typeof(TRUE), TRUE` is
+// `integer|1` on 3.51), so the cast changes no value the statement binds.
+TEST_CASE("runtime: IN list values beside a bind parameter are widened the caller can declare") {
+    const std::vector<std::string> statements{
+        generate("SELECT a IN (TRUE, ?);"),
+        generate("SELECT a IN (?, FALSE);"),
+        generate("SELECT a IN (TRUE, FALSE, ?);"),
+        generate("SELECT a IN (1, ?, 3000000000);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(in(&User::a, {static_cast<int64_t>(true), "
+                              "bindParam1})));",
+                              "auto rows = storage.select(as_optional(in(&User::a, {bindParam1, "
+                              "static_cast<int64_t>(false)})));",
+                              "auto rows = storage.select(as_optional(in(&User::a, {static_cast<int64_t>(true), "
+                              "static_cast<int64_t>(false), bindParam1})));",
+                              "auto rows = storage.select(as_optional(in(&User::a, {static_cast<int64_t>(1), "
+                              "bindParam1, static_cast<int64_t>(3000000000)})));",
+                          });
+    REQUIRE(compilesWithInt64Spelled(statements, "long", "int64_t bindParam1{};") == 0);
+    REQUIRE(compilesWithInt64Spelled(statements, "long long", "int64_t bindParam1{};") == 0);
 }
 
 // sqlite_orm's `json_extract` and `json_quote` take the type the row is read back into as a

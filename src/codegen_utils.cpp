@@ -512,7 +512,9 @@ namespace sqlite2orm {
         "already an `int64_t`, rather than on the narrower ones: the type a 64-bit constant is "
         "given is `long` where an `int64_t` is a `long long`, and the two are distinct types even "
         "where both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as "
-        "a signed 64-bit number anyway, TRUE and FALSE among them.";
+        "a signed 64-bit number anyway, TRUE and FALSE among them. A `bindParamN` beside them is "
+        "not cast: its type is the one you declare, and a cast there would change the value it "
+        "binds rather than only its type, so declare it `int64_t`.";
 
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
@@ -1897,11 +1899,24 @@ namespace sqlite2orm {
         if (form != OneDeducedTypeForm::asWritten) {
             return form;
         }
-        const bool everyValueBoolean =
-            !values.empty() && std::all_of(values.begin(), values.end(), [](const AstNode* value) {
-                return generatedValueCppType(*value) == GeneratedValueCppType::boolean;
-            });
-        return everyValueBoolean ? OneDeducedTypeForm::widenedToInt64 : form;
+        // A value this cannot type is a bind parameter, and only a bind parameter: had the list
+        // held a column pointer or an expression node beside a typed value, the gate above would
+        // have answered noCommonType already. A bind parameter no more rules the `std::vector<bool>`
+        // out than it rules the widening of two integer widths out — `a IN (TRUE, ?)` as written
+        // has no working declaration at all (`bool bindParam1` is the vector, `int64_t bindParam1`
+        // is a second type), while the widened list meets the `int64_t` the caller declares.
+        bool booleanValueSeen = false;
+        for (const AstNode* value: values) {
+            const std::optional<GeneratedValueCppType> type = generatedValueCppType(*value);
+            if (!type) {
+                continue;
+            }
+            if (*type != GeneratedValueCppType::boolean) {
+                return form;
+            }
+            booleanValueSeen = true;
+        }
+        return booleanValueSeen ? OneDeducedTypeForm::widenedToInt64 : form;
     }
 
     std::string widenToInt64(const AstNode& node, std::string code) {

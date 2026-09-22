@@ -2045,12 +2045,15 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                       "FROM s_text_pk) || ',' || (SELECT count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2");
 }
 
-// sqlite_orm syncs the database objects of a storage in declaration order only since the v1.9.1
-// release: the release itself walks them backwards, so an index or a trigger written after the
-// table it is made for reaches SQLite before that table exists and `sync_schema()` throws
-// `no such table: main.t` on the very first call, leaving the database empty. The order written
-// here is the one both take — every index and trigger first, the tables they are made for after
-// them — and these two cases pin it, over two tables so that "last argument" cannot pass for it.
+// sqlite_orm syncs the database objects of a storage in declaration order only in the revisions
+// after the v1.9.1 release: the release itself walks them backwards, so an index or a trigger
+// written after the table it is made for reaches SQLite before that table exists and
+// `sync_schema()` throws `no such table: main.t` on the very first call, leaving the database
+// empty. The order written here is the one both take — every index and trigger first, the tables
+// they are made for after them. The literal of the first case is what pins that order, over two
+// tables so that "last argument" cannot pass for it, and it is the only guard of the order there
+// is: these tests build against the pinned revision, which takes either order, so no case here
+// can be run against the release the order is written for.
 TEST_CASE("generateSqliteSchemaHeader: an index and a trigger stand before the table they are made for") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path,
@@ -2104,8 +2107,11 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() creates the index and the t
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
     REQUIRE(header.errors.empty());
 
-    // A database that holds nothing at all is where the order decides everything: every object is
-    // created, so an index reaching SQLite before its table has nothing to attach to.
+    // The order cannot fail this case: it is built against the pinned revision, which sorts the
+    // database objects by dependency and syncs a database that holds nothing at all just as fully
+    // in either order (checked, both ways round). What it guards is that a header carrying an
+    // index and a trigger compiles and syncs at all, and that every object the schema named
+    // reaches `sqlite_master`.
     TempDbFile empty{makeTempDbPath()};
     REQUIRE(syncSchemaProbeOutput(header.code, empty.path, "") == "t=new_table_created\n"
                                                                   "t_a_idx=new_table_created\n"

@@ -875,6 +875,124 @@ TEST_CASE("codegen: a result column typed by a predicate, a CAST or a function c
             "auto rows = storage.select(as_optional(length(&Users::a) + 1));");
 }
 
+// sqlite_orm types COALESCE, IFNULL, NULLIF and IIF as the common C++ type of their arguments, and
+// a result column read back through such a call names a type only where the arguments reduce to
+// one. Where they do not, the call spells the type it is read back through — `std::string`, or
+// `std::vector<char>` where a BLOB takes part — and the report says so: that type carries every
+// storage class, but it carries a number as its digits rather than as the number sqlite_orm would
+// have deduced. The report belongs to the result column, which is where a type is read back at
+// all; a call in a WHERE spells the same type and reports nothing, since nothing reads it.
+// The anchor is the name the call is written under, the text the message repeats.
+TEST_CASE("codegen: a result column typed by the common type of its arguments reports the type it spells") {
+    const auto typeWarning = [](std::string_view name,
+                                std::string_view resultType,
+                                std::string_view first,
+                                std::string_view second,
+                                size_t column) {
+        const bool blob = resultType == "std::vector<char>";
+        return std::vector<CodegenWarning>{
+            {"result column computed with `" + std::string(name) + "` comes back as " + (blob ? "bytes" : "text") +
+                 ": sqlite_orm types the call as the common C++ type of its arguments, and " + std::string(first) +
+                 " next to " + std::string(second) + " has none, so the call is generated as `" + std::string(name) +
+                 "<" + std::string(resultType) + ">(…)` — a number comes back as " +
+                 (blob ? "the bytes of its digits" : "its digits") +
+                 ". Spell the result type the call answers with where it is known",
+             SourceLocation{1, column},
+             name.size()}};
+    };
+
+    auto result = generateFull("SELECT coalesce('x', 1);");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce<std::string>(\"x\", 1));");
+    REQUIRE(result.warnings == typeWarning("coalesce", "std::string", "a `const char*`", "an `int`", 8));
+
+    result = generateFull("SELECT ifnull('x', 2);");
+    REQUIRE(result.code == "auto rows = storage.select(ifnull<std::string>(\"x\", 2));");
+    REQUIRE(result.warnings == typeWarning("ifnull", "std::string", "a `const char*`", "an `int`", 8));
+
+    // NULLIF is NULL whenever its two arguments are equal, and the `std::optional` sqlite_orm
+    // wrapped its deduced type in is gone with that type, so the widening of a result column that
+    // can be NULL is what carries the NULL now.
+    result = generateFull("SELECT nullif('x', 1);");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(nullif<std::string>(\"x\", 1)));");
+    REQUIRE(result.warnings == typeWarning("nullif", "std::string", "a `const char*`", "an `int`", 8));
+
+    result = generateFull("SELECT iif(1, 'x', 2);");
+    REQUIRE(result.code == "auto rows = storage.select(iif<std::string>(1, \"x\", 2));");
+    REQUIRE(result.warnings == typeWarning("iif", "std::string", "a `const char*`", "an `int`", 8));
+
+    result = generateFull("SELECT coalesce(NULL, 1);");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, 1)));");
+    REQUIRE(result.warnings == typeWarning("coalesce", "std::string", "a `std::nullptr_t`", "an `int`", 8));
+
+    result = generateFull("SELECT coalesce(x'41', 1);");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce<std::vector<char>>(std::vector<char>{'\\x41'}, 1));");
+    REQUIRE(result.warnings == typeWarning("coalesce", "std::vector<char>", "a `std::vector<char>`", "an `int`", 8));
+
+    // The name is repeated as it is written, and the call is located at it.
+    result = generateFull("SELECT 1, COALESCE('x', 1);");
+    REQUIRE(result.code == "auto rows = storage.select(columns(1, coalesce<std::string>(\"x\", 1)));");
+    REQUIRE(result.warnings == typeWarning("coalesce", "std::string", "a `const char*`", "an `int`", 11));
+}
+
+// A column argument is read back as the field the generated struct declares for it, so the schema
+// of the batch is what types it. Two fields of one kind reduce to one type — an `int64_t` next to
+// a `double` is a `double` — but two `std::optional`s of different types do not: each converts to
+// the other, which leaves neither of them the common one. `std::optional<bool>` is the exception,
+// and it is the `bool` that makes it one: a `bool` is constructible from any `std::optional`
+// through its explicit `operator bool`, which rules the conversion INTO the `std::optional<bool>`
+// out and leaves the single direction. All four checked against the pinned headers.
+TEST_CASE("codegen: a result column over schema columns of two C++ types spells the type it is read as") {
+    auto result = generateLastOfBatch("CREATE TABLE t(b TEXT, i INTEGER); SELECT coalesce(b, 1) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::b, 1)));");
+    REQUIRE(result.warnings.size() == 1);
+    REQUIRE(result.warnings.at(0).message ==
+            "result column computed with `coalesce` comes back as text: sqlite_orm types the call as the common "
+            "C++ type of its arguments, and a column typed `std::optional<std::string>` next to an `int` has none, "
+            "so the call is generated as `coalesce<std::string>(…)` — a number comes back as its digits. Spell the "
+            "result type the call answers with where it is known");
+
+    // Two nullable fields of different types, which is two `std::optional`s with no common type.
+    result = generateLastOfBatch("CREATE TABLE t(i INTEGER, r REAL); SELECT coalesce(i, r) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::i, &T::r)));");
+    REQUIRE(result.warnings.size() == 1);
+    REQUIRE(result.warnings.at(0).message ==
+            "result column computed with `coalesce` comes back as text: sqlite_orm types the call as the common "
+            "C++ type of its arguments, and a column typed `std::optional<int64_t>` next to a column typed "
+            "`std::optional<double>` has none, so the call is generated as `coalesce<std::string>(…)` — a number "
+            "comes back as its digits. Spell the result type the call answers with where it is known");
+
+    // The same two types NOT NULL are two plain arithmetic types, which reduce to one.
+    result = generateLastOfBatch("CREATE TABLE t(i INTEGER NOT NULL, r REAL NOT NULL); SELECT coalesce(i, r) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce(&T::i, &T::r));");
+    REQUIRE(result.warnings.empty());
+
+    // And so does a nullable field next to an `std::optional<bool>`.
+    result = generateLastOfBatch("CREATE TABLE t(i INTEGER, f BOOLEAN); SELECT coalesce(i, f) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce(&T::i, &T::f));");
+    REQUIRE(result.warnings.empty());
+
+    result = generateLastOfBatch("CREATE TABLE t(bl BLOB, i INTEGER); SELECT coalesce(bl, i) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::vector<char>>(&T::bl, &T::i)));");
+    REQUIRE(result.warnings.size() == 1);
+    REQUIRE(result.warnings.at(0).message ==
+            "result column computed with `coalesce` comes back as bytes: sqlite_orm types the call as the common "
+            "C++ type of its arguments, and a column typed `std::optional<std::vector<char>>` next to a column "
+            "typed `std::optional<int64_t>` has none, so the call is generated as `coalesce<std::vector<char>>(…)` "
+            "— a number comes back as the bytes of its digits. Spell the result type the call answers with where "
+            "it is known");
+
+    // A WHERE spells the same call and reports nothing: no row is read back through it.
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT, i INTEGER); SELECT i FROM t WHERE coalesce(b, 1) = 2;");
+    REQUIRE(result.code == "auto rows = storage.select(&T::i, where(coalesce<std::string>(&T::b, 1) == 2));");
+    REQUIRE(result.warnings.empty());
+
+    // A column name two tables declare with different types is left alone: which of them a
+    // reference resolves to is the query's to say, and this answers over the name.
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT); CREATE TABLE u(b INTEGER); SELECT coalesce(b, 1) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce(&T::b, 1));");
+    REQUIRE(result.warnings.empty());
+}
+
 // A built-in answers NULL over arguments that hold none far more often than it merely propagates
 // one, so a call is ruled nullable unless the function is known to answer NULL for no reason other
 // than a NULL argument. Every expression here is NULL in libsqlite3 3.45.1, the version this

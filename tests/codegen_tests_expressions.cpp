@@ -1444,6 +1444,64 @@ TEST_CASE("codegen: function - multiple args") {
     REQUIRE(generate("replace(name, 'foo', 'bar')") == "replace(&User::name, \"foo\", \"bar\")");
 }
 
+// sqlite_orm types COALESCE, IFNULL, NULLIF and IIF as the COMMON TYPE of their arguments —
+// `common_argument_type<>` for COALESCE, `common_argument_type<0, 1>` for IFNULL and NULLIF, and
+// `common_argument_type<1, 2>` for IIF, the two branches and not the condition — and
+// `std::common_type` reduces two C++ types only where one converts to the other. A text next to a
+// number reduces to nothing, so `storage.select(coalesce("x", 1))` did not compile at all: `no
+// type named 'type' in 'sqlite_orm::internal::column_result_t<…, common_argument_type<>(anything,
+// anything, variadic<anything>)…>'`. SQLite takes every one of these — `SELECT coalesce('x', 1)`
+// answers 'x' on 3.51 — so the call is generated with the type it is read back through spelled
+// out. `std::string` reads every storage class back as its text; a BLOB anywhere among the
+// arguments makes it `std::vector<char>`, which carries bytes a `std::string` would cut at the
+// first NUL.
+TEST_CASE("codegen: a call typed by the common type of its arguments spells the type it has none") {
+    REQUIRE(generate("coalesce('x', 1)") == "coalesce<std::string>(\"x\", 1)");
+    REQUIRE(generate("coalesce(1, 'x')") == "coalesce<std::string>(1, \"x\")");
+    REQUIRE(generate("coalesce(1, 2, 'x')") == "coalesce<std::string>(1, 2, \"x\")");
+    REQUIRE(generate("ifnull('x', 2)") == "ifnull<std::string>(\"x\", 2)");
+    REQUIRE(generate("nullif('x', 1)") == "nullif<std::string>(\"x\", 1)");
+    REQUIRE(generate("iif(1, 'x', 2)") == "iif<std::string>(1, \"x\", 2)");
+    // A NULL is a `std::nullptr_t`, which reduces with a `std::string` — that one has a
+    // `const char*` constructor — and with nothing else.
+    REQUIRE(generate("coalesce(NULL, 1)") == "coalesce<std::string>(nullptr, 1)");
+    REQUIRE(generate("coalesce(NULL, 2.5)") == "coalesce<std::string>(nullptr, 2.5)");
+    REQUIRE(generate("coalesce(x'41', 1)") == "coalesce<std::vector<char>>(std::vector<char>{'\\x41'}, 1)");
+    REQUIRE(generate("coalesce(x'41', 'x')") == "coalesce<std::vector<char>>(std::vector<char>{'\\x41'}, \"x\")");
+    REQUIRE(generate("coalesce(x'41', NULL)") == "coalesce<std::vector<char>>(std::vector<char>{'\\x41'}, nullptr)");
+}
+
+// Arguments that do reduce to one type are left exactly as they are generated: every arithmetic
+// type converts to every other one, a `std::string` and a `std::nullptr_t` convert to each other,
+// and two arguments of the very same type are one type to begin with. The condition of an IIF is
+// out of the reduction, and so is every argument of a call sqlite_orm types on its own — `max`
+// takes the type of its first argument, which is why `max('x', 1)` compiled all along.
+TEST_CASE("codegen: a call typed by the common type of its arguments keeps a type it has") {
+    REQUIRE(generate("coalesce(1, 2.5)") == "coalesce(1, 2.5)");
+    REQUIRE(generate("coalesce(1, TRUE)") == "coalesce(1, true)");
+    REQUIRE(generate("coalesce(1, 3000000000)") == "coalesce(1, 3000000000)");
+    REQUIRE(generate("coalesce('a', 'b')") == "coalesce(\"a\", \"b\")");
+    REQUIRE(generate("coalesce(NULL, 'x')") == "coalesce(nullptr, \"x\")");
+    REQUIRE(generate("coalesce(NULL, NULL)") == "coalesce(nullptr, nullptr)");
+    REQUIRE(generate("coalesce(x'41', x'42')") == "coalesce(std::vector<char>{'\\x41'}, std::vector<char>{'\\x42'})");
+    REQUIRE(generate("iif('x', 1, 2)") == "iif(\"x\", 1, 2)");
+    REQUIRE(generate("max('x', 1)") == "max(\"x\", 1)");
+    REQUIRE(generate("min('x', 1)") == "min(\"x\", 1)");
+}
+
+// An argument whose type is not named by the generated code — a nested call, an operator, a bind
+// parameter, a column no schema in the batch types — is typed by sqlite_orm out of what it is
+// built over, and that type can be the one every other argument reduces to. Such a call is left
+// alone, which leaves the hole the schema-less cases here stand for: `coalesce(abs(a), 'x')` does
+// not compile, and nothing at this level can tell that it does not.
+TEST_CASE("codegen: a call typed by the common type of its arguments leaves an untyped argument alone") {
+    REQUIRE(generate("coalesce(a, 1)") == "coalesce(&User::a, 1)");
+    REQUIRE(generate("coalesce(a, 'x')") == "coalesce(&User::a, \"x\")");
+    REQUIRE(generate("coalesce(abs(a), 'x')") == "coalesce(abs(&User::a), \"x\")");
+    REQUIRE(generate("coalesce(a + 1, 'x')") == "coalesce(c(&User::a) + 1, \"x\")");
+    REQUIRE(generate("coalesce(:p, 'x')") == "coalesce(p, \"x\")");
+}
+
 TEST_CASE("codegen: function - case insensitive name") {
     REQUIRE(generate("ABS(a)") == "abs(&User::a)");
     REQUIRE(generate("COUNT(*)") == "count()");

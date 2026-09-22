@@ -165,6 +165,92 @@ TEST_CASE("codegen: CREATE VIEW - column of an integer literal beyond int64 is a
                                         cpp26ViewWarning("v", 1)});
 }
 
+// A CASE has no type of its own in SQLite: it answers with the value of whichever branch matched,
+// and the view field every row reaches holds one type. Taken from the first branch alone, the
+// field truncated the wider branches — both columns below were `int64_t` fields — and it disagreed
+// with the `case_<R>` generated for that very column, which widens over all of them (card
+// 1866790966522808145). The field a column of an integer and a REAL branch lands in is the
+// `double` that holds both exactly; a branch only an int64 holds takes the pair to the text that
+// keeps both, the same way the `case_<R>` beside it does.
+TEST_CASE("codegen: CREATE VIEW - a CASE column is typed over every branch and the ELSE") {
+    auto result =
+        generateLastOfBatch("CREATE TABLE t (a INTEGER);\n"
+                            "CREATE VIEW v AS SELECT CASE WHEN a < 0 THEN 1 ELSE 1.5 END AS x,\n"
+                            "                        CASE WHEN a < 0 THEN 1 ELSE 'z' END AS y,\n"
+                            "                        CASE WHEN a < 0 THEN 9223372036854775807 ELSE 1.5 END AS z\n"
+                            "                 FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    double x = 0.0;\n"
+                           "    std::string y;\n"
+                           "    std::string z;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(columns(case_<double>().when(c(&T::a) < 0, then(1)).else_(1.5)"
+                           ".end(), case_<std::string>().when(c(&T::a) < 0, then(1)).else_(\"z\").end(), "
+                           "case_<std::string>().when(c(&T::a) < 0, then(9223372036854775807)).else_(1.5)"
+                           ".end()))));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
+}
+
+// The column type the FROM tables know is what a branch naming one contributes, and an INTEGER
+// column holds values a `double` drops, so a column beside a REAL branch reaches the text that
+// keeps both. The `case_<double>` of the same column is the expression side reading a bare column
+// reference through the default `int` — the gap the CASE widening cannot close on its own — and
+// the field stays the wider of the two answers, which is the side that loses nothing.
+TEST_CASE("codegen: CREATE VIEW - a CASE branch naming a column is as wide as the column") {
+    auto result = generateLastOfBatch("CREATE TABLE t (a INTEGER);\n"
+                                      "CREATE VIEW v AS SELECT CASE WHEN a < 0 THEN a ELSE 1.5 END AS x FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    std::optional<std::string> x;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(case_<double>().when(c(&T::a) < 0, then(&T::a)).else_(1.5)"
+                           ".end())));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
+}
+
+// A CASE no branch matches and no ELSE answers is NULL — `SELECT CASE WHEN 0 THEN 1 END` is one —
+// and so is a branch spelling a NULL out, so the field holds an optional either way. The
+// nullability used to come off the first branch alone as well.
+TEST_CASE("codegen: CREATE VIEW - a CASE that can answer NULL is an optional field") {
+    auto result = generateLastOfBatch("CREATE TABLE t (a INTEGER NOT NULL);\n"
+                                      "CREATE VIEW v AS SELECT CASE WHEN a < 0 THEN a END AS x,\n"
+                                      "                        CASE WHEN a < 0 THEN NULL ELSE a END AS y,\n"
+                                      "                        CASE WHEN a < 0 THEN a ELSE 0 END AS z FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "    std::optional<int64_t> y;\n"
+                           "    int64_t z = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(columns(case_<int>().when(c(&T::a) < 0, then(&T::a)).end(), "
+                           "case_<int>().when(c(&T::a) < 0, then(nullptr)).else_(&T::a).end(), "
+                           "case_<int>().when(c(&T::a) < 0, then(&T::a)).else_(0).end()))));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
+}
+
+// A BLOB branch beside a non-BLOB one has no field type that keeps both: an `std::string` stops at
+// the first NUL byte a blob holds, and the `std::vector<char>` that does read every storage class
+// whole is a type the expression side cannot name for the same column. The column is left
+// uninferred — warned about and defaulted — rather than typed by the order the branches are
+// written in.
+TEST_CASE("codegen: CREATE VIEW - a CASE over a BLOB and a non-BLOB branch is left uninferred") {
+    auto result = generateLastOfBatch("CREATE TABLE t (a INTEGER, b BLOB);\n"
+                                      "CREATE VIEW v AS SELECT CASE WHEN a < 0 THEN b ELSE 1 END AS x FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int x = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(case_<int>().when(c(&T::a) < 0, then(&T::b)).else_(1).end())));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"view v: type of column `x` could not be inferred; defaulting to int",
+                                        cpp26ViewWarning("v", 2)});
+}
+
 TEST_CASE("codegen: view column-type warning carries a source location to underline") {
     // `id` sits at line 1, column 25 of the SQL and is 2 characters long.
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");

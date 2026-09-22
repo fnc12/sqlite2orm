@@ -651,6 +651,42 @@ namespace sqlite2orm {
             bool nullable = false;
         };
 
+        /**
+         *  Whether a CASE branch result is an integer literal, under the signs and the COLLATE
+         *  SQLite folds into the value it spells.
+         */
+        bool isIntegerLiteralResult(const AstNode& result) {
+            std::size_t foldedSigns = 0;
+            const AstNode* value = withoutFoldedSigns(generatedOperandNode(result), foldedSigns);
+            return dynamic_cast<const IntegerLiteralNode*>(value) != nullptr;
+        }
+
+        /**
+         *  The one field type two inferred view-column types are both read through, over the
+         *  vocabulary this file infers with: the widening order of `widerInferredCppType` plus the
+         *  `std::vector<char>` a BLOB comes out as. A field holds a NULL as soon as either side
+         *  can be one.
+         */
+        std::optional<InferredFieldType> widerViewFieldType(const InferredFieldType& left,
+                                                            const InferredFieldType& right) {
+            const bool nullable = left.nullable || right.nullable;
+            if (left.cppType == right.cppType) {
+                return InferredFieldType{left.cppType, nullable};
+            }
+            if (left.cppType == "std::vector<char>" || right.cppType == "std::vector<char>") {
+                // A BLOB against a non-BLOB has no type that keeps both here. An `std::string`
+                // stops at the first NUL byte a blob holds, and the `std::vector<char>` that does
+                // read every storage class whole is a type the expression side cannot name for the
+                // same column — `inferTypeFromNode` answers `int` for a blob literal and for a
+                // CAST alike — so naming it would make the field and the `case_<R>` of one
+                // `make_view` disagree about the storage class rather than the width. Left
+                // uninferred instead: the column carries the warning the caller raises for one,
+                // rather than a type picked silently by the order the branches are written in.
+                return std::nullopt;
+            }
+            return InferredFieldType{widerInferredCppType(left.cppType, right.cppType), nullable};
+        }
+
         /** Resolves view SELECT output expressions to C++ field types using tables known to the context. */
         struct ViewFieldTypeInferrer {
             const CodeGeneratorContext& context;
@@ -834,10 +870,64 @@ namespace sqlite2orm {
                     return InferredFieldType{"bool"};
                 }
                 if (auto* caseNode = dynamic_cast<const CaseNode*>(&node)) {
-                    if (!caseNode->branches.empty() && caseNode->branches.front().result) {
-                        return this->infer(*caseNode->branches.front().result);
+                    // A CASE has no type of its own in SQLite: it answers with the value of
+                    // whichever branch matched, and every row of the column reaches the field
+                    // through the one type declared for it. Taken from the first branch alone, the
+                    // field truncated every wider branch — and it disagreed with the `case_<R>`
+                    // generated for that very column, which widens over all of them, so a column
+                    // read as text landed in an `int64_t` field of the same `make_view`. The
+                    // operand of a simple CASE is compared against rather than answered with, so
+                    // it is not one of the values either.
+                    std::optional<InferredFieldType> widest;
+                    // A CASE no branch matches and no ELSE answers is NULL — `CASE WHEN 0 THEN 1
+                    // END` is one — and so is a branch that spells a NULL out. Such a branch says
+                    // what the field holds without naming a type of its own.
+                    bool nullable = !caseNode->elseResult;
+                    std::vector<const AstNode*> results;
+                    results.reserve(caseNode->branches.size() + 1);
+                    for (const CaseBranch& branch: caseNode->branches) {
+                        results.push_back(branch.result.get());
                     }
-                    return std::nullopt;
+                    if (caseNode->elseResult) {
+                        results.push_back(caseNode->elseResult.get());
+                    }
+                    for (const AstNode* result: results) {
+                        if (!result) {
+                            return std::nullopt;
+                        }
+                        if (dynamic_cast<const NullLiteralNode*>(result)) {
+                            nullable = true;
+                            continue;
+                        }
+                        std::optional<InferredFieldType> inferred = this->infer(*result);
+                        if (!inferred) {
+                            return std::nullopt;
+                        }
+                        if (inferred->cppType == "int64_t" && isIntegerLiteralResult(*result)) {
+                            // An integer literal is a value, and the fold asks how wide the values
+                            // beside it are: `CASE WHEN a < 0 THEN 1 ELSE 1.5 END` is answered by
+                            // the `double` that holds both 1 and 1.5 exactly, and only a literal
+                            // past the int32 range makes the branch one a `double` may drop. So a
+                            // literal contributes the width the expression side reads it with —
+                            // the very rule the `case_<R>` of this column is typed by, which keeps
+                            // the two answers from parting over a value both of them can see. A
+                            // view column that is nothing but a literal keeps the `int64_t` of an
+                            // integer column, the way it always has: nothing stands beside it to
+                            // compare widths with.
+                            inferred->cppType = this->context.inferTypeFromNode(*result);
+                        }
+                        widest = widest ? widerViewFieldType(*widest, *inferred) : inferred;
+                        if (!widest) {
+                            return std::nullopt;
+                        }
+                    }
+                    if (!widest) {
+                        // Every branch spells a NULL out, so there is no value to name a type
+                        // after: `CASE WHEN a THEN NULL END` leaves the column uninferred.
+                        return std::nullopt;
+                    }
+                    widest->nullable = widest->nullable || nullable;
+                    return widest;
                 }
                 return std::nullopt;
             }

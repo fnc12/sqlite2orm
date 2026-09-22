@@ -243,13 +243,32 @@ namespace sqlite2orm {
          */
         std::set<std::string> emittedTableTypes;
         /**
-         *  The part of `emittedTableTypes` the clauses of the select at hand named themselves: a
-         *  nested select merges its mentions into the set above, so that this FROM answers for the
-         *  width sqlite_orm infers, but not into this one. The difference is what tells a mention
-         *  this select has to spell out itself from one a subquery already answers for with a FROM
-         *  of its own — a `from<...>()` fixes the level it stands on and no other.
+         *  Every recordset the code of the select at hand names itself, whether or not sqlite_orm
+         *  can see it: a nested select merges its mentions into the set above, so that this FROM
+         *  answers for the width sqlite_orm infers, but not into this one. The difference is what
+         *  tells a mention this select has to spell out itself from one a subquery already answers
+         *  for with a FROM of its own — a `from<...>()` fixes the level it stands on and no other.
          */
         std::set<std::string> ownEmittedTableTypes;
+        /**
+         *  The set above minus the mentions sqlite_orm cannot see — the ones made under the field
+         *  operand of a MATCH. Own and visible are two different things, and the halves of the
+         *  criterion ask about different ones: whether the code has anything to hand sqlite_orm to
+         *  infer a FROM from is a question about the mentions it can see, while the FROM written
+         *  out still has to name every recordset this select names, visible or not.
+         */
+        std::set<std::string> ownVisibleEmittedTableTypes;
+        /**
+         *  Set while the field operand of a MATCH is generated. `match_t` holds that operand, but
+         *  sqlite_orm walks only the pattern argument of it (`ast_iterator<match_t<Field, X>>`
+         *  iterates `node.argument` alone), so a recordset named there reaches the inferred FROM
+         *  through nothing: `select(iif(match(&T::b, "x"), 1, 2))` serializes as
+         *  `SELECT IIF("t"."b" MATCH 'x', 1, 2)` with no FROM at all and throws at run time. Such
+         *  a mention is kept out of `emittedTableTypes` and of `ownVisibleEmittedTableTypes` for
+         *  that reason, and kept in `ownEmittedTableTypes`, which the FROM written out for it still
+         *  has to name.
+         */
+        bool emittingMatchField = false;
 
         /** Records a recordset the emitter has just named in the code of the select being generated. */
         void recordEmittedTableType(std::string typeName);
@@ -390,6 +409,13 @@ namespace sqlite2orm {
         void registerPrefixColumn(const std::string& cppName, const std::string& cppType);
         std::string syntheticColumnCppType(std::string_view cppIdentifier) const;
         std::string inferTypeFromNode(const AstNode& node) const;
+        /**
+         *  The one type every node in `nodes` is read through: the widest of what
+         *  `inferTypeFromNode` says about each of them. A CASE has no type of its own in SQLite —
+         *  it answers with the value of whichever branch matched — so the `R` of the generated
+         *  `case_<R>` has to hold every branch result and the ELSE, not just the first branch.
+         */
+        std::string inferWidestTypeFromNodes(const std::vector<const AstNode*>& nodes) const;
         std::string generatePrefix() const;
 
         /**

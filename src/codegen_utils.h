@@ -60,6 +60,18 @@ namespace sqlite2orm {
 
     bool sqliteScalarFirstArgTextContext(std::string_view functionLower);
     std::string defaultCppTypeForSyntheticColumn(std::string_view cppIdentifier);
+    /**
+     *  The one C++ type that carries every value two inferred types hold, for the types
+     *  `CodeGeneratorContext::inferTypeFromNode` names: `bool` widens to `int`, `int` to
+     *  `int64_t` and to `double`, and anything to `std::string`, which reads back every storage
+     *  class SQLite has. `int64_t` and `double` widen into neither one another nor a third
+     *  number — a `double` drops every integer past 2^53, an `int64_t` the fractional part of a
+     *  REAL — so the type over that pair is the `std::string` that keeps both. SQLite types a
+     *  value rather than an expression, so a CASE answers with whichever branch matched and the
+     *  single C++ type it is read through has to hold all of them. A type the order does not name
+     *  never reaches here; `left` comes back unchanged so that a fold over one stays total.
+     */
+    std::string widerInferredCppType(std::string_view left, std::string_view right);
 
     extern const std::string kCommentCpp20ColumnAliases;
     extern const std::string kCommentViewReflection;

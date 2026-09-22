@@ -689,6 +689,23 @@ namespace sqlite2orm {
                 return nullptr;
             }
 
+            /**
+             *  The schema column an argument of a call in this view's body is read back through,
+             *  and `nullptr` for every other argument — the answer `functionCallSpelledResultType`
+             *  needs, over the sources this SELECT names rather than over the context's scope.
+             */
+            const SourceTableColumn* resolveArgumentColumn(const AstNode& argument) const {
+                // A COLLATE or a unary plus generates its operand and nothing else.
+                const AstNode& valueNode = generatedOperandNode(argument);
+                if (auto* qualifiedRef = dynamic_cast<const QualifiedColumnRefNode*>(&valueNode)) {
+                    return this->resolveQualified(qualifiedRef->tableName, qualifiedRef->columnName);
+                }
+                if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
+                    return this->resolveUnqualified(columnRef->columnName);
+                }
+                return nullptr;
+            }
+
             std::optional<InferredFieldType> inferFunctionCall(const FunctionCallNode& functionCall) const {
                 const std::string lower = toLowerAscii(functionCall.name);
                 auto firstArgument = [&]() -> std::optional<InferredFieldType> {
@@ -731,9 +748,15 @@ namespace sqlite2orm {
                 // IIF over arguments with no common C++ type — is read back as exactly that type,
                 // so the field follows it rather than the argument the call is otherwise typed
                 // as. The two answers live in one `make_view<V>(select(…))` and cannot be allowed
-                // to disagree, and the same function answers both.
+                // to disagree, and the same function answers both. A column argument is resolved
+                // here against the FROM clause of the view's own SELECT: that select is generated
+                // as a subquery, which leaves the context with none of the scope it named, so
+                // asking the context would answer nothing for every column of a view body.
                 auto spelledOr = [&](std::optional<InferredFieldType> deduced) -> std::optional<InferredFieldType> {
-                    const std::string spelledType = functionCallSpelledResultType(functionCall, this->context);
+                    const std::string spelledType =
+                        functionCallSpelledResultType(functionCall, [this](const AstNode& argument) {
+                            return this->resolveArgumentColumn(argument);
+                        });
                     if (spelledType.empty()) {
                         return deduced;
                     }

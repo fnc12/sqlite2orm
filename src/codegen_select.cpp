@@ -295,7 +295,7 @@ namespace sqlite2orm {
         // SQL itself and are read back by nobody.
         auto inner =
             this->coordinator.tryCodegenCompoundSelectSubexpression(compoundNode,
-                                                                    compoundSelectResultWidening(compoundNode));
+                                                                    compoundSelectResultWidening(compoundNode, this->context));
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if (inner.code.empty()) {
             auto placeholder = unsupportedStatementPlaceholder(this->context,

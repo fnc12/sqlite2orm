@@ -1958,7 +1958,7 @@ namespace sqlite2orm {
          *  one is left as it is generated.
          */
         std::optional<ArgumentCppType> generatedArgumentCppType(const AstNode& argument,
-                                                                const CodeGeneratorContext& context) {
+                                                                const ReferencedColumnResolver& resolveColumn) {
             if (const std::optional<GeneratedValueCppType> valueType = generatedValueCppType(argument)) {
                 const std::optional<ArgumentTypeKind> kind = constantValueKind(*valueType);
                 if (!kind) {
@@ -1966,7 +1966,7 @@ namespace sqlite2orm {
                 }
                 return ArgumentCppType{*kind, {}, generatedValueTypeDescription(argument)};
             }
-            const SourceTableColumn* column = context.findReferencedColumn(argument);
+            const SourceTableColumn* column = resolveColumn(argument);
             if (!column) {
                 return std::nullopt;
             }
@@ -2038,7 +2038,7 @@ namespace sqlite2orm {
         };
 
         std::optional<CommonArgumentTypeClash> commonArgumentTypeClash(const FunctionCallNode& functionCall,
-                                                                       const CodeGeneratorContext& context) {
+                                                                       const ReferencedColumnResolver& resolveColumn) {
             if (functionCall.star || functionCall.over || functionCall.filterWhere) {
                 // A star names no arguments to reduce at all, and a call written with an OVER or a
                 // FILTER comes out wrapped in an `over_t` or a `filtered_aggregate_function_t`
@@ -2056,7 +2056,7 @@ namespace sqlite2orm {
                 if (!argument) {
                     return std::nullopt;
                 }
-                std::optional<ArgumentCppType> type = generatedArgumentCppType(*argument, context);
+                std::optional<ArgumentCppType> type = generatedArgumentCppType(*argument, resolveColumn);
                 if (!type) {
                     // One argument left untyped is enough to leave the whole call alone: the type
                     // it brings can be the one every other argument reduces to.
@@ -2095,17 +2095,24 @@ namespace sqlite2orm {
     }  // namespace
 
     std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
-                                              const CodeGeneratorContext& context) {
+                                              const ReferencedColumnResolver& resolveColumn) {
         if (const std::string_view byName = functionCallResultTypeArgument(toLowerAscii(functionCall.name));
             !byName.empty()) {
             // `"<std::string>"` without the brackets the caller of the other form wants.
             return std::string(byName.substr(1, byName.size() - 2));
         }
-        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(functionCall, context);
+        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(functionCall, resolveColumn);
         if (!clash) {
             return {};
         }
         return std::string(clashResultType(*clash));
+    }
+
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const CodeGeneratorContext& context) {
+        return functionCallSpelledResultType(functionCall, [&context](const AstNode& argument) {
+            return context.findReferencedColumn(argument);
+        });
     }
 
     std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
@@ -2896,7 +2903,10 @@ namespace sqlite2orm {
         if (!functionCall) {
             return std::nullopt;
         }
-        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(*functionCall, context);
+        const std::optional<CommonArgumentTypeClash> clash =
+            commonArgumentTypeClash(*functionCall, [&context](const AstNode& argument) {
+                return context.findReferencedColumn(argument);
+            });
         if (!clash) {
             return std::nullopt;
         }
@@ -3096,7 +3106,8 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
-    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode) {
+    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
+                                                   const CodeGeneratorContext& context) {
         std::vector<const SelectNode*> arms;
         arms.reserve(compoundNode.selects.size());
         for (const auto& select: compoundNode.selects) {
@@ -3138,7 +3149,7 @@ namespace sqlite2orm {
                     sameTypeEverywhere = false;
                     break;
                 }
-                someArmNeedsWidening = someArmNeedsWidening || selectResultNeedsAsOptional(columnExpression);
+                someArmNeedsWidening = someArmNeedsWidening || selectResultNeedsAsOptional(columnExpression, context);
             }
             widenedColumns[columnIndex] = sameTypeEverywhere && someArmNeedsWidening;
             widensAnyColumn = widensAnyColumn || widenedColumns[columnIndex];

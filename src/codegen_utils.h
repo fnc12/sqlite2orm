@@ -15,6 +15,7 @@
 namespace sqlite2orm {
 
     class CodeGeneratorContext;
+    struct SourceTableColumn;
 
     bool policyEquals(const CodeGenPolicy* policy, std::string_view category, std::string_view value);
     CodeGenPolicy policyWithOverride(const CodeGenPolicy* base, std::string_view category, std::string_view value);
@@ -142,6 +143,16 @@ namespace sqlite2orm {
                                                const CodeGeneratorContext& context);
 
     /**
+     *  How a caller answers the schema column an argument of a call is read back through, and
+     *  `nullptr` where it names none. The two models that ask for a spelled result type resolve a
+     *  name differently — the emitter by the struct it writes the reference as a member of, the
+     *  inferrer of a view's fields by the FROM clause of the view's own SELECT, which it holds
+     *  and the context does not — while the rule that reduces the argument types to one is the
+     *  same for both and lives in one place.
+     */
+    using ReferencedColumnResolver = std::function<const SourceTableColumn*(const AstNode&)>;
+
+    /**
      *  The same answer without the angle brackets — `"std::string"`, and an empty string for a
      *  call that spells no result type. This is the type the row is read back into, so it is also
      *  the type a field holding that value has to be: a view column computed with such a call is
@@ -149,6 +160,10 @@ namespace sqlite2orm {
      */
     std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
                                               const CodeGeneratorContext& context);
+
+    /** The same answer, resolving a column argument with `resolveColumn` instead of the emitter's rule. */
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const ReferencedColumnResolver& resolveColumn);
 
     /** `"->"`, `"->>"` or an empty view for any other operator — the text a JSON arrow is written as. */
     std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator);
@@ -633,7 +648,8 @@ namespace sqlite2orm {
      *  they carry are left alone too: SQLite refuses such a compound outright ("SELECTs to the
      *  left and right of UNION do not have the same number of result columns").
      */
-    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode);
+    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
+                                                   const CodeGeneratorContext& context);
     /**
      *  Whether a SELECT result column has to be generated as `cast<int64_t>(...)` for the integer
      *  SQLite computes to reach the caller whole. sqlite_orm types the bitwise operators `int`, so

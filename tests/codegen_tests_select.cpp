@@ -986,11 +986,93 @@ TEST_CASE("codegen: a result column over schema columns of two C++ types spells 
     REQUIRE(result.code == "auto rows = storage.select(&T::i, where(coalesce<std::string>(&T::b, 1) == 2));");
     REQUIRE(result.warnings.empty());
 
-    // A column name two tables declare with different types is left alone: which of them a
-    // reference resolves to is the query's to say, and this answers over the name.
+    // A column name two tables declare is typed by the struct the reference comes out a member
+    // of — the source the select reads — and not by whichever table happens to declare the name.
     result = generateLastOfBatch("CREATE TABLE t(b TEXT); CREATE TABLE u(b INTEGER); SELECT coalesce(b, 1) FROM t;");
-    REQUIRE(result.code == "auto rows = storage.select(coalesce(&T::b, 1));");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::b, 1)));");
+    REQUIRE(result.warnings.size() == 1);
+
+    // The same two tables and the same call over the other source: `&U::b` is an
+    // `std::optional<int64_t>`, which has a common type with the `int`, so nothing is spelled.
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT); CREATE TABLE u(b INTEGER); SELECT coalesce(b, 1) FROM u;");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce(&U::b, 1));");
     REQUIRE(result.warnings.empty());
+}
+
+// The type of a call argument is the type of the field the form the emitter wrote names, so a
+// reference the generated code does NOT write as `&T::a` types nothing here — whatever name the
+// SQL spells it under. A column of a CTE comes out as `column<cte_0>(…)`, a column of a view of
+// the batch as a field of the view's own struct, and a SELECT alias as `get<Alias>()`; none of the
+// three is read back through a field of a CREATE TABLE of this batch, and a table that merely
+// declares the same name would type the call from a column that is never named in the code. Every
+// case here has a same-named schema column of a kind that does NOT reduce with the other argument,
+// so the spelling would appear if the schema answered — and the output stays what it is without
+// this rule at all.
+TEST_CASE("codegen: a call over a column that is not a schema column spells no result type") {
+    // What a WITH statement warns about whatever its body holds, and the whole of what these
+    // three warn: no result column reports a spelled type, because none is spelled.
+    const std::vector<CodegenWarning> withCteWarnings = {
+        {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+         "sqlite_orm::literals` scope for `_ctealias`"}};
+
+    // A CTE column, named plainly and qualified with the CTE.
+    auto result =
+        generateLastOfBatch("CREATE TABLE t1(a TEXT NOT NULL); WITH c(a) AS (SELECT 1) SELECT coalesce(a, 1) FROM c;");
+    REQUIRE(result.code ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "constexpr auto c__a = colalias_a{};\n"
+            "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= c__a)), select(coalesce(column<cte_0>(c__a), 1)));");
+    REQUIRE(result.warnings == withCteWarnings);
+
+    result = generateLastOfBatch(
+        "CREATE TABLE t1(a TEXT NOT NULL); WITH c(a) AS (SELECT 1) SELECT coalesce(c.a, 1) FROM c;");
+    REQUIRE(result.code ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "constexpr auto c__a = colalias_a{};\n"
+            "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= c__a)), select(coalesce(column<cte_0>(c__a), 1)));");
+    REQUIRE(result.warnings == withCteWarnings);
+
+    // The reverse schema, which is the same rule seen from the other side: the CTE holds the text
+    // and the table the number, and the model still answers nothing for the CTE column.
+    result = generateLastOfBatch(
+        "CREATE TABLE t1(a INTEGER NOT NULL); WITH c(a) AS (SELECT 'x') SELECT coalesce(a, 1) FROM c;");
+    REQUIRE(result.code ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "constexpr auto c__a = colalias_a{};\n"
+            "auto rows = storage.with(cte<cte_0>(\"a\").as(select(\"x\" >>= c__a)), select(coalesce(column<cte_0>(c__a), 1)));");
+    REQUIRE(result.warnings == withCteWarnings);
+
+    // A column of a view: the batch's schema holds the CREATE TABLEs, so the fields a view's
+    // struct is built with are not in it, and `&V::a` is typed by nothing here.
+    result = generateLastOfBatch(
+        "CREATE TABLE t1(a TEXT NOT NULL); CREATE VIEW v AS SELECT 1 AS a; SELECT coalesce(v.a, 1) FROM v;");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce(&V::a, 1));");
+    REQUIRE(result.warnings.empty());
+
+    result = generateLastOfBatch(
+        "CREATE TABLE t1(a TEXT NOT NULL); CREATE VIEW v AS SELECT 1 AS a; SELECT coalesce(a, 1) FROM v;");
+    REQUIRE(result.code == "auto rows = storage.select(coalesce(&V::a, 1));");
+    REQUIRE(result.warnings.empty());
+
+    // A SELECT alias, which comes out as `get<Alias>()` and carries the type of the expression it
+    // was declared over — here an `int64_t` column — and not the type of the table column that
+    // happens to go by the same name.
+    result = generateLastOfBatch(
+        "CREATE TABLE t(a TEXT NOT NULL, i INTEGER NOT NULL); SELECT i AS a FROM t ORDER BY coalesce(a, 1);");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as<colalias_a>(&T::i), order_by(coalesce(get<colalias_a>(), 1)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"SELECT column alias uses sqlite_orm built-in colalias_* types; requires "
+                                         "`using namespace sqlite_orm`"}});
+
+    // A table alias is the one qualifier that still names a schema column: the form is
+    // `alias_column<alias_a<T>>(&T::b)`, which reads the very field `&T::b` does.
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT NOT NULL); SELECT coalesce(u.b, 1) FROM t u;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(alias_column<alias_a<T>>(&T::b), 1)));");
+    REQUIRE(result.warnings.size() == 1);
 }
 
 // A built-in answers NULL over arguments that hold none far more often than it merely propagates

@@ -369,11 +369,17 @@ namespace sqlite2orm {
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName, std::string_view columnName) const;
 
         /**
-         *  The schema column an expression names, or `nullptr` where the batch's schema does not
-         *  name one unambiguously. The field the generated struct declares for that column is the
-         *  C++ type an argument written as `&T::a` is read back as, so this is what answers the
-         *  type of such an argument — unlike `customFunctionArgType`, which falls back on a name
-         *  heuristic and always answers something.
+         *  The schema column an expression is generated as a member of, or `nullptr` where the
+         *  form the emitter writes names no column of a source table. The field the generated
+         *  struct declares is the C++ type an argument written as `&T::a` is read back as, so
+         *  this is what answers the type of such an argument — unlike `customFunctionArgType`,
+         *  which falls back on a name heuristic and always answers something.
+         *
+         *  The form the emitter writes is what decides, not the name: a reference resolving to a
+         *  CTE column, to a SELECT alias, to a view of the batch or to any other source answers
+         *  `nullptr`, because none of those is read back through a field this schema declares and
+         *  answering from a table that merely shares the name would type the reference from a
+         *  column the generated code never names.
          */
         const SourceTableColumn* findReferencedColumn(const AstNode& node) const;
 

@@ -363,6 +363,9 @@ a compound of bitwise branches is still read back through `int`.
 ### Table constraints
 - [x] PRIMARY KEY (columns) → `primary_key(&T::a, &T::b)`
 - [x] UNIQUE (columns) → `unique(&T::a, &T::b)`
+- [!] COLLATE / DESC on a key column (parsed; codegen warning — a table-level key of sqlite_orm
+  takes bare member pointers, and `primary_key(...).desc()` writes the keyword before the list,
+  which SQLite refuses)
 - [x] CHECK(expr) → `check(expr)`
 - [x] FOREIGN KEY (column) REFERENCES table(column) + ON DELETE/UPDATE actions
 - [x] CONSTRAINT name prefix (parsed and skipped)

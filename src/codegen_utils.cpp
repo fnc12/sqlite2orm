@@ -400,8 +400,8 @@ namespace sqlite2orm {
             }
             const std::string columnName = normalizeSqlName(column.name);
             for (const TablePrimaryKey& primaryKey: createTable.primaryKeys) {
-                for (const std::string& keyColumn: primaryKey.columns) {
-                    if (normalizeSqlName(keyColumn) == columnName) {
+                for (const KeyColumn& keyColumn: primaryKey.columns) {
+                    if (normalizeSqlName(keyColumn.name) == columnName) {
                         return true;
                     }
                 }
@@ -442,7 +442,7 @@ namespace sqlite2orm {
             }
             const TablePrimaryKey& primaryKey = createTable.primaryKeys.front();
             return primaryKey.columns.size() == 1 &&
-                   normalizeSqlName(primaryKey.columns.front()) == normalizeSqlName(column.name);
+                   normalizeSqlName(primaryKey.columns.front().name) == normalizeSqlName(column.name);
         }
 
     }  // namespace

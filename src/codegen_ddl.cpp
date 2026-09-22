@@ -1436,7 +1436,7 @@ namespace sqlite2orm {
                     }
                 }
                 if (!createTable.primaryKeys.empty() && !createTable.primaryKeys[0].columns.empty()) {
-                    return toCppIdentifier(createTable.primaryKeys[0].columns[0]);
+                    return toCppIdentifier(createTable.primaryKeys[0].columns[0].name);
                 }
             }
             return {};
@@ -1579,13 +1579,31 @@ namespace sqlite2orm {
                                    "' is not supported in sqlite_orm — ignored in codegen");
             }
         }
+        // sqlite_orm takes plain member pointers in a table-level key: there is no place in
+        // `primary_key(&T::a, &T::b)` for the collation or the direction one of those names was
+        // spelled with. `primary_key(...).desc()` is no substitute — it is the column-level
+        // `PRIMARY KEY DESC` spelling and puts the keyword before the list, which SQLite refuses
+        // as `near "DESC": syntax error`. An ASC is the direction SQLite would take anyway, so
+        // only a DESC is worth telling about.
+        const auto warnAboutKeySpelling = [&warnings](const KeyColumn& keyColumn, std::string_view keyKind) {
+            const std::string where = std::string(" on column '") + keyColumn.name + "' of a table-level " +
+                                      std::string(keyKind) + " is not supported in sqlite_orm — ignored in codegen";
+            if (!keyColumn.collation.empty()) {
+                warnings.push_back("COLLATE " + keyColumn.collation + where);
+            }
+            if (keyColumn.sortDirection == SortDirection::desc) {
+                warnings.push_back("DESC" + where);
+            }
+        };
         for (const auto& tablePrimaryKey: createTable.primaryKeys) {
             std::string constraint = "primary_key(";
             for (size_t columnIndex = 0; columnIndex < tablePrimaryKey.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
                     constraint += ", ";
                 }
-                constraint += "&" + structName + "::" + toCppIdentifier(tablePrimaryKey.columns.at(columnIndex));
+                const auto& keyColumn = tablePrimaryKey.columns.at(columnIndex);
+                constraint += "&" + structName + "::" + toCppIdentifier(keyColumn.name);
+                warnAboutKeySpelling(keyColumn, "PRIMARY KEY");
             }
             constraint += ")";
             tableConstraints.push_back(std::move(constraint));
@@ -1598,7 +1616,9 @@ namespace sqlite2orm {
                 if (columnIndex > 0) {
                     constraint += ", ";
                 }
-                constraint += "&" + structName + "::" + toCppIdentifier(tableUnique.columns.at(columnIndex));
+                const auto& keyColumn = tableUnique.columns.at(columnIndex);
+                constraint += "&" + structName + "::" + toCppIdentifier(keyColumn.name);
+                warnAboutKeySpelling(keyColumn, "UNIQUE");
             }
             constraint += ")";
             tableConstraints.push_back(std::move(constraint));

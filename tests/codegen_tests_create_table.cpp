@@ -1,6 +1,89 @@
 #include "codegen_tests_common.hpp"
+#include "temp_build_dir.hpp"
 
 #include <sqlite2orm/json_emit.h>
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace {
+
+    /**
+     *  Builds a storage whose `make_table("t", ...)` takes `tableArguments`, syncs it into a
+     *  database file and answers with the `CREATE TABLE` SQLite kept for it — or with what
+     *  `sync_schema()` threw instead. What sqlite_orm writes a constraint as is the library's to
+     *  decide, so the direction the generator may put in a key is read off the pinned revision
+     *  rather than assumed.
+     */
+    [[nodiscard]] std::string syncedTableSql(std::string_view tableArguments) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "\n"
+                   "#include <sqlite3.h>\n"
+                   "\n"
+                   "#include <iostream>\n"
+                   "#include <string>\n"
+                   "#include <system_error>\n"
+                   "\n"
+                   "struct T {\n"
+                   "    int64_t a = 0;\n"
+                   "    std::string b;\n"
+                   "};\n"
+                   "\n"
+                   "int main(int argc, char** argv) {\n"
+                   "    using namespace sqlite_orm;\n"
+                   "    auto storage = make_storage(argv[1], make_table(\"t\",\n        "
+                << tableArguments
+                << "));\n"
+                   "    try {\n"
+                   "        storage.sync_schema();\n"
+                   "    } catch(const std::system_error& e) {\n"
+                   "        std::cout << \"threw \" << e.what() << '\\n';\n"
+                   "        return 0;\n"
+                   "    }\n"
+                   "    sqlite3* db = nullptr;\n"
+                   "    sqlite3_open(argv[1], &db);\n"
+                   "    sqlite3_stmt* statement = nullptr;\n"
+                   "    sqlite3_prepare_v2(db, \"SELECT sql FROM sqlite_master WHERE name = 't'\", -1, &statement, "
+                   "nullptr);\n"
+                   "    if(sqlite3_step(statement) == SQLITE_ROW) {\n"
+                   "        std::cout << reinterpret_cast<const char*>(sqlite3_column_text(statement, 0)) << '\\n';\n"
+                   "    }\n"
+                   "    sqlite3_finalize(statement);\n"
+                   "    sqlite3_close(db);\n"
+                   "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("check");
+        const std::filesystem::path dbpath = dir.file("check.db");
+        const std::filesystem::path outpath = dir.file("check.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << ' ' << dbpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::string outcome;
+        {
+            std::ifstream out(outpath);
+            std::getline(out, outcome);
+        }
+        if (exitCode != 0) {
+            WARN("building the table probe failed (exit " << exitCode
+                                                          << "); ensure c++, sqlite_orm headers and libsqlite3 are "
+                                                             "usable");
+        }
+        REQUIRE(exitCode == 0);
+        return outcome;
+    }
+
+}  // namespace
 
 TEST_CASE("codegen: CREATE TABLE - basic") {
     auto result = generate("CREATE TABLE users (id INTEGER, name TEXT)");
@@ -625,6 +708,90 @@ TEST_CASE("codegen: CREATE TABLE - table-level PRIMARY KEY") {
                       "        make_column(\"a\", &T::a),\n"
                       "        make_column(\"b\", &T::b),\n"
                       "        primary_key(&T::a, &T::b)));");
+}
+
+// Why the direction of a column-level key is generated and the direction of a table-level one is
+// not, read off the pinned sqlite_orm: one serializer writes `PRIMARY KEY DESC` where a column
+// constraint goes, the other writes the same keyword before the column list of a table
+// constraint, which SQLite has no grammar for. Should upstream start spelling the direction per
+// key column, this case goes red and asks for the table-level direction to be generated too.
+TEST_CASE("codegen: sqlite_orm cannot write the direction of a table-level PRIMARY KEY") {
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), primary_key(&T::a, &T::b))") ==
+            R"(CREATE TABLE "t" ("a" INTEGER NOT NULL, "b" TEXT NOT NULL, PRIMARY KEY("a", "b")))");
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), primary_key(&T::a, &T::b).desc())") ==
+            "threw SQL logic error");
+}
+
+// A table-level key takes plain member pointers, and there is no place in `primary_key(&T::a,
+// &T::b)` for a direction of one of them: `primary_key(...).desc()` writes the keyword before the
+// list (`PRIMARY KEY DESC("a","b")`), which SQLite refuses as `near "DESC": syntax error`, and
+// `indexed_column(&T::a).desc()` is not a key column sqlite_orm compiles at all. So the DESC is
+// dropped, and said to be dropped.
+TEST_CASE("codegen: CREATE TABLE - a DESC in a table-level PRIMARY KEY is not generated") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (a DESC, b))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a, &T::b)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
+// An ASC is the direction SQLite takes anyway, so dropping it costs nothing and is worth no warning.
+TEST_CASE("codegen: CREATE TABLE - an ASC in a table-level PRIMARY KEY is silent") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (a ASC, b))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a, &T::b)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+TEST_CASE("codegen: CREATE TABLE - a COLLATE in a table-level PRIMARY KEY is not generated") {
+    const auto result = generateFull("CREATE TABLE t (a TEXT, PRIMARY KEY (a COLLATE NOCASE DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::string> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE NOCASE on column 'a' of a table-level PRIMARY KEY is not supported "
+                                        "in sqlite_orm — ignored in codegen",
+                                        "DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
+TEST_CASE("codegen: CREATE TABLE - a DESC in a table-level UNIQUE is not generated") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (a, b DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        sqlite_orm::unique(&T::a, &T::b)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'b' of a table-level UNIQUE is not supported in sqlite_orm "
+                                        "— ignored in codegen"});
 }
 
 TEST_CASE("codegen: CREATE TABLE - table-level UNIQUE") {

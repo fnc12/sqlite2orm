@@ -1584,6 +1584,21 @@ TEST_CASE("codegen: IN list values this cannot type are left as written") {
             "in(&User::a, {static_cast<int64_t>(1), bindParam1, static_cast<int64_t>(3000000000)})");
 }
 
+// What the operand generates warns for itself too, and that warning used to be dropped on the way
+// out of the IN: the operand and the values were generated and only their code was kept.
+TEST_CASE("codegen: a warning from an IN operand reaches the caller") {
+    auto result = generateFull("(a COLLATE NOCASE) IN (1, 2)");
+    REQUIRE(result.code == "in(&User::a, {1, 2})");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE NOCASE on expressions is not directly supported in sqlite_orm "
+                                        "codegen"});
+    result = generateFull("a NOT IN ((1 COLLATE BINARY), 2)");
+    REQUIRE(result.code == "not_in(&User::a, {1, 2})");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE BINARY on expressions is not directly supported in sqlite_orm "
+                                        "codegen"});
+}
+
 // The pair a warning names is looked for among the values that can be half of one rather than
 // among every pair of them: a bind parameter is typed by the caller and so meets every value in
 // one type, which makes a list of them ahead of the two values that do prove the conflict a walk

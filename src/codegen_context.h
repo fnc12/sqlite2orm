@@ -251,13 +251,22 @@ namespace sqlite2orm {
          */
         std::set<std::string> ownEmittedTableTypes;
         /**
+         *  The set above minus the mentions sqlite_orm cannot see — the ones made under the field
+         *  operand of a MATCH. Own and visible are two different things, and the halves of the
+         *  criterion ask about different ones: whether the code has anything to hand sqlite_orm to
+         *  infer a FROM from is a question about the mentions it can see, while the FROM written
+         *  out still has to name every recordset this select names, visible or not.
+         */
+        std::set<std::string> ownVisibleEmittedTableTypes;
+        /**
          *  Set while the field operand of a MATCH is generated. `match_t` holds that operand, but
          *  sqlite_orm walks only the pattern argument of it (`ast_iterator<match_t<Field, X>>`
          *  iterates `node.argument` alone), so a recordset named there reaches the inferred FROM
          *  through nothing: `select(iif(match(&T::b, "x"), 1, 2))` serializes as
          *  `SELECT IIF("t"."b" MATCH 'x', 1, 2)` with no FROM at all and throws at run time. Such
-         *  a mention is kept out of `emittedTableTypes` for that reason, and kept in
-         *  `ownEmittedTableTypes`, which the FROM written out for it still has to name.
+         *  a mention is kept out of `emittedTableTypes` and of `ownVisibleEmittedTableTypes` for
+         *  that reason, and kept in `ownEmittedTableTypes`, which the FROM written out for it still
+         *  has to name.
          */
         bool emittingMatchField = false;
 

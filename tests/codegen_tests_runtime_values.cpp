@@ -1706,6 +1706,26 @@ TEST_CASE("runtime: a select naming its table inside a MATCH alone returns the r
     REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "hello world", "1"});
 }
 
+// The same table named under the MATCH and by a subquery: the mention under the MATCH is the
+// select's own and invisible to sqlite_orm, the one the subquery made is visible and not the
+// select's own, so a criterion that weighs one set alone finds a FROM to infer where there is
+// none and the table goes out unnamed. sqlite3 3.51 answers a row for each of these over
+// `docs(body)` as an FTS5 table holding 'hello world' and 'bye'; without the FROM written out
+// both throw `SQL logic error` instead.
+TEST_CASE("runtime: a select naming its table under a MATCH and in a subquery returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' AND EXISTS (SELECT 1 FROM docs);"),
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' AND (SELECT 1 FROM docs LIMIT 1);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(1, from<Docs>(), where(match(&Docs::body, \"hello\") and "
+                              "exists(select(1, from<Docs>()))));",
+                              "auto rows = storage.select(1, from<Docs>(), where(c(match(&Docs::body, \"hello\")) and "
+                              "select(1, from<Docs>(), limit(1))));",
+                          });
+    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "1"});
+}
+
 // A subquery over the table the outer FROM already names leaves a mention that FROM covers, so the
 // outer select looked like it had a FROM to infer while its own code named nothing at all: every
 // statement below went out without its table and answered with a single row (card

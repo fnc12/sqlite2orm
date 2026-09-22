@@ -1929,6 +1929,30 @@ TEST_CASE("codegen: a MATCH beside a mention sqlite_orm sees keeps its FROM impl
             "auto rows = storage.select(&Users::id, where(match(&Users::a, \"x\")));");
 }
 
+// The seam between the two mentions neither half of the criterion can be inferred from. A table
+// named under a MATCH is this select's own and yet invisible to sqlite_orm; one named by a subquery
+// is visible and yet not this select's own. Put both in one select and asking a single set gets it
+// wrong whichever set that is: weigh the losing half by every own mention and the MATCH covers it,
+// weigh it by every visible mention and the subquery does, and either way the select goes out with
+// no table at all. Both fixes were in the tree before such a shape was, which is how the second of
+// them silently undid the first. The last statement is the companion that holds either way — the
+// subquery names a table of its own, so the widening half carries the FROM without this seam.
+// Row counts checked against sqlite3 3.51 in `codegen_tests_runtime_values.cpp`.
+TEST_CASE("codegen: a table named under a MATCH and by a subquery alone carries its FROM") {
+    REQUIRE(generate("SELECT 1 FROM users WHERE a MATCH 'x' AND EXISTS (SELECT 1 FROM users);") ==
+            "auto rows = storage.select(1, from<Users>(), where(match(&Users::a, \"x\") and "
+            "exists(select(1, from<Users>()))));");
+    REQUIRE(generate("SELECT 1 FROM users WHERE a MATCH 'x' AND (SELECT 1 FROM users LIMIT 1);") ==
+            "auto rows = storage.select(1, from<Users>(), where(c(match(&Users::a, \"x\")) and "
+            "select(1, from<Users>(), limit(1))));");
+    REQUIRE(generate("SELECT iif(a MATCH 'x', 1, 2) FROM users WHERE EXISTS (SELECT 1 FROM users);") ==
+            "auto rows = storage.select(iif(match(&Users::a, \"x\"), 1, 2), from<Users>(), "
+            "where(exists(select(1, from<Users>()))));");
+    REQUIRE(generate("SELECT 1 FROM users WHERE a MATCH 'x' AND EXISTS (SELECT 1 FROM orders);") ==
+            "auto rows = storage.select(1, from<Users>(), where(match(&Users::a, \"x\") and "
+            "exists(select(1, from<Orders>()))));");
+}
+
 // A subquery naming a table the outer FROM already covers used to cancel the criterion out: the
 // mention it leaves behind is one that FROM stands for, so nothing looked wider, and the set of
 // mentions was not empty either, so nothing looked lost — and the outer select went out with no

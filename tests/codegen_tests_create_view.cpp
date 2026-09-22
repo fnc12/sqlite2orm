@@ -293,20 +293,20 @@ TEST_CASE("codegen: a view column over a call with a spelled result type takes t
         "coalesce(i, r + 1) AS c4 FROM t;");
     REQUIRE(result.code ==
             "struct [[= \"v\"_orm_name]] V {\n"
-            "    std::optional<double> c1;\n"
+            "    std::optional<std::string> c1;\n"
             "    std::optional<std::string> c2;\n"
             "    std::optional<std::vector<char>> c3;\n"
             "    std::optional<int64_t> c4;\n"
             "};\n"
             "\n"
             "auto storage = make_storage(\"\",\n"
-            "    make_view<V>(select(columns(coalesce<double>(&T::i, &T::r), coalesce<std::string>(&T::b, 1), "
+            "    make_view<V>(select(columns(coalesce<std::string>(&T::i, &T::r), coalesce<std::string>(&T::b, 1), "
             "coalesce<std::vector<char>>(&T::bl, &T::i), coalesce(&T::i, c(&T::r) + 1)))));");
 
     // The field is read back through that spelled type, so the column carries the same report a
     // SELECT result column does, named by the field and anchored at the call in the view's body.
-    // The first column is read back as the `double` its two numeric arguments reduce to and the
-    // fourth spells no type at all, so neither of them reports anything.
+    // The fourth column spells no type at all — its second argument is an expression sqlite_orm
+    // types out of what it is built over — so it reports nothing.
     const auto columnReport = [](std::string_view field,
                                  std::string_view resultType,
                                  std::string_view first,
@@ -326,6 +326,11 @@ TEST_CASE("codegen: a view column over a call with a spelled result type takes t
     };
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
+                columnReport("c1",
+                             "std::string",
+                             "a column typed `std::optional<int64_t>`",
+                             "a column typed `std::optional<double>`",
+                             25),
                 columnReport("c2", "std::string", "a column typed `std::optional<std::string>`", "an `int`", 47),
                 columnReport("c3",
                              "std::vector<char>",

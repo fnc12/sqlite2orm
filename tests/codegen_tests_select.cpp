@@ -943,11 +943,12 @@ TEST_CASE("codegen: a result column typed by the common type of its arguments re
 
 // A column argument is read back as the field the generated struct declares for it, so the schema
 // of the batch is what types it. Two fields of one kind reduce to one type — an `int64_t` next to
-// a `double` is a `double` — but two `std::optional`s of different types do not: each converts to
-// the other, which leaves neither of them the common one. `std::optional<bool>` is the exception,
-// and it is the `bool` that makes it one: a `bool` is constructible from any `std::optional`
-// through its explicit `operator bool`, which rules the conversion INTO the `std::optional<bool>`
-// out and leaves the single direction. All four checked against the pinned headers.
+// a `double` is a `double` for `std::common_type` — but two `std::optional`s of different types do
+// not: each converts to the other, which leaves neither of them the common one.
+// `std::optional<bool>` is the exception, and it is the `bool` that makes it one: a `bool` is
+// constructible from any `std::optional` through its explicit `operator bool`, which rules the
+// conversion INTO the `std::optional<bool>` out and leaves the single direction. All four checked
+// against the pinned headers.
 TEST_CASE("codegen: a result column over schema columns of two C++ types spells the type it is read as") {
     auto result = generateLastOfBatch("CREATE TABLE t(b TEXT, i INTEGER); SELECT coalesce(b, 1) FROM t;");
     REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::b, 1)));");
@@ -959,11 +960,34 @@ TEST_CASE("codegen: a result column over schema columns of two C++ types spells 
             "result type the call answers with where it is known");
 
     // Two nullable fields of different types, which is two `std::optional`s with no common type.
-    // Both carry a number, so the call is read back as the one they reduce to outside their
-    // wrappers — the very `double` sqlite_orm deduces for the same two fields declared NOT NULL.
+    // Both carry a number, but an `int64_t` and a `double` carry nothing of each other — a double
+    // loses every integer past 2^53, an int64_t the fractional part of a REAL — so the pair has no
+    // number above it and is read back as text, which renders both as SQLite prints them.
     result = generateLastOfBatch("CREATE TABLE t(i INTEGER, r REAL); SELECT coalesce(i, r) FROM t;");
-    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<double>(&T::i, &T::r)));");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::i, &T::r)));");
+    REQUIRE(result.warnings.size() == 1);
+    REQUIRE(result.warnings.at(0).message ==
+            "result column computed with `coalesce` comes back as text: sqlite_orm types the call as the common "
+            "C++ type of its arguments, and a column typed `std::optional<int64_t>` next to a column typed "
+            "`std::optional<double>` has none, so the call is generated as `coalesce<std::string>(…)` — a number "
+            "comes back as its digits. Spell the result type the call answers with where it is known");
+
+    // The `int` of a 32-bit integer constant is carried by a `double` exactly, so that pair keeps
+    // its number where the `int64_t` one does not.
+    result = generateLastOfBatch("CREATE TABLE t(r REAL); SELECT coalesce(NULL, 1, r) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<double>(nullptr, 1, &T::r)));");
     REQUIRE(result.warnings.empty());
+
+    // And a 64-bit integer constant next to a REAL one is the same sibling pair, read as text.
+    result = generateLastOfBatch("SELECT coalesce(NULL, 9007199254740993, 1.5);");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, 9007199254740993, "
+                           "1.5)));");
+    REQUIRE(result.warnings.size() == 1);
+    REQUIRE(result.warnings.at(0).message ==
+            "result column computed with `coalesce` comes back as text: sqlite_orm types the call as the common "
+            "C++ type of its arguments, and a `std::nullptr_t` next to a 64-bit integer constant has none, so the "
+            "call is generated as `coalesce<std::string>(…)` — a number comes back as its digits. Spell the result "
+            "type the call answers with where it is known");
 
     // A nullable text beside a nullable number is not two numbers, and reads back as text.
     result = generateLastOfBatch("CREATE TABLE t(b TEXT, r REAL); SELECT coalesce(b, r) FROM t;");
@@ -1164,6 +1188,43 @@ TEST_CASE("codegen: a call inside a scalar subquery is typed by the subquery's o
     result = generateLastOfBatch(
         "CREATE TABLE t(a INTEGER); CREATE TABLE u(b TEXT); SELECT (SELECT coalesce(a, 'x') FROM u) FROM t;");
     REQUIRE(result.code == "auto rows = storage.select(select(coalesce(&U::a, \"x\")), from<T>());");
+    REQUIRE(result.warnings.empty());
+}
+
+// The numbers a value is read back as form a lattice rather than a line: `bool` under `int`, `int`
+// under both `int64_t` and `double`, and `int64_t` and `double` beside each other with nothing
+// above them — a double loses every integer past 2^53 and an int64_t the fractional part of a
+// REAL. Reducing that pair to a `double` would swap a call that does not compile for one that
+// silently rounds, so it goes to the text fallback and reports it. The fold over a call's
+// arguments is total and order-free, so the same multiset of arguments answers the same however
+// it is written.
+TEST_CASE("codegen: the number a call is read back as reduces over a lattice, not a line") {
+    auto result = generateLastOfBatch("CREATE TABLE t(i INTEGER, r REAL, f BOOLEAN);\n"
+                                      "SELECT coalesce(r, i, NULL) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::r, &T::i, nullptr)));");
+    REQUIRE(result.warnings.size() == 1);
+    REQUIRE(result.warnings.at(0).message ==
+            "result column computed with `coalesce` comes back as text: sqlite_orm types the call as the common "
+            "C++ type of its arguments, and a column typed `std::optional<double>` next to a column typed "
+            "`std::optional<int64_t>` has none, so the call is generated as `coalesce<std::string>(…)` — a number "
+            "comes back as its digits. Spell the result type the call answers with where it is known");
+
+    // The same three arguments in another order, which has to answer the same type.
+    result = generateLastOfBatch("CREATE TABLE t(i INTEGER, r REAL, f BOOLEAN);\n"
+                                 "SELECT coalesce(NULL, i, r) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, &T::i, &T::r)));");
+    REQUIRE(result.warnings.size() == 1);
+
+    // A `bool` and an `int` are both carried by an `int`, and an `int` by a `double` exactly, so
+    // those pairs keep their number and report nothing.
+    result = generateLastOfBatch("CREATE TABLE t(i INTEGER, r REAL, f BOOLEAN);\n"
+                                 "SELECT coalesce(NULL, f, 1) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<int>(nullptr, &T::f, 1)));");
+    REQUIRE(result.warnings.empty());
+
+    result = generateLastOfBatch("CREATE TABLE t(i INTEGER, r REAL, f BOOLEAN);\n"
+                                 "SELECT coalesce(NULL, 1, r) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<double>(nullptr, 1, &T::r)));");
     REQUIRE(result.warnings.empty());
 }
 

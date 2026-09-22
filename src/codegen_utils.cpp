@@ -1922,19 +1922,77 @@ namespace sqlite2orm {
         };
 
         /**
-         *  The arithmetic type two of them reduce to, by the conversions C++ applies between
-         *  them: a `double` takes every other one in, then an `int64_t`, then an `int`, and two
-         *  `bool`s are a `bool`. This is the type `std::common_type` answers for the two wherever
-         *  it answers at all, and the one an argument arriving inside an `std::optional` — where
-         *  it does not — still holds.
+         *  The width a value read back as a number is read back at, ordered by what carries what.
+         *  A `bool` is carried by an `int`, and an `int` by both an `int64_t` and a `double` —
+         *  every 32-bit integer is exact in one. `int64_t` and `double` are SIBLINGS and carry
+         *  nothing of each other: a double loses every integer past 2^53 (9007199254740993 read
+         *  through one comes back as 9007199254740992) and an int64_t loses the fractional part
+         *  of a REAL. The pair reduces to `noNumber`, the same answer the widening of a CASE
+         *  gives the same pair, and a call whose arguments reduce to that is read back as text
+         *  instead — which renders both an INTEGER and a REAL the way SQLite prints them.
          */
-        std::string_view widerArithmeticType(std::string_view first, std::string_view second) {
-            for (std::string_view candidate: {"double", "int64_t", "int"}) {
-                if (first == candidate || second == candidate) {
-                    return candidate;
-                }
+        enum class NumberWidth { boolean, integer32, integer64, real, noNumber };
+
+        /** The width a generated C++ type is read back at, and `noNumber` for every other type. */
+        NumberWidth numberWidthOf(std::string_view cppType) {
+            if (cppType == "bool") {
+                return NumberWidth::boolean;
             }
-            return "bool";
+            if (cppType == "int") {
+                return NumberWidth::integer32;
+            }
+            if (cppType == "int64_t") {
+                return NumberWidth::integer64;
+            }
+            if (cppType == "double") {
+                return NumberWidth::real;
+            }
+            return NumberWidth::noNumber;
+        }
+
+        /** How such a width is spelled, and an empty view for `noNumber`, which spells no number. */
+        std::string_view numberWidthType(NumberWidth width) {
+            switch (width) {
+                case NumberWidth::boolean:
+                    return "bool";
+                case NumberWidth::integer32:
+                    return "int";
+                case NumberWidth::integer64:
+                    return "int64_t";
+                case NumberWidth::real:
+                    return "double";
+                case NumberWidth::noNumber:
+                    return {};
+            }
+            return {};
+        }
+
+        /**
+         *  The width two of them reduce to. Total, commutative and associative — `noNumber` takes
+         *  everything in — so folding it over a call's arguments answers the same whatever order
+         *  they are written in and whatever types they have.
+         */
+        NumberWidth widerNumberWidth(NumberWidth first, NumberWidth second) {
+            if (first == second) {
+                return first;
+            }
+            if (first == NumberWidth::noNumber || second == NumberWidth::noNumber) {
+                return NumberWidth::noNumber;
+            }
+            if (first == NumberWidth::boolean) {
+                return second;
+            }
+            if (second == NumberWidth::boolean) {
+                return first;
+            }
+            if (first == NumberWidth::integer32) {
+                return second;
+            }
+            if (second == NumberWidth::integer32) {
+                return first;
+            }
+            // An `int64_t` next to a `double`, the one pair with nothing above it.
+            return NumberWidth::noNumber;
         }
 
         /**
@@ -2084,13 +2142,13 @@ namespace sqlite2orm {
             /** Whether a BLOB takes part anywhere in the reduced arguments. */
             bool holdsBlob = false;
             /**
-             *  The arithmetic type every reduced argument that carries a value has, where they
-             *  all do, and empty where a text, a BLOB or an argument of an unknown type takes
-             *  part. A NULL carries no value type — SQLite's answer for such a call is always
-             *  another argument — so it does not take part in this, and neither does the
-             *  `std::optional` wrapper a nullable column arrives in: the value read back is the
-             *  number either way. Where this is set the call is read back as that very number,
-             *  and nothing about it is worth reporting.
+             *  The one number every reduced argument that carries a value fits in, where there is
+             *  one, and empty where a text, a BLOB, an argument of an unknown type or a pair with
+             *  no number above it — an `int64_t` next to a `double` — takes part. A NULL carries
+             *  no value type — SQLite's answer for such a call is always another argument — so it
+             *  does not take part in this, and neither does the `std::optional` wrapper a nullable
+             *  column arrives in: the value read back is the number either way. Where this is set
+             *  the call is read back as that very number, and nothing about it is worth reporting.
              */
             std::string narrowedResultType;
         };
@@ -2139,25 +2197,21 @@ namespace sqlite2orm {
             for (const ArgumentCppType& type: types) {
                 clash->holdsBlob = clash->holdsBlob || type.kind == ArgumentTypeKind::blob;
             }
-            // Where every argument that carries a value carries a number, the call answers one of
-            // those numbers, and that is what the row holds and what the code reads it back as.
-            std::string narrowed;
-            bool everyValueIsANumber = true;
+            // Where every argument that carries a value carries a number they all fit in, the call
+            // answers one of those numbers, and that is what the row holds and what the code reads
+            // it back as. Arguments that are all NULL fold to nothing, and they have a common type
+            // anyway.
+            std::optional<NumberWidth> narrowed;
             for (const ArgumentCppType& type: types) {
                 if (type.kind == ArgumentTypeKind::null) {
                     // A NULL is no value of its own: SQLite answers with one of the others.
                     continue;
                 }
-                if (type.arithmeticType.empty()) {
-                    everyValueIsANumber = false;
-                    break;
-                }
-                narrowed = narrowed.empty() ? type.arithmeticType
-                                            : std::string(widerArithmeticType(narrowed, type.arithmeticType));
+                const NumberWidth width = numberWidthOf(type.arithmeticType);
+                narrowed = narrowed ? widerNumberWidth(*narrowed, width) : width;
             }
-            if (everyValueIsANumber) {
-                // Arguments that are all NULL leave this empty, and they have a common type anyway.
-                clash->narrowedResultType = std::move(narrowed);
+            if (narrowed) {
+                clash->narrowedResultType = std::string(numberWidthType(*narrowed));
             }
             return clash;
         }

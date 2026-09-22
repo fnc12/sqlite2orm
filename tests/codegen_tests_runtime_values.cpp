@@ -1491,6 +1491,30 @@ TEST_CASE("runtime: a call whose arguments all carry a number reads that number 
             std::vector<std::string>{"1", "2.5", "1", "3", "NULL", "2", "NULL", "7", "NULL"});
 }
 
+// `int64_t` and `double` carry nothing of each other, so a call holding both is read back as
+// text rather than as one of them. A `double` would take every integer past 2^53 down with it —
+// the counterfactual statement below is the very code the other reduction would have generated,
+// and it answers 9.0072e+15 where sqlite3 3.51 answers 9007199254740993 with typeof `integer`.
+// The text fallback carries the value whole, and the report at the result column says the digits
+// are what comes back.
+TEST_CASE("runtime: an integer beside a REAL is read back through text without rounding") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT coalesce(NULL, a, 1.5) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT coalesce(NULL, a, 1) FROM user;").code,
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, &User::a, 1.5)));",
+                              "auto rows = storage.select(as_optional(coalesce<int64_t>(nullptr, &User::a, 1)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int64_t>", "9007199254740993") ==
+            std::vector<std::string>{"9007199254740993", "9007199254740993"});
+
+    // What the same call spelled `<double>` reads back: the value is off by one and nothing says so.
+    REQUIRE(selectedValues({"auto rows = storage.select(as_optional(coalesce<double>(nullptr, &User::a, 1.5)));"},
+                           "std::optional<int64_t>",
+                           "9007199254740993") == std::vector<std::string>{"9.0072e+15"});
+}
+
 // A BLOB among the arguments makes the generated type `std::vector<char>` rather than
 // `std::string`: sqlite_orm reads a `std::string` through `sqlite3_column_text`, which stops at
 // the first NUL byte a BLOB holds, and x'004100' would have come back as the empty text. Every

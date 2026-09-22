@@ -289,7 +289,13 @@ namespace sqlite2orm {
         coordinator(coordinator), context(context) {}
 
     CodeGenResult SelectCodeGenerator::generateCompoundSelect(const CompoundSelectNode& compoundNode) {
-        auto inner = this->coordinator.tryCodegenCompoundSelectSubexpression(compoundNode);
+        // The rows of this compound are what the caller reads back, so its result columns are
+        // widened here, at the one point that knows they are — and not in the generator the arms
+        // share with a subquery, a view body, a CTE and an INSERT ... SELECT, whose columns go to
+        // SQL itself and are read back by nobody.
+        auto inner =
+            this->coordinator.tryCodegenCompoundSelectSubexpression(compoundNode,
+                                                                    compoundSelectResultWidening(compoundNode));
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if (inner.code.empty()) {
             auto placeholder = unsupportedStatementPlaceholder(this->context,
@@ -960,7 +966,9 @@ namespace sqlite2orm {
         return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
     }
 
-    CodeGenResult SelectCodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode) {
+    CodeGenResult
+    SelectCodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
+                                                             const std::vector<bool>& widenedResultColumns) {
         struct SubselectAliasRestore {
             CodeGeneratorContext* ctx;
             std::map<std::string, std::string> savedAliases;
@@ -1134,6 +1142,21 @@ namespace sqlite2orm {
             return expr;
         };
 
+        // A result column the caller reads back is widened here, the way the ordinary SELECT
+        // widens its own: the compound this select is an arm of decided the widening for every arm
+        // at once, so that the arms keep the one common type sqlite_orm reads them back through.
+        auto colExprAsResultColumn = [&](size_t colIndex, const std::string& expr) -> std::string {
+            if (colIndex < widenedResultColumns.size() && widenedResultColumns[colIndex]) {
+                return "as_optional(" + expr + ")";
+            }
+            return expr;
+        };
+        auto resultColumnCode = [&](size_t colIndex) -> std::string {
+            return colExprWithBinding(
+                colIndex,
+                colExprAsResultColumn(colIndex, expressionCode(*selectNode.columns.at(colIndex).expression)));
+        };
+
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
         // A subquery answers for its own sources the way the outer select does, and settles them
         // at the same point, before the first clause is generated.
@@ -1176,25 +1199,24 @@ namespace sqlite2orm {
                 // `limit_t`, a cross or natural join and a named window hold nothing and do.
                 this->context.recordFormWithoutDefaultConstructor("DISTINCT");
                 if (selectNode.columns.size() == 1) {
-                    columnPart =
-                        "distinct(" + colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression)) + ")";
+                    columnPart = "distinct(" + resultColumnCode(0) + ")";
                 } else {
                     columnPart = "distinct(columns(";
                     for (size_t i = 0; i < selectNode.columns.size(); ++i) {
                         if (i > 0)
                             columnPart += ", ";
-                        columnPart += colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
+                        columnPart += resultColumnCode(i);
                     }
                     columnPart += "))";
                 }
             } else if (selectNode.columns.size() == 1) {
-                columnPart = colExprWithBinding(0, expressionCode(*selectNode.columns.at(0).expression));
+                columnPart = resultColumnCode(0);
             } else {
                 columnPart = "columns(";
                 for (size_t i = 0; i < selectNode.columns.size(); ++i) {
                     if (i > 0)
                         columnPart += ", ";
-                    columnPart += colExprWithBinding(i, expressionCode(*selectNode.columns.at(i).expression));
+                    columnPart += resultColumnCode(i);
                 }
                 columnPart += ")";
             }
@@ -1418,7 +1440,9 @@ namespace sqlite2orm {
         return CodeGenResult{code, std::move(subDecisionPoints), std::move(subWarnings)};
     }
 
-    CodeGenResult SelectCodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode) {
+    CodeGenResult
+    SelectCodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
+                                                               const std::vector<bool>& widenedResultColumns) {
         if (compoundNode.selects.size() != compoundNode.operators.size() + 1) {
             return CodeGenResult{{}, {}, {"internal: compound SELECT operand count mismatch"}};
         }
@@ -1426,7 +1450,8 @@ namespace sqlite2orm {
         if (!firstSelect) {
             return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
         }
-        CodeGenResult accumulated = this->coordinator.tryCodegenSqliteSelectSubexpression(*firstSelect);
+        CodeGenResult accumulated =
+            this->coordinator.tryCodegenSqliteSelectSubexpression(*firstSelect, widenedResultColumns);
         if (accumulated.code.empty()) {
             return accumulated;
         }
@@ -1435,7 +1460,8 @@ namespace sqlite2orm {
             if (!nextSelect) {
                 return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
             }
-            CodeGenResult nextArm = this->coordinator.tryCodegenSqliteSelectSubexpression(*nextSelect);
+            CodeGenResult nextArm =
+                this->coordinator.tryCodegenSqliteSelectSubexpression(*nextSelect, widenedResultColumns);
             accumulated.decisionPoints.insert(accumulated.decisionPoints.end(),
                                               std::make_move_iterator(nextArm.decisionPoints.begin()),
                                               std::make_move_iterator(nextArm.decisionPoints.end()));

@@ -2810,6 +2810,140 @@ namespace sqlite2orm {
         return false;
     }
 
+    std::optional<std::string> generatedResultColumnCppType(const AstNode& astNode) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the type the row is
+        // read back into is the one the operand under them comes out as.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if (generatesFoldedNegation(generatedNode)) {
+            // The sign is folded into the constant, leaving a plain C++ literal whose type the
+            // compiler picks by magnitude, the way it does for a literal written without one.
+            return std::nullopt;
+        }
+        if (auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            switch (binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                case BinaryOperator::subtract:
+                case BinaryOperator::multiply:
+                case BinaryOperator::divide:
+                case BinaryOperator::modulo:
+                    return "double";
+                case BinaryOperator::bitwiseAnd:
+                case BinaryOperator::bitwiseOr:
+                case BinaryOperator::shiftLeft:
+                case BinaryOperator::shiftRight:
+                    // `int`, not `int64_t`: the CAST `selectResultNeedsIntegerCast` asks for is
+                    // placed by the ordinary SELECT's result column and nowhere else.
+                    return "int";
+                case BinaryOperator::concatenate:
+                    return "std::string";
+                case BinaryOperator::jsonArrow:
+                case BinaryOperator::jsonArrow2:
+                    // Generated as `json_extract<std::string>(…)`, which is the type it is read as.
+                    return "std::string";
+                case BinaryOperator::equals:
+                case BinaryOperator::notEquals:
+                case BinaryOperator::lessThan:
+                case BinaryOperator::lessOrEqual:
+                case BinaryOperator::greaterThan:
+                case BinaryOperator::greaterOrEqual:
+                case BinaryOperator::logicalAnd:
+                case BinaryOperator::logicalOr:
+                    return "bool";
+                case BinaryOperator::isOp:
+                case BinaryOperator::isNot:
+                case BinaryOperator::isDistinctFrom:
+                case BinaryOperator::isNotDistinctFrom:
+                    // The validator rejects the IS family, so none of them reaches codegen.
+                    return std::nullopt;
+            }
+            return std::nullopt;
+        }
+        if (auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            switch (unaryOperator->unaryOperator) {
+                case UnaryOperator::minus:
+                    if (negationFormFor(*unaryOperator->operand) != NegationForm::zeroMinusSubtraction) {
+                        // The form codegen warns about has no sqlite_orm spelling at all, so there
+                        // is no type it is read back through.
+                        return std::nullopt;
+                    }
+                    // `(c(0) - x)`, a subtraction like any other.
+                    return "double";
+                case UnaryOperator::bitwiseNot:
+                    return "int";
+                case UnaryOperator::logicalNot:
+                    return "bool";
+                case UnaryOperator::plus:
+                    // Emitted as its operand, which `generatedOperandNode` already stepped through.
+                    return std::nullopt;
+            }
+            return std::nullopt;
+        }
+        if (dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
+            dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
+            // `between_t`, `in_t`, `like_t`, `glob_t` and the `negated_condition_t` a NOT form
+            // comes out as are all typed `bool`.
+            return "bool";
+        }
+        if (auto* castNode = dynamic_cast<const CastNode*>(&generatedNode)) {
+            // `cast_t<T, E>` is typed T, and T is what codegen writes into the CAST.
+            return sqliteTypeToCpp(castNode->typeName);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode) {
+        std::vector<const SelectNode*> arms;
+        arms.reserve(compoundNode.selects.size());
+        for (const auto& select: compoundNode.selects) {
+            auto* armSelect = dynamic_cast<const SelectNode*>(select.get());
+            if (!armSelect) {
+                return {};
+            }
+            arms.push_back(armSelect);
+        }
+        if (arms.empty()) {
+            return {};
+        }
+        const size_t columnCount = arms.front()->columns.size();
+        for (const auto* arm: arms) {
+            if (arm->columns.size() != columnCount) {
+                return {};
+            }
+            for (const auto& column: arm->columns) {
+                // A `*` names the columns of a row rather than an expression of its own, and a row
+                // is read back through the struct it is mapped to, which holds a NULL already.
+                if (!column.expression) {
+                    return {};
+                }
+            }
+        }
+        std::vector<bool> widenedColumns(columnCount, false);
+        bool widensAnyColumn = false;
+        for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
+            const std::optional<std::string> cppType =
+                generatedResultColumnCppType(*arms.front()->columns.at(columnIndex).expression);
+            if (!cppType) {
+                continue;
+            }
+            bool sameTypeEverywhere = true;
+            bool someArmNeedsWidening = false;
+            for (const auto* arm: arms) {
+                const AstNode& columnExpression = *arm->columns.at(columnIndex).expression;
+                if (generatedResultColumnCppType(columnExpression) != cppType) {
+                    sameTypeEverywhere = false;
+                    break;
+                }
+                someArmNeedsWidening = someArmNeedsWidening || selectResultNeedsAsOptional(columnExpression);
+            }
+            widenedColumns[columnIndex] = sameTypeEverywhere && someArmNeedsWidening;
+            widensAnyColumn = widensAnyColumn || widenedColumns[columnIndex];
+        }
+        if (!widensAnyColumn) {
+            return {};
+        }
+        return widenedColumns;
+    }
+
     std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode) {
         auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode);
         if (!unaryOp || unaryOp->unaryOperator != UnaryOperator::plus) {

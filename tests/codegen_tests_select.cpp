@@ -1960,3 +1960,96 @@ TEST_CASE("codegen: a select over a CTE naming no recordset keeps its FROM impli
             "using cte_0 = decltype(1_ctealias);\n"
             "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), select(1));");
 }
+
+// A compound SELECT hands its rows to the caller the way a plain one does, so its result columns
+// carry the same widening — and carry it in every arm at once, since sqlite_orm reads a compound
+// back through `std::common_type` of the types the arms come out as. On master every arm went out
+// through the subquery generator unwidened, and `SELECT a + 1 FROM users UNION SELECT a * 2 FROM
+// users` over a NULL row read back as 0 where sqlite3 3.51 answers NULL.
+TEST_CASE("codegen: a compound SELECT widens the result column in every arm") {
+    REQUIRE(generate("SELECT a + 1 UNION SELECT a * 2;") ==
+            "auto rows = storage.select(union_(select(as_optional(c(&User::a) + 1)), "
+            "select(as_optional(c(&User::a) * 2))));");
+    REQUIRE(generate("SELECT a + 1 UNION ALL SELECT a * 2;") ==
+            "auto rows = storage.select(union_all(select(as_optional(c(&User::a) + 1)), "
+            "select(as_optional(c(&User::a) * 2))));");
+    REQUIRE(generate("SELECT a + 1 INTERSECT SELECT a * 2;") ==
+            "auto rows = storage.select(intersect(select(as_optional(c(&User::a) + 1)), "
+            "select(as_optional(c(&User::a) * 2))));");
+    REQUIRE(generate("SELECT a + 1 EXCEPT SELECT a * 2;") ==
+            "auto rows = storage.select(except(select(as_optional(c(&User::a) + 1)), "
+            "select(as_optional(c(&User::a) * 2))));");
+    // Three arms, and then the other result types the rule names: a comparison, a `||`, a CAST.
+    REQUIRE(generate("SELECT a + 1 UNION SELECT a * 2 UNION SELECT a - 3;") ==
+            "auto rows = storage.select(union_(union_(select(as_optional(c(&User::a) + 1)), "
+            "select(as_optional(c(&User::a) * 2))), select(as_optional(c(&User::a) - 3))));");
+    REQUIRE(generate("SELECT a > 0 UNION SELECT a < 0;") ==
+            "auto rows = storage.select(union_(select(as_optional(c(&User::a) > 0)), "
+            "select(as_optional(c(&User::a) < 0))));");
+    REQUIRE(generate("SELECT a || 'x' UNION SELECT a || 'y';") ==
+            "auto rows = storage.select(union_(select(as_optional(c(&User::a) || \"x\")), "
+            "select(as_optional(c(&User::a) || \"y\"))));");
+    REQUIRE(generate("SELECT CAST(a AS TEXT) UNION SELECT CAST(b AS TEXT);") ==
+            "auto rows = storage.select(union_(select(as_optional(cast<std::string>(&User::a))), "
+            "select(as_optional(cast<std::string>(&User::b)))));");
+    // The outer statement of a `WITH` is read back by the caller too, and is widened there.
+    REQUIRE(generate("WITH q AS (SELECT 1 AS a) SELECT a + 1 FROM q UNION SELECT a * 2 FROM q;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(1)), "
+            "select(union_(select(as_optional(column<cte_0>(\"a\") + 1)), "
+            "select(as_optional(column<cte_0>(\"a\") * 2)))));");
+    // Every column of a multi-column compound is decided on its own, and the second one here —
+    // a column reference, read back through its field's type — is left as written beside a first
+    // one that is widened.
+    REQUIRE(generate("SELECT a + 1, a * 2 INTERSECT SELECT a - 1, a / 2;") ==
+            "auto rows = storage.select(intersect(select(columns(as_optional(c(&User::a) + 1), "
+            "as_optional(c(&User::a) * 2))), select(columns(as_optional(c(&User::a) - 1), "
+            "as_optional(c(&User::a) / 2)))));");
+    REQUIRE(generate("SELECT a + 1, b UNION SELECT a * 2, b;") ==
+            "auto rows = storage.select(union_(select(columns(as_optional(c(&User::a) + 1), &User::b)), "
+            "select(columns(as_optional(c(&User::a) * 2), &User::b))));");
+}
+
+// The widening needs one common type across the arms, so an arm whose type this layer cannot name
+// — a column reference carries its field's type, and a literal the type C++ gives the constant —
+// leaves the column as written: widening its neighbour alone is what has no common type at all
+// (`std::optional<double>` beside an `std::optional<int>`), and the generated code would stop
+// compiling. Arms of two different named types are left alone for the same reason: sqlite_orm types
+// `&` as `int` and `+` as `double`, and `std::common_type` carries those two but not their
+// optionals.
+TEST_CASE("codegen: a compound SELECT leaves its arms alone without one common result type") {
+    REQUIRE(generate("SELECT a + 1 UNION SELECT a;") ==
+            "auto rows = storage.select(union_(select(c(&User::a) + 1), select(&User::a)));");
+    REQUIRE(generate("SELECT a & 1 UNION SELECT a + 1;") ==
+            "auto rows = storage.select(union_(select(c(&User::a) & 1), select(c(&User::a) + 1)));");
+    REQUIRE(generate("SELECT a + 1 UNION SELECT length(a);") ==
+            "auto rows = storage.select(union_(select(c(&User::a) + 1), select(length(&User::a))));");
+    REQUIRE(generate("SELECT 1 UNION SELECT 2;") == "auto rows = storage.select(union_(select(1), select(2)));");
+    // A column that no arm can answer NULL for is left alone too, the way a plain SELECT leaves it.
+    REQUIRE(generate("SELECT 1 + 2 UNION SELECT 3 * 4;") ==
+            "auto rows = storage.select(union_(select(c(1) + 2), select(c(3) * 4)));");
+}
+
+// The arms share their generator with the subqueries, and a subquery hands its columns to SQL
+// itself rather than to the caller: a view body, a CTE, an IN and an INSERT ... SELECT read nothing
+// back, so nothing there is widened. The outer statement of a `WITH` is read back, and is.
+TEST_CASE("codegen: a compound SELECT standing as a subquery is not widened") {
+    REQUIRE(generate("CREATE VIEW v AS SELECT a + 1 FROM users UNION SELECT a * 2 FROM users;") ==
+            "struct [[= \"v\"_orm_name]] V {\n"
+            "    int64_t column_1 = 0;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_view<V>(union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2))));");
+    REQUIRE(generate("INSERT INTO orders SELECT a + 1 FROM users UNION SELECT a * 2 FROM users;") ==
+            "storage.insert(into<Orders>(), union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2)));");
+    REQUIRE(generate("SELECT id FROM users WHERE a IN (SELECT a + 1 FROM users UNION SELECT a * 2 FROM users);") ==
+            "auto rows = storage.select(&Users::id, where(in(&Users::a, union_(select(c(&Users::a) + 1), "
+            "select(c(&Users::a) * 2)))));");
+    REQUIRE(generate("WITH q AS (SELECT a + 1 FROM users UNION SELECT a * 2 FROM users) SELECT * FROM q;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2))), "
+            "select(asterisk<cte_0>()));");
+}

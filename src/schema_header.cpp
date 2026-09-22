@@ -293,6 +293,19 @@ namespace sqlite2orm {
             gen.context().ungeneratableTables = ungeneratableTables;
             gen.context().ungeneratableViews = ungeneratableViews;
 
+            // Every name the database holds a table or a view under. SQLite only resolves a
+            // foreign key when enforcement is on, so a stored schema may name a parent that was
+            // never created, and such a name has no struct behind it however the rest of the
+            // schema generates. `sqlite_master` is the whole truth about what the database has,
+            // so what is missing from it is missing from the schema.
+            std::set<std::string> schemaObjectNames;
+            for (const SchemaStatementResult& statementResult: schema.statements) {
+                if (statementResult.meta.type == "table" || statementResult.meta.type == "view") {
+                    schemaObjectNames.insert(normalizeSqlIdentifier(statementResult.meta.name));
+                }
+            }
+            gen.context().schemaObjectNames = std::move(schemaObjectNames);
+
             // Whether SQLite, not sqlite_orm, owns what a row created: its own `sqlite_...` object
             // or a table a module keeps its index in. Either way the row is left out of the storage
             // before anything is generated, and the name gets no C++ type.

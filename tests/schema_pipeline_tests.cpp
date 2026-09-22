@@ -485,6 +485,124 @@ TEST_CASE("generateSqliteSchemaHeader: a table-level foreign key into an ungener
     REQUIRE(header.errors.empty());
 }
 
+// SQLite resolves a foreign key only while enforcement is on, so it stores `REFERENCES o(x)`
+// whether or not `o` was ever created — `PRAGMA foreign_keys=ON; INSERT INTO t VALUES(1,'z')` is
+// where it first says `no such table: main.o` (checked against sqlite3 3.51.0). The funnel for a
+// parent that is in the schema and does not generate never saw such a name, so it went into the
+// header as written: `foreign_key(&T::a).references(&O::x)` at exit 0, with no `struct O` anywhere
+// and only the compiler to say so. A parent the schema does not create gets no struct either, so
+// the key is left out with a warning of its own.
+TEST_CASE("generateSqliteSchemaHeader: a foreign key into a table the schema does not create is left out") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (a INTEGER REFERENCES o(x) PRIMARY KEY, b TEXT);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, primary_key()),\n"
+                           "        make_column(\"b\", &T::b)));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"foreign key on column 'a' references o, which this schema does not create, so the generated "
+                 "table has no foreign_key()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// The table-level spelling of the same schema, which SQLite stores just as readily.
+TEST_CASE("generateSqliteSchemaHeader: a table-level foreign key into a table the schema does not create is left out") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t2 (a INTEGER, b TEXT, FOREIGN KEY (a) REFERENCES o(x));");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T2 {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"t2\",\n"
+                           "        make_column(\"a\", &T2::a),\n"
+                           "        make_column(\"b\", &T2::b)));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"table-level foreign key on column 'a' references o, which this schema does not create, so the "
+                 "generated table has no foreign_key()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
+// A parent the schema does create keeps its key, whichever order the two tables are stored in and
+// however either name is spelled: SQLite matches a foreign key parent case-insensitively, and so
+// does the lookup that decides whether the name is in the schema at all.
+TEST_CASE("generateSqliteSchemaHeader: a foreign key into a table the schema creates is kept") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER REFERENCES \"O\"(x) PRIMARY KEY, b TEXT);"
+            "CREATE TABLE \"O\" (x INTEGER PRIMARY KEY);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct O {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "};\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"O\",\n"
+                           "        make_column(\"x\", &O::x, primary_key())),\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, primary_key()),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        foreign_key(&T::a).references(&O::x)));\n"
+                           "}\n");
+    REQUIRE(header.warnings.empty());
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
 // A view reading an ungenerated table has no struct to select from either, so it goes with it.
 TEST_CASE("generateSqliteSchemaHeader: a view over an ungenerated table is left out") {
     TempDbFile file{makeTempDbPath()};
@@ -1293,6 +1411,32 @@ TEST_CASE("processMultiSql: a column constraint spelling its column otherwise co
     for (const auto& result: results) {
         REQUIRE(result.codegen.warnings.empty());
     }
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
+// The snippet path carries the same hole: a batch is one database, so a parent none of its
+// statements creates has no struct in the snippet either. Both spellings of the key are here,
+// and SQLite stores both schemas without a word (checked against sqlite3 3.51.0).
+TEST_CASE("processMultiSql: the snippet of a batch with a foreign key into a missing table compiles") {
+    const auto results = processMultiSql("CREATE TABLE t(a INTEGER REFERENCES o(x) PRIMARY KEY, b TEXT);\n"
+                                         "CREATE TABLE t2(a INTEGER, b TEXT, FOREIGN KEY(a) REFERENCES o(x));");
+
+    REQUIRE(results.size() == 2);
+    REQUIRE(results[0].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                {"foreign key on column 'a' references o, which this schema does not create, so the generated "
+                 "table has no foreign_key()"}});
+    REQUIRE(results[1].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                {"table-level foreign key on column 'a' references o, which this schema does not create, so the "
+                 "generated table has no foreign_key()"}});
 
     requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
                     "#include <cstdint>\n"

@@ -272,11 +272,17 @@ namespace sqlite2orm {
         advanceToken();
 
         std::string typeName;
+        std::optional<SourceLocation> typeNameLocation;
         if (!check(TokenType::comma) && !check(TokenType::rightParen) && !atEnd()) {
+            const SourceLocation typeStart = current().location;
             typeName = parseColumnTypeName();
+            if (!typeName.empty()) {
+                typeNameLocation = typeStart;
+            }
         }
 
         ColumnDef columnDef{std::move(name), std::move(typeName)};
+        columnDef.typeNameLocation = typeNameLocation;
         parseColumnConstraints(columnDef);
         return columnDef;
     }

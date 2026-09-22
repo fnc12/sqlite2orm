@@ -45,6 +45,14 @@ namespace sqlite2orm {
         bool generatedAlways = false;
         enum class GeneratedStorage { none, stored, virtual_ };
         GeneratedStorage generatedStorage = GeneratedStorage::none;
+        /**
+         *  Where `typeName` starts, for a diagnostic that has to underline the declared type
+         *  rather than the column — `ANY` is the one type name a consumer has to be told about.
+         *  Empty for a column declared without a type. Not part of equality: a column is the same
+         *  column wherever it was written. Written last so that the positional
+         *  `ColumnDef{name, type, primaryKey, autoincrement, notNull}` initializers keep theirs.
+         */
+        std::optional<SourceLocation> typeNameLocation;
 
         bool operator==(const ColumnDef& other) const {
             if (this->name != other.name || this->typeName != other.typeName || this->primaryKey != other.primaryKey ||

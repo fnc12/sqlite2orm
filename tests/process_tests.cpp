@@ -198,12 +198,42 @@ TEST_CASE("joinGeneratedCode: index merges into make_storage, DML follows after 
                                           "};\n"
                                           "\n"
                                           "auto storage = make_storage(\"\",\n"
+                                          "    make_index(\"idx\", indexed_column(&T::x)),\n"
                                           "    make_table(\"t\",\n"
                                           "        make_column(\"id\", &T::id, primary_key()),\n"
-                                          "        make_column(\"x\", &T::x)),\n"
-                                          "    make_index(\"idx\", indexed_column(&T::x)));\n"
+                                          "        make_column(\"x\", &T::x)));\n"
                                           "\n"
                                           "auto rows = storage.select(&T::x);\n");
+}
+
+// The v1.9.1 release of sqlite_orm syncs the database objects of a storage backwards, so an index
+// or a trigger written after the table it is made for is created first and `sync_schema()` throws
+// `no such table`. A batch writes them the way every revision takes them: the index and the
+// trigger first, then the tables — over two tables, so that the last argument of the call cannot
+// pass for the right answer.
+TEST_CASE("joinGeneratedCode: an index and a trigger merge before the tables they are made for") {
+    const auto results = processMultiSql("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER);"
+                                         "CREATE TABLE u (id INTEGER PRIMARY KEY);"
+                                         "CREATE INDEX idx ON t(x);"
+                                         "CREATE TRIGGER trg AFTER INSERT ON t BEGIN DELETE FROM u; END;");
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct T {\n"
+            "    std::optional<int64_t> id;\n"
+            "    std::optional<int64_t> x;\n"
+            "};\n"
+            "\n"
+            "struct U {\n"
+            "    std::optional<int64_t> id;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_index(\"idx\", indexed_column(&T::x)),\n"
+            "    make_trigger(\"trg\", after().insert().on<T>().begin(remove_all<U>())),\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"id\", &T::id, primary_key()),\n"
+            "        make_column(\"x\", &T::x)),\n"
+            "    make_table(\"u\",\n"
+            "        make_column(\"id\", &U::id, primary_key())));\n");
 }
 
 TEST_CASE("joinGeneratedCode: DML-only batch keeps statements, uniques the result names") {

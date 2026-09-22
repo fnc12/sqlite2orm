@@ -374,6 +374,7 @@ namespace sqlite2orm {
 
         std::vector<std::string> structBlocks;
         std::vector<std::string> storageArguments;
+        std::vector<std::string> dependentStorageArguments;
         std::vector<std::string> otherStatements;
         std::vector<const AstNode*> otherStatementNodes;
         for (const auto& result: results) {
@@ -404,12 +405,13 @@ namespace sqlite2orm {
                        (argument.back() == '\n' || argument.back() == ';' || argument.back() == ' ')) {
                     argument.pop_back();
                 }
-                storageArguments.push_back(std::move(argument));
+                dependentStorageArguments.push_back(std::move(argument));
                 continue;
             }
             otherStatements.push_back(code);
             otherStatementNodes.push_back(root);
         }
+        storageArguments = storageArgumentOrder(std::move(storageArguments), std::move(dependentStorageArguments));
         otherStatements = resolveGuardSavepoints(std::move(otherStatements), otherStatementNodes);
         otherStatements = foldFunctionalSavepoints(std::move(otherStatements), otherStatementNodes);
 

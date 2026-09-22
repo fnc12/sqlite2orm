@@ -328,6 +328,7 @@ namespace sqlite2orm {
             bool declarationsCarryAnnotations = false;
 
             std::vector<std::string> storageArgs;
+            std::vector<std::string> dependentStorageArgs;
             std::vector<DecisionPoint> allDecisionPoints;
             std::vector<CodegenWarning> allWarnings;
             std::vector<std::string> allComments;
@@ -505,9 +506,11 @@ namespace sqlite2orm {
                                               " `" + statementResult.meta.name + "` is not merged into make_storage()");
                         continue;
                     }
-                    storageArgs.push_back(storageArgLine);
+                    dependentStorageArgs.push_back(storageArgLine);
                 }
             }
+
+            storageArgs = storageArgumentOrder(std::move(storageArgs), std::move(dependentStorageArgs));
 
             if (declarationsCarryAnnotations) {
                 // Unqualified lookup is all an annotation gets, and a literal operator

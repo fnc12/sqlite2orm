@@ -59,6 +59,18 @@ namespace sqlite2orm {
 
     bool sqliteScalarFirstArgTextContext(std::string_view functionLower);
     std::string defaultCppTypeForSyntheticColumn(std::string_view cppIdentifier);
+    /**
+     *  The one C++ type that carries every value two inferred types hold, for the types
+     *  `CodeGeneratorContext::inferTypeFromNode` names: `bool` widens to `int`, `int` to
+     *  `int64_t` and to `double`, and anything to `std::string`, which reads back every storage
+     *  class SQLite has. `int64_t` and `double` widen into neither one another nor a third
+     *  number — a `double` drops every integer past 2^53, an `int64_t` the fractional part of a
+     *  REAL — so the type over that pair is the `std::string` that keeps both. SQLite types a
+     *  value rather than an expression, so a CASE answers with whichever branch matched and the
+     *  single C++ type it is read through has to hold all of them. A type the order does not name
+     *  never reaches here; `left` comes back unchanged so that a fold over one stays total.
+     */
+    std::string widerInferredCppType(std::string_view left, std::string_view right);
 
     extern const std::string kCommentCpp20ColumnAliases;
     extern const std::string kCommentViewReflection;
@@ -582,6 +594,32 @@ namespace sqlite2orm {
      *  argument, NULL itself is a `std::nullptr_t`).
      */
     bool selectResultNeedsAsOptional(const AstNode& astNode);
+    /**
+     *  The C++ type sqlite_orm reads a result column back through, spelled the way the generated
+     *  code spells it, for the expressions whose type the operator or the CAST alone settles;
+     *  nullopt for every other one, whose type the schema, the storage or the compiler decides.
+     *  A column reference is one of those: it carries the type of the struct field it names.
+     */
+    std::optional<std::string> generatedResultColumnCppType(const AstNode& astNode);
+    /**
+     *  Which result columns of a compound SELECT are generated as `as_optional(...)` — the single
+     *  home of that rule. One entry per result column position, true where EVERY arm widens that
+     *  column; empty where none does. sqlite_orm reads a compound back through
+     *  `std::common_type` of the types its arms come out as, so a column is widened in every arm
+     *  at once or in none: one `std::optional<double>` beside a plain `int` still reads the row
+     *  optionally, but beside an `std::optional<int>` it has no common type at all, and the
+     *  generated code stops compiling. That is why the widening the ordinary SELECT settles per
+     *  result column is settled here for the whole statement.
+     *
+     *  A column is widened when some arm's expression needs it by the rule every result column
+     *  follows (`selectResultNeedsAsOptional`) and every arm generates that column as the same C++
+     *  type, which is what keeps that common type defined. An arm whose type nothing here can name
+     *  — a column reference, a call, a literal — leaves the column as written, since widening one
+     *  arm beside it is exactly what may have no common type. Arms disagreeing on how many columns
+     *  they carry are left alone too: SQLite refuses such a compound outright ("SELECTs to the
+     *  left and right of UNION do not have the same number of result columns").
+     */
+    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode);
     /**
      *  Whether a SELECT result column has to be generated as `cast<int64_t>(...)` for the integer
      *  SQLite computes to reach the caller whole. sqlite_orm types the bitwise operators `int`, so

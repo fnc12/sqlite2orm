@@ -118,6 +118,8 @@ Statuses:
 - [x] `CASE WHEN cond THEN result ... ELSE ... END`
 - [x] `CASE expr WHEN value THEN result ... ELSE ... END`
 - [x] CASE without ELSE
+- [~] result type — `case_<R>` reads every row of the column through the one `R`, while SQLite answers a CASE with the value of whichever branch matched, so `R` is the widest type over all the branch results and the ELSE (the operand of a simple CASE is compared against rather than answered with, so it is not one of them): `bool` widens to `int`, `int` to `int64_t` and to the `double` that holds every int32 exactly, and anything to `std::string`, which reads back every storage class. An `int64_t` branch beside a REAL one is the pair with no number over it — a `double` drops every integer past 2^53, an `int64_t` the fractional part of a REAL — so that pair widens to text as well: `CASE WHEN a > 0 THEN a * 1 ELSE 1.5 END` is generated as `case_<std::string>().when(c(&T::a) > 0, then(c(&T::a) * 1)).else_(1.5).end()`, which reads both back as SQLite prints them. A branch whose type the operation knows rather than the literal under it — a concatenation, a CAST, a function call, a JSON arrow — is still read through the `int` the inference answers by default, so `CASE WHEN a THEN a || 'x' ELSE 1 END` comes back as 7 where SQLite answers `7x`
+- [x] a view column of a CASE — the field a `make_view` struct holds for the column is widened over the branches and the ELSE the same way, and holds an `std::optional` as soon as a branch spells a NULL out or the CASE has no ELSE to answer with; a BLOB branch beside a non-BLOB one is left uninferred and warned about, since an `std::string` stops at the first NUL byte a blob holds
 
 ### CAST
 - [x] `CAST(expr AS type-name)`
@@ -242,11 +244,19 @@ Statuses:
 - [~] INTERSECT
 - [~] EXCEPT
 
-Each branch is generated through the subexpression path, which is shared with subqueries, so a
-result column of a compound SELECT is not widened to `as_optional` the way a plain SELECT's is: a
-branch like `SELECT a + 1 FROM users UNION SELECT a FROM users` still reads a NULL row back as 0.
-Widening compiles only if every branch is widened together — sqlite_orm requires the branches to
-share one result type — so it needs a decision taken across the branches at once.
+A result column of a compound SELECT is widened to `as_optional` the way a plain SELECT's is, and
+widened in every branch at once: sqlite_orm reads a compound back through `std::common_type` of the
+types its branches come out as, so `SELECT a + 1 FROM users UNION SELECT a * 2 FROM users` now reads
+a NULL row back as an empty optional rather than as 0.
+
+What is still `[~]`: the widening needs one common type across the branches, so branches whose types
+differ — `SELECT a & 1 FROM users UNION SELECT a + 1 FROM users`, where sqlite_orm types `&` as
+`int` and `+` as `double` — are left as written and still read a NULL row back as 0. Widening one of
+them alone is what has no common type at all (`std::optional<int>` beside an
+`std::optional<double>`), and the generated code would stop compiling. A branch whose type only the
+schema knows — a column reference, a call, a literal — is left alone for the same reason. The
+`cast<int64_t>` a plain SELECT puts on a bitwise result column is not placed in a branch either, so
+a compound of bitwise branches is still read back through `int`.
 
 ### WITH (CTE)
 - [x] WITH cte AS (select-stmt)

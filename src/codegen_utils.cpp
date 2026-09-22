@@ -332,6 +332,48 @@ namespace sqlite2orm {
         return "int";
     }
 
+    std::string widerInferredCppType(std::string_view left, std::string_view right) {
+        // The order the types widen in. `bool` sits below `int` because SQLite spells TRUE as the
+        // integer 1, and `std::string` sits above everything: sqlite3_column_text renders an
+        // INTEGER and a REAL as the text SQLite prints for them, while a number read out of a TEXT
+        // value is 0.
+        static constexpr std::array<std::string_view, 5> kWideningOrder{{
+            "bool",
+            "int",
+            "int64_t",
+            "double",
+            "std::string",
+        }};
+        // `int64_t` and `double` hold values the other one does not, so neither widens into the
+        // other: a `double` loses every integer past 2^53 — `9007199254740993` read through one
+        // comes back as `9007199254740992` — while an `int64_t` loses the fractional part of a
+        // REAL. The two are siblings in the order above rather than neighbours, and the type that
+        // holds both is the `std::string` over them. `int` and `bool` do widen into a `double`,
+        // which holds every value an int32 has exactly.
+        if ((left == "int64_t" && right == "double") || (left == "double" && right == "int64_t")) {
+            return "std::string";
+        }
+        const auto rank = [](std::string_view type) -> std::optional<std::size_t> {
+            for (std::size_t index = 0; index < kWideningOrder.size(); ++index) {
+                if (kWideningOrder.at(index) == type) {
+                    return index;
+                }
+            }
+            return std::nullopt;
+        };
+        const std::optional<std::size_t> leftRank = rank(left);
+        const std::optional<std::size_t> rightRank = rank(right);
+        if (!leftRank || !rightRank) {
+            // Neither caller hands over a type the order above does not name: the five are every
+            // type `CodeGeneratorContext::inferTypeFromNode` answers with, and the view field
+            // inferrer, whose own vocabulary holds `std::vector<char>` as well, settles a BLOB
+            // against a non-BLOB before it asks. This keeps the fold total rather than describing
+            // a widening of its own: what the caller accumulated so far comes back unchanged.
+            return std::string(left);
+        }
+        return std::string(kWideningOrder.at(std::max(*leftRank, *rightRank)));
+    }
+
     const std::string kCommentCpp20ColumnAliases =
         "C++20 literal column aliases (`orm_column_alias`, string literal `_col`) require sqlite_orm to be "
         "built with the preprocessor macro SQLITE_ORM_WITH_CPP20_ALIASES defined. Your project may enable "
@@ -2697,8 +2739,9 @@ namespace sqlite2orm {
             return expressionMayBeNull(generatedNode);
         }
         if (dynamic_cast<const CaseNode*>(&generatedNode)) {
-            // `case_t<R, …>` is typed R, and R is the type inferred for the first branch's result —
-            // `int` for a branch holding a NULL — so a CASE that answers NULL was read back as 0:
+            // `case_t<R, …>` is typed R, and R is the widest type inferred over the branch results
+            // and the ELSE — `int` where one of them holds a NULL — so a CASE that answers NULL
+            // was read back as 0:
             // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
             // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
             // NULL. The inference never names a nullable type, so nothing here is already widened.
@@ -2743,6 +2786,140 @@ namespace sqlite2orm {
             return expressionMayBeNull(generatedNode);
         }
         return false;
+    }
+
+    std::optional<std::string> generatedResultColumnCppType(const AstNode& astNode) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the type the row is
+        // read back into is the one the operand under them comes out as.
+        const AstNode& generatedNode = generatedOperandNode(astNode);
+        if (generatesFoldedNegation(generatedNode)) {
+            // The sign is folded into the constant, leaving a plain C++ literal whose type the
+            // compiler picks by magnitude, the way it does for a literal written without one.
+            return std::nullopt;
+        }
+        if (auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+            switch (binaryOperator->binaryOperator) {
+                case BinaryOperator::add:
+                case BinaryOperator::subtract:
+                case BinaryOperator::multiply:
+                case BinaryOperator::divide:
+                case BinaryOperator::modulo:
+                    return "double";
+                case BinaryOperator::bitwiseAnd:
+                case BinaryOperator::bitwiseOr:
+                case BinaryOperator::shiftLeft:
+                case BinaryOperator::shiftRight:
+                    // `int`, not `int64_t`: the CAST `selectResultNeedsIntegerCast` asks for is
+                    // placed by the ordinary SELECT's result column and nowhere else.
+                    return "int";
+                case BinaryOperator::concatenate:
+                    return "std::string";
+                case BinaryOperator::jsonArrow:
+                case BinaryOperator::jsonArrow2:
+                    // Generated as `json_extract<std::string>(…)`, which is the type it is read as.
+                    return "std::string";
+                case BinaryOperator::equals:
+                case BinaryOperator::notEquals:
+                case BinaryOperator::lessThan:
+                case BinaryOperator::lessOrEqual:
+                case BinaryOperator::greaterThan:
+                case BinaryOperator::greaterOrEqual:
+                case BinaryOperator::logicalAnd:
+                case BinaryOperator::logicalOr:
+                    return "bool";
+                case BinaryOperator::isOp:
+                case BinaryOperator::isNot:
+                case BinaryOperator::isDistinctFrom:
+                case BinaryOperator::isNotDistinctFrom:
+                    // The validator rejects the IS family, so none of them reaches codegen.
+                    return std::nullopt;
+            }
+            return std::nullopt;
+        }
+        if (auto* unaryOperator = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+            switch (unaryOperator->unaryOperator) {
+                case UnaryOperator::minus:
+                    if (negationFormFor(*unaryOperator->operand) != NegationForm::zeroMinusSubtraction) {
+                        // The form codegen warns about has no sqlite_orm spelling at all, so there
+                        // is no type it is read back through.
+                        return std::nullopt;
+                    }
+                    // `(c(0) - x)`, a subtraction like any other.
+                    return "double";
+                case UnaryOperator::bitwiseNot:
+                    return "int";
+                case UnaryOperator::logicalNot:
+                    return "bool";
+                case UnaryOperator::plus:
+                    // Emitted as its operand, which `generatedOperandNode` already stepped through.
+                    return std::nullopt;
+            }
+            return std::nullopt;
+        }
+        if (dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
+            dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
+            // `between_t`, `in_t`, `like_t`, `glob_t` and the `negated_condition_t` a NOT form
+            // comes out as are all typed `bool`.
+            return "bool";
+        }
+        if (auto* castNode = dynamic_cast<const CastNode*>(&generatedNode)) {
+            // `cast_t<T, E>` is typed T, and T is what codegen writes into the CAST.
+            return sqliteTypeToCpp(castNode->typeName);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode) {
+        std::vector<const SelectNode*> arms;
+        arms.reserve(compoundNode.selects.size());
+        for (const auto& select: compoundNode.selects) {
+            auto* armSelect = dynamic_cast<const SelectNode*>(select.get());
+            if (!armSelect) {
+                return {};
+            }
+            arms.push_back(armSelect);
+        }
+        if (arms.empty()) {
+            return {};
+        }
+        const size_t columnCount = arms.front()->columns.size();
+        for (const auto* arm: arms) {
+            if (arm->columns.size() != columnCount) {
+                return {};
+            }
+            for (const auto& column: arm->columns) {
+                // A `*` names the columns of a row rather than an expression of its own, and a row
+                // is read back through the struct it is mapped to, which holds a NULL already.
+                if (!column.expression) {
+                    return {};
+                }
+            }
+        }
+        std::vector<bool> widenedColumns(columnCount, false);
+        bool widensAnyColumn = false;
+        for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
+            const std::optional<std::string> cppType =
+                generatedResultColumnCppType(*arms.front()->columns.at(columnIndex).expression);
+            if (!cppType) {
+                continue;
+            }
+            bool sameTypeEverywhere = true;
+            bool someArmNeedsWidening = false;
+            for (const auto* arm: arms) {
+                const AstNode& columnExpression = *arm->columns.at(columnIndex).expression;
+                if (generatedResultColumnCppType(columnExpression) != cppType) {
+                    sameTypeEverywhere = false;
+                    break;
+                }
+                someArmNeedsWidening = someArmNeedsWidening || selectResultNeedsAsOptional(columnExpression);
+            }
+            widenedColumns[columnIndex] = sameTypeEverywhere && someArmNeedsWidening;
+            widensAnyColumn = widensAnyColumn || widenedColumns[columnIndex];
+        }
+        if (!widensAnyColumn) {
+            return {};
+        }
+        return widenedColumns;
     }
 
     std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode) {

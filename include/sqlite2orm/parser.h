@@ -22,6 +22,18 @@ namespace sqlite2orm {
     inline constexpr size_t kMaxExpressionDepth = 1000;
 
     /**
+     *  How deeply queries may nest inside one another: a subquery in FROM, a parenthesized join
+     *  group, a CTE body, the query an INSERT takes its rows from. SQLite sets no limit of its own
+     *  here and carries tens of thousands of levels before its stack runs out, but every pass over
+     *  the tree here — the parser, the validator, code generation, even the destructor — recurses
+     *  once per level, and a library that takes the host process down with it is worse than one
+     *  that refuses a query nobody writes. A few hundred levels of nesting is already pathological,
+     *  so the limit sits far enough under the smallest stack a consumer runs on to leave room for
+     *  the expressions each of those levels carries.
+     */
+    inline constexpr size_t kMaxQueryDepth = 200;
+
+    /**
      *  What one parse answers with. Everything in it owns its text: the AST keeps no view into the
      *  SQL the tokens were made from, so a consumer is free to parse once, let the SQL go, and
      *  generate from the AST whenever it likes.

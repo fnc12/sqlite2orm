@@ -1726,6 +1726,87 @@ TEST_CASE("runtime: a select naming its table under a MATCH and in a subquery re
     REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "1"});
 }
 
+// `case_<R>` reads every row of the column through the one `R`, while SQLite answers the CASE with
+// the value of whichever branch matched. `R` taken from the first branch alone truncated every
+// wider branch silently: `CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END` came out
+// `case_<int>` and read that ELSE back as -1 (card 1866790966522808145). Expected values checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7; on master every line is
+// generated `case_<int>` and reads back as -1, -1, 1, 1 and 0.
+TEST_CASE("runtime: a CASE reads back the widest branch it can answer with") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 9223372036854775807 ELSE 0 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 1.5 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN 1 ELSE 'x' END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 'x' END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) < 0, "
+                "then(1)).else_(9223372036854775807).end());",
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, "
+                "then(9223372036854775807)).else_(0).end());",
+                "auto rows = storage.select(case_<double>().when(c(&User::a) < 0, then(1)).else_(1.5).end());",
+                "auto rows = storage.select(case_<std::string>().when(c(&User::a) > 0, then(1)).else_(\"x\").end());",
+                "auto rows = storage.select(case_<std::string>().when(c(&User::a) < 0, then(1)).else_(\"x\").end());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"9223372036854775807", "9223372036854775807", "1.5", "1", "x"});
+}
+
+// A compound SELECT is read back through `std::common_type` of the types its arms come out as, so
+// arms sqlite_orm types `double`, `bool` or `std::string` handed a NULL row back as 0 / false / ""
+// on master, exactly as an unwidened plain SELECT did. Widening every arm at once keeps that common
+// type defined and carries the NULL. Expected rows checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a compound SELECT reads a NULL result column back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 1 UNION SELECT a * 2;"),
+        generate("SELECT a + 1 UNION ALL SELECT a * 2;"),
+        generate("SELECT a + 1 INTERSECT SELECT a + 1;"),
+        generate("SELECT a + 1 EXCEPT SELECT 0 - 1;"),
+        generate("SELECT a > 0 UNION SELECT a < 0;"),
+        generate("SELECT a || 'x' UNION SELECT a || 'y';"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) * 2))));",
+                              "auto rows = storage.select(union_all(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) * 2))));",
+                              "auto rows = storage.select(intersect(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) + 1))));",
+                              "auto rows = storage.select(except(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(0) - 1))));",
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) > 0)), "
+                              "select(as_optional(c(&User::a) < 0))));",
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) || \"x\")), "
+                              "select(as_optional(c(&User::a) || \"y\"))));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"8", "8", "8", "8", "0", "7x"});
+}
+
+// The arms left alone still compile, which is the whole reason they are left alone: an
+// `std::optional<double>` beside the `std::optional<int>` a nullable column carries has no common
+// type, and one beside the `std::optional<int>` an `&` comes out as has none either. What the first
+// pair loses by staying as written is nothing — the column's own type carries the NULL — while the
+// second pair still reads a NULL row back as 0, the hole a widening of `&` to `int64_t` in the arms
+// would have to close. Expected rows checked against sqlite3 3.51 over the same one-row `users`.
+TEST_CASE("runtime: compound arms without one common result type are left compiling as they were") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 1 UNION SELECT a;"),
+        generate("SELECT a & 1 UNION SELECT a + 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(union_(select(c(&User::a) + 1), select(&User::a)));",
+                              "auto rows = storage.select(union_(select(c(&User::a) & 1), select(c(&User::a) + 1)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") == std::vector<std::string>{"NULL", "0"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"7", "1"});
+}
+
 // A subquery over the table the outer FROM already names leaves a mention that FROM covers, so the
 // outer select looked like it had a FROM to infer while its own code named nothing at all: every
 // statement below went out without its table and answered with a single row (card
@@ -1772,4 +1853,48 @@ TEST_CASE("runtime: a select leaning on a mention its subquery made returns the 
                               "auto rows = storage.select(1, from<Users>(), order_by(select(&Users::a, limit(1))));",
                           });
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "1,1,1"});
+}
+
+// The one branch pair with no number over it: an `int64_t` branch beside a REAL one. A `double`
+// drops every integer past 2^53 and an `int64_t` the fractional part of a REAL, so a `double` over
+// the first statement below — an INTEGER column and an arithmetic branch over it, nothing
+// contrived — handed back a value one off the one SQLite answers, silently. `std::string` reads
+// both back as SQLite prints them, and it is what the pair widens to (card 1866790966522808145).
+// The single row holds a = 9007199254740993, the smallest integer a `double` cannot tell from its
+// neighbour; expected values checked against sqlite3 3.51. Through a `case_<double>` the first
+// line reads 9007199254740992, and through the `case_<int>` the first branch alone used to name,
+// -1.
+TEST_CASE("runtime: a CASE over an integer and a REAL branch keeps both values") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a > 0 THEN a * 1 ELSE 1.5 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN 9223372036854775807 ELSE 1.5 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 9223372036854775807 ELSE 1.5 END;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(case_<std::string>().when(c(&User::a) > 0, "
+                              "then(c(&User::a) * 1)).else_(1.5).end()));",
+                              "auto rows = storage.select(case_<std::string>().when(c(&User::a) > 0, "
+                              "then(9223372036854775807)).else_(1.5).end());",
+                              "auto rows = storage.select(case_<std::string>().when(c(&User::a) < 0, "
+                              "then(9223372036854775807)).else_(1.5).end());",
+                          });
+    REQUIRE(selectedValues(statements, "int64_t", "9007199254740993") ==
+            std::vector<std::string>{"9007199254740993", "9223372036854775807", "1.5"});
+}
+
+// What the widening over the branches still cannot reach: `inferTypeFromNode` answers `int` for a
+// node whose type the operation knows rather than the literal under it — a concatenation, a CAST,
+// a function call, a JSON arrow — so such a branch widens nothing and the CASE is read through an
+// `int`. SQLite answers `7x` for the statement below over a = 7 (checked against sqlite3 3.51) and
+// the generated select answers 7. Closing this takes typing an arbitrary SQLite expression, which
+// is its own card; the case pins what a user gets until then, and the COVERAGE.md row that says so.
+TEST_CASE("runtime: a CASE branch typed by its operation is still read through an int") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a THEN a || 'x' ELSE 1 END;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(case_<int>().when(&User::a, "
+                              "then(c(&User::a) || \"x\")).else_(1).end()));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"7"});
 }

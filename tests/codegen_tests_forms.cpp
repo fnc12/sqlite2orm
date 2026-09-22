@@ -5,6 +5,7 @@
 #include <cctype>
 #include <map>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -222,7 +223,63 @@ namespace {
         return rows;
     }
 
+    /**
+     *  The sqlite_orm types declaring an `over()`, read off the headers the build fetches: the
+     *  member is declared inside the type it belongs to, so the struct or class opened last before
+     *  a declaration of it is its owner.
+     */
+    std::vector<std::string> typesDeclaringOver(const std::string& headers) {
+        std::vector<std::string> owners;
+        std::string opened;
+        const std::regex opening{"^\\s*(?:struct|class)\\s+([A-Za-z_][A-Za-z0-9_]*)"};
+        std::istringstream lines{headers};
+        for (std::string line; std::getline(lines, line);) {
+            std::smatch match;
+            if (std::regex_search(line, match, opening)) {
+                opened = match[1].str();
+            }
+            if (line.find("over(OverArgs... overArgs)") != std::string::npos) {
+                owners.push_back(opened);
+            }
+        }
+        std::sort(owners.begin(), owners.end());
+        owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+        return owners;
+    }
+
 }  // namespace
+
+// `over()` is declared apart from `filter()` — the window functions carry one and not the other —
+// so the registry answers the two questions apart, and this holds its `over()` answer to the
+// headers the same way the argument counts are held to them. Every type below is one a registry
+// kind is generated as: `builtin_aggregate_function_t` and `builtin_aggregate_function_call` are
+// `builtinAggregate` on the legacy and the C++20 header path, `count_asterisk_t` is
+// `countAsterisk`, the eleven `_t` window types are `windowFunction`, and
+// `filtered_aggregate_function` is what a `filter()` over an aggregate or over `count(*)` returns,
+// which is why those two take a FILTER and an OVER at once. The kinds absent from the list are the ones
+// `formTakesOver` says no for: `builtin_function_t` and `builtin_function_call`
+// (`builtinScalar`), `match_t` (`matchFunction`), `count_asterisk_without_type`
+// (`countWithoutType`), and the two kinds with no form at all.
+TEST_CASE("codegen: the forms the registry gives an over() to are the ones declaring it in the headers") {
+    const std::vector<std::string> owners =
+        typesDeclaringOver(readSourceFile(SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE "/sqlite_orm/sqlite_orm.h"));
+
+    REQUIRE(owners == std::vector<std::string>{"builtin_aggregate_function_call",
+                                               "builtin_aggregate_function_t",
+                                               "count_asterisk_t",
+                                               "cume_dist_t",
+                                               "dense_rank_t",
+                                               "filtered_aggregate_function",
+                                               "first_value_t",
+                                               "lag_t",
+                                               "last_value_t",
+                                               "lead_t",
+                                               "nth_value_t",
+                                               "ntile_t",
+                                               "percent_rank_t",
+                                               "rank_t",
+                                               "row_number_t"});
+}
 
 // The registry has to answer for every name codegen may write a call of, or a name added to the
 // validator's list goes on being generated with nothing recorded about it — which is the hole this

@@ -688,15 +688,21 @@ namespace sqlite2orm {
      */
     std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode);
     /**
-     *  The warning a SELECT result column read back through a COALESCE, IFNULL, NULLIF or IIF call
-     *  whose arguments have no common C++ type carries, and nullopt for every other column. Such a
-     *  call spells its result type (see `functionCallResultTypeArgument`) to compile at all, and
-     *  that type reads every storage class back as its text — a number comes back as its digits —
+     *  The warning a column read back through a COALESCE, IFNULL, NULLIF or IIF call whose
+     *  arguments have no common C++ type carries, and nullopt for every other column. Such a call
+     *  spells its result type (see `functionCallResultTypeArgument`) to compile at all, and that
+     *  type reads every storage class back as its text — a number comes back as its digits —
      *  while the type sqlite_orm deduces for the same call over arguments of one type carries the
-     *  value as it is. The report belongs to the result column rather than to the call: the type
-     *  is what the caller reads a row back into, and a call in a WHERE or an ORDER BY hands its
-     *  value to no caller.
+     *  value as it is. The report belongs to the column rather than to the call: the type is what
+     *  a value is read back into, and a call in a WHERE or an ORDER BY hands its value to nobody.
+     *  `subject` names the column the message opens with — `"result column"` for a column of a
+     *  SELECT, `"view v: column `c`"` for a field of a view's struct, which is read back through
+     *  that same spelled type.
      */
+    std::optional<CodegenWarning> commonArgumentTypeWarning(const AstNode& astNode,
+                                                            std::string_view subject,
+                                                            const ReferencedColumnResolver& resolveColumn);
+    /** `commonArgumentTypeWarning` for a SELECT result column, resolving columns the emitter's way. */
     std::optional<CodegenWarning> selectResultCommonArgumentTypeWarning(const AstNode& astNode,
                                                                         const CodeGeneratorContext& context);
     /**

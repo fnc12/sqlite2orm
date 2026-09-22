@@ -1099,6 +1099,19 @@ namespace sqlite2orm {
                         underlineLength = underlineLengthOf(columnRef->columnName);
                     }
                 }
+                // A field read back through a call whose result type the generated code spells
+                // out carries that type, exactly as a SELECT result column does — a view's struct
+                // is a reading surface of its own — so the same report is made for it, named by
+                // the field it is about and anchored at the call in the view's body.
+                if (selectColumn.expression) {
+                    if (auto warning = commonArgumentTypeWarning(*selectColumn.expression,
+                                                                 "view " + rawViewName + ": column `" + sqlName + "`",
+                                                                 [&inferrer](const AstNode& argument) {
+                                                                     return inferrer.resolveArgumentColumn(argument);
+                                                                 })) {
+                        parts.warnings.push_back(std::move(*warning));
+                    }
+                }
                 appendField(std::move(sqlName), inferred, columnLocation, underlineLength);
             }
         }

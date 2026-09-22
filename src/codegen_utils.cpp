@@ -2895,24 +2895,23 @@ namespace sqlite2orm {
                               underlineLengthOf(writtenText)};
     }
 
-    std::optional<CodegenWarning> selectResultCommonArgumentTypeWarning(const AstNode& astNode,
-                                                                        const CodeGeneratorContext& context) {
-        // A COLLATE and a unary plus emit their operand and nothing else, so the call the row is
+    std::optional<CodegenWarning> commonArgumentTypeWarning(const AstNode& astNode,
+                                                            std::string_view subject,
+                                                            const ReferencedColumnResolver& resolveColumn) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the call the value is
         // read back through is the one the operand under them comes out as.
         auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedOperandNode(astNode));
         if (!functionCall) {
             return std::nullopt;
         }
-        const std::optional<CommonArgumentTypeClash> clash =
-            commonArgumentTypeClash(*functionCall, [&context](const AstNode& argument) {
-                return context.findReferencedColumn(argument);
-            });
+        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(*functionCall, resolveColumn);
         if (!clash) {
             return std::nullopt;
         }
         const std::string lowerName = toLowerAscii(functionCall->name);
         const std::string resultType(clashResultType(*clash));
-        std::string message = "result column computed with `";
+        std::string message(subject);
+        message += " computed with `";
         message += lowerName;
         message += "` comes back as ";
         message += clash->holdsBlob ? "bytes" : "text";
@@ -2927,6 +2926,13 @@ namespace sqlite2orm {
         message += ". Spell the result type the call answers with where it is known";
         // The call is located at its name, and the name is what the message repeats.
         return CodegenWarning{std::move(message), functionCall->location, underlineLengthOf(functionCall->name)};
+    }
+
+    std::optional<CodegenWarning> selectResultCommonArgumentTypeWarning(const AstNode& astNode,
+                                                                        const CodeGeneratorContext& context) {
+        return commonArgumentTypeWarning(astNode, "result column", [&context](const AstNode& argument) {
+            return context.findReferencedColumn(argument);
+        });
     }
 
     bool selectResultNeedsAsOptional(const AstNode& astNode, const CodeGeneratorContext& context) {

@@ -302,6 +302,35 @@ TEST_CASE("codegen: a view column over a call with a spelled result type takes t
             "auto storage = make_storage(\"\",\n"
             "    make_view<V>(select(columns(coalesce<std::string>(&T::i, &T::r), coalesce<std::string>(&T::b, 1), "
             "coalesce<std::vector<char>>(&T::bl, &T::i), coalesce(&T::i, c(&T::r) + 1)))));");
+
+    // The field is read back through that spelled type, so the column carries the same report a
+    // SELECT result column does, named by the field and anchored at the call in the view's body.
+    // The fourth column spells no type and reports nothing.
+    const auto columnReport = [](std::string_view field, std::string_view resultType, std::string_view first,
+                                 std::string_view second, size_t column) {
+        const bool blob = resultType == "std::vector<char>";
+        return CodegenWarning{"view v: column `" + std::string(field) +
+                                  "` computed with `coalesce` comes back as " + (blob ? "bytes" : "text") +
+                                  ": sqlite_orm types the call as the common C++ type of its arguments, and " +
+                                  std::string(first) + " next to " + std::string(second) +
+                                  " has none, so the call is generated as `coalesce<" + std::string(resultType) +
+                                  ">(…)` — a number comes back as " +
+                                  (blob ? "the bytes of its digits" : "its digits") +
+                                  ". Spell the result type the call answers with where it is known",
+                              SourceLocation{2, column},
+                              8};
+    };
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                columnReport("c1", "std::string", "a column typed `std::optional<int64_t>`",
+                             "a column typed `std::optional<double>`", 25),
+                columnReport("c2", "std::string", "a column typed `std::optional<std::string>`", "an `int`", 47),
+                columnReport("c3", "std::vector<char>", "a column typed `std::optional<std::vector<char>>`",
+                             "a column typed `std::optional<int64_t>`", 69),
+                {"CREATE VIEW v: sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
+                 "requires C++26 and will not compile under the selected C++ standard",
+                 SourceLocation{2, 1},
+                 11}});
 }
 
 TEST_CASE("codegen: CREATE VIEW - a hex literal too big leaves the view ungenerated") {

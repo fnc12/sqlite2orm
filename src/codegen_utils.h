@@ -38,6 +38,19 @@ namespace sqlite2orm {
     /** `text` as a C++ string literal, quotes included. */
     std::string cppStringLiteral(std::string_view text);
 
+    /**
+     *  The order the arguments of a generated `make_storage()` are written in.
+     *
+     *  sqlite_orm up to and including the v1.9.1 release syncs the database objects of a storage in
+     *  reverse declaration order, so an index or a trigger written after the table it is made for
+     *  reaches SQLite first and `sync_schema()` throws `no such table`. Revisions after the release
+     *  sort the objects by dependency and take either order. The order valid on both is therefore
+     *  the reverse of the creation order: the indexes and the triggers first, the tables and the
+     *  views they are made for after them.
+     */
+    std::vector<std::string> storageArgumentOrder(std::vector<std::string> tablesAndViews,
+                                                  std::vector<std::string> indexesAndTriggers);
+
     std::string stripColumnAliasQuotes(std::string_view alias);
     bool isBuiltinColalias(std::string_view stripped);
     std::string columnAliasTypeName(std::string_view rawAlias);

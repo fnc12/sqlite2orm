@@ -1202,7 +1202,7 @@ namespace sqlite2orm {
             // sqlite_orm deduces one `E` from the whole of `in(A, std::initializer_list<E>)`, so
             // values generated as different C++ types do not compile — and SQLite takes the SQL
             // either way, `x IN (1, 3000000000)` as readily as `x IN (1, 'a')`.
-            const OneDeducedTypeForm valuesForm = oneDeducedTypeForm(valueNodes);
+            const OneDeducedTypeForm valuesForm = inValuesForm(valueNodes);
 
             std::string valuesList;
             for (size_t valueIndex = 0; valueIndex < inNode->values.size(); ++valueIndex) {

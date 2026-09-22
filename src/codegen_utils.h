@@ -541,6 +541,16 @@ namespace sqlite2orm {
      *  `int64_t` is on macOS. So every member but that one is cast, rather than the narrower ones.
      */
     std::string widenToInt64(const AstNode& node, std::string code);
+    /**
+     *  The shape the values of an IN list are generated in. sqlite_orm collects the initializer
+     *  list into a `std::vector<E>`, so those values are under one rule more than the bounds of a
+     *  BETWEEN: a list of `bool` values is one type already and still comes out a
+     *  `std::vector<bool>`, whose proxy references the walk over a statement's bound values cannot
+     *  take (`cannot bind non-const lvalue reference of type 'bool&'`). `in(&User::a, {true})`
+     *  builds as an expression on its own and fails the moment a statement holds it, so such a
+     *  list is widened as well: SQLite carries TRUE and FALSE as the integers 1 and 0 anyway.
+     */
+    OneDeducedTypeForm inValuesForm(const std::vector<const AstNode*>& values);
     /** How a member of such a group is named in the warning about the two types, e.g. "an `int`". */
     std::string generatedValueTypeDescription(const AstNode& node);
     /**

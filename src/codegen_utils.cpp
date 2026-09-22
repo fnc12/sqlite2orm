@@ -1892,6 +1892,18 @@ namespace sqlite2orm {
                                                        : OneDeducedTypeForm::asWritten;
     }
 
+    OneDeducedTypeForm inValuesForm(const std::vector<const AstNode*>& values) {
+        const OneDeducedTypeForm form = oneDeducedTypeForm(values);
+        if (form != OneDeducedTypeForm::asWritten) {
+            return form;
+        }
+        const bool everyValueBoolean =
+            !values.empty() && std::all_of(values.begin(), values.end(), [](const AstNode* value) {
+                return generatedValueCppType(*value) == GeneratedValueCppType::boolean;
+            });
+        return everyValueBoolean ? OneDeducedTypeForm::widenedToInt64 : form;
+    }
+
     std::string widenToInt64(const AstNode& node, std::string code) {
         const std::optional<GeneratedValueCppType> type = generatedValueCppType(node);
         // A member this cannot type is a bind parameter the caller declares himself, and a cast

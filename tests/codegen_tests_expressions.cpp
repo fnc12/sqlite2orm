@@ -1436,6 +1436,21 @@ TEST_CASE("codegen: IN list values of two integer widths are widened to one") {
     REQUIRE(generate("a IN (3000000000)") == "in(&User::a, {3000000000})");
 }
 
+// A list of `bool` values is one type already and still has no working form: sqlite_orm collects
+// the initializer list into a `std::vector<bool>`, whose proxy references the walk over a
+// statement's bound values cannot take, so `in(&User::a, {true})` builds on its own and fails the
+// moment a statement holds it — `cannot bind non-const lvalue reference of type 'bool&'`. The
+// same cast the integer widths take gives the list a vector of `int64_t`, and SQLite reads TRUE
+// and FALSE as the integers 1 and 0 either way. The two bounds of a BETWEEN are not collected
+// into a vector at all, so `between(&User::a, true, false)` is left as it is.
+TEST_CASE("codegen: an IN list of bool values is widened to one a statement can hold") {
+    REQUIRE(generate("a IN (TRUE, FALSE)") ==
+            "in(&User::a, {static_cast<int64_t>(true), static_cast<int64_t>(false)})");
+    REQUIRE(generate("a IN (TRUE)") == "in(&User::a, {static_cast<int64_t>(true)})");
+    REQUIRE(generate("a NOT IN (FALSE)") == "not_in(&User::a, {static_cast<int64_t>(false)})");
+    REQUIRE(generate("a BETWEEN TRUE AND FALSE") == "between(&User::a, true, false)");
+}
+
 // Values with no C++ type to widen to have no working form at all: the initializer list takes one
 // type, and an integer next to a text, a real, a NULL, a blob, a column pointer or an expression
 // node is two. SQLite takes every one of these (`SELECT 1 IN (1, 'x')` answers 1 on 3.45.1 and on

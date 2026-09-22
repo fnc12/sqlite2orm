@@ -1420,7 +1420,10 @@ TEST_CASE("runtime: BETWEEN bounds of two integer widths read back as SQLite com
 // off: `0x100000000` is not an `int` and takes the cast next to one, and is the type a 64-bit
 // decimal constant is, so next to that one it is left alone and still has to build. The last two
 // are the forms the card reports: the hex list that mixes an `int` with a cast `int64_t`, and the
-// empty list, which has no value to deduce `E` from at all and is spelled as an empty vector.
+// empty list, which has no value to deduce `E` from at all and is spelled as an empty vector. The
+// last one is one type already and is widened all the same: a list of `bool` values comes out a
+// `std::vector<bool>`, which is the one vector the walk over a statement's bound values cannot
+// read, so it too has to be a vector of something else to run at all.
 TEST_CASE("runtime: IN list values of two integer widths read back as SQLite computes them") {
     const std::vector<std::string> statements{
         generate("SELECT a IN (1, 3000000000);"),
@@ -1433,6 +1436,7 @@ TEST_CASE("runtime: IN list values of two integer widths read back as SQLite com
         generate("SELECT a IN (0x100000000, 3000000000);"),
         generate("SELECT a IN (1, 2, 0xDEADBEEF);"),
         generate("SELECT a IN ();"),
+        generate("SELECT a IN (TRUE, FALSE);"),
     };
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select(as_optional(in(&User::a, {static_cast<int64_t>(1), "
@@ -1453,11 +1457,13 @@ TEST_CASE("runtime: IN list values of two integer widths read back as SQLite com
                               "auto rows = storage.select(as_optional(in(&User::a, {static_cast<int64_t>(1), "
                               "static_cast<int64_t>(2), static_cast<int64_t>(0xDEADBEEF)})));",
                               "auto rows = storage.select(in(&User::a, std::vector<int64_t>{}));",
+                              "auto rows = storage.select(as_optional(in(&User::a, {static_cast<int64_t>(true), "
+                              "static_cast<int64_t>(false)})));",
                           });
     REQUIRE(selectedValues(statements, "int64_t", "2147483648") ==
-            std::vector<std::string>{"0", "1", "0", "0", "0", "0", "0", "0", "0", "0"});
+            std::vector<std::string>{"0", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0"});
     REQUIRE(selectedValues(statements, "std::string", "\"1\"") ==
-            std::vector<std::string>{"1", "1", "1", "1", "0", "0", "1", "0", "1", "0"});
+            std::vector<std::string>{"1", "1", "1", "1", "0", "0", "1", "0", "1", "0", "1"});
     // Building these once says nothing about the platform the tests do not run on, and this is
     // the bug: the cast is what gives the values one type, and which type a 64-bit constant is
     // differs between a platform where an `int64_t` is a `long` and one where it is a

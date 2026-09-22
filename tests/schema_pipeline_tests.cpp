@@ -551,9 +551,9 @@ TEST_CASE("generateSqliteSchemaHeader: a trigger naming an ungenerated table in 
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                            "    using namespace sqlite_orm;\n"
                            "    return make_storage(db_path,\n"
+                           "        make_index(\"i_ok\", indexed_column(&Good::a)),\n"
                            "        make_table(\"good\",\n"
-                           "        make_column(\"a\", &Good::a)),\n"
-                           "        make_index(\"i_ok\", indexed_column(&Good::a)));\n"
+                           "        make_column(\"a\", &Good::a)));\n"
                            "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
@@ -1177,6 +1177,9 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
                                              "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                                              "    using namespace sqlite_orm;\n"
                                              "    return make_storage(db_path,\n"
+                                             "        make_trigger(\"tail_tr\", "
+                                             "after().insert().on<TailT>().begin(insert(into<TailT>(), "
+                                             "columns(&TailT::t), values(std::make_tuple(\"x\"))))),\n"
                                              "        make_table(\"inf_t\",\n"
                                              "        make_column(\"a\", &InfT::a, "
                                              "default_value(std::numeric_limits<double>::infinity())),\n"
@@ -1184,10 +1187,7 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
                                              "        make_column(\"c\", &InfT::c, "
                                              "check(c(&InfT::c) < std::numeric_limits<double>::infinity()))),\n"
                                              "        make_table(\"tail_t\",\n"
-                                             "        make_column(\"t\", &TailT::t)),\n"
-                                             "        make_trigger(\"tail_tr\", "
-                                             "after().insert().on<TailT>().begin(insert(into<TailT>(), "
-                                             "columns(&TailT::t), values(std::make_tuple(\"x\"))))));\n"
+                                             "        make_column(\"t\", &TailT::t)));\n"
                                              "}\n"),
                                  {},
                                  {}};
@@ -1357,11 +1357,11 @@ TEST_CASE("generateSqliteSchemaHeader: an index over an expression compiles") {
                                        "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                                        "    using namespace sqlite_orm;\n"
                                        "    return make_storage(db_path,\n"
+                                       "        make_index(\"i_col\", indexed_column(&T::b)),\n"
+                                       "        make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)),\n"
                                        "        make_table(\"t\",\n"
                                        "        make_column(\"a\", &T::a, primary_key()),\n"
-                                       "        make_column(\"b\", &T::b)),\n"
-                                       "        make_index(\"i_col\", indexed_column(&T::b)),\n"
-                                       "        make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"
+                                       "        make_column(\"b\", &T::b)));\n"
                                        "}\n"));
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
@@ -1387,16 +1387,15 @@ TEST_CASE("processMultiSql: the snippet of a batch with an index over an express
                                          "CREATE INDEX i_expr ON t(a + 1);\n"
                                          "CREATE UNIQUE INDEX u_expr ON t(b || 'x');");
 
-    REQUIRE(joinGeneratedCode(results) ==
-            std::string("struct T {\n"
-                        "    std::optional<int64_t> a;\n"
-                        "    std::optional<std::string> b;\n"
-                        "};\n\n"
-                        "auto storage = make_storage(\"\",\n"
-                        "    make_table(\"t\",\n"
-                        "        make_column(\"a\", &T::a, primary_key()),\n"
-                        "        make_column(\"b\", &T::b)),\n"
-                        "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"));
+    REQUIRE(joinGeneratedCode(results) == std::string("struct T {\n"
+                                                      "    std::optional<int64_t> a;\n"
+                                                      "    std::optional<std::string> b;\n"
+                                                      "};\n\n"
+                                                      "auto storage = make_storage(\"\",\n"
+                                                      "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)),\n"
+                                                      "    make_table(\"t\",\n"
+                                                      "        make_column(\"a\", &T::a, primary_key()),\n"
+                                                      "        make_column(\"b\", &T::b)));\n"));
 
     requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
                     "#include <cstdint>\n"

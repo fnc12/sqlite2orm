@@ -400,6 +400,75 @@ namespace {
         return lines;
     }
 
+    /**
+     *  Builds a program around the generated select statements over a two-row FTS5 `docs` table,
+     *  compiles and links it against sqlite_orm, runs it and returns the rows each statement came
+     *  back with, comma separated, or `throws` for a statement SQLite refuses. An FTS table is what
+     *  a MATCH needs to run at all, and a statement whose table is named inside the MATCH alone
+     *  went out with no FROM and threw where SQLite answers rows.
+     */
+    std::vector<std::string> ftsSelectedRowValues(const std::vector<std::string>& selectStatements) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <iostream>\n"
+                   "#include <string>\n"
+                   "#include <system_error>\n"
+                   "\n"
+                   "struct Docs {\n"
+                   "    std::string body;\n"
+                   "};\n"
+                   "\n"
+                   "int main() {\n"
+                   "    using namespace sqlite_orm;\n"
+                   "    auto storage = make_storage(\"\", make_virtual_table<Docs>(\"docs\", "
+                   "using_fts5(make_column(\"body\", &Docs::body))));\n"
+                   "    storage.sync_schema();\n"
+                   "    storage.replace(Docs{\"hello world\"});\n"
+                   "    storage.replace(Docs{\"bye\"});\n";
+        for (const auto& statement: selectStatements) {
+            program << "    try {\n        " << statement
+                    << "\n        const char* separator = \"\";\n"
+                       "        for(const auto& row: rows) {\n"
+                       "            std::cout << separator << row;\n"
+                       "            separator = \",\";\n"
+                       "        }\n"
+                       "        std::cout << '\\n';\n"
+                       "    } catch(const std::system_error&) {\n"
+                       "        std::cout << \"throws\" << '\\n';\n"
+                       "    }\n";
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("fts.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("fts");
+        const std::filesystem::path outpath = dir.file("fts.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> rows;
+        {
+            std::ifstream out(outpath);
+            for (std::string line; std::getline(out, line);) {
+                rows.push_back(line);
+            }
+        }
+        if (exitCode != 0) {
+            WARN("building the generated FTS selects failed (exit " << exitCode
+                                                                    << "); ensure c++, sqlite_orm headers and "
+                                                                       "libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return rows;
+    }
+
 }  // namespace
 
 // The generated code used to read every negative numeric literal back as 0: the SQL was right, but
@@ -1718,6 +1787,79 @@ TEST_CASE("runtime: an aliased source with a subquery over its own table returns
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"2,3", "2,3", "1,2,3"});
 }
 
+// `match_t` holds the field it compares, and sqlite_orm walks only the pattern argument of it, so
+// a table named inside a MATCH and nowhere else left the select with no FROM to infer: `SELECT 1
+// FROM docs WHERE body MATCH 'hello'` went out as `SELECT 1 WHERE ("docs"."body" MATCH 'hello')`
+// and threw `SQL logic error` where sqlite3 answers a row (card 1868412795247134567). The second
+// statement is the counter-check — the result column names the table where sqlite_orm can see it,
+// and that form is left as it was. The third stands for the MATCH against the table name, which
+// carried its FROM before this change already: `c<Docs>()->*&fts5::hidden::any` names no recordset
+// at all, so the half of the criterion that asks whether anything was named had it covered.
+// Expected rows checked against sqlite3 3.51 over `docs(body)` as an FTS5 table holding
+// 'hello world' and 'bye'; on master the first of them reads back as `throws`.
+TEST_CASE("runtime: a select naming its table inside a MATCH alone returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello';"),
+        generate("SELECT body FROM docs WHERE body MATCH 'hello';"),
+        generate("SELECT 1 FROM docs WHERE docs MATCH 'hello';"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(1, from<Docs>(), where(match(&Docs::body, \"hello\")));",
+                              "auto rows = storage.select(&Docs::body, where(match(&Docs::body, \"hello\")));",
+                              "auto rows = storage.select(1, from<Docs>(), where(match(c<Docs>()->*&fts5::hidden::any, "
+                              "\"hello\")));",
+                          });
+    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "hello world", "1"});
+}
+
+// The same table named under the MATCH and by a subquery: the mention under the MATCH is the
+// select's own and invisible to sqlite_orm, the one the subquery made is visible and not the
+// select's own, so a criterion that weighs one set alone finds a FROM to infer where there is
+// none and the table goes out unnamed. sqlite3 3.51 answers a row for each of these over
+// `docs(body)` as an FTS5 table holding 'hello world' and 'bye'; without the FROM written out
+// both throw `SQL logic error` instead.
+TEST_CASE("runtime: a select naming its table under a MATCH and in a subquery returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' AND EXISTS (SELECT 1 FROM docs);"),
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' AND (SELECT 1 FROM docs LIMIT 1);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(1, from<Docs>(), where(match(&Docs::body, \"hello\") and "
+                              "exists(select(1, from<Docs>()))));",
+                              "auto rows = storage.select(1, from<Docs>(), where(c(match(&Docs::body, \"hello\")) and "
+                              "select(1, from<Docs>(), limit(1))));",
+                          });
+    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "1"});
+}
+
+// `case_<R>` reads every row of the column through the one `R`, while SQLite answers the CASE with
+// the value of whichever branch matched. `R` taken from the first branch alone truncated every
+// wider branch silently: `CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END` came out
+// `case_<int>` and read that ELSE back as -1 (card 1866790966522808145). Expected values checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7; on master every line is
+// generated `case_<int>` and reads back as -1, -1, 1, 1 and 0.
+TEST_CASE("runtime: a CASE reads back the widest branch it can answer with") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 9223372036854775807 ELSE 0 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 1.5 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN 1 ELSE 'x' END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 1 ELSE 'x' END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) < 0, "
+                "then(1)).else_(9223372036854775807).end());",
+                "auto rows = storage.select(case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, "
+                "then(9223372036854775807)).else_(0).end());",
+                "auto rows = storage.select(case_<double>().when(c(&User::a) < 0, then(1)).else_(1.5).end());",
+                "auto rows = storage.select(case_<std::string>().when(c(&User::a) > 0, then(1)).else_(\"x\").end());",
+                "auto rows = storage.select(case_<std::string>().when(c(&User::a) < 0, then(1)).else_(\"x\").end());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"9223372036854775807", "9223372036854775807", "1.5", "1", "x"});
+}
+
 // A compound SELECT is read back through `std::common_type` of the types its arms come out as, so
 // arms sqlite_orm types `double`, `bool` or `std::string` handed a NULL row back as 0 / false / ""
 // on master, exactly as an unwidened plain SELECT did. Widening every arm at once keeps that common
@@ -1817,4 +1959,48 @@ TEST_CASE("runtime: a select leaning on a mention its subquery made returns the 
                               "auto rows = storage.select(1, from<Users>(), order_by(select(&Users::a, limit(1))));",
                           });
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "1,1,1"});
+}
+
+// The one branch pair with no number over it: an `int64_t` branch beside a REAL one. A `double`
+// drops every integer past 2^53 and an `int64_t` the fractional part of a REAL, so a `double` over
+// the first statement below — an INTEGER column and an arithmetic branch over it, nothing
+// contrived — handed back a value one off the one SQLite answers, silently. `std::string` reads
+// both back as SQLite prints them, and it is what the pair widens to (card 1866790966522808145).
+// The single row holds a = 9007199254740993, the smallest integer a `double` cannot tell from its
+// neighbour; expected values checked against sqlite3 3.51. Through a `case_<double>` the first
+// line reads 9007199254740992, and through the `case_<int>` the first branch alone used to name,
+// -1.
+TEST_CASE("runtime: a CASE over an integer and a REAL branch keeps both values") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a > 0 THEN a * 1 ELSE 1.5 END;"),
+        generate("SELECT CASE WHEN a > 0 THEN 9223372036854775807 ELSE 1.5 END;"),
+        generate("SELECT CASE WHEN a < 0 THEN 9223372036854775807 ELSE 1.5 END;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(case_<std::string>().when(c(&User::a) > 0, "
+                              "then(c(&User::a) * 1)).else_(1.5).end()));",
+                              "auto rows = storage.select(case_<std::string>().when(c(&User::a) > 0, "
+                              "then(9223372036854775807)).else_(1.5).end());",
+                              "auto rows = storage.select(case_<std::string>().when(c(&User::a) < 0, "
+                              "then(9223372036854775807)).else_(1.5).end());",
+                          });
+    REQUIRE(selectedValues(statements, "int64_t", "9007199254740993") ==
+            std::vector<std::string>{"9007199254740993", "9223372036854775807", "1.5"});
+}
+
+// What the widening over the branches still cannot reach: `inferTypeFromNode` answers `int` for a
+// node whose type the operation knows rather than the literal under it — a concatenation, a CAST,
+// a function call, a JSON arrow — so such a branch widens nothing and the CASE is read through an
+// `int`. SQLite answers `7x` for the statement below over a = 7 (checked against sqlite3 3.51) and
+// the generated select answers 7. Closing this takes typing an arbitrary SQLite expression, which
+// is its own card; the case pins what a user gets until then, and the COVERAGE.md row that says so.
+TEST_CASE("runtime: a CASE branch typed by its operation is still read through an int") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN a THEN a || 'x' ELSE 1 END;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(case_<int>().when(&User::a, "
+                              "then(c(&User::a) || \"x\")).else_(1).end()));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"7"});
 }

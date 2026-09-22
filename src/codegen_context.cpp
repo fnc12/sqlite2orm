@@ -178,6 +178,17 @@ namespace sqlite2orm {
                 return operandType == "int" ? "int64_t" : operandType;
             }
         }
+        if (auto* nestedCase = dynamic_cast<const CaseNode*>(&valueNode)) {
+            // A CASE standing in a branch of another one answers with a value of its own, so the
+            // width of that branch is the width of everything the nested CASE can answer with.
+            std::vector<const AstNode*> nestedResults;
+            nestedResults.reserve(nestedCase->branches.size() + 1);
+            for (const auto& branch: nestedCase->branches) {
+                nestedResults.push_back(branch.result.get());
+            }
+            nestedResults.push_back(nestedCase->elseResult.get());
+            return this->inferWidestTypeFromNodes(nestedResults);
+        }
         if (auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&valueNode)) {
             // SQLite computes arithmetic and bit operations over 64-bit integers, so the result
             // leaves the int32 range even where both operands sit inside it: `2147483647 + 1` is
@@ -204,6 +215,18 @@ namespace sqlite2orm {
             }
         }
         return "int";
+    }
+
+    std::string CodeGeneratorContext::inferWidestTypeFromNodes(const std::vector<const AstNode*>& nodes) const {
+        std::string widest;
+        for (const AstNode* node: nodes) {
+            if (!node) {
+                continue;
+            }
+            const std::string nodeType = this->inferTypeFromNode(*node);
+            widest = widest.empty() ? nodeType : widerInferredCppType(widest, nodeType);
+        }
+        return widest.empty() ? "int" : widest;
     }
 
     std::string CodeGeneratorContext::generatePrefix() const {
@@ -256,7 +279,15 @@ namespace sqlite2orm {
         if (typeName.empty()) {
             return;
         }
+        if (this->emittingMatchField) {
+            // Hidden from sqlite_orm's ast_iterator, so it widens no inferred FROM and is no FROM
+            // to infer from either: it goes only into the set the FROM this select writes out has
+            // to name.
+            this->ownEmittedTableTypes.insert(std::move(typeName));
+            return;
+        }
         this->ownEmittedTableTypes.insert(typeName);
+        this->ownVisibleEmittedTableTypes.insert(typeName);
         this->emittedTableTypes.insert(std::move(typeName));
     }
 

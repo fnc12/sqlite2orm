@@ -48,15 +48,21 @@ namespace sqlite2orm {
 
     /** Which sqlite_orm type a call of a name is generated as. */
     enum class SqliteOrmFormKind {
-        /** A `builtin_function_t`: a constructor and no default one, and no `filter()`. */
+        /** A `builtin_function_t`: a constructor and no default one, and neither `filter()` nor `over()`. */
         builtinScalar,
-        /** A `builtin_aggregate_function_t`, the form carrying `filter()`. */
+        /** A `builtin_aggregate_function_t`, the form carrying both `filter()` and `over()`. */
         builtinAggregate,
-        /** `row_number_t`, `lag_t`, … — each an aggregate of its own: default-constructible, no `filter()`. */
+        /**
+         *  `row_number_t`, `lag_t`, … — each an aggregate of its own: default-constructible, and
+         *  carrying `over()` and no `filter()`.
+         */
         windowFunction,
-        /** `match_t`, which derives from nothing: default-constructible, no `filter()`, no operand traits. */
+        /**
+         *  `match_t`, which derives from nothing: default-constructible, no `filter()`, no `over()`,
+         *  no operand traits.
+         */
         matchFunction,
-        /** `count_asterisk_t`, what `count(*)` over a known FROM clause becomes; it takes a `filter()`. */
+        /** `count_asterisk_t`, what `count(*)` over a known FROM clause becomes; it takes both. */
         countAsterisk,
         /** `count_asterisk_without_type`, what the argument-less `count()` becomes; it holds nothing. */
         countWithoutType,
@@ -122,6 +128,14 @@ namespace sqlite2orm {
     bool formTakesFilter(SqliteOrmFormKind kind);
 
     /**
+     *  Whether the form carries an `over()`, i.e. whether an OVER over it can be generated at all.
+     *  sqlite_orm declares the two members apart — `over()` on the window functions, which have no
+     *  `filter()`, and both on the aggregate function calls and on `count(*)` — so the two
+     *  questions are asked apart as well.
+     */
+    bool formTakesOver(SqliteOrmFormKind kind);
+
+    /**
      *  True when a call of `lowerFunctionName` — written with a star for its argument list or with
      *  arguments of its own — is generated as a sqlite_orm type that has a default constructor.
      *  A trigger's WHEN clause is kept in an `optional_container`, which default-constructs the
@@ -135,7 +149,7 @@ namespace sqlite2orm {
      *  reported with — and nothing when the call is one the library takes. This is the gate: every
      *  generated call passes it, and a call it refuses is placeheld rather than guessed at.
      *  `userDefinedFunction` says the call is written as `func<…>()`, which takes any argument list
-     *  and carries no `filter()`.
+     *  and carries neither `filter()` nor `over()`.
      */
     std::optional<std::string> functionCallFormRefusal(const FunctionCallNode& functionCall,
                                                        bool generatedAsCountAsterisk,

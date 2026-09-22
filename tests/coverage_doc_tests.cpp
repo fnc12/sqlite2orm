@@ -95,6 +95,30 @@ TEST_CASE("COVERAGE.md quotes the code the generator emits for a MATCH beside a 
     REQUIRE(countOccurrences(readCoverage(), R"(`match(&T::a, "x") or c(&T::b) == 1`)") == 1);
 }
 
+// The CASE result-type row quotes the code the generator emits for the one branch pair with no
+// number over it — an `int64_t` branch beside a REAL one — and the row is the reason the pair is
+// read as text rather than through a `double` that drops every integer past 2^53. Both literals
+// below are the same expression, the fixture naming the struct `User` and the row naming it `T`,
+// so a change to either side fails here and asks for the other.
+TEST_CASE("COVERAGE.md quotes the code the generator emits for a CASE over an integer and a REAL") {
+    REQUIRE(generate("CASE WHEN a > 0 THEN a * 1 ELSE 1.5 END") ==
+            "case_<std::string>().when(c(&User::a) > 0, then(c(&User::a) * 1)).else_(1.5).end()");
+    REQUIRE(countOccurrences(readCoverage(),
+                             "`case_<std::string>().when(c(&T::a) > 0, then(c(&T::a) * 1)).else_(1.5).end()`") == 1);
+}
+
+// The same row names what the widening still cannot reach: a branch whose type the operation
+// knows rather than the literal under it is read through the default `int`, so the row quotes a
+// CASE that answers a number where SQLite answers text. The value it comes back as is pinned by
+// running the generated select, in codegen_tests_runtime_values.cpp.
+TEST_CASE("COVERAGE.md quotes the CASE branch the type inference still reads through an int") {
+    REQUIRE(generate("CASE WHEN a THEN a || 'x' ELSE 1 END") ==
+            R"(case_<int>().when(&User::a, then(c(&User::a) || "x")).else_(1).end())");
+    REQUIRE(countOccurrences(readCoverage(),
+                             "`CASE WHEN a THEN a || 'x' ELSE 1 END` comes back as 7 where "
+                             "SQLite answers `7x`") == 1);
+}
+
 // Every row that describes one of the four gaps reported in fnc12/sqlite_orm#1543 links it, so a
 // reader who hits the gap reaches the upstream report from wherever this file mentions it: the
 // `OR` row, the UNIQUE index over an expression, `json_extract`, `json_quote` and the PRAGMA row

@@ -969,7 +969,8 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
             "auto rows = storage.select(lag(&Users::a).over(order_by(&Users::a)));");
     REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
             "auto rows = storage.select(row_number().over(), from<Users>());");
-    REQUIRE(generate("SELECT a MATCH 'x' FROM users;") == "auto rows = storage.select(match(&Users::a, \"x\"));");
+    REQUIRE(generate("SELECT a MATCH 'x' FROM users;") ==
+            "auto rows = storage.select(match(&Users::a, \"x\"), from<Users>());");
     REQUIRE(generate("SELECT count(*) FROM users;") == "auto rows = storage.select(count<Users>());");
 }
 
@@ -1894,6 +1895,63 @@ TEST_CASE("codegen: a subquery naming no recordset carries its own FROM") {
             "auto rows = storage.select(union_(select(1, from<Users>()), select(2, from<Orders>())));");
     REQUIRE(generate("INSERT INTO orders SELECT 1 FROM users;") ==
             "storage.insert(into<Orders>(), select(1, from<Users>()));");
+}
+
+// A mention sqlite_orm cannot see is no FROM to infer from either. `match_t` holds the field it
+// compares, but `ast_iterator<match_t<Field, X>>` walks `node.argument` and nothing else, so a
+// table named inside a MATCH reaches the inferred FROM through nothing: `SELECT iif(a MATCH 'x',
+// 1, 2) FROM users` ran as `SELECT IIF("users"."a" MATCH 'x', 1, 2)` — no FROM at all — and threw
+// `SQL logic error` (card 1868412795247134567). The mention is the select's own all the same, so
+// the FROM written out for it names what every other clause of that select names: the alias where
+// the source carries one, and the source of that level alone where a subquery holds the MATCH.
+// Row counts checked against sqlite3 3.51 in `codegen_tests_runtime_values.cpp`.
+TEST_CASE("codegen: a table named only inside a MATCH carries its FROM") {
+    REQUIRE(generate("SELECT iif(a MATCH 'x', 1, 2) FROM users;") ==
+            "auto rows = storage.select(iif(match(&Users::a, \"x\"), 1, 2), from<Users>());");
+    REQUIRE(generate("SELECT CAST((a MATCH 'x') AS INTEGER) FROM users;") ==
+            "auto rows = storage.select(as_optional(cast<int64_t>(match(&Users::a, \"x\"))), from<Users>());");
+    REQUIRE(generate("SELECT 1 FROM users WHERE a MATCH 'x';") ==
+            "auto rows = storage.select(1, from<Users>(), where(match(&Users::a, \"x\")));");
+    REQUIRE(generate("SELECT iif(u.a MATCH 'x', 1, 2) FROM users u;") ==
+            "auto rows = storage.select(iif(match(alias_column<alias_a<Users>>(&Users::a), \"x\"), 1, 2), "
+            "from<alias_a<Users>>());");
+    REQUIRE(generate("SELECT id FROM users WHERE EXISTS (SELECT iif(uid MATCH 'x', 1, 2) FROM orders);") ==
+            "auto rows = storage.select(&Users::id, from<Users>(), where(exists(select(iif(match(&Orders::uid, "
+            "\"x\"), 1, 2), from<Orders>()))));");
+}
+
+// Anything beside the MATCH that names the table is a mention sqlite_orm does see, and the FROM it
+// infers from that one is the FROM the SQL asked for: the form changes only where the MATCH holds
+// the only mention there is.
+TEST_CASE("codegen: a MATCH beside a mention sqlite_orm sees keeps its FROM implicit") {
+    REQUIRE(generate("SELECT (a MATCH 'x') AND id = 1 FROM users;") ==
+            "auto rows = storage.select(as_optional(match(&Users::a, \"x\") and c(&Users::id) == 1));");
+    REQUIRE(generate("SELECT id FROM users WHERE a MATCH 'x';") ==
+            "auto rows = storage.select(&Users::id, where(match(&Users::a, \"x\")));");
+}
+
+// The seam between the two mentions neither half of the criterion can be inferred from. A table
+// named under a MATCH is this select's own and yet invisible to sqlite_orm; one named by a subquery
+// is visible and yet not this select's own. Put both in one select and asking a single set gets it
+// wrong whichever set that is: weigh the losing half by every own mention and the MATCH covers it,
+// weigh it by every visible mention and the subquery does, and either way the select goes out with
+// no table at all. Both fixes were in the tree before such a shape was, which is how the second of
+// them silently undid the first. The last statement is the companion that holds either way — the
+// subquery names a table of its own, so the widening half carries the FROM without this seam.
+// Row counts checked against sqlite3 3.51 in `codegen_tests_runtime_values.cpp`.
+TEST_CASE("codegen: a table named under a MATCH and by a subquery alone carries its FROM") {
+    REQUIRE(generate("SELECT 1 FROM users WHERE a MATCH 'x' AND EXISTS (SELECT 1 FROM users);") ==
+            "auto rows = storage.select(1, from<Users>(), where(match(&Users::a, \"x\") and "
+            "exists(select(1, from<Users>()))));");
+    REQUIRE(generate("SELECT 1 FROM users WHERE a MATCH 'x' AND (SELECT 1 FROM users LIMIT 1);") ==
+            "auto rows = storage.select(1, from<Users>(), where(c(match(&Users::a, \"x\")) and "
+            "select(1, from<Users>(), limit(1))));");
+    REQUIRE(generate("SELECT iif(a MATCH 'x', 1, 2) FROM users WHERE EXISTS (SELECT 1 FROM users);") ==
+            "auto rows = storage.select(iif(match(&Users::a, \"x\"), 1, 2), from<Users>(), "
+            "where(exists(select(1, from<Users>()))));");
+    REQUIRE(generate("SELECT 1 FROM users WHERE a MATCH 'x' AND EXISTS (SELECT 1 FROM orders);") ==
+            "auto rows = storage.select(1, from<Users>(), where(match(&Users::a, \"x\") and "
+            "exists(select(1, from<Orders>()))));");
 }
 
 // A subquery naming a table the outer FROM already covers used to cancel the criterion out: the

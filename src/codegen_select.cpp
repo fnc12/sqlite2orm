@@ -16,25 +16,30 @@ namespace sqlite2orm {
          *  enclosing FROM as well — an explicit `from<...>()` fixes the level it stands on and no
          *  other — so whatever a subquery named its parent has to answer for too.
          *
-         *  The mentions a level made itself are kept apart in `ownEmittedTableTypes`, which is
-         *  restored rather than merged: the parent answers for a subquery's width, but the forms
-         *  that subquery wrote are not forms the parent has to name with its own FROM.
+         *  The mentions a level made itself are kept apart in `ownEmittedTableTypes` and in
+         *  `ownVisibleEmittedTableTypes`, which are restored rather than merged: the parent answers
+         *  for a subquery's width, but the forms that subquery wrote are not forms the parent has to
+         *  name with its own FROM.
          */
         struct EmittedTableTypeScope {
             CodeGeneratorContext* ctx;
             std::set<std::string> enclosing;
             std::set<std::string> enclosingOwn;
+            std::set<std::string> enclosingOwnVisible;
 
             explicit EmittedTableTypeScope(CodeGeneratorContext* context) :
                 ctx(context), enclosing(std::move(context->emittedTableTypes)),
-                enclosingOwn(std::move(context->ownEmittedTableTypes)) {
+                enclosingOwn(std::move(context->ownEmittedTableTypes)),
+                enclosingOwnVisible(std::move(context->ownVisibleEmittedTableTypes)) {
                 ctx->emittedTableTypes.clear();
                 ctx->ownEmittedTableTypes.clear();
+                ctx->ownVisibleEmittedTableTypes.clear();
             }
 
             ~EmittedTableTypeScope() {
                 ctx->emittedTableTypes.insert(enclosing.begin(), enclosing.end());
                 ctx->ownEmittedTableTypes = std::move(enclosingOwn);
+                ctx->ownVisibleEmittedTableTypes = std::move(enclosingOwnVisible);
             }
 
             EmittedTableTypeScope(const EmittedTableTypeScope&) = delete;
@@ -176,23 +181,27 @@ namespace sqlite2orm {
          *  cartesian product, so the widening half weighs `mentioned`, the mentions of this select
          *  and of every select nested in it alike.
          *
-         *  The losing half weighs `ownMentions` instead. A mention that reached this level out of a
-         *  nested scope is no FROM for this one to infer from: the subquery answers for it with a
-         *  `from<...>()` of its own, and a `from<...>()` fixes the level it stands on and no other.
-         *  With `SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users)` the two halves used to
-         *  cancel out — the inherited mention of `Users` is one this FROM covers, so nothing looked
-         *  wider, and nothing looked lost either — and the outer select went out with no table at
-         *  all, answering one row where SQLite answers one per row of the table.
+         *  The losing half weighs `ownVisibleMentions` instead: the mentions this select made
+         *  itself, and of those the ones sqlite_orm can see. A mention that reached this level out
+         *  of a nested scope is no FROM for this one to infer from — the subquery answers for it
+         *  with a `from<...>()` of its own, and a `from<...>()` fixes the level it stands on and no
+         *  other. With `SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users)` the two halves
+         *  used to cancel out — the inherited mention of `Users` is one this FROM covers, so
+         *  nothing looked wider, and nothing looked lost either — and the outer select went out
+         *  with no table at all, answering one row where SQLite answers one per row of the table.
+         *  A mention made under the field operand of a MATCH is the level's own and yet invisible
+         *  to sqlite_orm, so it is out of this half too: `SELECT iif(a MATCH 'x', 1, 2) FROM users`
+         *  hands the inferred FROM nothing, however plainly the code names the table.
          */
         bool implicitFromDiffers(const SelectFromSources& sources,
                                  const std::set<std::string>& mentioned,
-                                 const std::set<std::string>& ownMentions) {
+                                 const std::set<std::string>& ownVisibleMentions) {
             // Code that names no recordset of its own leaves sqlite_orm nothing to infer a FROM
             // from, and the table is dropped rather than widened: `SELECT row_number() OVER () FROM
             // users` runs as `SELECT ROW_NUMBER() OVER ()` and answers with one row where SQLite
             // answers with one per row of the table. Naming the sources is what brings the table
             // back.
-            if (ownMentions.empty()) {
+            if (ownVisibleMentions.empty()) {
                 return true;
             }
             for (const auto& type: mentioned) {
@@ -274,7 +283,7 @@ namespace sqlite2orm {
                 context.recordComment(kCommentAliasedFromSources);
             } else if (!sources.hasCteSource && !sources.implicitTypes.empty() &&
                        clausesNameEveryMention(sources, context.ownEmittedTableTypes) &&
-                       implicitFromDiffers(sources, context.emittedTableTypes, context.ownEmittedTableTypes)) {
+                       implicitFromDiffers(sources, context.emittedTableTypes, context.ownVisibleEmittedTableTypes)) {
                 explicitFrom = explicitFromClause(sources.implicitTypes);
             }
             for (const auto& sourceType: sources.allTypes) {

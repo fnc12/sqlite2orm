@@ -247,6 +247,40 @@ namespace sqlite2orm {
         }
 
         /**
+         *  Why an OVER over the call cannot be generated. sqlite_orm declares `over()` on the
+         *  window functions, on `count_asterisk_t` and on the built-in aggregate function calls —
+         *  and on the `filtered_aggregate_function` a `filter()` over either of those last two
+         *  returns — so a scalar function, a MATCH in its function spelling, the argument-less
+         *  `count()` and a user-defined function written as a `func<…>()` call all carry none.
+         *  `functionName` is spelled as the SQL writes it, which is how SQLite echoes a function
+         *  name in the diagnostic quoted here; it was read off sqlite3 3.51.0, which refuses such
+         *  a call at prepare and stores a trigger or a view holding one all the same. The two
+         *  calls SQLite does take — the argument-less `count()` and a `userDefinedFunction`
+         *  registered through `sqlite3_create_window_function` — say so instead: there the
+         *  generated code alone is at fault.
+         */
+        std::string overRefusal(std::string_view functionName, bool userDefinedFunction) {
+            const std::string name(functionName);
+            const std::string preamble = name + "() has no over() in sqlite_orm: only the window functions, the "
+                                                "aggregate function calls and count(*) take an OVER, so there is no "
+                                                "form to generate the call as. ";
+            if (userDefinedFunction) {
+                return preamble +
+                       "SQLite takes an OVER over a user-defined window function, so the SQL may well be fine while "
+                       "the func<" +
+                       toStructName(functionName) + ">() call standing for " + name + "() is not";
+            }
+            if (toLowerAscii(functionName) == "count") {
+                // The only COUNT generated without an `over()` is the argument-less one, which
+                // SQLite windows as readily as the star it counts the same rows as.
+                return preamble + "SQLite takes the same call — count() counts the rows count(*) does — so the SQL is "
+                                  "well formed and the generated code alone is not";
+            }
+            return preamble + "SQLite refuses the same call — " + name +
+                   "() may not be used as a window function — but stores a trigger or a view holding it";
+        }
+
+        /**
          *  Why an FTS5 auxiliary function cannot be generated. sqlite_orm declares `highlight()`,
          *  and declares it over the FTS5 table's hidden column — `highlight(posts, 0, '<b>',
          *  '</b>')` reads `posts` as a column reference, and the library's factory takes an
@@ -340,6 +374,11 @@ namespace sqlite2orm {
         return kind == SqliteOrmFormKind::builtinAggregate || kind == SqliteOrmFormKind::countAsterisk;
     }
 
+    bool formTakesOver(SqliteOrmFormKind kind) {
+        return kind == SqliteOrmFormKind::windowFunction || kind == SqliteOrmFormKind::builtinAggregate ||
+               kind == SqliteOrmFormKind::countAsterisk;
+    }
+
     bool functionCallHasDefaultConstructor(std::string_view lowerFunctionName, bool star) {
         const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(lowerFunctionName);
         // The window functions and a function-spelled MATCH are each generated as an aggregate of
@@ -370,6 +409,9 @@ namespace sqlite2orm {
             if (functionCall.filterWhere != nullptr) {
                 return filterRefusal(functionCall.name, functionCall.over != nullptr, true);
             }
+            if (functionCall.over != nullptr) {
+                return overRefusal(functionCall.name, true);
+            }
             return std::nullopt;
         }
         const std::optional<SqliteOrmFunctionForm> form =
@@ -392,6 +434,12 @@ namespace sqlite2orm {
         }
         if (functionCall.filterWhere != nullptr && !formTakesFilter(form->kind)) {
             return filterRefusal(functionCall.name, functionCall.over != nullptr, false);
+        }
+        // Asked after the FILTER: a form carrying neither member answers for the FILTER, which is
+        // the one the generated call reaches for first, and that refusal already quotes the
+        // diagnostic SQLite gives a call written with an OVER as well.
+        if (functionCall.over != nullptr && !formTakesOver(form->kind)) {
+            return overRefusal(functionCall.name, false);
         }
         return std::nullopt;
     }

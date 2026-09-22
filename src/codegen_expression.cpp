@@ -1226,14 +1226,18 @@ namespace sqlite2orm {
                     break;
                 case OneDeducedTypeForm::noCommonType: {
                     // The warning names the pair of values that proves the list has no one type,
-                    // which in a longer list is not necessarily the first two of them.
+                    // which in a longer list is not necessarily the first two of them. A reason to
+                    // have no common type that no pair proves would leave it without one to name,
+                    // and then the warning says only what it knows.
                     const auto [firstValue, secondValue] = firstNoCommonTypePair(valueNodes);
+                    const std::string types = firstValue && secondValue
+                                                  ? generatedValueTypeDescription(*firstValue) + " next to " +
+                                                        generatedValueTypeDescription(*secondValue) + " is not one type"
+                                                  : "these values are not one type";
                     warnings.push_back(sourceSpanWarning(
                         "sqlite_orm's in(A, std::initializer_list<E>) deduces one C++ type from every value of an IN "
                         "list, and " +
-                            generatedValueTypeDescription(*firstValue) + " next to " +
-                            generatedValueTypeDescription(*secondValue) +
-                            " is not one type, so the generated code does not compile",
+                            types + ", so the generated code does not compile",
                         *inNode));
                     break;
                 }

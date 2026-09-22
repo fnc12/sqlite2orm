@@ -551,9 +551,9 @@ TEST_CASE("generateSqliteSchemaHeader: a trigger naming an ungenerated table in 
                            "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                            "    using namespace sqlite_orm;\n"
                            "    return make_storage(db_path,\n"
+                           "        make_index(\"i_ok\", indexed_column(&Good::a)),\n"
                            "        make_table(\"good\",\n"
-                           "        make_column(\"a\", &Good::a)),\n"
-                           "        make_index(\"i_ok\", indexed_column(&Good::a)));\n"
+                           "        make_column(\"a\", &Good::a)));\n"
                            "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
@@ -1177,6 +1177,9 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
                                              "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                                              "    using namespace sqlite_orm;\n"
                                              "    return make_storage(db_path,\n"
+                                             "        make_trigger(\"tail_tr\", "
+                                             "after().insert().on<TailT>().begin(insert(into<TailT>(), "
+                                             "columns(&TailT::t), values(std::make_tuple(\"x\"))))),\n"
                                              "        make_table(\"inf_t\",\n"
                                              "        make_column(\"a\", &InfT::a, "
                                              "default_value(std::numeric_limits<double>::infinity())),\n"
@@ -1184,10 +1187,7 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
                                              "        make_column(\"c\", &InfT::c, "
                                              "check(c(&InfT::c) < std::numeric_limits<double>::infinity()))),\n"
                                              "        make_table(\"tail_t\",\n"
-                                             "        make_column(\"t\", &TailT::t)),\n"
-                                             "        make_trigger(\"tail_tr\", "
-                                             "after().insert().on<TailT>().begin(insert(into<TailT>(), "
-                                             "columns(&TailT::t), values(std::make_tuple(\"x\"))))));\n"
+                                             "        make_column(\"t\", &TailT::t)));\n"
                                              "}\n"),
                                  {},
                                  {}};
@@ -1401,11 +1401,11 @@ TEST_CASE("generateSqliteSchemaHeader: an index over an expression compiles") {
                                        "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
                                        "    using namespace sqlite_orm;\n"
                                        "    return make_storage(db_path,\n"
+                                       "        make_index(\"i_col\", indexed_column(&T::b)),\n"
+                                       "        make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)),\n"
                                        "        make_table(\"t\",\n"
                                        "        make_column(\"a\", &T::a, primary_key()),\n"
-                                       "        make_column(\"b\", &T::b)),\n"
-                                       "        make_index(\"i_col\", indexed_column(&T::b)),\n"
-                                       "        make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"
+                                       "        make_column(\"b\", &T::b)));\n"
                                        "}\n"));
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
@@ -1431,16 +1431,15 @@ TEST_CASE("processMultiSql: the snippet of a batch with an index over an express
                                          "CREATE INDEX i_expr ON t(a + 1);\n"
                                          "CREATE UNIQUE INDEX u_expr ON t(b || 'x');");
 
-    REQUIRE(joinGeneratedCode(results) ==
-            std::string("struct T {\n"
-                        "    std::optional<int64_t> a;\n"
-                        "    std::optional<std::string> b;\n"
-                        "};\n\n"
-                        "auto storage = make_storage(\"\",\n"
-                        "    make_table(\"t\",\n"
-                        "        make_column(\"a\", &T::a, primary_key()),\n"
-                        "        make_column(\"b\", &T::b)),\n"
-                        "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)));\n"));
+    REQUIRE(joinGeneratedCode(results) == std::string("struct T {\n"
+                                                      "    std::optional<int64_t> a;\n"
+                                                      "    std::optional<std::string> b;\n"
+                                                      "};\n\n"
+                                                      "auto storage = make_storage(\"\",\n"
+                                                      "    make_index<T>(\"i_expr\", indexed_column(c(&T::a) + 1)),\n"
+                                                      "    make_table(\"t\",\n"
+                                                      "        make_column(\"a\", &T::a, primary_key()),\n"
+                                                      "        make_column(\"b\", &T::b)));\n"));
 
     requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
                     "#include <cstdint>\n"
@@ -2088,4 +2087,82 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                       "(SELECT count(*) FROM s_any_pk) || ',' || (SELECT count(*) FROM s_desc_pk) || ',' || (SELECT "
                       "count(*) FROM s_int_pk) || ',' || (SELECT count(*) FROM s_table_pk) || ',' || (SELECT count(*) "
                       "FROM s_text_pk) || ',' || (SELECT count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2");
+}
+
+// sqlite_orm syncs the database objects of a storage in declaration order only in the revisions
+// after the v1.9.1 release: the release itself walks them backwards, so an index or a trigger
+// written after the table it is made for reaches SQLite before that table exists and
+// `sync_schema()` throws `no such table: main.t` on the very first call, leaving the database
+// empty. The order written here is the one both take — every index and trigger first, the tables
+// they are made for after them. The literal of the first case is what pins that order, over two
+// tables so that "last argument" cannot pass for it, and it is the only guard of the order there
+// is: these tests build against the pinned revision, which takes either order, so no case here
+// can be run against the release the order is written for.
+TEST_CASE("generateSqliteSchemaHeader: an index and a trigger stand before the table they are made for") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT);"
+            "CREATE TABLE u (id INTEGER PRIMARY KEY);"
+            "CREATE INDEX t_a_idx ON t (a);"
+            "CREATE TRIGGER t_trg AFTER INSERT ON t BEGIN DELETE FROM u; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::string> a;\n"
+                           "};\n\n"
+                           "struct U {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_index(\"t_a_idx\", indexed_column(&T::a)),\n"
+                           "        make_trigger(\"t_trg\", after().insert().on<T>().begin(remove_all<U>())),\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"id\", &T::id, primary_key()),\n"
+                           "        make_column(\"a\", &T::a)),\n"
+                           "        make_table(\"u\",\n"
+                           "        make_column(\"id\", &U::id, primary_key())));\n"
+                           "}\n");
+    REQUIRE(header.errors.empty());
+}
+
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() creates the index and the trigger over an empty database") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT);"
+            "CREATE TABLE u (id INTEGER PRIMARY KEY);"
+            "CREATE INDEX t_a_idx ON t (a);"
+            "CREATE TRIGGER t_trg AFTER INSERT ON t BEGIN DELETE FROM u; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    // The order cannot fail this case: it is built against the pinned revision, which sorts the
+    // database objects by dependency and syncs a database that holds nothing at all just as fully
+    // in either order (checked, both ways round). What it guards is that a header carrying an
+    // index and a trigger compiles and syncs at all, and that every object the schema named
+    // reaches `sqlite_master`.
+    TempDbFile empty{makeTempDbPath()};
+    REQUIRE(syncSchemaProbeOutput(header.code, empty.path, "") == "t=new_table_created\n"
+                                                                  "t_a_idx=new_table_created\n"
+                                                                  "t_trg=new_table_created\n"
+                                                                  "u=new_table_created\n");
+
+    REQUIRE(queryText(empty.path,
+                      "SELECT group_concat(type || ':' || name, ',') FROM (SELECT type, name FROM sqlite_master "
+                      "ORDER BY name);") == "table:t,index:t_a_idx,trigger:t_trg,table:u");
 }

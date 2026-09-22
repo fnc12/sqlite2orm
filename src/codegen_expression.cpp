@@ -1342,10 +1342,18 @@ namespace sqlite2orm {
                                  std::move(operandResult.decisionPoints)};
         } else if (auto* caseNode = dynamic_cast<const CaseNode*>(&astNode)) {
             std::vector<DecisionPoint> decisionPoints;
-            std::string returnType = "int";
-            if (!caseNode->branches.empty()) {
-                returnType = this->context.inferTypeFromNode(*caseNode->branches.at(0).result);
+            // `case_<R>` reads every row of the column through the one `R`, while SQLite answers
+            // the CASE with the value of whichever branch matched, so `R` is the widest type over
+            // all the branch results and the ELSE. Taken from the first branch alone it truncated
+            // every wider one silently: `CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END` read
+            // back as -1 through an `int`.
+            std::vector<const AstNode*> resultNodes;
+            resultNodes.reserve(caseNode->branches.size() + 1);
+            for (const auto& branch: caseNode->branches) {
+                resultNodes.push_back(branch.result.get());
             }
+            resultNodes.push_back(caseNode->elseResult.get());
+            const std::string returnType = this->context.inferWidestTypeFromNodes(resultNodes);
             std::string code = "case_<" + returnType + ">(";
             if (caseNode->operand) {
                 auto operandResult = this->coordinator.generateNode(*caseNode->operand);

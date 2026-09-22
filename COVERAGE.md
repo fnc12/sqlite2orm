@@ -118,6 +118,8 @@ Statuses:
 - [x] `CASE WHEN cond THEN result ... ELSE ... END`
 - [x] `CASE expr WHEN value THEN result ... ELSE ... END`
 - [x] CASE without ELSE
+- [~] result type — `case_<R>` reads every row of the column through the one `R`, while SQLite answers a CASE with the value of whichever branch matched, so `R` is the widest type over all the branch results and the ELSE (the operand of a simple CASE is compared against rather than answered with, so it is not one of them): `bool` widens to `int`, `int` to `int64_t` and to the `double` that holds every int32 exactly, and anything to `std::string`, which reads back every storage class. An `int64_t` branch beside a REAL one is the pair with no number over it — a `double` drops every integer past 2^53, an `int64_t` the fractional part of a REAL — so that pair widens to text as well: `CASE WHEN a > 0 THEN a * 1 ELSE 1.5 END` is generated as `case_<std::string>().when(c(&T::a) > 0, then(c(&T::a) * 1)).else_(1.5).end()`, which reads both back as SQLite prints them. A branch whose type the operation knows rather than the literal under it — a concatenation, a CAST, a function call, a JSON arrow — is still read through the `int` the inference answers by default, so `CASE WHEN a THEN a || 'x' ELSE 1 END` comes back as 7 where SQLite answers `7x`
+- [x] a view column of a CASE — the field a `make_view` struct holds for the column is widened over the branches and the ELSE the same way, and holds an `std::optional` as soon as a branch spells a NULL out or the CASE has no ELSE to answer with; a BLOB branch beside a non-BLOB one is left uninferred and warned about, since an `std::string` stops at the first NUL byte a blob holds
 
 ### CAST
 - [x] `CAST(expr AS type-name)`

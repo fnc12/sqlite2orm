@@ -1579,6 +1579,65 @@ TEST_CASE("codegen: CASE without ELSE") {
             "case_<std::string>().when(c(&User::a) == 1, then(\"one\")).end()");
 }
 
+// SQLite types a value rather than an expression: a CASE answers with the value of whichever
+// branch matched, while `case_<R>` reads every row of the column through the one `R`. Taken from
+// the first branch alone, `R` truncated every wider branch silently — `CASE WHEN a < 0 THEN 1 ELSE
+// 9223372036854775807 END` came out `case_<int>` and read that ELSE back as -1. `R` is the widest
+// type over all the branch results and the ELSE instead: `bool` widens to `int`, `int` to
+// `int64_t` and to `double`, and anything to `std::string`.
+TEST_CASE("codegen: CASE result type widens over every branch and the ELSE") {
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END") ==
+            "case_<int64_t>().when(c(&User::a) < 0, then(1)).else_(9223372036854775807).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 3000000000 ELSE 0 END") ==
+            "case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, then(3000000000)).else_(0).end()");
+    // An `int` widens into the `double` that holds every int32 exactly.
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 1.5 END") ==
+            "case_<double>().when(c(&User::a) < 0, then(1)).else_(1.5).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 'x' END") ==
+            "case_<std::string>().when(c(&User::a) < 0, then(1)).else_(\"x\").end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 'x' ELSE 1 END") ==
+            "case_<std::string>().when(c(&User::a) < 0, then(\"x\")).else_(1).end()");
+    // The operand of a simple CASE is compared against, not answered with, so it is not one of
+    // the values `R` has to hold.
+    REQUIRE(generate("CASE a WHEN 1 THEN 2 ELSE 9223372036854775807 END") ==
+            "case_<int64_t>(&User::a).when(1, then(2)).else_(9223372036854775807).end()");
+    // A CASE with no ELSE widens over the branches it does have.
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 3000000000 END") ==
+            "case_<int64_t>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, then(3000000000)).end()");
+    // A CASE standing in a branch of another one answers with a value of its own, so the outer
+    // one widens over everything the nested one can answer with.
+    REQUIRE(generate("CASE WHEN a THEN (CASE WHEN a THEN 9223372036854775807 ELSE 0 END) ELSE 1 END") ==
+            "case_<int64_t>().when(&User::a, then(case_<int64_t>().when(&User::a, "
+            "then(9223372036854775807)).else_(0).end())).else_(1).end()");
+    // Branches that all stay inside an int32 keep the readable `int`.
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 0 END") ==
+            "case_<int>().when(c(&User::a) < 0, then(1)).else_(0).end()");
+}
+
+// An `int64_t` branch beside a REAL one is the one pair with no number over it: a `double` drops
+// every integer past 2^53 — SQLite answers `CASE WHEN a > 0 THEN a * 1 ELSE 1.5 END` over
+// `a = 9007199254740993` with that integer, and a `double` reads it back as 9007199254740992 —
+// while an `int64_t` drops the fractional part of the REAL. `std::string` is the type that keeps
+// both, and it is what the pair widens to. Checked by running the generated selects, in
+// codegen_tests_runtime_values.cpp.
+TEST_CASE("codegen: a CASE over an integer and a REAL branch is read as text") {
+    REQUIRE(generate("CASE WHEN a < 0 THEN 9223372036854775807 ELSE 1.5 END") ==
+            "case_<std::string>().when(c(&User::a) < 0, then(9223372036854775807)).else_(1.5).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1.5 ELSE 9223372036854775807 END") ==
+            "case_<std::string>().when(c(&User::a) < 0, then(1.5)).else_(9223372036854775807).end()");
+    // SQLite computes arithmetic over 64-bit integers, so a branch holding one is an `int64_t`
+    // branch however small the operands are written.
+    REQUIRE(generate("CASE WHEN a > 0 THEN a * 1 ELSE 1.5 END") ==
+            "case_<std::string>().when(c(&User::a) > 0, then(c(&User::a) * 1)).else_(1.5).end()");
+    // The widening is over all the branches, so one REAL among them is enough to reach text.
+    REQUIRE(generate("CASE WHEN a < 0 THEN 1 WHEN a > 0 THEN 3000000000 ELSE 1.5 END") ==
+            "case_<std::string>().when(c(&User::a) < 0, then(1)).when(c(&User::a) > 0, "
+            "then(3000000000)).else_(1.5).end()");
+    // A REAL beside a branch an int32 holds keeps the `double` that carries it exactly.
+    REQUIRE(generate("CASE WHEN a < 0 THEN 2147483647 ELSE 1.5 END") ==
+            "case_<double>().when(c(&User::a) < 0, then(2147483647)).else_(1.5).end()");
+}
+
 TEST_CASE("codegen: blob literal") {
     REQUIRE(generate("X'48656C6C6F'") == "std::vector<char>{'\\x48', '\\x65', '\\x6C', '\\x6C', '\\x6F'}");
     REQUIRE(generate("x'AB'") == "std::vector<char>{'\\xAB'}");

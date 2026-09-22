@@ -1249,3 +1249,30 @@ TEST_CASE("codegen: CREATE TABLE - the table_mapping_style decision point reache
         decisionPointsToJson(result.decisionPoints) ==
         R"JSON([{"category":"table_mapping_style","chosenCode":"struct [[= \"t\"_orm_name]] T {\n    std::optional<int64_t> a;\n};\n\nmake_table<T>()","chosenValue":"reflection","id":1,"options":[{"code":"struct T {\n    std::optional<int64_t> a;\n};\n\nmake_table(\"t\",\n        make_column(\"a\", &T::a))","comments":[],"description":"make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)","hidden":false,"minCppStandard":14,"value":"make_table"},{"code":"struct [[= \"t\"_orm_name]] T {\n    std::optional<int64_t> a;\n};\n\nmake_table<T>()","comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"description":"C++26 reflection: annotated struct + make_table<T>()","hidden":false,"minCppStandard":26,"value":"reflection"}]}])JSON");
 }
+
+// A character above the basic multilingual plane is written the way C++ writes one, with the eight
+// hex digits of its code point; a byte that is no character at all — SQLite takes those in an
+// identifier too — is written as that byte.
+TEST_CASE("codegen: CREATE TABLE - a column name outside the basic multilingual plane") {
+    const auto result = generateFull("CREATE TABLE t (🙂 INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> U0001F642;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"🙂\", &T::U0001F642)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - a column name that is not valid UTF-8 at all") {
+    const std::string sql = "CREATE TABLE t (" + std::string(2, static_cast<char>(0x80)) + " INTEGER)";
+    const auto result = generateFull(sql);
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> x80x80;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"" +
+                               std::string(2, static_cast<char>(0x80)) + "\", &T::x80x80)));");
+}

@@ -29,6 +29,23 @@ namespace sqlite2orm {
     std::string colaliasBuiltinSlot(size_t slotIndex);
 
     std::string stripIdentifierQuotes(std::string_view identifier);
+    /**
+     *  `sqlName` as a C++ identifier: an SQL name reaches the generated code as the name of a
+     *  struct member or of a variable, and SQLite takes names C++ does not. The rewriting works
+     *  character by character rather than byte by byte, so a name written in a script of its own
+     *  keeps as many characters as it was written with — `üü` and `ää` are two characters each,
+     *  not four bytes each, and the two names stay apart instead of both collapsing into the same
+     *  member. An ASCII letter, digit or `_` stands for itself; any other ASCII character becomes
+     *  `_`; and a character C++ has no letter for is spelled the way C++ spells a universal
+     *  character name, `u` and four hex digits (`ü` → `u00FC`) or `U` and eight above the basic
+     *  multilingual plane (`🙂` → `U0001F642`), with a byte that is no character at all — SQLite
+     *  takes those in an identifier too — spelled `x` and its two hex digits.
+     *
+     *  Distinct names can still meet here: `a b` and `a-b` are both `a_b`, and a name spelled
+     *  `u00FC` in ASCII is what `ü` is rewritten to. Whoever names the members of one struct
+     *  reports that through `recordMemberName()` — the rewriting itself cannot, as it sees one
+     *  name at a time.
+     */
     std::string toCppIdentifier(std::string_view sqlName);
     std::string identifierToCppStringLiteral(std::string_view sqlIdentifier);
 

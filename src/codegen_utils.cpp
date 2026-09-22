@@ -89,18 +89,53 @@ namespace sqlite2orm {
         return std::string(identifier);
     }
 
+    namespace {
+
+        /** `value` in upper-case hexadecimal, padded with leading zeros to `digits` of them. */
+        std::string hexDigits(char32_t value, size_t digits) {
+            static constexpr std::string_view kDigits = "0123456789ABCDEF";
+            std::string result(digits, '0');
+            for (size_t index = digits; index > 0; --index) {
+                result[index - 1] = kDigits[value & 0xFu];
+                value >>= 4;
+            }
+            return result;
+        }
+
+    }  // namespace
+
     std::string toCppIdentifier(std::string_view sqlName) {
         auto stripped = stripIdentifierQuotes(sqlName);
         std::string result;
         result.reserve(stripped.size());
-        for (char character: stripped) {
-            if (std::isalnum(static_cast<unsigned char>(character)) || character == '_') {
-                result += character;
-            } else {
+        for (size_t index = 0; index < stripped.size();) {
+            const Utf8Character character = decodeUtf8Character(std::string_view(stripped).substr(index));
+            index += character.length;
+            if (!character.valid) {
+                result += 'x' + hexDigits(character.codePoint, 2);
+                continue;
+            }
+            // The ASCII classification is spelled out rather than asked of <cctype>, whose answer
+            // for the bytes above 0x7F depends on the locale the program happens to run in.
+            const char32_t codePoint = character.codePoint;
+            if ((codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') ||
+                (codePoint >= '0' && codePoint <= '9') || codePoint == '_') {
+                result += static_cast<char>(codePoint);
+            } else if (codePoint < 0x80) {
                 result += '_';
+            } else if (codePoint <= 0xFFFF) {
+                result += 'u' + hexDigits(codePoint, 4);
+            } else {
+                result += 'U' + hexDigits(codePoint, 8);
             }
         }
-        if (!result.empty() && std::isdigit(static_cast<unsigned char>(result[0]))) {
+        if (result.empty()) {
+            // SQLite takes an empty name — `CREATE TABLE t("" INTEGER)` is a table with a column
+            // called nothing — and C++ has no identifier of no characters, so the one character
+            // that carries no letters of its own stands for it.
+            return "_";
+        }
+        if (result[0] >= '0' && result[0] <= '9') {
             result = "_" + result;
         }
         return result;

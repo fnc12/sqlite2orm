@@ -36,11 +36,12 @@ using namespace sqlite2orm;
  *  header for it, generates the code for each query, compiles and links one program around the
  *  lot, runs it, and requires that every row equals the literal written here — and that SQLite,
  *  asked the same query on the same database, answers with that literal too. The program takes
- *  the path a user takes with a database of their own: it calls `sync_schema()` on it before it
- *  reads anything, so the outcome of that call is a literal here too, and the rows under it are
- *  what the schema came through the call with. A query the generator gets wrong today is not left
- *  out: it is pinned as `knownBad` with the card that tracks it, so the corpus stays usable while
- *  the bug waits its turn and goes red the day the bug is fixed and the expectation has to move.
+ *  the path a user takes with a database of their own: it calls `sync_schema()` on it — twice,
+ *  the way a program run twice does — before it reads anything, so the outcome of both calls is a
+ *  literal here too (see `CorpusSync`), and the rows under them are what the schema came through
+ *  the calls with. A query the generator gets wrong today is not left out: it is pinned as
+ *  `knownBad` with the card that tracks it, so the corpus stays usable while the bug waits its
+ *  turn and goes red the day the bug is fixed and the expectation has to move.
  *
  *  These cases are hidden (`[.corpus]`): they compile, link and run a program per schema, and the
  *  corpus grows with every schema worth watching. ctest runs them as `sqlite2orm_tests_corpus`.
@@ -85,6 +86,38 @@ namespace {
     const std::vector<std::string>& rowsFromGeneratedCode(const CorpusQuery& query) {
         return query.knownBad.card.empty() ? query.rows : query.knownBad.rows;
     }
+
+    /**
+     *  What `sync_schema()` answers, `<object name>=<outcome>` per mapped object, when the header
+     *  generated for a schema is run against the very database it was generated from — called
+     *  twice in a row, because what the second call says is the point of the first.
+     *
+     *  A table answers `already_in_sync`: sqlite_orm compares the mapping against
+     *  `PRAGMA table_xinfo` column by column, and a header read back off the database describes
+     *  the database. An index or a trigger is not compared that way. sqlite_orm takes the
+     *  statement SQLite stored for it in the schema table and requires it to equal, character for
+     *  character, the statement sqlite_orm would serialize from the mapping; anything else is
+     *  `dropped_and_recreated`. The corpus schemas are written the way a person writes SQL —
+     *  `[bracketed]` or bare names, a line per trigger step — and sqlite_orm serializes
+     *  `"quoted"` names on a single line, so the first call rewrites every index and trigger over
+     *  a difference of spelling alone:
+     *
+     *      CREATE INDEX user_id_index ON users (id)   ->   CREATE INDEX "user_id_index" ON "users" ("id")
+     *
+     *  Which is why `secondRun` is here and says `already_in_sync` for everything. The first call
+     *  leaves the database holding sqlite_orm's own spelling, and the second one reads that back
+     *  and recognizes it: the rewriting converges rather than repeating. The day the generated
+     *  header describes an index or a trigger as something other than what it read — an index
+     *  that loses its WHERE, a trigger that loses its WHEN — the second call stops saying
+     *  `already_in_sync`, and that is a user whose objects are torn down and rebuilt on every
+     *  single run of their program.
+     */
+    struct CorpusSync {
+        /** The call a user's program makes first, on the database as the corpus SQL wrote it. */
+        std::vector<std::string> firstRun;
+        /** The same call again, on what the first one left behind. */
+        std::vector<std::string> secondRun;
+    };
 
     [[nodiscard]] fs::path makeTempDatabasePath() {
         static thread_local std::mt19937 gen{std::random_device{}()};
@@ -201,6 +234,10 @@ namespace {
      *  The outcomes are printed as a block of their own, ahead of the queries, and the queries
      *  that follow read what survived the sync -- a mapping that differs from the schema SQLite
      *  stores makes sqlite_orm rebuild the table, which takes its rows with it.
+     *
+     *  It calls `sync_schema()` a second time, printing a second block, because a user's program
+     *  calls it on every start. See `CorpusSync` for what the two blocks say and why the second
+     *  one is the one that would catch a header that keeps disagreeing with the database.
      */
     [[nodiscard]] std::string programSource(const std::vector<std::string>& generatedQueries,
                                             const fs::path& databasePath) {
@@ -220,19 +257,23 @@ namespace {
                    "    auto storage = make_sqlite_schema_storage(\""
                 << databasePath.string()
                 << "\");\n"
-                   "    try {\n"
-                   "        std::vector<std::string> rows;\n"
-                   "        for (const auto& outcome: storage.sync_schema()) {\n"
-                   "            rows.push_back(outcome.first + '=' + "
+                   "    const auto printSyncOutcomes = [&storage] {\n"
+                   "        try {\n"
+                   "            std::vector<std::string> rows;\n"
+                   "            for (const auto& outcome: storage.sync_schema()) {\n"
+                   "                rows.push_back(outcome.first + '=' + "
                    "corpus_test_helpers::syncOutcomeText(outcome.second));\n"
+                   "            }\n"
+                   "            std::cout << \"ROWS \" << rows.size() << '\\n';\n"
+                   "            for (const std::string& row: rows) {\n"
+                   "                std::cout << row << '\\n';\n"
+                   "            }\n"
+                   "        } catch (const std::exception& e) {\n"
+                   "            std::cout << \"THREW \" << e.what() << '\\n';\n"
                    "        }\n"
-                   "        std::cout << \"ROWS \" << rows.size() << '\\n';\n"
-                   "        for (const std::string& row: rows) {\n"
-                   "            std::cout << row << '\\n';\n"
-                   "        }\n"
-                   "    } catch (const std::exception& e) {\n"
-                   "        std::cout << \"THREW \" << e.what() << '\\n';\n"
-                   "    }\n";
+                   "    };\n"
+                   "    printSyncOutcomes();\n"
+                   "    printSyncOutcomes();\n";
         for (const std::string& query: generatedQueries) {
             program << "    try {\n        " << query
                     << "\n"
@@ -329,12 +370,10 @@ namespace {
 
     /**
      *  Runs the whole path on one corpus schema and checks every query of it, both against SQLite
-     *  and against the literals of `queries`, with `syncOutcomes` saying what `sync_schema()` is
-     *  to answer for each mapped object of the database the header was generated from.
+     *  and against the literals of `queries`, with `sync` saying what the two `sync_schema()`
+     *  calls are to answer for each mapped object of the database the header was generated from.
      */
-    void checkCorpusSchema(std::string_view name,
-                           const std::vector<std::string>& syncOutcomes,
-                           const std::vector<CorpusQuery>& queries) {
+    void checkCorpusSchema(std::string_view name, const CorpusSync& sync, const std::vector<CorpusQuery>& queries) {
         const CorpusDatabase database{name};
         const std::string header = generatedHeader(database.path);
 
@@ -355,11 +394,13 @@ namespace {
         }
 
         const std::vector<std::vector<std::string>> printed =
-            runProgram(header, programSource(generated, database.path), generated.size() + 1);
+            runProgram(header, programSource(generated, database.path), generated.size() + 2);
 
-        // The sync block comes first, so every query below it was answered by a database that had
-        // already been through `sync_schema()`.
-        CHECK(printed.front() == syncOutcomes);
+        // The two sync blocks come first, so every query below them was answered by a database
+        // that had already been through `sync_schema()` -- twice, and the second block is where
+        // a header that never stops disagreeing with the database would show up.
+        CHECK(printed[0] == sync.firstRun);
+        CHECK(printed[1] == sync.secondRun);
 
         for (std::size_t index = 0; index < compiled.size(); ++index) {
             const CorpusQuery& query = *compiled[index];
@@ -369,7 +410,7 @@ namespace {
                 INFO("this query is pinned as known-bad; if it now matches SQLite, "
                      << query.knownBad.card << " is fixed and the expectation moves to `rows`");
             }
-            CHECK(printed[index + 1] == rowsFromGeneratedCode(query));
+            CHECK(printed[index + 2] == rowsFromGeneratedCode(query));
         }
 
         for (const CorpusQuery& query: queries) {
@@ -390,28 +431,56 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
     checkCorpusSchema(
         "chinook",
         {
-            "Album=already_in_sync",
-            "Artist=already_in_sync",
-            "Customer=already_in_sync",
-            "Employee=already_in_sync",
-            "Genre=already_in_sync",
-            "IFK_AlbumArtistId=dropped_and_recreated",
-            "IFK_CustomerSupportRepId=dropped_and_recreated",
-            "IFK_EmployeeReportsTo=dropped_and_recreated",
-            "IFK_InvoiceCustomerId=dropped_and_recreated",
-            "IFK_InvoiceLineInvoiceId=dropped_and_recreated",
-            "IFK_InvoiceLineTrackId=dropped_and_recreated",
-            "IFK_PlaylistTrackPlaylistId=dropped_and_recreated",
-            "IFK_PlaylistTrackTrackId=dropped_and_recreated",
-            "IFK_TrackAlbumId=dropped_and_recreated",
-            "IFK_TrackGenreId=dropped_and_recreated",
-            "IFK_TrackMediaTypeId=dropped_and_recreated",
-            "Invoice=already_in_sync",
-            "InvoiceLine=already_in_sync",
-            "MediaType=already_in_sync",
-            "Playlist=already_in_sync",
-            "PlaylistTrack=already_in_sync",
-            "Track=already_in_sync",
+            .firstRun =
+                {
+                    "Album=already_in_sync",
+                    "Artist=already_in_sync",
+                    "Customer=already_in_sync",
+                    "Employee=already_in_sync",
+                    "Genre=already_in_sync",
+                    "IFK_AlbumArtistId=dropped_and_recreated",
+                    "IFK_CustomerSupportRepId=dropped_and_recreated",
+                    "IFK_EmployeeReportsTo=dropped_and_recreated",
+                    "IFK_InvoiceCustomerId=dropped_and_recreated",
+                    "IFK_InvoiceLineInvoiceId=dropped_and_recreated",
+                    "IFK_InvoiceLineTrackId=dropped_and_recreated",
+                    "IFK_PlaylistTrackPlaylistId=dropped_and_recreated",
+                    "IFK_PlaylistTrackTrackId=dropped_and_recreated",
+                    "IFK_TrackAlbumId=dropped_and_recreated",
+                    "IFK_TrackGenreId=dropped_and_recreated",
+                    "IFK_TrackMediaTypeId=dropped_and_recreated",
+                    "Invoice=already_in_sync",
+                    "InvoiceLine=already_in_sync",
+                    "MediaType=already_in_sync",
+                    "Playlist=already_in_sync",
+                    "PlaylistTrack=already_in_sync",
+                    "Track=already_in_sync",
+                },
+            .secondRun =
+                {
+                    "Album=already_in_sync",
+                    "Artist=already_in_sync",
+                    "Customer=already_in_sync",
+                    "Employee=already_in_sync",
+                    "Genre=already_in_sync",
+                    "IFK_AlbumArtistId=already_in_sync",
+                    "IFK_CustomerSupportRepId=already_in_sync",
+                    "IFK_EmployeeReportsTo=already_in_sync",
+                    "IFK_InvoiceCustomerId=already_in_sync",
+                    "IFK_InvoiceLineInvoiceId=already_in_sync",
+                    "IFK_InvoiceLineTrackId=already_in_sync",
+                    "IFK_PlaylistTrackPlaylistId=already_in_sync",
+                    "IFK_PlaylistTrackTrackId=already_in_sync",
+                    "IFK_TrackAlbumId=already_in_sync",
+                    "IFK_TrackGenreId=already_in_sync",
+                    "IFK_TrackMediaTypeId=already_in_sync",
+                    "Invoice=already_in_sync",
+                    "InvoiceLine=already_in_sync",
+                    "MediaType=already_in_sync",
+                    "Playlist=already_in_sync",
+                    "PlaylistTrack=already_in_sync",
+                    "Track=already_in_sync",
+                },
         },
         {
             {.sql = "SELECT COUNT(*) FROM Track;", .rows = {"7"}},
@@ -506,19 +575,38 @@ TEST_CASE("corpus: Northwind", "[.corpus]") {
     checkCorpusSchema(
         "northwind",
         {
-            "Categories=already_in_sync",
-            "CustomerCustomerDemo=already_in_sync",
-            "CustomerDemographics=already_in_sync",
-            "Customers=already_in_sync",
-            "EmployeeTerritories=already_in_sync",
-            "Employees=already_in_sync",
-            "Order Details=already_in_sync",
-            "Orders=already_in_sync",
-            "Products=already_in_sync",
-            "Regions=already_in_sync",
-            "Shippers=already_in_sync",
-            "Suppliers=already_in_sync",
-            "Territories=already_in_sync",
+            .firstRun =
+                {
+                    "Categories=already_in_sync",
+                    "CustomerCustomerDemo=already_in_sync",
+                    "CustomerDemographics=already_in_sync",
+                    "Customers=already_in_sync",
+                    "EmployeeTerritories=already_in_sync",
+                    "Employees=already_in_sync",
+                    "Order Details=already_in_sync",
+                    "Orders=already_in_sync",
+                    "Products=already_in_sync",
+                    "Regions=already_in_sync",
+                    "Shippers=already_in_sync",
+                    "Suppliers=already_in_sync",
+                    "Territories=already_in_sync",
+                },
+            .secondRun =
+                {
+                    "Categories=already_in_sync",
+                    "CustomerCustomerDemo=already_in_sync",
+                    "CustomerDemographics=already_in_sync",
+                    "Customers=already_in_sync",
+                    "EmployeeTerritories=already_in_sync",
+                    "Employees=already_in_sync",
+                    "Order Details=already_in_sync",
+                    "Orders=already_in_sync",
+                    "Products=already_in_sync",
+                    "Regions=already_in_sync",
+                    "Shippers=already_in_sync",
+                    "Suppliers=already_in_sync",
+                    "Territories=already_in_sync",
+                },
         },
         {
             {.sql = "SELECT COUNT(*) FROM Products;", .rows = {"5"}},
@@ -557,10 +645,20 @@ TEST_CASE("corpus: sqlite_orm prepared-statement tests", "[.corpus]") {
     checkCorpusSchema(
         "sqlite_orm_prepared",
         {
-            "user_id_index=dropped_and_recreated",
-            "users=already_in_sync",
-            "users_and_visits=already_in_sync",
-            "visits=already_in_sync",
+            .firstRun =
+                {
+                    "user_id_index=dropped_and_recreated",
+                    "users=already_in_sync",
+                    "users_and_visits=already_in_sync",
+                    "visits=already_in_sync",
+                },
+            .secondRun =
+                {
+                    "user_id_index=already_in_sync",
+                    "users=already_in_sync",
+                    "users_and_visits=already_in_sync",
+                    "visits=already_in_sync",
+                },
         },
         {
             {.sql = "SELECT name FROM users ORDER BY id;", .rows = {"Team BS", "Shy'm", "Maître Gims"}},
@@ -581,12 +679,24 @@ TEST_CASE("corpus: sqlite_orm prepared-statement tests", "[.corpus]") {
 TEST_CASE("corpus: sqlite_orm trigger tests", "[.corpus]") {
     checkCorpusSchema("sqlite_orm_triggers",
                       {
-                          "test_delete=already_in_sync",
-                          "test_insert=already_in_sync",
-                          "test_update=already_in_sync",
-                          "trigger_delete=dropped_and_recreated",
-                          "trigger_insert=dropped_and_recreated",
-                          "trigger_update=dropped_and_recreated",
+                          .firstRun =
+                              {
+                                  "test_delete=already_in_sync",
+                                  "test_insert=already_in_sync",
+                                  "test_update=already_in_sync",
+                                  "trigger_delete=dropped_and_recreated",
+                                  "trigger_insert=dropped_and_recreated",
+                                  "trigger_update=dropped_and_recreated",
+                              },
+                          .secondRun =
+                              {
+                                  "test_delete=already_in_sync",
+                                  "test_insert=already_in_sync",
+                                  "test_update=already_in_sync",
+                                  "trigger_delete=already_in_sync",
+                                  "trigger_insert=already_in_sync",
+                                  "trigger_update=already_in_sync",
+                              },
                       },
                       {
                           {.sql = "SELECT sql_id, sql_text, sql_x, sql_y FROM test_insert ORDER BY sql_id;",

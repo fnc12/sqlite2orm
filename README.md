@@ -137,6 +137,9 @@ program starts where a user starts with a database of their own: it calls `sync_
 database before it reads anything, and the outcome per table, index and trigger is a literal in the
 test too — a header that disagrees with the schema SQLite stores makes sqlite_orm rebuild the table
 and take its rows with it, and the queries under the sync are what the schema came through it with.
+It calls `sync_schema()` a second time as well, and that block has to say `already_in_sync` for
+everything: a header a database never converges with is one that tears the user's indexes and
+triggers down and rebuilds them on every run of their program.
 A query the generator gets wrong today is pinned as `knownBad` with the card that tracks it, so the
 corpus stays usable while the bug waits and goes red the day it is fixed.
 

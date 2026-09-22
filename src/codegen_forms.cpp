@@ -61,7 +61,7 @@ namespace sqlite2orm {
             {"ceil", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"ceiling", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"changes", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
-            {"char", SqliteOrmFormKind::notMapped, kAcceptsNothing, {0, kVariadicArity}, "char_"},
+            {"char", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}, "char_"},
             {"coalesce", SqliteOrmFormKind::builtinScalar, {2, kVariadicArity}, {2, kVariadicArity}},
             {"cos", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"cosh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
@@ -120,7 +120,7 @@ namespace sqlite2orm {
             {"match", SqliteOrmFormKind::matchFunction, {2, 2}, {2, 2}},
             {"max", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, kVariadicArity}},
             {"min", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, kVariadicArity}},
-            {"mod", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
+            {"mod", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, "mod_f"},
             {"nth_value", SqliteOrmFormKind::windowFunction, {2, 2}, {2, 2}},
             {"ntile", SqliteOrmFormKind::windowFunction, {1, 1}, {1, 1}},
             {"nullif", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
@@ -154,7 +154,7 @@ namespace sqlite2orm {
             {"total_changes", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
             {"trim", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
             {"trunc", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"typeof", SqliteOrmFormKind::notMapped, kAcceptsNothing, {1, 1}, "typeof_"},
+            {"typeof", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, "typeof_"},
             {"unicode", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"unlikely", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
             {"upper", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
@@ -301,20 +301,17 @@ namespace sqlite2orm {
         }
 
         /**
-         *  Why a name sqlite_orm spells no call of cannot be generated. A name the library merely
-         *  spells differently says so — codegen writes the SQL name, which in C++ is a cast
-         *  (`char(65)`) or a compiler extension (`typeof(x)`) rather than a call of the form.
-         *  SQLite's own verdict follows the registry: a function it does not have either is the
-         *  `no such function` it echoes the name as written into.
+         *  Why a name sqlite_orm spells no call of cannot be generated. A name the library spells
+         *  otherwise is not one of them — `sqliteOrmCallSpelling` writes CHAR as `char_`, TYPEOF
+         *  as `typeof_` and MOD as `mod_f`, the calls the library does declare — so what is left
+         *  here is a name it has no form for under any spelling. SQLite's own verdict follows the registry:
+         *  a function it does not have either is the `no such function` it echoes the name as
+         *  written into.
          */
         std::string notMappedRefusal(const SqliteOrmFunctionForm& form, const FunctionCallNode& functionCall) {
             const std::string name(functionCall.name);
-            std::string message = "sqlite_orm declares no " + name + "()";
-            if (!form.ormSpelling.empty()) {
-                message +=
-                    ": the call it spells is " + std::string(form.ormSpelling) + "(), which codegen does not generate";
-            }
-            message += ", so there is no form to generate the call as. ";
+            const std::string message =
+                "sqlite_orm declares no " + name + "(), so there is no form to generate the call as. ";
             if (form.sqliteArity == kAcceptsNothing) {
                 return message +
                        "SQLite has no such function either — it refuses the same call with no such "
@@ -334,6 +331,14 @@ namespace sqlite2orm {
                                             return form.sqlName == lowerFunctionName;
                                         });
         return found == kFunctionForms.end() ? nullptr : &*found;
+    }
+
+    std::string_view sqliteOrmCallSpelling(std::string_view lowerFunctionName) {
+        const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(lowerFunctionName);
+        if (form == nullptr || form->ormSpelling.empty()) {
+            return lowerFunctionName;
+        }
+        return form->ormSpelling;
     }
 
     std::optional<SqliteOrmFunctionForm> resolveFunctionCallForm(std::string_view lowerFunctionName,

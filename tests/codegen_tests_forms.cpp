@@ -223,6 +223,78 @@ namespace {
         return rows;
     }
 
+    /** The SQL text each `…_string` type in the headers serializes a call to, lowercased. */
+    std::map<std::string, std::string> serializedSqlNames(const std::string& headers) {
+        std::map<std::string, std::string> names;
+        const std::regex declaration{"struct ([A-Za-z0-9_]+_string) \\{[^}]*return \"([^\"]*)\";"};
+        for (auto match = std::sregex_iterator{headers.begin(), headers.end(), declaration};
+             match != std::sregex_iterator{};
+             ++match) {
+            std::string sqlName = (*match)[2].str();
+            std::transform(sqlName.begin(), sqlName.end(), sqlName.begin(), [](unsigned char letter) {
+                return static_cast<char>(std::tolower(letter));
+            });
+            names[(*match)[1].str()] = sqlName;
+        }
+        return names;
+    }
+
+    /**
+     *  `sql -> cppName` for every built-in factory in the headers whose C++ name is not the SQL it
+     *  serializes to. The factories read
+     *  `builtin_function_t<Result, internal::NAME_string, …> cppName(…)`, an aggregate the same
+     *  with `builtin_aggregate_function_t`, and the `…_string` they name is what the call comes out
+     *  as in SQL — so the two halves of the pair are read off one declaration and compared.
+     */
+    std::map<std::string, std::string> factoriesSpelledOtherwise(const std::string& headers, size_t& factories) {
+        const std::map<std::string, std::string> sqlNames = serializedSqlNames(headers);
+        std::map<std::string, std::string> spelledOtherwise;
+        std::vector<std::string> pairs;
+        const std::regex factory{"builtin_(?:aggregate_)?function_t<[^;]*?internal::([A-Za-z0-9_]+_string)[^;]*?>"
+                                 "\\s*([A-Za-z0-9_]+)\\("};
+        for (auto match = std::sregex_iterator{headers.begin(), headers.end(), factory};
+             match != std::sregex_iterator{};
+             ++match) {
+            const auto sqlName = sqlNames.find((*match)[1].str());
+            REQUIRE(sqlName != sqlNames.end());
+            const std::string cppName = (*match)[2].str();
+            pairs.push_back(sqlName->second + " -> " + cppName);
+            std::string lowered = cppName;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char letter) {
+                return static_cast<char>(std::tolower(letter));
+            });
+            if (lowered != sqlName->second) {
+                spelledOtherwise[sqlName->second] = cppName;
+            }
+        }
+        std::sort(pairs.begin(), pairs.end());
+        pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+        factories = pairs.size();
+        return spelledOtherwise;
+    }
+
+    /** `sql -> cppName` for every registry row carrying a sqlite_orm spelling of its own. */
+    std::map<std::string, std::string> registrySpellings(const std::string& registry) {
+        std::map<std::string, std::string> spellings;
+        const std::string body = initializerBodyAfter(registry, "kFunctionForms");
+        const std::regex row{"\\{\"([a-z0-9_]+)\", SqliteOrmFormKind::\\w+, (?:kAcceptsNothing|\\{[^}]*\\}), "
+                             "(?:kAcceptsNothing|\\{[^}]*\\}), \"([a-z0-9_]+)\"\\}"};
+        for (auto match = std::sregex_iterator{body.begin(), body.end(), row}; match != std::sregex_iterator{};
+             ++match) {
+            spellings[(*match)[1].str()] = (*match)[2].str();
+        }
+        return spellings;
+    }
+
+    /** A `sql -> cppName` map as the lines a disagreement is spelled out in. */
+    std::vector<std::string> spellingLines(const std::map<std::string, std::string>& spellings) {
+        std::vector<std::string> lines;
+        for (const auto& [sqlName, cppName]: spellings) {
+            lines.push_back(sqlName + " -> " + cppName);
+        }
+        return lines;
+    }
+
     /**
      *  The sqlite_orm types declaring an `over()`, read off the headers the build fetches: the
      *  member is declared inside the type it belongs to, so the struct or class opened last before
@@ -312,7 +384,9 @@ TEST_CASE("codegen: the form registry covers every built-in function name the va
 //
 // The disagreements below are the ones that belong: a row that deliberately generates no call
 // although the library declares one, and the two names whose second form lives in
-// `resolveFunctionCallForm` instead of in the row. `json_insert`, `json_replace`, `json_set` and
+// `resolveFunctionCallForm` instead of in the row. CHAR and TYPEOF are not among them — the
+// headers declare them under the C++ names `char_` and `typeof_`, and a row's counts have to
+// match the form whatever the call is spelled as. `json_insert`, `json_replace`, `json_set` and
 // `json_object` are NOT among them — they take their arguments in pairs, so what the headers
 // declare is every other count, which a range says as the whole stretch on both sides.
 TEST_CASE("codegen: the registry's argument counts are the ones the sqlite_orm headers declare") {
@@ -344,10 +418,6 @@ TEST_CASE("codegen: the registry's argument counts are the ones the sqlite_orm h
     REQUIRE(declared.size() == 113);
     REQUIRE(compared == 90);
     REQUIRE(disagreements == std::vector<std::string>{
-                                 // CHAR and TYPEOF are spelled `char_` and `typeof_`, names C++ already means
-                                 // something by; codegen writes the SQL name, which is a cast and a compiler
-                                 // extension rather than a call, so the row generates nothing under either name.
-                                 "char: the registry takes no call at all, the headers declare 0 or more",
                                  // An FTS5 auxiliary function takes the table's hidden column first, and codegen
                                  // writes no such column, so no count of ordinary arguments resolves to the form.
                                  "highlight: the registry takes no call at all, the headers declare 4",
@@ -356,8 +426,38 @@ TEST_CASE("codegen: the registry's argument counts are the ones the sqlite_orm h
                                  // picks between them, which is the one place that split is allowed to live.
                                  "max: the registry takes 1, the headers declare 1 or more",
                                  "min: the registry takes 1, the headers declare 1 or more",
-                                 "typeof: the registry takes no call at all, the headers declare 1",
                              });
+}
+
+// The spelling column is held to the headers the same way the argument counts are. Codegen wrote
+// the SQL name for every call, which for three of them is not a call of the form at all: `typeof`
+// is a compiler extension in C++, `char` a type, and `mod` is sqlite_orm's `%` operator rather
+// than its MOD function. Each declaration names both halves at once — the C++ factory and the
+// `…_string` whose `serialize()` is the SQL it comes out as — so what the library spells otherwise
+// is read out of them and compared with what the registry says it spells otherwise.
+TEST_CASE("codegen: the registry spells a call the way the sqlite_orm headers declare it") {
+    size_t factories = 0;
+    const std::map<std::string, std::string> spelledOtherwise =
+        factoriesSpelledOtherwise(readSourceFile(SQLITE2ORM_TEST_SQLITE_ORM_INCLUDE "/sqlite_orm/sqlite_orm.h"),
+                                  factories);
+
+    // A parse that found nothing would agree with anything: the headers declare 112 built-in
+    // factories, and these four are every one whose C++ name is not the SQL it serializes.
+    REQUIRE(factories == 112);
+    REQUIRE(spellingLines(spelledOtherwise) ==
+            std::vector<std::string>{"char -> char_", "if -> if_", "mod -> mod_f", "typeof -> typeof_"});
+
+    // IF is the one of them codegen never writes. SQLite does have the function — it takes `if()`
+    // as a spelling of `iif()`, and sqlite3 3.51.0 answers `SELECT if(1, 2, 3)` with 2 — but IF is
+    // a keyword to the tokenizer, so `SELECT if(a, 1, 2)` stops at `unexpected token: if` and no
+    // call of the name ever reaches the registry. Every other one is a row, and the row spells it
+    // the way the headers do.
+    const std::map<std::string, std::string> rows = registrySpellings(readSourceFile("src/codegen_forms.cpp"));
+    REQUIRE(spellingLines(rows) == std::vector<std::string>{"char -> char_", "mod -> mod_f", "typeof -> typeof_"});
+    for (const auto& [sqlName, cppName]: rows) {
+        INFO("the registry spells " << sqlName << " " << cppName);
+        REQUIRE(spelledOtherwise.at(sqlName) == cppName);
+    }
 }
 
 // A built-in call sqlite_orm has no overload for was the widest hole of all: nothing warned, the
@@ -524,34 +624,56 @@ TEST_CASE("codegen: an arity sqlite_orm lacks and SQLite accepts says so") {
                 {kStatementNotGenerated}});
 }
 
+// The three names sqlite_orm spells otherwise, which are every one of them: the headers declare
+// 112 built-in factories, and `char_`, `typeof_`, `mod_f` and `if_` are the only ones whose C++
+// name is not the SQL they serialize — `IF` being no SQLite function, three of the four reach
+// codegen. Codegen used to write the SQL name, which is a compiler extension for `typeof(x)` and
+// a cast for `char(65)` rather than a call of the form, so the statement went out unbuildable
+// until the gate started holding it back — and holding it back left a query sqlite_orm can
+// express with no code at all. The spelling the library declares is the registry's to know, and
+// it is what the call comes out as. The C++ names come from the headers the build fetches:
+// `typeof_` is declared over one argument and `char_` over any number, so a call written with
+// another count is refused on its arity like every other built-in.
+TEST_CASE("codegen: a name sqlite_orm spells otherwise is generated under the library's spelling") {
+    REQUIRE(generate("SELECT typeof(id) FROM users;") == "auto rows = storage.select(typeof_(&Users::id));");
+    // The spelling follows the name rather than the case it is written in, the way every other
+    // built-in is generated.
+    REQUIRE(generate("SELECT TYPEOF(id) FROM users;") == "auto rows = storage.select(typeof_(&Users::id));");
+    REQUIRE(generate("SELECT char(65);") == "auto rows = storage.select(char_(65));");
+    REQUIRE(generate("SELECT char(65, id) FROM users;") == "auto rows = storage.select(char_(65, &Users::id));");
+    // CHAR takes any number of arguments in the library and in SQLite alike — `SELECT char()` is
+    // the empty text on sqlite3 3.51.0 — so the argument-less call is generated too.
+    REQUIRE(generate("SELECT char();") == "auto rows = storage.select(char_());");
+    REQUIRE(generate("SELECT typeof(name) FROM users WHERE typeof(id) = 'integer';") ==
+            "auto rows = storage.select(typeof_(&Users::name), where(typeof_(&Users::id) == \"integer\"));");
+
+    // MOD is the third, and the one that was generating a call all along — the wrong one.
+    // sqlite_orm's `mod()` is the `%` operator (`mod_t` serializes `%`), while the MOD function is
+    // `mod_f` (`mod_string` serializes `MOD`), and the two are different functions: on sqlite3
+    // 3.51.0 built with SQLITE_ENABLE_MATH_FUNCTIONS, `SELECT mod(7.5, 2)` is 1.5 and
+    // `SELECT 7.5 % 2` is 1.0, `%` truncating its operands to integers where MOD does not.
+    REQUIRE(generate("SELECT mod(size, 2) FROM users;") ==
+            "auto rows = storage.select(as_optional(mod_f(&Users::size, 2)));");
+
+    // And the arity gate keeps answering for the name: sqlite3 3.51.0 refuses this very call with
+    // `wrong number of arguments to function typeof()`.
+    const auto tooMany = generateFull("SELECT typeof(id, 1) FROM users;");
+    REQUIRE(tooMany.code.empty());
+    REQUIRE(tooMany.warnings ==
+            std::vector<CodegenWarning>{
+                {"typeof() takes 1 argument in sqlite_orm, and the call is written with 2 arguments: the library "
+                 "declares no overload for that many, so there is no form to generate the call as. SQLite refuses "
+                 "the same call — wrong number of arguments to function typeof() — but stores a trigger or a view "
+                 "holding it",
+                 SourceLocation{1, 8},
+                 13},
+                {kStatementNotGenerated}});
+}
+
 // A name the library has no call of at all is the quietest of the lot, because what it generates
-// is not even a call: `typeof(x)` is a compiler extension in C++ and `char(65)` a cast, so the one
-// refuses to build and the other builds into a `char` nobody asked for. The registry carries the
-// spelling sqlite_orm does declare, and the message names it — `typeof_` and `char_` are the calls
-// a future card teaches codegen to write.
+// is not even a call. The two names it merely spells otherwise are generated under that spelling;
+// what is left here is a name it has no form for under any spelling.
 TEST_CASE("codegen: a name sqlite_orm spells no call of is not generated") {
-    const auto spelledOtherwise = generateFull("SELECT typeof(id) FROM users;");
-    REQUIRE(spelledOtherwise.code.empty());
-    REQUIRE(spelledOtherwise.warnings ==
-            std::vector<CodegenWarning>{
-                {"sqlite_orm declares no typeof(): the call it spells is typeof_(), which codegen does not "
-                 "generate, so there is no form to generate the call as. SQLite takes the same call, so the SQL is "
-                 "well formed and the generated code alone would not be",
-                 SourceLocation{1, 8},
-                 10},
-                {kStatementNotGenerated}});
-
-    const auto castingName = generateFull("SELECT char(65);");
-    REQUIRE(castingName.code.empty());
-    REQUIRE(castingName.warnings ==
-            std::vector<CodegenWarning>{
-                {"sqlite_orm declares no char(): the call it spells is char_(), which codegen does not generate, "
-                 "so there is no form to generate the call as. SQLite takes the same call, so the SQL is well "
-                 "formed and the generated code alone would not be",
-                 SourceLocation{1, 8},
-                 8},
-                {kStatementNotGenerated}});
-
     // A table-valued function is no scalar call in either place: sqlite3 3.51.0 answers `no such
     // function: json_each` for this very statement.
     const auto noFunctionAtAll = generateFull("SELECT json_each('[1]');");

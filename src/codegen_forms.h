@@ -90,10 +90,12 @@ namespace sqlite2orm {
         ArityRange ormArity;
         ArityRange sqliteArity;
         /**
-         *  What sqlite_orm calls this function when it calls it something else — `char_` for
-         *  CHAR, `typeof_` for TYPEOF, both names C++ already means something by. Empty when the
-         *  library spells the SQL name itself, and for a `notMapped` name it has no form for
-         *  under any spelling.
+         *  What sqlite_orm calls this function when it calls it something else, and what codegen
+         *  writes the call as. Three names in the library are spelled otherwise, and the headers
+         *  name all three: `char_` for CHAR and `typeof_` for TYPEOF, names C++ already means
+         *  something by, and `mod_f` for MOD, because `mod()` in sqlite_orm is the `%` operator
+         *  and not the MOD function. Empty when the library spells the SQL name itself, and for a
+         *  `notMapped` name it has no form for under any spelling.
          */
         std::string_view ormSpelling;
     };
@@ -104,6 +106,18 @@ namespace sqlite2orm {
      *  whatever it is written with.
      */
     const SqliteOrmFunctionForm* sqliteOrmFunctionForm(std::string_view lowerFunctionName);
+
+    /**
+     *  What codegen writes a call of `lowerFunctionName` as: the sqlite_orm spelling where the
+     *  library spells the name otherwise, and the SQL name itself everywhere else — including for
+     *  a name the registry does not carry, which is generated as a `func<…>()` call over a stub
+     *  named after the SQL. The call the SQL writes and the call C++ has to read are not always
+     *  the same text: `typeof(x)` is a compiler extension in C++ and `char(65)` a cast, so a
+     *  generated `typeof(&T::x)` builds nowhere and a generated `char(65)` builds into a `char`
+     *  nobody asked for, while a generated `mod(a, b)` builds into the `%` operator, which is a
+     *  different function.
+     */
+    std::string_view sqliteOrmCallSpelling(std::string_view lowerFunctionName);
 
     /**
      *  The form a written call resolves to: the single place where a call is matched against the

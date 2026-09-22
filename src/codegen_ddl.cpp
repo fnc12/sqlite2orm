@@ -727,14 +727,26 @@ namespace sqlite2orm {
                 if (lower == "randomblob" || lower == "zeroblob") {
                     return InferredFieldType{"std::vector<char>"};
                 }
+                // A call generated with its result type spelled out — COALESCE, IFNULL, NULLIF or
+                // IIF over arguments with no common C++ type — is read back as exactly that type,
+                // so the field follows it rather than the argument the call is otherwise typed
+                // as. The two answers live in one `make_view<V>(select(…))` and cannot be allowed
+                // to disagree, and the same function answers both.
+                auto spelledOr = [&](std::optional<InferredFieldType> deduced) -> std::optional<InferredFieldType> {
+                    const std::string spelledType = functionCallSpelledResultType(functionCall, this->context);
+                    if (spelledType.empty()) {
+                        return deduced;
+                    }
+                    return InferredFieldType{spelledType, deduced && deduced->nullable};
+                };
                 if (lower == "abs" || lower == "min" || lower == "max" || lower == "coalesce" || lower == "ifnull" ||
                     lower == "nullif" || lower == "lag" || lower == "lead" || lower == "first_value" ||
                     lower == "last_value" || lower == "nth_value") {
-                    return firstArgument();
+                    return spelledOr(firstArgument());
                 }
                 if (lower == "iif") {
                     if (functionCall.arguments.size() >= 2 && functionCall.arguments.at(1)) {
-                        return this->infer(*functionCall.arguments.at(1));
+                        return spelledOr(this->infer(*functionCall.arguments.at(1)));
                     }
                     return std::nullopt;
                 }

@@ -2040,8 +2040,12 @@ namespace sqlite2orm {
         std::optional<CommonArgumentTypeClash> commonArgumentTypeClash(const FunctionCallNode& functionCall,
                                                                        const CodeGeneratorContext& context) {
             if (functionCall.star || functionCall.over || functionCall.filterWhere) {
-                // A star names no arguments to reduce, and a window call is generated as an
-                // aggregate over the same arguments — neither reaches the wrapper this is about.
+                // A star names no arguments to reduce at all, and a call written with an OVER or a
+                // FILTER comes out wrapped in an `over_t` or a `filtered_aggregate_function_t`
+                // rather than as the plain call this types. SQLite refuses both over these four
+                // names anyway: `coalesce(1, 2) OVER ()` is `coalesce() may not be used as a
+                // window function` and `coalesce(1, 2) FILTER (WHERE 1)` is `FILTER may not be
+                // used with non-aggregate coalesce()` (3.51).
                 return std::nullopt;
             }
             const std::string lowerName = toLowerAscii(functionCall.name);
@@ -2060,11 +2064,14 @@ namespace sqlite2orm {
                 }
                 types.push_back(std::move(*type));
             }
+            // The first pair without a common type is the one the report names; a COALESCE can
+            // be written with more arguments than two, and every pair of them has to reduce.
             std::optional<CommonArgumentTypeClash> clash;
-            for (size_t first = 0; first < types.size(); ++first) {
+            for (size_t first = 0; first < types.size() && !clash; ++first) {
                 for (size_t second = first + 1; second < types.size(); ++second) {
-                    if (!clash && !argumentTypesHaveACommonType(types[first], types[second])) {
+                    if (!argumentTypesHaveACommonType(types[first], types[second])) {
                         clash = CommonArgumentTypeClash{types[first], types[second]};
+                        break;
                     }
                 }
             }
@@ -2087,17 +2094,27 @@ namespace sqlite2orm {
 
     }  // namespace
 
-    std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
-                                               const CodeGeneratorContext& context) {
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const CodeGeneratorContext& context) {
         if (const std::string_view byName = functionCallResultTypeArgument(toLowerAscii(functionCall.name));
             !byName.empty()) {
-            return std::string(byName);
+            // `"<std::string>"` without the brackets the caller of the other form wants.
+            return std::string(byName.substr(1, byName.size() - 2));
         }
         const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(functionCall, context);
         if (!clash) {
             return {};
         }
-        return "<" + std::string(clashResultType(*clash)) + ">";
+        return std::string(clashResultType(*clash));
+    }
+
+    std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
+                                               const CodeGeneratorContext& context) {
+        const std::string spelledType = functionCallSpelledResultType(functionCall, context);
+        if (spelledType.empty()) {
+            return {};
+        }
+        return "<" + spelledType + ">";
     }
 
     bool generatesNegatedCondition(const AstNode& astNode) {

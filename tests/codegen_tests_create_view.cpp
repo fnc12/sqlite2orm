@@ -281,6 +281,29 @@ TEST_CASE("codegen: targeting C++26 drops the reflection-not-supported view warn
 // query of its own; `SELECT * FROM v` is then `Error: in prepare, hex literal too big`. C++ has no
 // literal for the value, so the view cannot be generated — but the statement is not an error, and
 // the rest of a schema holding it still generates. Checked against sqlite3 3.51.
+// A view column computed with a call whose result type the generated code spells out is read back
+// as that very type, so the field the view struct declares for it has to be that type too: the
+// select and the struct stand in one `make_view<V>(select(…))`, and the two answers come out of
+// the same function. A call the generated code spells no type for keeps the field its first
+// argument gives it, which is where every other such call stays.
+TEST_CASE("codegen: a view column over a call with a spelled result type takes that type") {
+    const auto result = generateLastOfBatch(
+        "CREATE TABLE t(i INTEGER, r REAL, b TEXT, bl BLOB);\n"
+        "CREATE VIEW v AS SELECT coalesce(i, r) AS c1, coalesce(b, 1) AS c2, coalesce(bl, i) AS c3, "
+        "coalesce(i, r + 1) AS c4 FROM t;");
+    REQUIRE(result.code ==
+            "struct [[= \"v\"_orm_name]] V {\n"
+            "    std::optional<std::string> c1;\n"
+            "    std::optional<std::string> c2;\n"
+            "    std::optional<std::vector<char>> c3;\n"
+            "    std::optional<int64_t> c4;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_view<V>(select(columns(coalesce<std::string>(&T::i, &T::r), coalesce<std::string>(&T::b, 1), "
+            "coalesce<std::vector<char>>(&T::bl, &T::i), coalesce(&T::i, c(&T::r) + 1)))));");
+}
+
 TEST_CASE("codegen: CREATE VIEW - a hex literal too big leaves the view ungenerated") {
     auto result = generateFull("CREATE VIEW v AS SELECT 0x10000000000000000;");
     REQUIRE(result.code == "/* CREATE VIEW v — not supported for sqlite_orm */");

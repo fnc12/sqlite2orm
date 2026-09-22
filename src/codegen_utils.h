@@ -141,6 +141,15 @@ namespace sqlite2orm {
     std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
                                                const CodeGeneratorContext& context);
 
+    /**
+     *  The same answer without the angle brackets — `"std::string"`, and an empty string for a
+     *  call that spells no result type. This is the type the row is read back into, so it is also
+     *  the type a field holding that value has to be: a view column computed with such a call is
+     *  inferred from here rather than from the argument the call is otherwise typed as.
+     */
+    std::string functionCallSpelledResultType(const FunctionCallNode& functionCall,
+                                              const CodeGeneratorContext& context);
+
     /** `"->"`, `"->>"` or an empty view for any other operator — the text a JSON arrow is written as. */
     std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator);
 

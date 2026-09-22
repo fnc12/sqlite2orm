@@ -94,23 +94,34 @@ namespace {
      *
      *  A table answers `already_in_sync`: sqlite_orm compares the mapping against
      *  `PRAGMA table_xinfo` column by column, and a header read back off the database describes
-     *  the database. An index or a trigger is not compared that way. sqlite_orm takes the
-     *  statement SQLite stored for it in the schema table and requires it to equal, character for
-     *  character, the statement sqlite_orm would serialize from the mapping; anything else is
-     *  `dropped_and_recreated`. The corpus schemas are written the way a person writes SQL —
-     *  `[bracketed]` or bare names, a line per trigger step — and sqlite_orm serializes
-     *  `"quoted"` names on a single line, so the first call rewrites every index and trigger over
-     *  a difference of spelling alone:
+     *  the database. An index or a trigger is not compared that way on the revision pinned here:
+     *  sqlite_orm takes the statement SQLite stored for it in the schema table and requires it to
+     *  equal, character for character, the statement sqlite_orm would serialize from the mapping;
+     *  anything else is `dropped_and_recreated`. That much is the pin's, not sqlite_orm's in
+     *  general — v1.9.1, the release the site and Studio are built with, answers `already_in_sync`
+     *  for an index and for a trigger without looking at either. Every `dropped_and_recreated`
+     *  below is the pin's answer, and a bump can move it. The corpus schemas are written the way
+     *  a person writes SQL — `[bracketed]` or bare names, a line per trigger step — and
+     *  sqlite_orm serializes `"quoted"` names on a single line, so the first call rewrites every
+     *  index and trigger over a difference of spelling alone:
      *
      *      CREATE INDEX user_id_index ON users (id)   ->   CREATE INDEX "user_id_index" ON "users" ("id")
      *
      *  Which is why `secondRun` is here and says `already_in_sync` for everything. The first call
      *  leaves the database holding sqlite_orm's own spelling, and the second one reads that back
-     *  and recognizes it: the rewriting converges rather than repeating. The day the generated
-     *  header describes an index or a trigger as something other than what it read — an index
-     *  that loses its WHERE, a trigger that loses its WHEN — the second call stops saying
-     *  `already_in_sync`, and that is a user whose objects are torn down and rebuilt on every
-     *  single run of their program.
+     *  and recognizes it: the rewriting converges rather than repeating. Convergence is what
+     *  `secondRun` pins. The day sqlite_orm serializes an object in a form SQLite stores back
+     *  differently — `CREATE INDEX IF NOT EXISTS`, say, which SQLite drops on the way into the
+     *  schema table — the two texts never meet, and that is a user whose objects are torn down
+     *  and rebuilt on every single run of their program. `firstRun` cannot see that: it reads
+     *  `dropped_and_recreated` either way.
+     *
+     *  What neither call sees is an object that comes back meaning something else — an index that
+     *  lost its WHERE, a trigger that lost its WHEN. The first call writes sqlite_orm's
+     *  serialization of the damaged object into the database, and the second one compares that
+     *  text with itself and is satisfied. Convergence is a property of the text, not of the
+     *  meaning; checking a recreated object against the one the schema held is card
+     *  1869723941640079186.
      */
     struct CorpusSync {
         /** The call a user's program makes first, on the database as the corpus SQL wrote it. */

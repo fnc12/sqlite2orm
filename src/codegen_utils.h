@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace sqlite2orm {
@@ -87,6 +88,7 @@ namespace sqlite2orm {
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
+    extern const std::string kCommentInValuesWidened;
     extern const std::string kCommentAliasedFromSources;
 
     /**
@@ -580,21 +582,52 @@ namespace sqlite2orm {
      */
     std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode);
     /**
-     *  How the two bounds of a BETWEEN have to be spelled. sqlite_orm's `between(A, T, T)` deduces
-     *  ONE `T` from both of them, so bounds generated as different C++ types do not compile at all.
+     *  How a group of expressions sqlite_orm deduces ONE C++ type from has to be spelled. Both
+     *  bounds of a `between(A, T, T)` and every value of the `in(A, {…})` initializer list are
+     *  such a group, so members generated as different C++ types do not compile at all.
      */
-    enum class BetweenBoundsForm {
-        /** Both bounds generate the one type already, or nothing here can tell that they do not. */
+    enum class OneDeducedTypeForm {
+        /** Every member generates the one type already, or nothing here can tell that they do not. */
         asWritten,
-        /** Integer bounds of different types, which a cast on each of them gives the one type. */
+        /** Integer members of different types, which a cast on each of them gives the one type. */
         widenedToInt64,
         /** Types with nothing to widen to; codegen warns, and the generated code does not compile. */
         noCommonType,
     };
-    /** The shape the bounds of a BETWEEN are generated in — the single home of that rule. */
-    BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high);
-    /** How a generated value is named in a warning about the C++ types that met, e.g. "an `int`". */
-    std::string generatedValueTypeDescription(const AstNode& bound);
+    /** The shape such a group is generated in — the single home of that rule. */
+    OneDeducedTypeForm oneDeducedTypeForm(const std::vector<const AstNode*>& nodes);
+    /**
+     *  The code for `node` given the one 64-bit type the group it belongs to is widened to. Only a
+     *  member the generated code already casts carries the type `int64_t` itself; a constant past
+     *  the `int` range is typed by its magnitude, as the `long` that is not the `long long` an
+     *  `int64_t` is on macOS. So every member but that one is cast, rather than the narrower ones.
+     */
+    std::string widenToInt64(const AstNode& node, std::string code);
+    /**
+     *  The shape the values of an IN list are generated in. sqlite_orm collects the initializer
+     *  list into a `std::vector<E>`, so those values are under one rule more than the bounds of a
+     *  BETWEEN: a list of `bool` values is one type already and still comes out a
+     *  `std::vector<bool>`, whose proxy references the walk over a statement's bound values cannot
+     *  take (`cannot bind non-const lvalue reference of type 'bool&'`). `in(&User::a, {true})`
+     *  builds as an expression on its own and fails the moment a statement holds it, so such a
+     *  list is widened as well: SQLite carries TRUE and FALSE as the integers 1 and 0 anyway.
+     *  A bind parameter beside those values does not stop the widening, the way it does not stop
+     *  the widening of two integer widths: it is typed by the caller, and the `int64_t` he
+     *  declares is what the cast on the values beside it meets.
+     */
+    OneDeducedTypeForm inValuesForm(const std::vector<const AstNode*>& values);
+    /** How a member of such a group is named in the warning about the two types, e.g. "an `int`". */
+    std::string generatedValueTypeDescription(const AstNode& node);
+    /**
+     *  The first two members of `nodes` that are known not to meet in one C++ type — the pair that
+     *  proves `oneDeducedTypeForm` answered `noCommonType`, and so the pair a warning names. A
+     *  group of more than two has members that are not the reason it has no common type: a bind
+     *  parameter is typed by the caller, and two integer constants of different widths would have
+     *  been widened were they alone. Every reason `oneDeducedTypeForm` has to answer `noCommonType`
+     *  today is proven by such a pair; `{nullptr, nullptr}` when a reason without one is added, so
+     *  that a caller can say less rather than read through nothing.
+     */
+    std::pair<const AstNode*, const AstNode*> firstNoCommonTypePair(const std::vector<const AstNode*>& nodes);
     /**
      *  True for a node generated as sqlite_orm's `negated_condition_t`: a logical NOT, and the
      *  `!predicate` spelling a negated BETWEEN, LIKE, GLOB or MATCH takes. sqlite_orm classifies

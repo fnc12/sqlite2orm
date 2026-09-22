@@ -547,6 +547,18 @@ namespace sqlite2orm {
         "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
         "signed 64-bit number anyway, TRUE and FALSE among them.";
 
+    const std::string kCommentInValuesWidened =
+        "The values of an IN list are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`in(A, std::initializer_list<E>)` deduces one C++ type from the whole list, and C++ types "
+        "an integer constant by its magnitude, so `in(&User::a, {1, 3000000000})` is an `int` next "
+        "to a 64-bit constant and does not compile. The cast goes on every value that is not "
+        "already an `int64_t`, rather than on the narrower ones: the type a 64-bit constant is "
+        "given is `long` where an `int64_t` is a `long long`, and the two are distinct types even "
+        "where both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as "
+        "a signed 64-bit number anyway, TRUE and FALSE among them. A `bindParamN` beside them is "
+        "not cast: its type is the one you declare, and a cast there would change the value it "
+        "binds rather than only its type, so declare it `int64_t`.";
+
     const std::string kCommentOrTokenCallSpelling =
         "`OR` is generated as `or_(left, right)` and `||` as `conc(left, right)`: C++ spells both "
         "of them `||`, and sqlite_orm picks between the two by the operands — `operator||` builds "
@@ -1841,6 +1853,23 @@ namespace sqlite2orm {
                    dynamic_cast<const ExcludedRefNode*>(&generatedNode);
         }
 
+        /**
+         *  Everything `oneDeducedTypeForm` reads off one member of a group, and nothing that tells
+         *  two members it reads the same way apart. Two members of one kind are interchangeable in
+         *  every group either of them belongs to.
+         */
+        struct OneTypeGroupMemberKind {
+            std::optional<GeneratedValueCppType> type;
+            bool bindParameter;
+            bool columnPointer;
+
+            bool operator==(const OneTypeGroupMemberKind&) const = default;
+        };
+
+        OneTypeGroupMemberKind oneTypeGroupMemberKind(const AstNode& node) {
+            return {generatedValueCppType(node), generatesBindParameter(node), generatesColumnPointer(node)};
+        }
+
     }  // namespace
 
     std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode) {
@@ -1873,42 +1902,136 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
-    BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high) {
-        const std::optional<GeneratedValueCppType> lowType = generatedValueCppType(low);
-        const std::optional<GeneratedValueCppType> highType = generatedValueCppType(high);
-        if (lowType && highType) {
-            if (*lowType == *highType) {
-                return BetweenBoundsForm::asWritten;
+    OneDeducedTypeForm oneDeducedTypeForm(const std::vector<const AstNode*>& nodes) {
+        bool everyTypedNodeInteger = true;
+        bool everyTypedNodeOneType = true;
+        std::optional<GeneratedValueCppType> firstType;
+        bool bindParameterSeen = false;
+        bool columnPointerSeen = false;
+        bool expressionNodeSeen = false;
+        for (const AstNode* node: nodes) {
+            const std::optional<GeneratedValueCppType> type = generatedValueCppType(*node);
+            if (type) {
+                if (!firstType) {
+                    firstType = type;
+                } else if (*firstType != *type) {
+                    everyTypedNodeOneType = false;
+                }
+                if (!isIntegerCppType(*type)) {
+                    everyTypedNodeInteger = false;
+                }
+            } else if (generatesBindParameter(*node)) {
+                // The bind parameter is typed by the caller, who declares `bindParamN` himself, so
+                // nothing said about the other members rules its type out.
+                bindParameterSeen = true;
+            } else if (generatesColumnPointer(*node)) {
+                columnPointerSeen = true;
+            } else {
+                expressionNodeSeen = true;
             }
-            // Two integer constants of different types are the one case with a type to widen to:
+        }
+        // A member that names something sqlite_orm serializes — a column pointer, an expression
+        // node — shares a type with no constant beside it.
+        if (firstType && (columnPointerSeen || expressionNodeSeen)) {
+            return OneDeducedTypeForm::noCommonType;
+        }
+        if (!everyTypedNodeOneType) {
+            // Integer constants of different types are the one case with a type to widen to:
             // every INTEGER SQLite carries fits an int64, and a value bound as one is the value
-            // bound as an `int` or as a `bool` — same storage class, same number.
-            return isIntegerCppType(*lowType) && isIntegerCppType(*highType) ? BetweenBoundsForm::widenedToInt64
-                                                                             : BetweenBoundsForm::noCommonType;
+            // bound as an `int` or as a `bool` — same storage class, same number. What is left
+            // unwidened beside them is a bind parameter, whose type this does not decide.
+            return everyTypedNodeInteger ? OneDeducedTypeForm::widenedToInt64 : OneDeducedTypeForm::noCommonType;
         }
-        // The bind parameter is typed by the caller, who declares `bindParamN` himself, so nothing
-        // said about the other bound rules its type out.
-        if (generatesBindParameter(low) || generatesBindParameter(high)) {
-            return BetweenBoundsForm::asWritten;
+        if (firstType || bindParameterSeen) {
+            return OneDeducedTypeForm::asWritten;
         }
-        if (!lowType && !highType) {
-            // A pointer to a member is never one of the node types sqlite_orm builds from an
-            // expression, so those two never meet. Two columns, on the other hand, are typed by
-            // the schema and two expression nodes by what they are built over, and neither is
-            // known here — `abs(&User::a)` and `abs(&User::b)` are the same type when the two
-            // columns are.
-            return generatesColumnPointer(low) != generatesColumnPointer(high) ? BetweenBoundsForm::noCommonType
-                                                                               : BetweenBoundsForm::asWritten;
-        }
-        // One bound is a constant and the other names something sqlite_orm serializes — a column
-        // pointer, an expression node — and no constant shares a type with one of those.
-        return BetweenBoundsForm::noCommonType;
+        // Nothing here is typed. A pointer to a member is never one of the node types sqlite_orm
+        // builds from an expression, so those two never meet. Members of one of those kinds, on
+        // the other hand, are typed by the schema and by what they are built over, and neither is
+        // known here — `abs(&User::a)` and `abs(&User::b)` are the same type when the two columns
+        // are.
+        return columnPointerSeen && expressionNodeSeen ? OneDeducedTypeForm::noCommonType
+                                                       : OneDeducedTypeForm::asWritten;
     }
 
-    std::string generatedValueTypeDescription(const AstNode& bound) {
-        const std::optional<GeneratedValueCppType> type = generatedValueCppType(bound);
+    OneDeducedTypeForm inValuesForm(const std::vector<const AstNode*>& values) {
+        const OneDeducedTypeForm form = oneDeducedTypeForm(values);
+        if (form != OneDeducedTypeForm::asWritten) {
+            return form;
+        }
+        // A value this cannot type is a bind parameter, and only a bind parameter: had the list
+        // held a column pointer or an expression node beside a typed value, the gate above would
+        // have answered noCommonType already. A bind parameter no more rules the `std::vector<bool>`
+        // out than it rules the widening of two integer widths out — `a IN (TRUE, ?)` as written
+        // has no working declaration at all (`bool bindParam1` is the vector, `int64_t bindParam1`
+        // is a second type), while the widened list meets the `int64_t` the caller declares.
+        bool booleanValueSeen = false;
+        for (const AstNode* value: values) {
+            const std::optional<GeneratedValueCppType> type = generatedValueCppType(*value);
+            if (!type) {
+                continue;
+            }
+            if (*type != GeneratedValueCppType::boolean) {
+                return form;
+            }
+            booleanValueSeen = true;
+        }
+        return booleanValueSeen ? OneDeducedTypeForm::widenedToInt64 : form;
+    }
+
+    std::string widenToInt64(const AstNode& node, std::string code) {
+        const std::optional<GeneratedValueCppType> type = generatedValueCppType(node);
+        // A member this cannot type is a bind parameter the caller declares himself, and a cast
+        // over one would change the value it binds rather than only its type — `bindParam1` held
+        // as a `double` would reach SQLite truncated. It is left as written, and the widening of
+        // the constants beside it is what a declaration of `int64_t` meets.
+        if (!type || *type == GeneratedValueCppType::integer64Cast) {
+            return code;
+        }
+        return "static_cast<int64_t>(" + code + ")";
+    }
+
+    std::pair<const AstNode*, const AstNode*> firstNoCommonTypePair(const std::vector<const AstNode*>& nodes) {
+        // An IN list holds as many values as a statement is long, and a value that meets every
+        // other one in a type — a bind parameter above all — is passed over by the search rather
+        // than ending it, so a look at every pair of them is a walk over the whole list per value.
+        // Members of one kind stand in for each other: were a third member of a kind half of the
+        // pair, the first member of that kind would be half of a pair with the same partner and an
+        // earlier one, which is the pair this answers instead. So the first two members of each
+        // kind hold every pair there is to find, and a group has as many kinds as there are C++
+        // types here — the search below is over a handful of members whatever the list's length.
+        std::vector<std::pair<OneTypeGroupMemberKind, int>> memberCountByKind;
+        std::vector<const AstNode*> candidates;
+        for (const AstNode* node: nodes) {
+            const OneTypeGroupMemberKind kind = oneTypeGroupMemberKind(*node);
+            const auto counted =
+                std::find_if(memberCountByKind.begin(), memberCountByKind.end(), [&kind](const auto& countedKind) {
+                    return countedKind.first == kind;
+                });
+            if (counted == memberCountByKind.end()) {
+                memberCountByKind.emplace_back(kind, 1);
+            } else if (counted->second == 2) {
+                continue;
+            } else {
+                ++counted->second;
+            }
+            candidates.push_back(node);
+        }
+        for (size_t firstIndex = 0; firstIndex + 1 < candidates.size(); ++firstIndex) {
+            for (size_t secondIndex = firstIndex + 1; secondIndex < candidates.size(); ++secondIndex) {
+                if (oneDeducedTypeForm({candidates[firstIndex], candidates[secondIndex]}) ==
+                    OneDeducedTypeForm::noCommonType) {
+                    return {candidates[firstIndex], candidates[secondIndex]};
+                }
+            }
+        }
+        return {nullptr, nullptr};
+    }
+
+    std::string generatedValueTypeDescription(const AstNode& node) {
+        const std::optional<GeneratedValueCppType> type = generatedValueCppType(node);
         if (!type) {
-            return generatesColumnPointer(bound) ? "a pointer to a column" : "a sqlite_orm expression";
+            return generatesColumnPointer(node) ? "a pointer to a column" : "a sqlite_orm expression";
         }
         switch (*type) {
             case GeneratedValueCppType::integer32:

@@ -1026,8 +1026,8 @@ namespace sqlite2orm {
                 case BetweenBoundsForm::noCommonType:
                     warnings.push_back(sourceSpanWarning(
                         "sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and " +
-                            betweenBoundTypeDescription(*betweenNode->low) + " next to " +
-                            betweenBoundTypeDescription(*betweenNode->high) +
+                            generatedValueTypeDescription(*betweenNode->low) + " next to " +
+                            generatedValueTypeDescription(*betweenNode->high) +
                             " is not one type, so the generated code does not compile",
                         *betweenNode));
                     break;
@@ -1473,7 +1473,7 @@ namespace sqlite2orm {
                 } else {
                     // A builtin whose result type sqlite_orm cannot deduce is generated with the
                     // one it is read back through spelled out; every other call names none.
-                    const std::string callName = funcName + std::string(functionCallResultTypeArgument(funcName));
+                    const std::string callName = funcName + functionCallResultTypeArgument(*funcCall, this->context);
                     if (funcCall->distinct && !argList.empty()) {
                         baseCode = callName + "(distinct(" + argList + "))";
                     } else {

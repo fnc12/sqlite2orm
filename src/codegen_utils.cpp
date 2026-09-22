@@ -1862,7 +1862,7 @@ namespace sqlite2orm {
         return BetweenBoundsForm::noCommonType;
     }
 
-    std::string betweenBoundTypeDescription(const AstNode& bound) {
+    std::string generatedValueTypeDescription(const AstNode& bound) {
         const std::optional<GeneratedValueCppType> type = generatedValueCppType(bound);
         if (!type) {
             return generatesColumnPointer(bound) ? "a pointer to a column" : "a sqlite_orm expression";
@@ -1886,6 +1886,218 @@ namespace sqlite2orm {
                 return "a `std::nullptr_t`";
         }
         return "a sqlite_orm expression";
+    }
+
+    namespace {
+
+        /**
+         *  The kind of C++ type a call argument is read back as, at the granularity
+         *  `std::common_type` reduces over. Every arithmetic type converts to every other one; a
+         *  `std::string` converts to a `std::nullptr_t` and back, its `const char*` constructor
+         *  taking one; a `std::vector<char>` converts to nothing else at all. Checked against the
+         *  pinned sqlite_orm headers over every pair of constants and field types codegen writes.
+         */
+        enum class ArgumentTypeKind { arithmetic, text, blob, null };
+
+        /** The C++ type the generated code hands sqlite_orm for one argument of a call. */
+        struct ArgumentCppType {
+            ArgumentTypeKind kind = ArgumentTypeKind::arithmetic;
+            /**
+             *  The type a nullable column's field holds inside its `std::optional<…>`, and empty
+             *  for every other argument. Two `std::optional`s of different types have no common
+             *  type — each converts to the other, so neither is the common one — while an
+             *  `std::optional` next to a plain type has the `std::optional` for a common type.
+             */
+            std::string optionalFieldType;
+            /** How a warning names this type, e.g. "an `int`". */
+            std::string description;
+        };
+
+        /**
+         *  The kind of a C++ type a generated struct declares a field as. The spellings answered
+         *  for are the closed set `sqliteTypeToCpp` and `CodeGeneratorContext::inferTypeFromNode`
+         *  produce; any other one is a type this file does not know and says nothing about.
+         */
+        std::optional<ArgumentTypeKind> cppFieldTypeKind(std::string_view cppType) {
+            if (cppType == "bool" || cppType == "int" || cppType == "int64_t" || cppType == "double") {
+                return ArgumentTypeKind::arithmetic;
+            }
+            if (cppType == "std::string") {
+                return ArgumentTypeKind::text;
+            }
+            if (cppType == "std::vector<char>") {
+                return ArgumentTypeKind::blob;
+            }
+            return std::nullopt;
+        }
+
+        std::optional<ArgumentTypeKind> constantValueKind(GeneratedValueCppType valueType) {
+            switch (valueType) {
+                case GeneratedValueCppType::integer32:
+                case GeneratedValueCppType::integer64Literal:
+                case GeneratedValueCppType::integer64Cast:
+                case GeneratedValueCppType::boolean:
+                case GeneratedValueCppType::real:
+                    return ArgumentTypeKind::arithmetic;
+                case GeneratedValueCppType::text:
+                    return ArgumentTypeKind::text;
+                case GeneratedValueCppType::blob:
+                    return ArgumentTypeKind::blob;
+                case GeneratedValueCppType::null:
+                    return ArgumentTypeKind::null;
+            }
+            return std::nullopt;
+        }
+
+        /**
+         *  The C++ type a call argument is generated as, for the two kinds of argument the
+         *  generated code names the type of: a constant, spelled out in the call itself, and a
+         *  column, read back as the field the generated struct declares for it. Every other
+         *  argument — a nested call, an operator, a bind parameter, a subquery — is typed by
+         *  sqlite_orm out of what it is built over, which is not answered here, and a call holding
+         *  one is left as it is generated.
+         */
+        std::optional<ArgumentCppType> generatedArgumentCppType(const AstNode& argument,
+                                                                const CodeGeneratorContext& context) {
+            if (const std::optional<GeneratedValueCppType> valueType = generatedValueCppType(argument)) {
+                const std::optional<ArgumentTypeKind> kind = constantValueKind(*valueType);
+                if (!kind) {
+                    return std::nullopt;
+                }
+                return ArgumentCppType{*kind, {}, generatedValueTypeDescription(argument)};
+            }
+            const SourceTableColumn* column = context.findReferencedColumn(argument);
+            if (!column) {
+                return std::nullopt;
+            }
+            const std::optional<ArgumentTypeKind> kind = cppFieldTypeKind(column->cppType);
+            if (!kind) {
+                return std::nullopt;
+            }
+            const std::string fieldType = column->nullable ? "std::optional<" + column->cppType + ">" : column->cppType;
+            return ArgumentCppType{*kind,
+                                   column->nullable ? column->cppType : std::string(),
+                                   "a column typed `" + fieldType + "`"};
+        }
+
+        /** Whether `std::common_type` reduces these two argument types to one. */
+        bool argumentTypesHaveACommonType(const ArgumentCppType& first, const ArgumentCppType& second) {
+            if (first.kind != second.kind) {
+                // A `std::string` is constructible from a `std::nullptr_t` through its
+                // `const char*` constructor, which makes the two one type; nothing else here
+                // converts across kinds.
+                return (first.kind == ArgumentTypeKind::text && second.kind == ArgumentTypeKind::null) ||
+                       (first.kind == ArgumentTypeKind::null && second.kind == ArgumentTypeKind::text);
+            }
+            if (first.optionalFieldType.empty() || second.optionalFieldType.empty() ||
+                first.optionalFieldType == second.optionalFieldType) {
+                return true;
+            }
+            // Two `std::optional`s of different types convert to each other both ways, which
+            // leaves neither of them the common type — except where one is an
+            // `std::optional<bool>`: a `bool` is constructible from any `std::optional` through
+            // its explicit `operator bool`, and that rules the converting constructor INTO the
+            // `std::optional<bool>` out, leaving the one direction. Checked against the pinned
+            // headers: `coalesce(std::optional<int>, std::optional<bool>)` compiles,
+            // `coalesce(std::optional<int>, std::optional<int64_t>)` does not.
+            return first.optionalFieldType == "bool" || second.optionalFieldType == "bool";
+        }
+
+        /**
+         *  The arguments sqlite_orm reduces to one type when it deduces the result type of a call
+         *  of `lowerFunctionName`, and an empty list for every other name. Read off the
+         *  declarations in the pinned headers: COALESCE is `common_argument_type<>` — all of them —
+         *  IFNULL and NULLIF `common_argument_type<0, 1>`, and IIF `common_argument_type<1, 2>`,
+         *  the two branches and not the condition. IIF is declared in its three-argument form
+         *  alone, so SQLite's two-argument and n-ary forms name no indexes here; the arity check in
+         *  `functionCallFormRefusal` is what reports them.
+         */
+        std::vector<size_t> commonArgumentTypeIndexes(std::string_view lowerFunctionName, size_t argumentCount) {
+            if (lowerFunctionName == "coalesce") {
+                std::vector<size_t> indexes(argumentCount);
+                for (size_t index = 0; index < argumentCount; ++index) {
+                    indexes[index] = index;
+                }
+                return indexes;
+            }
+            if ((lowerFunctionName == "ifnull" || lowerFunctionName == "nullif") && argumentCount == 2) {
+                return {0, 1};
+            }
+            if (lowerFunctionName == "iif" && argumentCount == 3) {
+                return {1, 2};
+            }
+            return {};
+        }
+
+        /** The first pair of a call's reduced arguments that has no common C++ type. */
+        struct CommonArgumentTypeClash {
+            ArgumentCppType first;
+            ArgumentCppType second;
+            /** Whether a BLOB takes part anywhere in the reduced arguments. */
+            bool holdsBlob = false;
+        };
+
+        std::optional<CommonArgumentTypeClash> commonArgumentTypeClash(const FunctionCallNode& functionCall,
+                                                                       const CodeGeneratorContext& context) {
+            if (functionCall.star || functionCall.over || functionCall.filterWhere) {
+                // A star names no arguments to reduce, and a window call is generated as an
+                // aggregate over the same arguments — neither reaches the wrapper this is about.
+                return std::nullopt;
+            }
+            const std::string lowerName = toLowerAscii(functionCall.name);
+            const std::vector<size_t> indexes = commonArgumentTypeIndexes(lowerName, functionCall.arguments.size());
+            std::vector<ArgumentCppType> types;
+            for (size_t index: indexes) {
+                const AstNodePointer& argument = functionCall.arguments.at(index);
+                if (!argument) {
+                    return std::nullopt;
+                }
+                std::optional<ArgumentCppType> type = generatedArgumentCppType(*argument, context);
+                if (!type) {
+                    // One argument left untyped is enough to leave the whole call alone: the type
+                    // it brings can be the one every other argument reduces to.
+                    return std::nullopt;
+                }
+                types.push_back(std::move(*type));
+            }
+            std::optional<CommonArgumentTypeClash> clash;
+            for (size_t first = 0; first < types.size(); ++first) {
+                for (size_t second = first + 1; second < types.size(); ++second) {
+                    if (!clash && !argumentTypesHaveACommonType(types[first], types[second])) {
+                        clash = CommonArgumentTypeClash{types[first], types[second]};
+                    }
+                }
+            }
+            if (!clash) {
+                return std::nullopt;
+            }
+            for (const ArgumentCppType& type: types) {
+                clash->holdsBlob = clash->holdsBlob || type.kind == ArgumentTypeKind::blob;
+            }
+            return clash;
+        }
+
+        /** The type such a call spells its result as: bytes where a BLOB takes part, text otherwise. */
+        std::string_view clashResultType(const CommonArgumentTypeClash& clash) {
+            // `std::string` is read through `sqlite3_column_text`, which stops at the first NUL
+            // byte a BLOB holds, while `std::vector<char>` carries every byte of one — and reads a
+            // text or a number back as its bytes just as well.
+            return clash.holdsBlob ? "std::vector<char>" : "std::string";
+        }
+
+    }  // namespace
+
+    std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
+                                               const CodeGeneratorContext& context) {
+        if (const std::string_view byName = functionCallResultTypeArgument(toLowerAscii(functionCall.name));
+            !byName.empty()) {
+            return std::string(byName);
+        }
+        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(functionCall, context);
+        if (!clash) {
+            return {};
+        }
+        return "<" + std::string(clashResultType(*clash)) + ">";
     }
 
     bool generatesNegatedCondition(const AstNode& astNode) {
@@ -2061,10 +2273,20 @@ namespace sqlite2orm {
          *  `CAST(a AS INT)` are typed `int` however NULL the row is, so `iif(1, length(a), 2)` and
          *  `likely(length(a))` are typed `int` too and read a NULL back as 0. Asking the argument
          *  rather than the name is a rule of its own; a known hole, carded separately.
+         *  `coalesce`, `ifnull`, `nullif` and `iif` drop out of the list where the call spells its
+         *  own result type: what sqlite_orm deduces from the arguments is then not what the row is
+         *  read back into — see `functionCallResultTypeArgument`.
          */
-        bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall) {
+        bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall,
+                                                      const CodeGeneratorContext& context) {
             const std::string functionLower = toLowerAscii(functionCall.name);
             if (iifNotInItsThreeArgumentForm(functionCall, functionLower)) {
+                return false;
+            }
+            if (!functionCallResultTypeArgument(functionCall, context).empty()) {
+                // A call that spells its result type is read back as exactly that type, and the
+                // types spelled — `std::string`, `std::vector<char>` — hold no NULL, so the
+                // widening this answers for is back on.
                 return false;
             }
             return isOneOfFunctions(functionLower,
@@ -2649,7 +2871,38 @@ namespace sqlite2orm {
                               underlineLengthOf(writtenText)};
     }
 
-    bool selectResultNeedsAsOptional(const AstNode& astNode) {
+    std::optional<CodegenWarning> selectResultCommonArgumentTypeWarning(const AstNode& astNode,
+                                                                        const CodeGeneratorContext& context) {
+        // A COLLATE and a unary plus emit their operand and nothing else, so the call the row is
+        // read back through is the one the operand under them comes out as.
+        auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedOperandNode(astNode));
+        if (!functionCall) {
+            return std::nullopt;
+        }
+        const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(*functionCall, context);
+        if (!clash) {
+            return std::nullopt;
+        }
+        const std::string lowerName = toLowerAscii(functionCall->name);
+        const std::string resultType(clashResultType(*clash));
+        std::string message = "result column computed with `";
+        message += lowerName;
+        message += "` comes back as ";
+        message += clash->holdsBlob ? "bytes" : "text";
+        message += ": sqlite_orm types the call as the common C++ type of its arguments, and ";
+        message += clash->first.description;
+        message += " next to ";
+        message += clash->second.description;
+        message += " has none, so the call is generated as `";
+        message += lowerName;
+        message += "<" + resultType + ">(…)` — a number comes back as ";
+        message += clash->holdsBlob ? "the bytes of its digits" : "its digits";
+        message += ". Spell the result type the call answers with where it is known";
+        // The call is located at its name, and the name is what the message repeats.
+        return CodegenWarning{std::move(message), functionCall->location, underlineLengthOf(functionCall->name)};
+    }
+
+    bool selectResultNeedsAsOptional(const AstNode& astNode, const CodeGeneratorContext& context) {
         // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
         // the result column comes out as — and with it the type the row is read back into — is the
         // one the operand under them comes out as.
@@ -2724,7 +2977,7 @@ namespace sqlite2orm {
             // column is NULL on an empty `t` and still reads back as 0. Whether the column the
             // nested select names is already nullable is the table's to answer, and no schema
             // reaches this layer. A known hole, carded separately.
-            return selectResultNeedsAsOptional(*nestedSelect->columns.at(0).expression);
+            return selectResultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context);
         }
         if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
             if (functionCall->over) {
@@ -2737,7 +2990,7 @@ namespace sqlite2orm {
                 // first row, and that NULL still reads back as 0. A known hole, carded separately.
                 return false;
             }
-            if (generatedFunctionResultIsAlreadyNullable(*functionCall)) {
+            if (generatedFunctionResultIsAlreadyNullable(*functionCall, context)) {
                 return false;
             }
             return expressionMayBeNull(generatedNode);

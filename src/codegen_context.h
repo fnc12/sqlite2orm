@@ -368,6 +368,15 @@ namespace sqlite2orm {
 
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName, std::string_view columnName) const;
 
+        /**
+         *  The schema column an expression names, or `nullptr` where the batch's schema does not
+         *  name one unambiguously. The field the generated struct declares for that column is the
+         *  C++ type an argument written as `&T::a` is read back as, so this is what answers the
+         *  type of such an argument — unlike `customFunctionArgType`, which falls back on a name
+         *  heuristic and always answers something.
+         */
+        const SourceTableColumn* findReferencedColumn(const AstNode& node) const;
+
         /** Best-effort C++ type for a custom-function argument: schema type when known, else the name heuristic. */
         std::string customFunctionArgType(const AstNode& argument) const;
 

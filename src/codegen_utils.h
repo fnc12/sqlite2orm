@@ -124,6 +124,23 @@ namespace sqlite2orm {
      */
     std::string_view functionCallResultTypeArgument(std::string_view lowerFunctionName);
 
+    /**
+     *  The result type a generated call of `functionCall` spells between angle brackets, and an
+     *  empty string for a call that spells none. On top of the two names above, this answers for
+     *  the four builtins sqlite_orm declares as the COMMON TYPE of their arguments — COALESCE
+     *  (`common_argument_type<>`), IFNULL and NULLIF (`common_argument_type<0, 1>`) and IIF
+     *  (`common_argument_type<1, 2>`, the two branches and not the condition). SQLite takes any
+     *  arguments there, its own result type being whichever branch it answers with, while
+     *  `std::common_type` reduces the C++ types of two arguments only where one converts to the
+     *  other: a text next to a number has no common type, and neither has a BLOB next to anything
+     *  else, so the call — and with it the whole `storage.select(...)` around it — does not
+     *  compile. Where the generated types say there is no common type, the call spells the one
+     *  type that reads every storage class back instead: `std::vector<char>` where a BLOB takes
+     *  part, which carries its bytes whole, and `std::string` otherwise.
+     */
+    std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
+                                               const CodeGeneratorContext& context);
+
     /** `"->"`, `"->>"` or an empty view for any other operator — the text a JSON arrow is written as. */
     std::string_view jsonArrowOperatorText(BinaryOperator binaryOperator);
 
@@ -531,8 +548,8 @@ namespace sqlite2orm {
     };
     /** The shape the bounds of a BETWEEN are generated in — the single home of that rule. */
     BetweenBoundsForm betweenBoundsForm(const AstNode& low, const AstNode& high);
-    /** How a BETWEEN bound is named in the warning about the two types, e.g. "an `int`". */
-    std::string betweenBoundTypeDescription(const AstNode& bound);
+    /** How a generated value is named in a warning about the C++ types that met, e.g. "an `int`". */
+    std::string generatedValueTypeDescription(const AstNode& bound);
     /**
      *  True for a node generated as sqlite_orm's `negated_condition_t`: a logical NOT, and the
      *  `!predicate` spelling a negated BETWEEN, LIKE, GLOB or MATCH takes. sqlite_orm classifies
@@ -581,7 +598,7 @@ namespace sqlite2orm {
      *  `abs(...)` is a `std::unique_ptr`, `max(...)` and `coalesce(...)` carry the type of an
      *  argument, NULL itself is a `std::nullptr_t`).
      */
-    bool selectResultNeedsAsOptional(const AstNode& astNode);
+    bool selectResultNeedsAsOptional(const AstNode& astNode, const CodeGeneratorContext& context);
     /**
      *  Whether a SELECT result column has to be generated as `cast<int64_t>(...)` for the integer
      *  SQLite computes to reach the caller whole. sqlite_orm types the bitwise operators `int`, so
@@ -619,6 +636,18 @@ namespace sqlite2orm {
      *  `jsonTextArrowWarning` already reports, at the same two characters.
      */
     std::optional<CodegenWarning> selectResultJsonExtractTypeWarning(const AstNode& astNode);
+    /**
+     *  The warning a SELECT result column read back through a COALESCE, IFNULL, NULLIF or IIF call
+     *  whose arguments have no common C++ type carries, and nullopt for every other column. Such a
+     *  call spells its result type (see `functionCallResultTypeArgument`) to compile at all, and
+     *  that type reads every storage class back as its text — a number comes back as its digits —
+     *  while the type sqlite_orm deduces for the same call over arguments of one type carries the
+     *  value as it is. The report belongs to the result column rather than to the call: the type
+     *  is what the caller reads a row back into, and a call in a WHERE or an ORDER BY hands its
+     *  value to no caller.
+     */
+    std::optional<CodegenWarning> selectResultCommonArgumentTypeWarning(const AstNode& astNode,
+                                                                        const CodeGeneratorContext& context);
     /**
      *  The report for a unary plus that stands over a column reference on one side of a comparison,
      *  if `astNode` is one. A unary plus is an identity for the value, which is why codegen emits

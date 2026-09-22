@@ -71,6 +71,45 @@ namespace sqlite2orm {
         return nullptr;
     }
 
+    const SourceTableColumn* CodeGeneratorContext::findReferencedColumn(const AstNode& node) const {
+        // A COLLATE or a unary plus generates its operand and nothing else, so the column named
+        // under one is the column the expression is built over.
+        const AstNode& valueNode = generatedOperandNode(node);
+        // A name several source tables declare answers only when they agree on the field it
+        // becomes: which of them a reference resolves to is the query's to say, and a FROM clause
+        // this far down is not read.
+        auto uniquelyNamedColumn = [this](std::string_view columnName) -> const SourceTableColumn* {
+            const std::string normalizedColumn = normalizeSqlIdentifier(columnName);
+            const SourceTableColumn* found = nullptr;
+            for (const auto& [tableKey, columns]: this->sourceTableColumnsByNormalizedName) {
+                (void)tableKey;
+                for (const SourceTableColumn& column: columns) {
+                    if (normalizeSqlIdentifier(column.sqlName) != normalizedColumn) {
+                        continue;
+                    }
+                    if (found && (found->cppType != column.cppType || found->nullable != column.nullable)) {
+                        return nullptr;
+                    }
+                    found = &column;
+                }
+            }
+            return found;
+        };
+        if (auto* qualifiedRef = dynamic_cast<const QualifiedColumnRefNode*>(&valueNode)) {
+            if (const SourceTableColumn* column =
+                    this->findSourceTableColumn(qualifiedRef->tableName, qualifiedRef->columnName)) {
+                return column;
+            }
+            // The qualifier can be a table alias, which no source table is registered under, and
+            // then the column name is all there is to resolve by.
+            return uniquelyNamedColumn(qualifiedRef->columnName);
+        }
+        if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
+            return uniquelyNamedColumn(columnRef->columnName);
+        }
+        return nullptr;
+    }
+
     std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {
         // The argument a COLLATE or a unary plus stands over is the one the call is handed.
         const AstNode& valueNode = generatedOperandNode(argument);

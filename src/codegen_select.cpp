@@ -512,13 +512,16 @@ namespace sqlite2orm {
                     colCode = "cast<int64_t>(" + colCode + ")";
                     this->context.recordComment(kCommentBitwiseResultCast);
                 }
-                if (selectResultNeedsAsOptional(*column.expression)) {
+                if (selectResultNeedsAsOptional(*column.expression, this->context)) {
                     colCode = "as_optional(" + colCode + ")";
                 }
                 if (auto warning = selectResultDoublePrecisionWarning(*column.expression)) {
                     appendUniqueWarnings(selectWarnings, {std::move(*warning)});
                 }
                 if (auto warning = selectResultJsonExtractTypeWarning(*column.expression)) {
+                    appendUniqueWarnings(selectWarnings, {std::move(*warning)});
+                }
+                if (auto warning = selectResultCommonArgumentTypeWarning(*column.expression, this->context)) {
                     appendUniqueWarnings(selectWarnings, {std::move(*warning)});
                 }
                 return wrapWithColumnAlias(colCode, column.alias, cpp20ColumnAliases);

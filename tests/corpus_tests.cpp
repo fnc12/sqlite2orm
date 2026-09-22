@@ -35,10 +35,12 @@ using namespace sqlite2orm;
  *  Per schema the test builds a database from the schema and its seed rows, generates the storage
  *  header for it, generates the code for each query, compiles and links one program around the
  *  lot, runs it, and requires that every row equals the literal written here — and that SQLite,
- *  asked the same query on the same database, answers with that literal too. A query the
- *  generator gets wrong today is not left out: it is pinned as `knownBad` with the card that
- *  tracks it, so the corpus stays usable while the bug waits its turn and goes red the day the
- *  bug is fixed and the expectation has to move.
+ *  asked the same query on the same database, answers with that literal too. The program takes
+ *  the path a user takes with a database of their own: it calls `sync_schema()` on it before it
+ *  reads anything, so the outcome of that call is a literal here too, and the rows under it are
+ *  what the schema came through the call with. A query the generator gets wrong today is not left
+ *  out: it is pinned as `knownBad` with the card that tracks it, so the corpus stays usable while
+ *  the bug waits its turn and goes red the day the bug is fixed and the expectation has to move.
  *
  *  These cases are hidden (`[.corpus]`): they compile, link and run a program per schema, and the
  *  corpus grows with every schema worth watching. ctest runs them as `sqlite2orm_tests_corpus`.
@@ -193,21 +195,44 @@ namespace {
      *  next to it. Each query announces how many rows it produced before printing them, so a
      *  value that happens to read like a separator cannot be mistaken for one; a value holding a
      *  newline still could, and the corpus has none.
+     *
+     *  The program does what a user does with a header generated from a database they already
+     *  have: it opens that very database, calls `sync_schema()` on it and only then queries it.
+     *  The outcomes are printed as a block of their own, ahead of the queries, and the queries
+     *  that follow read what survived the sync -- a mapping that differs from the schema SQLite
+     *  stores makes sqlite_orm rebuild the table, which takes its rows with it.
      */
     [[nodiscard]] std::string programSource(const std::vector<std::string>& generatedQueries,
                                             const fs::path& databasePath) {
         std::ostringstream program;
         program << "#include \"schema.hpp\"\n"
                    "\n"
+                   "#include <corpus_sync_outcome_text.hpp>\n"
                    "#include <corpus_value_text.hpp>\n"
                    "\n"
                    "#include <exception>\n"
                    "#include <iostream>\n"
+                   "#include <string>\n"
+                   "#include <vector>\n"
                    "\n"
                    "int main() {\n"
                    "    using namespace sqlite_orm;\n"
                    "    auto storage = make_sqlite_schema_storage(\""
-                << databasePath.string() << "\");\n";
+                << databasePath.string()
+                << "\");\n"
+                   "    try {\n"
+                   "        std::vector<std::string> rows;\n"
+                   "        for (const auto& outcome: storage.sync_schema()) {\n"
+                   "            rows.push_back(outcome.first + '=' + "
+                   "corpus_test_helpers::syncOutcomeText(outcome.second));\n"
+                   "        }\n"
+                   "        std::cout << \"ROWS \" << rows.size() << '\\n';\n"
+                   "        for (const std::string& row: rows) {\n"
+                   "            std::cout << row << '\\n';\n"
+                   "        }\n"
+                   "    } catch (const std::exception& e) {\n"
+                   "        std::cout << \"THREW \" << e.what() << '\\n';\n"
+                   "    }\n";
         for (const std::string& query: generatedQueries) {
             program << "    try {\n        " << query
                     << "\n"
@@ -304,9 +329,12 @@ namespace {
 
     /**
      *  Runs the whole path on one corpus schema and checks every query of it, both against SQLite
-     *  and against the literals of `queries`.
+     *  and against the literals of `queries`, with `syncOutcomes` saying what `sync_schema()` is
+     *  to answer for each mapped object of the database the header was generated from.
      */
-    void checkCorpusSchema(std::string_view name, const std::vector<CorpusQuery>& queries) {
+    void checkCorpusSchema(std::string_view name,
+                           const std::vector<std::string>& syncOutcomes,
+                           const std::vector<CorpusQuery>& queries) {
         const CorpusDatabase database{name};
         const std::string header = generatedHeader(database.path);
 
@@ -327,7 +355,12 @@ namespace {
         }
 
         const std::vector<std::vector<std::string>> printed =
-            runProgram(header, programSource(generated, database.path), generated.size());
+            runProgram(header, programSource(generated, database.path), generated.size() + 1);
+
+        // The sync block comes first, so every query below it was answered by a database that had
+        // already been through `sync_schema()`.
+        CHECK(printed.front() == syncOutcomes);
+
         for (std::size_t index = 0; index < compiled.size(); ++index) {
             const CorpusQuery& query = *compiled[index];
             INFO("query: " << query.sql);
@@ -336,7 +369,7 @@ namespace {
                 INFO("this query is pinned as known-bad; if it now matches SQLite, "
                      << query.knownBad.card << " is fixed and the expectation moves to `rows`");
             }
-            CHECK(printed[index] == rowsFromGeneratedCode(query));
+            CHECK(printed[index + 1] == rowsFromGeneratedCode(query));
         }
 
         for (const CorpusQuery& query: queries) {
@@ -356,6 +389,30 @@ namespace {
 TEST_CASE("corpus: Chinook", "[.corpus]") {
     checkCorpusSchema(
         "chinook",
+        {
+            "Album=already_in_sync",
+            "Artist=already_in_sync",
+            "Customer=already_in_sync",
+            "Employee=already_in_sync",
+            "Genre=already_in_sync",
+            "IFK_AlbumArtistId=dropped_and_recreated",
+            "IFK_CustomerSupportRepId=dropped_and_recreated",
+            "IFK_EmployeeReportsTo=dropped_and_recreated",
+            "IFK_InvoiceCustomerId=dropped_and_recreated",
+            "IFK_InvoiceLineInvoiceId=dropped_and_recreated",
+            "IFK_InvoiceLineTrackId=dropped_and_recreated",
+            "IFK_PlaylistTrackPlaylistId=dropped_and_recreated",
+            "IFK_PlaylistTrackTrackId=dropped_and_recreated",
+            "IFK_TrackAlbumId=dropped_and_recreated",
+            "IFK_TrackGenreId=dropped_and_recreated",
+            "IFK_TrackMediaTypeId=dropped_and_recreated",
+            "Invoice=already_in_sync",
+            "InvoiceLine=already_in_sync",
+            "MediaType=already_in_sync",
+            "Playlist=already_in_sync",
+            "PlaylistTrack=already_in_sync",
+            "Track=already_in_sync",
+        },
         {
             {.sql = "SELECT COUNT(*) FROM Track;", .rows = {"7"}},
             {.sql = "SELECT Name FROM Artist ORDER BY ArtistId;",
@@ -449,6 +506,21 @@ TEST_CASE("corpus: Northwind", "[.corpus]") {
     checkCorpusSchema(
         "northwind",
         {
+            "Categories=already_in_sync",
+            "CustomerCustomerDemo=already_in_sync",
+            "CustomerDemographics=already_in_sync",
+            "Customers=already_in_sync",
+            "EmployeeTerritories=already_in_sync",
+            "Employees=already_in_sync",
+            "Order Details=already_in_sync",
+            "Orders=already_in_sync",
+            "Products=already_in_sync",
+            "Regions=already_in_sync",
+            "Shippers=already_in_sync",
+            "Suppliers=already_in_sync",
+            "Territories=already_in_sync",
+        },
+        {
             {.sql = "SELECT COUNT(*) FROM Products;", .rows = {"5"}},
             {.sql = "SELECT ProductName FROM Products ORDER BY ProductID;",
              .rows = {"Chai", "Chang", "Aniseed Syrup", "Chef Antons Cajun Seasoning", "Chef Antons Gumbo Mix"}},
@@ -485,6 +557,12 @@ TEST_CASE("corpus: sqlite_orm prepared-statement tests", "[.corpus]") {
     checkCorpusSchema(
         "sqlite_orm_prepared",
         {
+            "user_id_index=dropped_and_recreated",
+            "users=already_in_sync",
+            "users_and_visits=already_in_sync",
+            "visits=already_in_sync",
+        },
+        {
             {.sql = "SELECT name FROM users ORDER BY id;", .rows = {"Team BS", "Shy'm", "Maître Gims"}},
             {.sql = "SELECT COUNT(*) FROM visits;", .rows = {"5"}},
             {.sql = "SELECT user_id, COUNT(*) FROM visits GROUP BY user_id ORDER BY user_id;",
@@ -502,6 +580,14 @@ TEST_CASE("corpus: sqlite_orm prepared-statement tests", "[.corpus]") {
 
 TEST_CASE("corpus: sqlite_orm trigger tests", "[.corpus]") {
     checkCorpusSchema("sqlite_orm_triggers",
+                      {
+                          "test_delete=already_in_sync",
+                          "test_insert=already_in_sync",
+                          "test_update=already_in_sync",
+                          "trigger_delete=dropped_and_recreated",
+                          "trigger_insert=dropped_and_recreated",
+                          "trigger_update=dropped_and_recreated",
+                      },
                       {
                           {.sql = "SELECT sql_id, sql_text, sql_x, sql_y FROM test_insert ORDER BY sql_id;",
                            .rows = {"1|SQLite trigger|20|2", "123|HelloTrigger|12|13"}},

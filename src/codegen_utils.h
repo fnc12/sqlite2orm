@@ -238,6 +238,16 @@ namespace sqlite2orm {
      */
     int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode);
     /**
+     *  Whether a COLLATE written after the SQL sqlite_orm serializes the node as applies to the
+     *  whole of it. SQLite binds COLLATE tighter than every binary operator and than `NOT`, so a
+     *  COLLATE after such an expression is taken by the operand it ends in instead:
+     *  `"b" || 'x' COLLATE nocase` is `"b" || ('x' COLLATE nocase)`, and the collation lands on the
+     *  literal. What ends in no operand at all takes the COLLATE whole — a literal, a column, a
+     *  call, CAST, CASE, an IN over a value list — and so does a prefix unary operator, which
+     *  SQLite binds tighter than COLLATE. Checked against sqlite3 3.51.0.
+     */
+    bool trailingCollateBindsWholeExpression(const AstNode& astNode);
+    /**
      *  True when the node stands for an AND or an OR, the two operators SQLite binds looser than
      *  every predicate. A predicate serializer leaves its argument bare, so such an argument takes
      *  the predicate into itself: `is_null(or_(1, 0))` comes out `1 OR 0 IS NULL`, which SQLite

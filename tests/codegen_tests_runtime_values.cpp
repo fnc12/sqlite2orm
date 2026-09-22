@@ -1705,3 +1705,51 @@ TEST_CASE("runtime: a select naming its table inside a MATCH alone returns the r
                           });
     REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "hello world", "1"});
 }
+
+// A subquery over the table the outer FROM already names leaves a mention that FROM covers, so the
+// outer select looked like it had a FROM to infer while its own code named nothing at all: every
+// statement below went out without its table and answered with a single row (card
+// 1868936178586092581). Expected rows checked against sqlite3 3.51 over `users(a INTEGER)` holding
+// 1, 2 and 3.
+TEST_CASE("runtime: a select whose subquery names its own table returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users);"),
+        generate("SELECT (SELECT 1 FROM users LIMIT 1) FROM users;"),
+        generate("SELECT 1 FROM users WHERE (SELECT 1 FROM users LIMIT 1);"),
+        generate("SELECT 1 FROM users ORDER BY (SELECT 1 FROM users LIMIT 1);"),
+        generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users) LIMIT 2;"),
+        generate("SELECT 1 FROM users u WHERE EXISTS (SELECT 1 FROM users);"),
+        generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users));"),
+        generate("SELECT row_number() OVER () FROM users WHERE EXISTS (SELECT 1 FROM users);"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))));",
+                "auto rows = storage.select(select(1, from<Users>(), limit(1)), from<Users>());",
+                "auto rows = storage.select(1, from<Users>(), where(select(1, from<Users>(), limit(1))));",
+                "auto rows = storage.select(1, from<Users>(), order_by(select(1, from<Users>(), limit(1))));",
+                "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))), limit(2));",
+                "auto rows = storage.select(1, from<alias_a<Users>>(), where(exists(select(1, from<Users>()))));",
+                "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>(), "
+                "where(exists(select(1, from<Users>())))))));",
+                "auto rows = storage.select(row_number().over(), from<Users>(), "
+                "where(exists(select(1, from<Users>()))));",
+            });
+    REQUIRE(selectedRowValues(statements) ==
+            std::vector<std::string>{"1,1,1", "1,1,1", "1,1,1", "1,1,1", "1,1", "1,1,1", "1,1,1", "1,2,3"});
+}
+
+// The same shape with a column mention inside the subquery: sqlite_orm collected that mention into
+// the outer FROM and the rows came out right by accident. Writing the FROM out is what stops the
+// outer level from leaning on what a subquery named.
+TEST_CASE("runtime: a select leaning on a mention its subquery made returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM users WHERE EXISTS (SELECT a FROM users);"),
+        generate("SELECT 1 FROM users ORDER BY (SELECT a FROM users LIMIT 1);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(1, from<Users>(), where(exists(select(&Users::a))));",
+                              "auto rows = storage.select(1, from<Users>(), order_by(select(&Users::a, limit(1))));",
+                          });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "1,1,1"});
+}

@@ -132,9 +132,16 @@ suite — each next to the seed rows the tests run it with, and each naming wher
 under what licence. `tests/corpus_tests.cpp` runs the whole product path on every one of them:
 build a database from the schema, generate the storage header for it, generate the code for a set
 of queries, compile and link the lot against sqlite_orm, run it, and require that every row equals
-both the literal written in the test and what SQLite itself answers on the same database. A query
-the generator gets wrong today is pinned as `knownBad` with the card that tracks it, so the corpus
-stays usable while the bug waits and goes red the day it is fixed.
+both the literal written in the test and what SQLite itself answers on the same database. The
+program starts where a user starts with a database of their own: it calls `sync_schema()` on that
+database before it reads anything, and the outcome per table, index and trigger is a literal in the
+test too — a header that disagrees with the schema SQLite stores makes sqlite_orm rebuild the table
+and take its rows with it, and the queries under the sync are what the schema came through it with.
+It calls `sync_schema()` a second time as well, and that block has to say `already_in_sync` for
+everything: a header a database never converges with is one that tears the user's indexes and
+triggers down and rebuilds them on every run of their program.
+A query the generator gets wrong today is pinned as `knownBad` with the card that tracks it, so the
+corpus stays usable while the bug waits and goes red the day it is fixed.
 
 Compiling and linking a program per schema costs seconds apiece, and the corpus grows with every
 schema worth watching, so these cases are hidden from the default run and have a ctest name of

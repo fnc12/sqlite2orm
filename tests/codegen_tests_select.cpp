@@ -1090,6 +1090,83 @@ TEST_CASE("codegen: a call over a column that is not a schema column spells no r
     REQUIRE(result.warnings.size() == 1);
 }
 
+// A scalar subquery carries a scope of its own: the sources ITS select names, which are not the
+// ones the outer select stands in. The decision the outer result column makes about it — whether
+// the row needs an `as_optional` around it, which is the type the call is read back as — is
+// therefore answered over the nested FROM clause, and the argument is typed from the field the
+// generated code actually writes. Asking the outer scope resolved a name of the inner select to a
+// same-named column of an outer table and answered a clash that is not there; both versions
+// compile, so the difference only ever shows up in the row type the caller gets.
+TEST_CASE("codegen: a call inside a scalar subquery is typed by the subquery's own sources") {
+    // `a` is `u`'s TEXT column, which reduces with the `'x'` beside it: no spelled type, and the
+    // nullability stays sqlite_orm's own. The outer `t.a` is an `int64_t` column of the same name,
+    // and answering from it would have spelled `<std::string>` and widened the row.
+    auto result = generateLastOfBatch(
+        "CREATE TABLE t(a INTEGER); CREATE TABLE u(a TEXT); SELECT (SELECT coalesce(a, 'x') FROM u) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(select(coalesce(&U::a, \"x\")), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    // The same over the qualified spelling, and over a table alias, whose base struct is the one
+    // the `alias_column<…>` form reads.
+    result = generateLastOfBatch(
+        "CREATE TABLE t(a INTEGER); CREATE TABLE u(a TEXT); SELECT (SELECT coalesce(u.a, 'x') FROM u) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(select(coalesce(&U::a, \"x\")), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    result = generateLastOfBatch(
+        "CREATE TABLE t(a INTEGER); CREATE TABLE u(a TEXT); SELECT (SELECT coalesce(a, 'x') FROM u AS w) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(select(coalesce(alias_column<alias_a<U>>(&U::a), \"x\")), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    // And the other direction: where the nested scope is the one with the clash, the call spells
+    // its type and the row is widened around it, exactly as an ordinary result column is.
+    result = generateLastOfBatch(
+        "CREATE TABLE t(a INTEGER); CREATE TABLE u(b TEXT); SELECT (SELECT coalesce(b, 1) FROM u) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as_optional(select(coalesce<std::string>(&U::b, 1))), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    result = generateLastOfBatch(
+        "CREATE TABLE t(a INTEGER); CREATE TABLE u(b TEXT); SELECT (SELECT coalesce(b, 1) FROM u AS w) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(select(coalesce<std::string>("
+                           "alias_column<alias_a<U>>(&U::b), 1))), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    // Over a join, the reference is a member of the struct of the FIRST source whatever table
+    // declares the name — `y` of `v` comes out `&U::y` — so the type is taken from `u`, which has
+    // no such field, and the call keeps the form it was generated with. Reading `v`'s column here
+    // would have spelled a type for a field the code does not name.
+    result = generateLastOfBatch("CREATE TABLE t(z INT); CREATE TABLE u(x TEXT, k INT); CREATE TABLE v(y TEXT, k INT); "
+                                 "SELECT (SELECT coalesce(y, 1) FROM u JOIN v ON u.k=v.k) FROM t;");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(select(coalesce(&U::y, 1), join<V>(on(c(&U::k) == &V::k))), from<T>());");
+    REQUIRE(result.warnings.empty());
+
+    // A CTE of the statement shadowing a table of the batch: the nested scope reads the CTE, whose
+    // column comes out as `column<cte_0>(…)` and is typed by the SELECT the CTE was built from, so
+    // the same-named table column answers nothing for it either.
+    result = generateLastOfBatch("CREATE TABLE c(a TEXT); CREATE TABLE t(z INT); "
+                                 "WITH c(a) AS (SELECT 1) SELECT (SELECT coalesce(a, 1) FROM c) FROM t;");
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte_0 = decltype(1_ctealias);\n"
+                           "constexpr auto c__a = colalias_a{};\n"
+                           "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= c__a)), "
+                           "select(select(coalesce(column<cte_0>(c__a), 1)), from<T>()));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using "
+                 "namespace sqlite_orm::literals` scope for `_ctealias`"}});
+
+    // A reference the nested scope does not name is not answered for at all: over `FROM u` the
+    // outer `t.a` of a correlated subquery comes out `&U::a`, a member of a struct that declares
+    // no such field, and a type taken from `t` would be read through a field the code never names.
+    result = generateLastOfBatch(
+        "CREATE TABLE t(a INTEGER); CREATE TABLE u(b TEXT); SELECT (SELECT coalesce(a, 'x') FROM u) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(select(coalesce(&U::a, \"x\")), from<T>());");
+    REQUIRE(result.warnings.empty());
+}
+
 // A built-in answers NULL over arguments that hold none far more often than it merely propagates
 // one, so a call is ruled nullable unless the function is known to answer NULL for no reason other
 // than a NULL argument. Every expression here is NULL in libsqlite3 3.45.1, the version this

@@ -1,6 +1,7 @@
 #include "codegen_utils.h"
 #include "codegen_context.h"
 #include "codegen_forms.h"
+#include "select_scope_columns.h"
 
 #include <sqlite2orm/utils.h>
 #include <sqlite2orm/validator.h>
@@ -2385,12 +2386,12 @@ namespace sqlite2orm {
          *  read back into — see `functionCallResultTypeArgument`.
          */
         bool generatedFunctionResultIsAlreadyNullable(const FunctionCallNode& functionCall,
-                                                      const CodeGeneratorContext& context) {
+                                                      const ReferencedColumnResolver& resolveColumn) {
             const std::string functionLower = toLowerAscii(functionCall.name);
             if (iifNotInItsThreeArgumentForm(functionCall, functionLower)) {
                 return false;
             }
-            if (!functionCallResultTypeArgument(functionCall, context).empty()) {
+            if (!functionCallSpelledResultType(functionCall, resolveColumn).empty()) {
                 // A call that spells its result type is read back as exactly that type, and the
                 // types spelled — `std::string`, `std::vector<char>` — hold no NULL, so the
                 // widening this answers for is back on.
@@ -3021,100 +3022,123 @@ namespace sqlite2orm {
         });
     }
 
-    bool selectResultNeedsAsOptional(const AstNode& astNode, const CodeGeneratorContext& context) {
-        // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
-        // the result column comes out as — and with it the type the row is read back into — is the
-        // one the operand under them comes out as.
-        const AstNode& generatedNode = generatedOperandNode(astNode);
-        if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
-            switch (binaryOp->binaryOperator) {
-                case BinaryOperator::isOp:
-                case BinaryOperator::isNot:
-                case BinaryOperator::isDistinctFrom:
-                case BinaryOperator::isNotDistinctFrom:
-                    // Not generated as a C++ binary operator, and never reaching codegen at all:
-                    // the validator rejects the IS family.
+    namespace {
+
+        /**
+         *  `selectResultNeedsAsOptional` over one scope: `resolveColumn` answers what the emitter
+         *  writes a reference of the select the column belongs to as, which is the select this
+         *  stands in and not always the one the context holds — a scalar subquery carries a scope
+         *  of its own, and the descent into it swaps the resolver for that scope's.
+         */
+        bool resultNeedsAsOptional(const AstNode& astNode,
+                                   const CodeGeneratorContext& context,
+                                   const ReferencedColumnResolver& resolveColumn) {
+            // A COLLATE and a unary plus emit their operand and nothing else, so the sqlite_orm node
+            // the result column comes out as — and with it the type the row is read back into — is the
+            // one the operand under them comes out as.
+            const AstNode& generatedNode = generatedOperandNode(astNode);
+            if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+                switch (binaryOp->binaryOperator) {
+                    case BinaryOperator::isOp:
+                    case BinaryOperator::isNot:
+                    case BinaryOperator::isDistinctFrom:
+                    case BinaryOperator::isNotDistinctFrom:
+                        // Not generated as a C++ binary operator, and never reaching codegen at all:
+                        // the validator rejects the IS family.
+                        return false;
+                    default:
+                        // The JSON arrows are generated as a `json_extract<std::string>()` call, whose
+                        // result type is as much the type the row is read back into as an operator's
+                        // is, and a `std::string` reads a NULL back as an empty string.
+                        return expressionMayBeNull(generatedNode);
+                }
+            }
+            if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+                // A unary operator is typed from the operator alone too — `-x` is generated as the
+                // subtraction `(c(0) - x)`, `~x` as a `bitwise_not_t`. A sign folded into a numeric
+                // constant leaves no operator behind, but a constant is never NULL either, so
+                // `expressionMayBeNull` already answers no for it.
+                if (unaryOp->unaryOperator == UnaryOperator::minus &&
+                    negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate) {
+                    // The one form codegen already warns has no working sqlite_orm spelling: it does
+                    // not compile at all, so there is no result type to widen.
                     return false;
-                default:
-                    // The JSON arrows are generated as a `json_extract<std::string>()` call, whose
-                    // result type is as much the type the row is read back into as an operator's
-                    // is, and a `std::string` reads a NULL back as an empty string.
-                    return expressionMayBeNull(generatedNode);
+                }
+                return expressionMayBeNull(generatedNode);
             }
-        }
-        if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
-            // A unary operator is typed from the operator alone too — `-x` is generated as the
-            // subtraction `(c(0) - x)`, `~x` as a `bitwise_not_t`. A sign folded into a numeric
-            // constant leaves no operator behind, but a constant is never NULL either, so
-            // `expressionMayBeNull` already answers no for it.
-            if (unaryOp->unaryOperator == UnaryOperator::minus &&
-                negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate) {
-                // The one form codegen already warns has no working sqlite_orm spelling: it does
-                // not compile at all, so there is no result type to widen.
-                return false;
+            if (dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
+                dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
+                // sqlite_orm types `between_t`, `in_t`, `like_t` and `glob_t` — and the
+                // `negated_condition_t` a NOT form comes out as — as `bool`, so a NULL row was read
+                // back as false. A MATCH is left out: SQLite refuses `a MATCH 'x'` as a result column
+                // outside an FTS table, and sqlite_orm has no result type for `match_t` either.
+                return expressionMayBeNull(generatedNode);
             }
-            return expressionMayBeNull(generatedNode);
-        }
-        if (dynamic_cast<const BetweenNode*>(&generatedNode) || dynamic_cast<const InNode*>(&generatedNode) ||
-            dynamic_cast<const LikeNode*>(&generatedNode) || dynamic_cast<const GlobNode*>(&generatedNode)) {
-            // sqlite_orm types `between_t`, `in_t`, `like_t` and `glob_t` — and the
-            // `negated_condition_t` a NOT form comes out as — as `bool`, so a NULL row was read
-            // back as false. A MATCH is left out: SQLite refuses `a MATCH 'x'` as a result column
-            // outside an FTS table, and sqlite_orm has no result type for `match_t` either.
-            return expressionMayBeNull(generatedNode);
-        }
-        if (dynamic_cast<const CastNode*>(&generatedNode)) {
-            // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
-            // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
-            return expressionMayBeNull(generatedNode);
-        }
-        if (dynamic_cast<const CaseNode*>(&generatedNode)) {
-            // `case_t<R, …>` is typed R, and R is the type inferred for the first branch's result —
-            // `int` for a branch holding a NULL — so a CASE that answers NULL was read back as 0:
-            // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
-            // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
-            // NULL. The inference never names a nullable type, so nothing here is already widened.
-            return expressionMayBeNull(generatedNode);
-        }
-        if (auto* subquery = dynamic_cast<const SubqueryNode*>(&generatedNode)) {
-            // A scalar subquery is read back through the type its own result column comes out as:
-            // `(SELECT 1 / 0)` is generated as the nested `select(c(1) / 0)`, and sqlite_orm types
-            // a `select_t` as the column list it carries, so the `double` of the division is what
-            // the outer row holds. The widening belongs here rather than inside the nested
-            // `select(...)`: `as_optional` is the widening of a RESULT column, and the generator
-            // the nested select shares with a view body, a CTE, an IN and an INSERT ... SELECT
-            // hands its columns to no caller. Wrapping the subquery keeps its SQL byte for byte —
-            // `as_optional` serializes its operand and nothing else.
-            auto* nestedSelect = dynamic_cast<const SelectNode*>(subquery->select.get());
-            // A compound subquery is typed from the common type of its parts, and a nested WITH is
-            // not mapped to sqlite_orm codegen at all. Both are left to the arms that own them.
-            if (!nestedSelect || nestedSelect->columns.size() != 1u || !nestedSelect->columns.at(0).expression) {
-                return false;
+            if (dynamic_cast<const CastNode*>(&generatedNode)) {
+                // `cast_t<T, E>` is typed T, the very type the CAST asks for, so a NULL row was read
+                // back as the default of that type: `CAST(a AS TEXT)` came back as the empty string.
+                return expressionMayBeNull(generatedNode);
             }
-            // What this arm does not cover is the NULL the subquery itself answers: SQLite reads a
-            // scalar subquery over an empty rowset as NULL, so `(SELECT a FROM t)` over a NOT NULL
-            // column is NULL on an empty `t` and still reads back as 0. Whether the column the
-            // nested select names is already nullable is the table's to answer, and no schema
-            // reaches this layer. A known hole, carded separately.
-            return selectResultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context);
-        }
-        if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
-            if (functionCall->over) {
-                // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
-                // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
-                // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
-                // nullable argument carries its nullability through on its own. What this arm does
-                // not cover is the NULL the window itself answers: over a NOT NULL column the
-                // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
-                // first row, and that NULL still reads back as 0. A known hole, carded separately.
-                return false;
+            if (dynamic_cast<const CaseNode*>(&generatedNode)) {
+                // `case_t<R, …>` is typed R, and R is the type inferred for the first branch's result —
+                // `int` for a branch holding a NULL — so a CASE that answers NULL was read back as 0:
+                // `SELECT CASE WHEN 1 THEN NULL ELSE 0 END` came out as
+                // `case_<int>().when(1, then(nullptr)).else_(0).end()` and read 0 where SQLite answers
+                // NULL. The inference never names a nullable type, so nothing here is already widened.
+                return expressionMayBeNull(generatedNode);
             }
-            if (generatedFunctionResultIsAlreadyNullable(*functionCall, context)) {
-                return false;
+            if (auto* subquery = dynamic_cast<const SubqueryNode*>(&generatedNode)) {
+                // A scalar subquery is read back through the type its own result column comes out as:
+                // `(SELECT 1 / 0)` is generated as the nested `select(c(1) / 0)`, and sqlite_orm types
+                // a `select_t` as the column list it carries, so the `double` of the division is what
+                // the outer row holds. The widening belongs here rather than inside the nested
+                // `select(...)`: `as_optional` is the widening of a RESULT column, and the generator
+                // the nested select shares with a view body, a CTE, an IN and an INSERT ... SELECT
+                // hands its columns to no caller. Wrapping the subquery keeps its SQL byte for byte —
+                // `as_optional` serializes its operand and nothing else.
+                auto* nestedSelect = dynamic_cast<const SelectNode*>(subquery->select.get());
+                // A compound subquery is typed from the common type of its parts, and a nested WITH is
+                // not mapped to sqlite_orm codegen at all. Both are left to the arms that own them.
+                if (!nestedSelect || nestedSelect->columns.size() != 1u || !nestedSelect->columns.at(0).expression) {
+                    return false;
+                }
+                // What this arm does not cover is the NULL the subquery itself answers: SQLite reads a
+                // scalar subquery over an empty rowset as NULL, so `(SELECT a FROM t)` over a NOT NULL
+                // column is NULL on an empty `t` and still reads back as 0. Whether the column the
+                // nested select names is already nullable is the table's to answer, and no schema
+                // reaches this layer. A known hole, carded separately.
+                // The nested select names its own sources, so what its column is read back through is
+                // answered over ITS FROM clause: asking the outer scope resolved a name of the inner
+                // select to a same-named column of an outer table and typed the call from a field the
+                // generated code does not read.
+                const SelectScopeColumns nestedScope(*nestedSelect, context);
+                return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, nestedScope.resolver());
             }
-            return expressionMayBeNull(generatedNode);
+            if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+                if (functionCall->over) {
+                    // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
+                    // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
+                    // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
+                    // nullable argument carries its nullability through on its own. What this arm does
+                    // not cover is the NULL the window itself answers: over a NOT NULL column the
+                    // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
+                    // first row, and that NULL still reads back as 0. A known hole, carded separately.
+                    return false;
+                }
+                if (generatedFunctionResultIsAlreadyNullable(*functionCall, resolveColumn)) {
+                    return false;
+                }
+                return expressionMayBeNull(generatedNode);
+            }
+            return false;
         }
-        return false;
+
+    }  // namespace
+
+    bool selectResultNeedsAsOptional(const AstNode& astNode, const CodeGeneratorContext& context) {
+        return resultNeedsAsOptional(astNode, context, [&context](const AstNode& argument) {
+            return context.findReferencedColumn(argument);
+        });
     }
 
     std::optional<std::string> generatedResultColumnCppType(const AstNode& astNode) {

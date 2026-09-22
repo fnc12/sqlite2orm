@@ -1,6 +1,7 @@
 #include "codegen_ddl.h"
 #include "codegen_context.h"
 #include "codegen_utils.h"
+#include "select_scope_columns.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
@@ -653,57 +654,19 @@ namespace sqlite2orm {
         /** Resolves view SELECT output expressions to C++ field types using tables known to the context. */
         struct ViewFieldTypeInferrer {
             const CodeGeneratorContext& context;
-            /** Raw FROM table names in order; aliases resolved separately. */
-            std::vector<std::string> fromTables;
-            std::map<std::string, std::string> tableByAliasNorm;
+            /** The sources the view's own SELECT names, which is the scope its expressions read. */
+            SelectScopeColumns scope;
 
             explicit ViewFieldTypeInferrer(const CodeGeneratorContext& context, const SelectNode& selectNode) :
-                context(context) {
-                for (const FromClauseItem& fromItem: selectNode.fromClause) {
-                    if (fromItem.table.derivedSelect || !fromItem.table.tableFunctionArgs.empty()) {
-                        continue;
-                    }
-                    const std::string rawTable = stripIdentifierQuotes(fromItem.table.tableName);
-                    this->fromTables.push_back(rawTable);
-                    if (fromItem.table.alias) {
-                        this->tableByAliasNorm[normalizeSqlIdentifier(*fromItem.table.alias)] = rawTable;
-                    }
-                }
-            }
+                context(context), scope(selectNode, context) {}
 
             const SourceTableColumn* resolveQualified(std::string_view tableOrAlias,
                                                       std::string_view columnName) const {
-                const auto aliasIterator = this->tableByAliasNorm.find(normalizeSqlIdentifier(tableOrAlias));
-                const std::string_view tableName = aliasIterator != this->tableByAliasNorm.end()
-                                                       ? std::string_view(aliasIterator->second)
-                                                       : tableOrAlias;
-                return this->context.findSourceTableColumn(tableName, columnName);
+                return this->scope.findQualified(tableOrAlias, columnName);
             }
 
             const SourceTableColumn* resolveUnqualified(std::string_view columnName) const {
-                for (const std::string& tableName: this->fromTables) {
-                    if (const SourceTableColumn* column = this->context.findSourceTableColumn(tableName, columnName)) {
-                        return column;
-                    }
-                }
-                return nullptr;
-            }
-
-            /**
-             *  The schema column an argument of a call in this view's body is read back through,
-             *  and `nullptr` for every other argument — the answer `functionCallSpelledResultType`
-             *  needs, over the sources this SELECT names rather than over the context's scope.
-             */
-            const SourceTableColumn* resolveArgumentColumn(const AstNode& argument) const {
-                // A COLLATE or a unary plus generates its operand and nothing else.
-                const AstNode& valueNode = generatedOperandNode(argument);
-                if (auto* qualifiedRef = dynamic_cast<const QualifiedColumnRefNode*>(&valueNode)) {
-                    return this->resolveQualified(qualifiedRef->tableName, qualifiedRef->columnName);
-                }
-                if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
-                    return this->resolveUnqualified(columnRef->columnName);
-                }
-                return nullptr;
+                return this->scope.findUnqualified(columnName);
             }
 
             std::optional<InferredFieldType> inferFunctionCall(const FunctionCallNode& functionCall) const {
@@ -751,12 +714,12 @@ namespace sqlite2orm {
                 // to disagree, and the same function answers both. A column argument is resolved
                 // here against the FROM clause of the view's own SELECT: that select is generated
                 // as a subquery, which leaves the context with none of the scope it named, so
-                // asking the context would answer nothing for every column of a view body.
+                // asking the context would answer nothing for every column of a view body. That
+                // resolution is `SelectScopeColumns`, shared with the one other model standing
+                // outside the scope it asks about — a result column deciding about a scalar
+                // subquery nested in it.
                 auto spelledOr = [&](std::optional<InferredFieldType> deduced) -> std::optional<InferredFieldType> {
-                    const std::string spelledType =
-                        functionCallSpelledResultType(functionCall, [this](const AstNode& argument) {
-                            return this->resolveArgumentColumn(argument);
-                        });
+                    const std::string spelledType = functionCallSpelledResultType(functionCall, this->scope.resolver());
                     if (spelledType.empty()) {
                         return deduced;
                     }
@@ -1038,12 +1001,12 @@ namespace sqlite2orm {
                 const SelectColumn& selectColumn = firstSelect->columns.at(columnIndex);
                 if (!selectColumn.expression) {
                     // Bare `SELECT *`: expand every FROM table's columns.
-                    if (inferrer.fromTables.empty()) {
+                    if (inferrer.scope.sourceNames().empty()) {
                         parts.warnings.push_back("CREATE VIEW " + displayName +
                                                  ": cannot derive view columns from SELECT *");
                         return parts;
                     }
-                    for (const std::string& tableName: inferrer.fromTables) {
+                    for (const std::string& tableName: inferrer.scope.sourceNames()) {
                         if (!expandAllColumnsOf(tableName)) {
                             parts.warnings.push_back("CREATE VIEW " + displayName + ": columns of table `" + tableName +
                                                      "` are unknown; cannot derive view columns from SELECT *");
@@ -1054,11 +1017,7 @@ namespace sqlite2orm {
                 }
                 if (auto* qualifiedAsterisk =
                         dynamic_cast<const QualifiedAsteriskNode*>(selectColumn.expression.get())) {
-                    std::string_view sourceTable = qualifiedAsterisk->tableName;
-                    const auto aliasIterator = inferrer.tableByAliasNorm.find(normalizeSqlIdentifier(sourceTable));
-                    if (aliasIterator != inferrer.tableByAliasNorm.end()) {
-                        sourceTable = aliasIterator->second;
-                    }
+                    const std::string_view sourceTable = inferrer.scope.sourceForAlias(qualifiedAsterisk->tableName);
                     if (!expandAllColumnsOf(sourceTable)) {
                         parts.warnings.push_back("CREATE VIEW " + displayName + ": columns of table `" +
                                                  std::string(sourceTable) +
@@ -1106,9 +1065,7 @@ namespace sqlite2orm {
                 if (selectColumn.expression) {
                     if (auto warning = commonArgumentTypeWarning(*selectColumn.expression,
                                                                  "view " + rawViewName + ": column `" + sqlName + "`",
-                                                                 [&inferrer](const AstNode& argument) {
-                                                                     return inferrer.resolveArgumentColumn(argument);
-                                                                 })) {
+                                                                 inferrer.scope.resolver())) {
                         parts.warnings.push_back(std::move(*warning));
                     }
                 }

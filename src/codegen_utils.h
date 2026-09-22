@@ -147,9 +147,18 @@ namespace sqlite2orm {
      *  `std::common_type` reduces the C++ types of two arguments only where one converts to the
      *  other: a text next to a number has no common type, and neither has a BLOB next to anything
      *  else, so the call — and with it the whole `storage.select(...)` around it — does not
-     *  compile. Where the generated types say there is no common type, the call spells the one
-     *  type that reads every storage class back instead: `std::vector<char>` where a BLOB takes
-     *  part, which carries its bytes whole, and `std::string` otherwise.
+     *  compile. Where the generated types say there is no common type, the call spells a type of
+     *  its own, picked over the arguments that carry a value — a NULL carries none, SQLite
+     *  answering such a call with one of the others, and the `std::optional` a nullable column
+     *  arrives in is a wrapper around a value rather than a value:
+     *  - where every one of them carries a NUMBER, the number they reduce to over the lattice
+     *    `bool` < `int` < {`int64_t`, `double`} — the very type `std::common_type` would have
+     *    answered had the NULLs and the wrappers not been in the way. `int64_t` and `double` are
+     *    siblings with nothing above them: a `double` loses every integer past 2^53 and an
+     *    `int64_t` the fractional part of a REAL, so that pair carries no number at all;
+     *  - `std::vector<char>` where a BLOB takes part, which carries its bytes whole;
+     *  - `std::string` otherwise, which reads every storage class back as its text — a number
+     *    comes back as its digits, which is what `commonArgumentTypeWarning` reports.
      */
     std::string functionCallResultTypeArgument(const FunctionCallNode& functionCall,
                                                const CodeGeneratorContext& context);
@@ -702,10 +711,11 @@ namespace sqlite2orm {
     /**
      *  The warning a column read back through a COALESCE, IFNULL, NULLIF or IIF call whose
      *  arguments have no common C++ type carries, and nullopt for every other column. Such a call
-     *  spells its result type (see `functionCallResultTypeArgument`) to compile at all, and that
-     *  type reads every storage class back as its text — a number comes back as its digits —
-     *  while the type sqlite_orm deduces for the same call over arguments of one type carries the
-     *  value as it is. The report belongs to the column rather than to the call: the type is what
+     *  spells its result type (see `functionCallResultTypeArgument`) to compile at all, and where
+     *  that type is the text fallback it reads every storage class back as its text — a number
+     *  comes back as its digits — while the type sqlite_orm deduces for the same call over
+     *  arguments of one type carries the value as it is. A call whose arguments all carry a number
+     *  spells that number instead and has nothing to lose, so it carries no warning either. The report belongs to the column rather than to the call: the type is what
      *  a value is read back into, and a call in a WHERE or an ORDER BY hands its value to nobody.
      *  `subject` names the column the message opens with — `"result column"` for a column of a
      *  SELECT, `"view v: column `c`"` for a field of a view's struct, which is read back through

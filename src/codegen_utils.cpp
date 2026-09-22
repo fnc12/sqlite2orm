@@ -2488,9 +2488,10 @@ namespace sqlite2orm {
                 return false;
             }
             if (!functionCallSpelledResultType(functionCall, resolveColumn).empty()) {
-                // A call that spells its result type is read back as exactly that type, and the
-                // types spelled — `std::string`, `std::vector<char>` — hold no NULL, so the
-                // widening this answers for is back on.
+                // A call that spells its result type is read back as exactly that type, and none of
+                // the types spelled holds a NULL — neither the `std::string` or `std::vector<char>`
+                // of the fallbacks nor the `bool`, `int`, `int64_t` or `double` a call whose
+                // arguments all carry a number spells — so the widening this answers for is back on.
                 return false;
             }
             return isOneOfFunctions(functionLower,

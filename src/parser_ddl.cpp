@@ -457,8 +457,13 @@ namespace sqlite2orm {
 
         bool keyColumnRefused = false;
         auto parseKeyColumnList = [&](std::vector<KeyColumn>& cols) {
-            if (!match(TokenType::leftParen))
+            // The list is not optional: a `PRIMARY KEY` with no columns behind it used to be read
+            // as a key over nothing and generated as a bare `primary_key()`, where SQLite answers
+            // `near ")": syntax error`.
+            if (!match(TokenType::leftParen)) {
+                keyColumnRefused = true;
                 return;
+            }
             KeyColumn keyColumn;
             if (!parseKeyColumn(keyColumn)) {
                 keyColumnRefused = true;
@@ -472,7 +477,9 @@ namespace sqlite2orm {
                 }
                 cols.push_back(std::move(keyColumn));
             }
-            match(TokenType::rightParen);
+            if (!match(TokenType::rightParen)) {
+                keyColumnRefused = true;
+            }
         };
 
         auto parseTableConstraint = [&]() -> bool {
@@ -522,8 +529,9 @@ namespace sqlite2orm {
             }
         }
 
-        // A key naming anything but a column — `PRIMARY KEY(1)`, or the expression SQLite answers
-        // with `expressions prohibited in PRIMARY KEY and UNIQUE constraints` — is no table at all.
+        // A key naming anything but a list of columns — `PRIMARY KEY(1)`, or the expression SQLite
+        // answers with `expressions prohibited in PRIMARY KEY and UNIQUE constraints` — is no
+        // table at all.
         if (keyColumnRefused)
             return nullptr;
 

@@ -542,6 +542,22 @@ TEST_CASE("parser: CREATE TABLE - error on an expression in a table-level PRIMAR
     CHECK(parseResult.errors.front().message == "unexpected token: 1");
 }
 
+// The column list is not optional either: `PRIMARY KEY` with nothing behind it used to be read as
+// a key over no columns, where sqlite3 answers `near ")": syntax error`.
+TEST_CASE("parser: CREATE TABLE - error on a table-level PRIMARY KEY with no columns") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER, PRIMARY KEY)");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: )");
+}
+
+TEST_CASE("parser: CREATE TABLE - error on a table-level UNIQUE with no columns") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER, UNIQUE)");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: )");
+}
+
 // --- Table-level UNIQUE ---
 
 TEST_CASE("parser: CREATE TABLE - table-level UNIQUE") {

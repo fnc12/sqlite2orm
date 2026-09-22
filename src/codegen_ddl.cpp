@@ -1455,6 +1455,17 @@ namespace sqlite2orm {
                                    ", which is not generated, so the generated table has no foreign_key()");
                 continue;
             }
+            // SQLite stores a foreign key into a table that does not exist — it resolves the
+            // parent only when enforcement is on — so a schema can name a parent nothing creates.
+            // That name gets no struct either, and `references(&O::x)` would not compile at all,
+            // so the key is left out exactly as a key into an ungenerated table is.
+            if (this->context.isNameOutsideSchema(foreignKey.table)) {
+                warnings.push_back("foreign key on column '" + stripIdentifierQuotes(column.name) + "' references " +
+                                   stripIdentifierQuotes(foreignKey.table) +
+                                   ", which this schema does not create, so the generated table has no "
+                                   "foreign_key()");
+                continue;
+            }
             const auto referencedStructName = toStructName(foreignKey.table);
             std::string referencedColumnName;
             if (!foreignKey.column.empty()) {
@@ -1509,6 +1520,15 @@ namespace sqlite2orm {
                                    stripIdentifierQuotes(tableForeignKey.column) + "' references " +
                                    stripIdentifierQuotes(tableForeignKey.references.table) +
                                    ", which is not generated, so the generated table has no foreign_key()");
+                continue;
+            }
+            // Same as the column form above: a parent the schema never creates has no struct.
+            if (this->context.isNameOutsideSchema(tableForeignKey.references.table)) {
+                warnings.push_back("table-level foreign key on column '" +
+                                   stripIdentifierQuotes(tableForeignKey.column) + "' references " +
+                                   stripIdentifierQuotes(tableForeignKey.references.table) +
+                                   ", which this schema does not create, so the generated table has no "
+                                   "foreign_key()");
                 continue;
             }
             const auto referencedStructName = toStructName(tableForeignKey.references.table);

@@ -333,8 +333,8 @@ a compound of bitwise branches is still read back through `int`.
 
 ### Column constraints
 - [x] PRIMARY KEY
-- [x] PRIMARY KEY ASC (parsed, ASC/DESC skipped)
-- [x] PRIMARY KEY DESC (parsed, ASC/DESC skipped)
+- [x] PRIMARY KEY ASC → `primary_key().asc()`
+- [x] PRIMARY KEY DESC → `primary_key().desc()` (and the column is no rowid alias, unlike ASC)
 - [x] PRIMARY KEY conflict-clause → `primary_key().on_conflict_XXX()`
 - [x] PRIMARY KEY AUTOINCREMENT
 - [x] NOT NULL

@@ -715,6 +715,11 @@ TEST_CASE("codegen: CREATE TABLE - table-level PRIMARY KEY") {
 // constraint goes, the other writes the same keyword before the column list of a table
 // constraint, which SQLite has no grammar for. Should upstream start spelling the direction per
 // key column, this case goes red and asks for the table-level direction to be generated too.
+TEST_CASE("codegen: sqlite_orm writes the direction of a column-level PRIMARY KEY back") {
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a, primary_key().desc()), make_column("b", &T::b))") ==
+            R"(CREATE TABLE "t" ("a" INTEGER PRIMARY KEY DESC NOT NULL, "b" TEXT NOT NULL))");
+}
+
 TEST_CASE("codegen: sqlite_orm cannot write the direction of a table-level PRIMARY KEY") {
     REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), primary_key(&T::a, &T::b))") ==
             R"(CREATE TABLE "t" ("a" INTEGER NOT NULL, "b" TEXT NOT NULL, PRIMARY KEY("a", "b")))");
@@ -976,7 +981,7 @@ TEST_CASE("codegen: CREATE TABLE - a DESC PRIMARY KEY of a STRICT table is no al
                       "\n"
                       "auto storage = make_storage(\"\",\n"
                       "    make_table(\"t\",\n"
-                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"id\", &T::id, primary_key().desc()),\n"
                       "        make_column(\"v\", &T::v)));");
 }
 
@@ -989,7 +994,66 @@ TEST_CASE("codegen: CREATE TABLE - an ASC PRIMARY KEY of a STRICT table is still
                       "\n"
                       "auto storage = make_storage(\"\",\n"
                       "    make_table(\"t\",\n"
-                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"id\", &T::id, primary_key().asc()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// The direction is not only what tells the alias from an ordinary column, it is part of the key
+// sqlite_orm has to write back: `primary_key().desc()` serializes as `PRIMARY KEY DESC`.
+TEST_CASE("codegen: CREATE TABLE - a column-level PRIMARY KEY keeps its DESC") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY DESC, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().desc()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - a column-level PRIMARY KEY keeps its ASC") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY ASC, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().asc()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// The direction comes before the conflict clause, the order SQLite spells the column constraint
+// in — `PRIMARY KEY ON CONFLICT REPLACE DESC` is a syntax error there.
+TEST_CASE("codegen: CREATE TABLE - a DESC PRIMARY KEY with a conflict clause") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY DESC ON CONFLICT REPLACE, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().desc().on_conflict_replace()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// AUTOINCREMENT stays last: it is the one step that leaves `primary_key_t` behind for
+// `primary_key_with_autoincrement`, which has no direction to set afterwards. SQLite takes this
+// spelling and refuses the DESC one — `AUTOINCREMENT is only allowed on an INTEGER PRIMARY KEY`.
+TEST_CASE("codegen: CREATE TABLE - an ASC PRIMARY KEY with AUTOINCREMENT") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY ASC AUTOINCREMENT, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().asc().autoincrement()),\n"
                       "        make_column(\"v\", &T::v)));");
 }
 

@@ -1295,6 +1295,15 @@ namespace sqlite2orm {
             makeExpression += ",\n        make_column(\"" + rawColumnName + "\", &" + structName + "::" + cppName;
             if (column.primaryKey) {
                 std::string primaryKey = "primary_key()";
+                // The direction is part of what the key means here: an `INTEGER PRIMARY KEY DESC`
+                // is an ordinary column with an index over it rather than the rowid alias, and
+                // sqlite_orm writes it back out of `primary_key().desc()`. It goes before the
+                // conflict clause, the order SQLite spells the column constraint in.
+                if (column.primaryKeySortDirection == SortDirection::asc) {
+                    primaryKey += ".asc()";
+                } else if (column.primaryKeySortDirection == SortDirection::desc) {
+                    primaryKey += ".desc()";
+                }
                 switch (column.primaryKeyConflict) {
                     case ConflictClause::rollback:
                         primaryKey += ".on_conflict_rollback()";

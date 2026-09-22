@@ -920,8 +920,15 @@ TEST_CASE("codegen: a result column typed by the common type of its arguments re
     REQUIRE(result.code == "auto rows = storage.select(iif<std::string>(1, \"x\", 2));");
     REQUIRE(result.warnings == typeWarning("iif", "std::string", "a `const char*`", "an `int`", 8));
 
+    // A NULL carries no value of its own, so where every other argument carries a number the call
+    // is read back as that number and there is nothing lost to report.
     result = generateFull("SELECT coalesce(NULL, 1);");
-    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, 1)));");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<int>(nullptr, 1)));");
+    REQUIRE(result.warnings.empty());
+
+    // A text among the values is not a number, and the text fallback is reported as ever.
+    result = generateFull("SELECT coalesce(NULL, 1, 'x');");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, 1, \"x\")));");
     REQUIRE(result.warnings == typeWarning("coalesce", "std::string", "a `std::nullptr_t`", "an `int`", 8));
 
     result = generateFull("SELECT coalesce(x'41', 1);");
@@ -952,12 +959,19 @@ TEST_CASE("codegen: a result column over schema columns of two C++ types spells 
             "result type the call answers with where it is known");
 
     // Two nullable fields of different types, which is two `std::optional`s with no common type.
+    // Both carry a number, so the call is read back as the one they reduce to outside their
+    // wrappers — the very `double` sqlite_orm deduces for the same two fields declared NOT NULL.
     result = generateLastOfBatch("CREATE TABLE t(i INTEGER, r REAL); SELECT coalesce(i, r) FROM t;");
-    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::i, &T::r)));");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<double>(&T::i, &T::r)));");
+    REQUIRE(result.warnings.empty());
+
+    // A nullable text beside a nullable number is not two numbers, and reads back as text.
+    result = generateLastOfBatch("CREATE TABLE t(b TEXT, r REAL); SELECT coalesce(b, r) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(&T::b, &T::r)));");
     REQUIRE(result.warnings.size() == 1);
     REQUIRE(result.warnings.at(0).message ==
             "result column computed with `coalesce` comes back as text: sqlite_orm types the call as the common "
-            "C++ type of its arguments, and a column typed `std::optional<int64_t>` next to a column typed "
+            "C++ type of its arguments, and a column typed `std::optional<std::string>` next to a column typed "
             "`std::optional<double>` has none, so the call is generated as `coalesce<std::string>(…)` — a number "
             "comes back as its digits. Spell the result type the call answers with where it is known");
 
@@ -1018,31 +1032,31 @@ TEST_CASE("codegen: a call over a column that is not a schema column spells no r
     // A CTE column, named plainly and qualified with the CTE.
     auto result =
         generateLastOfBatch("CREATE TABLE t1(a TEXT NOT NULL); WITH c(a) AS (SELECT 1) SELECT coalesce(a, 1) FROM c;");
-    REQUIRE(result.code ==
-            "using namespace sqlite_orm::literals;\n"
-            "using cte_0 = decltype(1_ctealias);\n"
-            "constexpr auto c__a = colalias_a{};\n"
-            "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= c__a)), select(coalesce(column<cte_0>(c__a), 1)));");
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte_0 = decltype(1_ctealias);\n"
+                           "constexpr auto c__a = colalias_a{};\n"
+                           "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= c__a)), "
+                           "select(coalesce(column<cte_0>(c__a), 1)));");
     REQUIRE(result.warnings == withCteWarnings);
 
     result = generateLastOfBatch(
         "CREATE TABLE t1(a TEXT NOT NULL); WITH c(a) AS (SELECT 1) SELECT coalesce(c.a, 1) FROM c;");
-    REQUIRE(result.code ==
-            "using namespace sqlite_orm::literals;\n"
-            "using cte_0 = decltype(1_ctealias);\n"
-            "constexpr auto c__a = colalias_a{};\n"
-            "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= c__a)), select(coalesce(column<cte_0>(c__a), 1)));");
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte_0 = decltype(1_ctealias);\n"
+                           "constexpr auto c__a = colalias_a{};\n"
+                           "auto rows = storage.with(cte<cte_0>(\"a\").as(select(1 >>= c__a)), "
+                           "select(coalesce(column<cte_0>(c__a), 1)));");
     REQUIRE(result.warnings == withCteWarnings);
 
     // The reverse schema, which is the same rule seen from the other side: the CTE holds the text
     // and the table the number, and the model still answers nothing for the CTE column.
     result = generateLastOfBatch(
         "CREATE TABLE t1(a INTEGER NOT NULL); WITH c(a) AS (SELECT 'x') SELECT coalesce(a, 1) FROM c;");
-    REQUIRE(result.code ==
-            "using namespace sqlite_orm::literals;\n"
-            "using cte_0 = decltype(1_ctealias);\n"
-            "constexpr auto c__a = colalias_a{};\n"
-            "auto rows = storage.with(cte<cte_0>(\"a\").as(select(\"x\" >>= c__a)), select(coalesce(column<cte_0>(c__a), 1)));");
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte_0 = decltype(1_ctealias);\n"
+                           "constexpr auto c__a = colalias_a{};\n"
+                           "auto rows = storage.with(cte<cte_0>(\"a\").as(select(\"x\" >>= c__a)), "
+                           "select(coalesce(column<cte_0>(c__a), 1)));");
     REQUIRE(result.warnings == withCteWarnings);
 
     // A column of a view: the batch's schema holds the CREATE TABLEs, so the fields a view's
@@ -1071,7 +1085,8 @@ TEST_CASE("codegen: a call over a column that is not a schema column spells no r
     // A table alias is the one qualifier that still names a schema column: the form is
     // `alias_column<alias_a<T>>(&T::b)`, which reads the very field `&T::b` does.
     result = generateLastOfBatch("CREATE TABLE t(b TEXT NOT NULL); SELECT coalesce(u.b, 1) FROM t u;");
-    REQUIRE(result.code == "auto rows = storage.select(as_optional(coalesce<std::string>(alias_column<alias_a<T>>(&T::b), 1)));");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(as_optional(coalesce<std::string>(alias_column<alias_a<T>>(&T::b), 1)));");
     REQUIRE(result.warnings.size() == 1);
 }
 

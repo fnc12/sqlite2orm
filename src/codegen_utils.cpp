@@ -1909,9 +1909,32 @@ namespace sqlite2orm {
              *  `std::optional` next to a plain type has the `std::optional` for a common type.
              */
             std::string optionalFieldType;
+            /**
+             *  The arithmetic C++ type the value has — `bool`, `int`, `int64_t` or `double`, the
+             *  inner type where the argument is a nullable column — and empty for a text, a BLOB
+             *  or a NULL. Arithmetic types reduce to one whatever wrapper they arrive in, so this
+             *  is what a call whose arguments have no common type can still be read back as.
+             */
+            std::string arithmeticType;
             /** How a warning names this type, e.g. "an `int`". */
             std::string description;
         };
+
+        /**
+         *  The arithmetic type two of them reduce to, by the conversions C++ applies between
+         *  them: a `double` takes every other one in, then an `int64_t`, then an `int`, and two
+         *  `bool`s are a `bool`. This is the type `std::common_type` answers for the two wherever
+         *  it answers at all, and the one an argument arriving inside an `std::optional` — where
+         *  it does not — still holds.
+         */
+        std::string_view widerArithmeticType(std::string_view first, std::string_view second) {
+            for (std::string_view candidate: {"double", "int64_t", "int"}) {
+                if (first == candidate || second == candidate) {
+                    return candidate;
+                }
+            }
+            return "bool";
+        }
 
         /**
          *  The kind of a C++ type a generated struct declares a field as. The spellings answered
@@ -1929,6 +1952,26 @@ namespace sqlite2orm {
                 return ArgumentTypeKind::blob;
             }
             return std::nullopt;
+        }
+
+        /** The arithmetic C++ type a generated constant holds, and empty for every other one. */
+        std::string_view constantArithmeticType(GeneratedValueCppType valueType) {
+            switch (valueType) {
+                case GeneratedValueCppType::integer32:
+                    return "int";
+                case GeneratedValueCppType::integer64Literal:
+                case GeneratedValueCppType::integer64Cast:
+                    return "int64_t";
+                case GeneratedValueCppType::boolean:
+                    return "bool";
+                case GeneratedValueCppType::real:
+                    return "double";
+                case GeneratedValueCppType::text:
+                case GeneratedValueCppType::blob:
+                case GeneratedValueCppType::null:
+                    return {};
+            }
+            return {};
         }
 
         std::optional<ArgumentTypeKind> constantValueKind(GeneratedValueCppType valueType) {
@@ -1964,7 +2007,10 @@ namespace sqlite2orm {
                 if (!kind) {
                     return std::nullopt;
                 }
-                return ArgumentCppType{*kind, {}, generatedValueTypeDescription(argument)};
+                return ArgumentCppType{*kind,
+                                       {},
+                                       std::string(constantArithmeticType(*valueType)),
+                                       generatedValueTypeDescription(argument)};
             }
             const SourceTableColumn* column = resolveColumn(argument);
             if (!column) {
@@ -1977,6 +2023,7 @@ namespace sqlite2orm {
             const std::string fieldType = column->nullable ? "std::optional<" + column->cppType + ">" : column->cppType;
             return ArgumentCppType{*kind,
                                    column->nullable ? column->cppType : std::string(),
+                                   *kind == ArgumentTypeKind::arithmetic ? column->cppType : std::string(),
                                    "a column typed `" + fieldType + "`"};
         }
 
@@ -2035,6 +2082,16 @@ namespace sqlite2orm {
             ArgumentCppType second;
             /** Whether a BLOB takes part anywhere in the reduced arguments. */
             bool holdsBlob = false;
+            /**
+             *  The arithmetic type every reduced argument that carries a value has, where they
+             *  all do, and empty where a text, a BLOB or an argument of an unknown type takes
+             *  part. A NULL carries no value type — SQLite's answer for such a call is always
+             *  another argument — so it does not take part in this, and neither does the
+             *  `std::optional` wrapper a nullable column arrives in: the value read back is the
+             *  number either way. Where this is set the call is read back as that very number,
+             *  and nothing about it is worth reporting.
+             */
+            std::string narrowedResultType;
         };
 
         std::optional<CommonArgumentTypeClash> commonArgumentTypeClash(const FunctionCallNode& functionCall,
@@ -2081,11 +2138,37 @@ namespace sqlite2orm {
             for (const ArgumentCppType& type: types) {
                 clash->holdsBlob = clash->holdsBlob || type.kind == ArgumentTypeKind::blob;
             }
+            // Where every argument that carries a value carries a number, the call answers one of
+            // those numbers, and that is what the row holds and what the code reads it back as.
+            std::string narrowed;
+            bool everyValueIsANumber = true;
+            for (const ArgumentCppType& type: types) {
+                if (type.kind == ArgumentTypeKind::null) {
+                    // A NULL is no value of its own: SQLite answers with one of the others.
+                    continue;
+                }
+                if (type.arithmeticType.empty()) {
+                    everyValueIsANumber = false;
+                    break;
+                }
+                narrowed = narrowed.empty() ? type.arithmeticType
+                                            : std::string(widerArithmeticType(narrowed, type.arithmeticType));
+            }
+            if (everyValueIsANumber) {
+                // Arguments that are all NULL leave this empty, and they have a common type anyway.
+                clash->narrowedResultType = std::move(narrowed);
+            }
             return clash;
         }
 
-        /** The type such a call spells its result as: bytes where a BLOB takes part, text otherwise. */
+        /**
+         *  The type such a call spells its result as: the number every argument of it carries
+         *  where they all carry one, bytes where a BLOB takes part, and text otherwise.
+         */
         std::string_view clashResultType(const CommonArgumentTypeClash& clash) {
+            if (!clash.narrowedResultType.empty()) {
+                return clash.narrowedResultType;
+            }
             // `std::string` is read through `sqlite3_column_text`, which stops at the first NUL
             // byte a BLOB holds, while `std::vector<char>` carries every byte of one — and reads a
             // text or a number back as its bytes just as well.
@@ -2905,7 +2988,10 @@ namespace sqlite2orm {
             return std::nullopt;
         }
         const std::optional<CommonArgumentTypeClash> clash = commonArgumentTypeClash(*functionCall, resolveColumn);
-        if (!clash) {
+        if (!clash || !clash->narrowedResultType.empty()) {
+            // A call whose arguments all carry a number is read back as that number, which is
+            // what a call with a common type would have answered too; there is nothing lost to
+            // report.
             return std::nullopt;
         }
         const std::string lowerName = toLowerAscii(functionCall->name);

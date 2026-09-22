@@ -1435,7 +1435,6 @@ TEST_CASE("runtime: a call typed by the common type of its arguments reads its v
         generate("SELECT nullif('x', 'x');"),
         generate("SELECT iif(1, 'x', 2);"),
         generate("SELECT iif(0, 'x', 2);"),
-        generate("SELECT coalesce(NULL, 1);"),
         generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT coalesce(a, 1) FROM user;").code,
         generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT nullif(a, 1) FROM user;").code,
     };
@@ -1448,14 +1447,48 @@ TEST_CASE("runtime: a call typed by the common type of its arguments reads its v
                               "auto rows = storage.select(nullif(\"x\", \"x\"));",
                               "auto rows = storage.select(iif<std::string>(1, \"x\", 2));",
                               "auto rows = storage.select(iif<std::string>(0, \"x\", 2));",
-                              "auto rows = storage.select(as_optional(coalesce<std::string>(nullptr, 1)));",
                               "auto rows = storage.select(as_optional(coalesce<std::string>(&User::a, 1)));",
                               "auto rows = storage.select(as_optional(nullif<std::string>(&User::a, 1)));",
                           });
     REQUIRE(selectedValues(statements, "std::optional<std::string>", "std::nullopt") ==
-            std::vector<std::string>{"x", "x", "x", "NULL", "x", "2", "1", "1", "NULL"});
+            std::vector<std::string>{"x", "x", "x", "NULL", "x", "2", "1", "NULL"});
     REQUIRE(selectedValues(statements, "std::optional<std::string>", "\"hi\"") ==
-            std::vector<std::string>{"x", "x", "x", "NULL", "x", "2", "1", "hi", "hi"});
+            std::vector<std::string>{"x", "x", "x", "NULL", "x", "2", "hi", "hi"});
+}
+
+// A NULL carries no value of its own — SQLite answers such a call with one of the other arguments
+// — and an `std::optional` is a wrapper around a value, not a value. So where every argument that
+// carries one carries a NUMBER, the call is read back as the number those reduce to, and not as
+// its digits through the text fallback: the generated type is the very one `std::common_type`
+// would have answered had the NULL and the wrappers not been in the way. Every value below is what
+// libsqlite3 answers for the generated SQL over the same row, checked against sqlite3 3.51.
+TEST_CASE("runtime: a call whose arguments all carry a number reads that number back") {
+    const std::vector<std::string> statements{
+        generate("SELECT coalesce(NULL, 1);"),
+        generate("SELECT coalesce(NULL, 2.5);"),
+        generate("SELECT coalesce(NULL, 1, 2.5);"),
+        generate("SELECT ifnull(NULL, 3);"),
+        generate("SELECT iif(1, NULL, 2);"),
+        generate("SELECT iif(0, NULL, 2);"),
+        generate("SELECT nullif(NULL, 1);"),
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT coalesce(NULL, a) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT nullif(NULL, a) FROM user;").code,
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(coalesce<int>(nullptr, 1)));",
+                              "auto rows = storage.select(as_optional(coalesce<double>(nullptr, 2.5)));",
+                              "auto rows = storage.select(as_optional(coalesce<double>(nullptr, 1, 2.5)));",
+                              "auto rows = storage.select(as_optional(ifnull<int>(nullptr, 3)));",
+                              "auto rows = storage.select(as_optional(iif<int>(1, nullptr, 2)));",
+                              "auto rows = storage.select(as_optional(iif<int>(0, nullptr, 2)));",
+                              "auto rows = storage.select(as_optional(nullif<int>(nullptr, 1)));",
+                              "auto rows = storage.select(as_optional(coalesce<int64_t>(nullptr, &User::a)));",
+                              "auto rows = storage.select(as_optional(nullif<int64_t>(nullptr, &User::a)));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int64_t>", "std::nullopt") ==
+            std::vector<std::string>{"1", "2.5", "1", "3", "NULL", "2", "NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int64_t>", "7") ==
+            std::vector<std::string>{"1", "2.5", "1", "3", "NULL", "2", "NULL", "7", "NULL"});
 }
 
 // A BLOB among the arguments makes the generated type `std::vector<char>` rather than

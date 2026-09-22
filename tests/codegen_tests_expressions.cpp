@@ -1463,9 +1463,18 @@ TEST_CASE("codegen: a call typed by the common type of its arguments spells the 
     REQUIRE(generate("nullif('x', 1)") == "nullif<std::string>(\"x\", 1)");
     REQUIRE(generate("iif(1, 'x', 2)") == "iif<std::string>(1, \"x\", 2)");
     // A NULL is a `std::nullptr_t`, which reduces with a `std::string` — that one has a
-    // `const char*` constructor — and with nothing else.
-    REQUIRE(generate("coalesce(NULL, 1)") == "coalesce<std::string>(nullptr, 1)");
-    REQUIRE(generate("coalesce(NULL, 2.5)") == "coalesce<std::string>(nullptr, 2.5)");
+    // `const char*` constructor — and with nothing else. It carries no value of its own, though:
+    // SQLite's answer for such a call is always one of the other arguments, so where every one of
+    // those is a number the call is read back as that number and not as its digits. `1` is an
+    // `int`, `2.5` a `double`, and the two of them together a `double`, exactly as
+    // `std::common_type` would have reduced them had the NULL not been there.
+    REQUIRE(generate("coalesce(NULL, 1)") == "coalesce<int>(nullptr, 1)");
+    REQUIRE(generate("coalesce(NULL, 2.5)") == "coalesce<double>(nullptr, 2.5)");
+    REQUIRE(generate("coalesce(NULL, 1, 2.5)") == "coalesce<double>(nullptr, 1, 2.5)");
+    REQUIRE(generate("coalesce(NULL, 9223372036854775807)") == "coalesce<int64_t>(nullptr, 9223372036854775807)");
+    // A text among them is a value that is not a number, and then the text fallback is what reads
+    // every one of them back.
+    REQUIRE(generate("coalesce(NULL, 1, 'x')") == "coalesce<std::string>(nullptr, 1, \"x\")");
     REQUIRE(generate("coalesce(x'41', 1)") == "coalesce<std::vector<char>>(std::vector<char>{'\\x41'}, 1)");
     REQUIRE(generate("coalesce(x'41', 'x')") == "coalesce<std::vector<char>>(std::vector<char>{'\\x41'}, \"x\")");
     REQUIRE(generate("coalesce(x'41', NULL)") == "coalesce<std::vector<char>>(std::vector<char>{'\\x41'}, nullptr)");

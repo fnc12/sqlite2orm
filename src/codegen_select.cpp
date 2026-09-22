@@ -293,9 +293,9 @@ namespace sqlite2orm {
         // widened here, at the one point that knows they are — and not in the generator the arms
         // share with a subquery, a view body, a CTE and an INSERT ... SELECT, whose columns go to
         // SQL itself and are read back by nobody.
-        auto inner =
-            this->coordinator.tryCodegenCompoundSelectSubexpression(compoundNode,
-                                                                    compoundSelectResultWidening(compoundNode, this->context));
+        auto inner = this->coordinator.tryCodegenCompoundSelectSubexpression(
+            compoundNode,
+            compoundSelectResultWidening(compoundNode, this->context));
         std::vector<CodegenWarning> compoundWarnings = std::move(inner.warnings);
         if (inner.code.empty()) {
             auto placeholder = unsupportedStatementPlaceholder(this->context,

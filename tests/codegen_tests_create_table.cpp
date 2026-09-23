@@ -1541,7 +1541,11 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is no C++ identifier keeps
                                                    {classicalOnlyOption(classicalCode,
                                                                         "column `first name` is not a C++ identifier, "
                                                                         "and a reflected column is named after the "
-                                                                        "member it reflects")}}}});
+                                                                        "member it reflects")}}},
+                                    {CodegenWarning{"table t: column `first name` is not a C++ identifier; the member "
+                                                    "holding it is named `first_name`",
+                                                    SourceLocation{1, 17},
+                                                    12}}});
 }
 
 // An annotation is a constant expression, and a text DEFAULT is generated as a pointer to a string
@@ -1639,4 +1643,101 @@ TEST_CASE("codegen: CREATE TABLE - the table_mapping_style decision point reache
     REQUIRE(
         decisionPointsToJson(result.decisionPoints) ==
         R"JSON([{"category":"table_mapping_style","chosenCode":"struct [[= \"t\"_orm_name]] T {\n    std::optional<int64_t> a;\n};\n\nmake_table<T>()","chosenValue":"reflection","id":1,"options":[{"code":"struct T {\n    std::optional<int64_t> a;\n};\n\nmake_table(\"t\",\n        make_column(\"a\", &T::a))","comments":[],"description":"make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)","hidden":false,"minCppStandard":14,"value":"make_table"},{"code":"struct [[= \"t\"_orm_name]] T {\n    std::optional<int64_t> a;\n};\n\nmake_table<T>()","comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"description":"C++26 reflection: annotated struct + make_table<T>()","hidden":false,"minCppStandard":26,"value":"reflection"}]}])JSON");
+}
+
+// An SQL name reaches the struct as a C++ identifier, and it is rewritten character by character:
+// `üü` and `ää` are two characters each — not the four bytes each takes — so they stay two
+// distinct members instead of collapsing into the same run of underscores, which is a struct that
+// declares one member twice and does not compile. SQLite takes non-ASCII in a bare identifier as
+// readily as in a quoted one, so this is not an exotic schema.
+TEST_CASE("codegen: CREATE TABLE - non-ASCII column names become members of their own") {
+    const auto result = generateFull("CREATE TABLE t (üü INTEGER, ää INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> u00FCu00FC;\n"
+                           "    std::optional<int64_t> u00E4u00E4;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"üü\", &T::u00FCu00FC),\n"
+                           "        make_column(\"ää\", &T::u00E4u00E4)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"table t: column `üü` is not a C++ identifier; the member holding it is named `u00FCu00FC`",
+                 SourceLocation{1, 17},
+                 2},
+                {"table t: column `ää` is not a C++ identifier; the member holding it is named `u00E4u00E4`",
+                 SourceLocation{1, 29},
+                 2}});
+}
+
+// A character above the basic multilingual plane is written the way C++ writes one, with the eight
+// hex digits of its code point; a byte that is no character at all — SQLite takes those in an
+// identifier too — is written as that byte.
+TEST_CASE("codegen: CREATE TABLE - a column name outside the basic multilingual plane") {
+    const auto result = generateFull("CREATE TABLE t (🙂 INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> U0001F642;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"🙂\", &T::U0001F642)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - a column name that is not valid UTF-8 at all") {
+    const std::string sql = "CREATE TABLE t (" + std::string(2, static_cast<char>(0x80)) + " INTEGER)";
+    const auto result = generateFull(sql);
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> x80x80;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"" +
+                               std::string(2, static_cast<char>(0x80)) + "\", &T::x80x80)));");
+}
+
+// Two names C++ has one spelling for is a member declared twice, which no amount of rewriting can
+// avoid — it happens to plain ASCII names as readily as to any other — so it is reported, anchored
+// at the name that lands on the member second, quotes and all.
+TEST_CASE("codegen: CREATE TABLE - two column names mapped to one member are reported") {
+    const auto result = generateFull("CREATE TABLE t (\"a-b\" INTEGER, \"a b\" INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a_b;\n"
+                           "    std::optional<int64_t> a_b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a-b\", &T::a_b),\n"
+                           "        make_column(\"a b\", &T::a_b)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"table t: column `a-b` is not a C++ identifier; the member holding it is named `a_b`",
+                 SourceLocation{1, 17},
+                 5},
+                {"table t: columns `a-b` and `a b` are both named `a_b` in C++; the generated struct declares that "
+                 "member twice and does not compile",
+                 SourceLocation{1, 32},
+                 5}});
+}
+
+// SQLite takes a name of no characters at all: `""` is a column called nothing, and it reads and
+// writes like any other. C++ has no identifier of no characters, so the member is named with the
+// one character that carries no letters — without it the struct declared a member with no name at
+// all, which no compiler takes.
+TEST_CASE("codegen: CREATE TABLE - an empty column name still names a member") {
+    const auto result = generateFull("CREATE TABLE t (\"\" INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> _;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"\", &T::_)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {"table t: column `` is not a C++ identifier; the member holding it is named `_`",
+                                    SourceLocation{1, 17},
+                                    2}});
 }

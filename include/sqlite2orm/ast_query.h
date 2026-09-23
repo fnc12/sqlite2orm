@@ -12,6 +12,13 @@ namespace sqlite2orm {
     struct SelectColumn {
         std::shared_ptr<AstNode> expression;
         std::string alias;
+        /**
+         *  Where `alias` stands in the source, so that a warning about the member a view field of
+         *  that name is mapped to underlines the alias itself rather than the expression before
+         *  it. Empty when there is no alias, and for a column built by hand rather than parsed; it
+         *  takes no part in equality, exactly as `AstNode::sourceSpan` does not.
+         */
+        SourceSpan aliasSpan;
 
         bool operator==(const SelectColumn& other) const {
             if (this->alias != other.alias)

@@ -364,16 +364,19 @@ namespace sqlite2orm {
         if (!expr)
             return std::nullopt;
         std::string alias;
+        SourceSpan aliasSpan;
         if (match(TokenType::kwAs)) {
             if (!atEnd()) {
                 alias = std::string(current().value);
+                aliasSpan = SourceSpan{current().location, alias};
                 advanceToken();
             }
         } else if (!atEnd() && check(TokenType::identifier)) {
             alias = std::string(current().value);
+            aliasSpan = SourceSpan{current().location, alias};
             advanceToken();
         }
-        return SelectColumn{std::shared_ptr<AstNode>(std::move(expr)), std::move(alias)};
+        return SelectColumn{std::shared_ptr<AstNode>(std::move(expr)), std::move(alias), std::move(aliasSpan)};
     }
 
     FromTableClause SelectParser::parseFromTableItem() {

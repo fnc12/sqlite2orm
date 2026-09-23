@@ -49,4 +49,27 @@ namespace sqlite2orm {
      */
     std::size_t utf8CharacterCount(std::string_view text);
 
+    /** One character read off the front of some text, as `decodeUtf8Character` reads it. */
+    struct Utf8Character {
+        /**
+         *  The code point the bytes stand for; the byte itself when they stand for none, i.e.
+         *  when `valid` is false.
+         */
+        char32_t codePoint = 0;
+        /** How many bytes the character takes, never 0 for a non-empty text and never past its end. */
+        std::size_t length = 1;
+        /** Whether the bytes are a well-formed UTF-8 character rather than a byte standing alone. */
+        bool valid = false;
+    };
+
+    /**
+     *  The character `text` begins with. Well-formed UTF-8 is decoded as one character however
+     *  many bytes it takes; anything else — a truncated sequence, an overlong one, a surrogate, a
+     *  byte past the U+10FFFF range, a continuation byte standing alone — is answered as that one
+     *  byte with `valid` false, because SQLite takes any byte from 0x80 up in an identifier
+     *  whether or not the text around it is valid UTF-8, and so does this tokenizer. `text` must
+     *  not be empty.
+     */
+    Utf8Character decodeUtf8Character(std::string_view text);
+
 }  // namespace sqlite2orm

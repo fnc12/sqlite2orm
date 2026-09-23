@@ -1649,6 +1649,31 @@ TEST_CASE("processMultiSql: the snippet of a batch with an index over an express
                     joinGeneratedCode(results));
 }
 
+// A name is rewritten into a C++ identifier character by character, and only a compiler ever says
+// whether that worked: `üü` and `ää` take four bytes each, so a rewriting that counted bytes gave
+// both of them the same four underscores and the struct declared one member twice. The literal
+// above says what the members are called; this says the header is one a compiler takes.
+TEST_CASE("processMultiSql: the snippet of a batch with non-ASCII column names compiles") {
+    const auto results = processMultiSql("CREATE TABLE t(üü INTEGER PRIMARY KEY, ää TEXT);");
+
+    REQUIRE(joinGeneratedCode(results) == std::string("struct T {\n"
+                                                      "    std::optional<int64_t> u00FCu00FC;\n"
+                                                      "    std::optional<std::string> u00E4u00E4;\n"
+                                                      "};\n\n"
+                                                      "auto storage = make_storage(\"\",\n"
+                                                      "    make_table(\"t\",\n"
+                                                      "        make_column(\"üü\", &T::u00FCu00FC, primary_key()),\n"
+                                                      "        make_column(\"ää\", &T::u00E4u00E4)));\n"));
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view compiles") {
     const auto results = processMultiSql("CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"
                                          "CREATE VIEW v1 AS SELECT a + 0x10000000000000000 AS b FROM ok1;\n"

@@ -269,6 +269,7 @@ namespace sqlite2orm {
 
     ColumnDef DdlParser::parseColumnDef() {
         std::string name(current().value);
+        SourceSpan nameSpan{current().location, name};
         advanceToken();
 
         std::string typeName;
@@ -277,6 +278,7 @@ namespace sqlite2orm {
         }
 
         ColumnDef columnDef{std::move(name), std::move(typeName)};
+        columnDef.nameSpan = std::move(nameSpan);
         parseColumnConstraints(columnDef);
         return columnDef;
     }
@@ -372,12 +374,14 @@ namespace sqlite2orm {
             return nullptr;
 
         std::vector<std::string> columnNames;
+        std::vector<SourceSpan> columnNameSpans;
         if (match(TokenType::leftParen)) {
             if (!check(TokenType::rightParen)) {
                 do {
                     if (!isColumnNameToken())
                         return nullptr;
                     columnNames.emplace_back(std::string(current().value));
+                    columnNameSpans.push_back(SourceSpan{current().location, columnNames.back()});
                     advanceToken();
                 } while (match(TokenType::comma));
             }
@@ -391,13 +395,15 @@ namespace sqlite2orm {
         if (!selectAst)
             return nullptr;
 
-        return std::make_unique<CreateViewNode>(location,
-                                                ifNotExists,
-                                                std::move(viewSchemaName),
-                                                std::move(viewName),
-                                                std::move(columnNames),
-                                                std::move(selectAst),
-                                                headerText);
+        auto viewNode = std::make_unique<CreateViewNode>(location,
+                                                         ifNotExists,
+                                                         std::move(viewSchemaName),
+                                                         std::move(viewName),
+                                                         std::move(columnNames),
+                                                         std::move(selectAst),
+                                                         headerText);
+        viewNode->columnNameSpans = std::move(columnNameSpans);
+        return viewNode;
     }
 
     AstNodePointer DdlParser::parseCreateTableTail(SourceLocation location) {

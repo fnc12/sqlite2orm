@@ -2390,3 +2390,44 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() creates the index and the t
                       "SELECT group_concat(type || ':' || name, ',') FROM (SELECT type, name FROM sqlite_master "
                       "ORDER BY name);") == "table:t,index:t_a_idx,trigger:t_trg,table:u");
 }
+
+// The row id is the one name a CREATE TABLE resolves that the table declares no column of, and a
+// CHECK of a rowid table resolves it in every spelling — so the double quotes that make an unknown
+// name a string literal elsewhere do not reach it. Written as a string, the CHECK below came out
+// `check(c("rowid") == 1)`, and this is what that costs past the compiler, which takes it: the table
+// sync_schema() creates carries `CHECK ('rowid' = 1)`, a comparison of two constants that is false
+// for every row, so nothing can be written to it — silently, the CLI exiting 0 with no warning,
+// where sqlite3 3.51.0 enforces the constraint over the actual row id. There is no member to map the
+// row id onto, so the constraint is left out and said so instead. A WITHOUT ROWID table has no row
+// id for the name to stand for, and there the string is what SQLite itself reads: that CHECK is kept
+// and syncs as the very comparison the database held.
+TEST_CASE("generateSqliteSchemaHeader: a CHECK over a double-quoted row id is left out, not made a string") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER, CHECK(\"rowid\" = 1));"
+            "CREATE TABLE w (a INTEGER PRIMARY KEY, CHECK(\"rowid\" = 1)) WITHOUT ROWID;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK constraint of table t names column 'rowid', which the table does "
+                                         "not declare: sqlite_orm maps no member onto the implicit row id, so the "
+                                         "generated table has no check()"}});
+
+    constexpr std::string_view kInsert = R"(    T row;
+    row.a = 7;
+    storage.insert(row);
+    std::cout << "rows=" << storage.count<T>() << "\n";
+)";
+
+    TempDbFile empty{makeTempDbPath()};
+    REQUIRE(syncSchemaProbeOutput(header.code, empty.path, kInsert) == "t=new_table_created\n"
+                                                                       "w=new_table_created\n"
+                                                                       "rows=1\n");
+    REQUIRE(
+        queryText(empty.path, "SELECT group_concat(sql, ' | ') FROM (SELECT sql FROM sqlite_master ORDER BY name);") ==
+        "CREATE TABLE \"t\" (\"a\" INTEGER NULL) | "
+        "CREATE TABLE \"w\" (\"a\" INTEGER PRIMARY KEY NOT NULL, CHECK ('rowid' = 1)) WITHOUT ROWID");
+}

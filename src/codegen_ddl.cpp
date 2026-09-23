@@ -1285,6 +1285,12 @@ namespace sqlite2orm {
             }
             return {std::move(result.code), {}};
         };
+        // A CHECK is the one clause of this declaration that resolves a name the table declares no
+        // column of — `rowid`, `oid`, `_rowid_` are the implicit row id there — and only while the
+        // table has a row id at all: on a WITHOUT ROWID one sqlite3 3.51.0 answers `CHECK(rowid>0)`
+        // with "no such column: rowid" and reads `CHECK("rowid">0)` as a string like any other name.
+        const auto checkClauseRule = createTable.withoutRowid ? ClauseColumnRule::columnOrDoubleQuotedString
+                                                              : ClauseColumnRule::columnOrRowIdOrDoubleQuotedString;
 
         // The reflected form of the table (C++26 `make_table<T>()` over an annotated struct,
         // sqlite_orm #1492) is built beside the classical one: the members are the same, a column
@@ -1464,8 +1470,7 @@ namespace sqlite2orm {
                 }
             }
             if (column.checkExpression) {
-                const auto checkClause =
-                    clauseExpressionCode(*column.checkExpression, true, ClauseColumnRule::columnOrDoubleQuotedString);
+                const auto checkClause = clauseExpressionCode(*column.checkExpression, true, checkClauseRule);
                 if (!checkClause.code) {
                     warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK on column '" + rawColumnName + "'",
@@ -1770,8 +1775,7 @@ namespace sqlite2orm {
         }
         for (const auto& tableCheck: createTable.checks) {
             if (tableCheck.expression) {
-                const auto checkClause =
-                    clauseExpressionCode(*tableCheck.expression, true, ClauseColumnRule::columnOrDoubleQuotedString);
+                const auto checkClause = clauseExpressionCode(*tableCheck.expression, true, checkClauseRule);
                 if (!checkClause.code) {
                     warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK constraint",

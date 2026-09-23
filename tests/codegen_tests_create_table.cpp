@@ -937,6 +937,104 @@ TEST_CASE("codegen: CREATE TABLE - a constraint over the implicit row id") {
                                          "generated table has no primary_key()"}});
 }
 
+// SQLite reads a double-quoted name as a string only where the name resolves to nothing at all, and
+// a CHECK of a rowid table resolves all three row id names: sqlite3 3.51.0 answers `CHECK("rowid" =
+// 1)` there with the row id itself, not with the string 'rowid' (measured with
+// `CHECK(typeof("rowid") = 'integer')`, which takes the insert). Everywhere else in a table
+// declaration the double quotes do carry the misfeature — a CHECK of a WITHOUT ROWID table and a
+// generated column read the same name as a string and take the statement, while the bare spelling is
+// refused ("no such column: rowid") — and a PRIMARY KEY, a UNIQUE or a foreign key column list is
+// refused in both spellings. Written as the string, `CHECK("rowid" = 1)` generated
+// `check(c("rowid") == 1)`, which syncs as `CHECK ('rowid' = 1)`: a table no row can be written to,
+// silently and without a warning.
+TEST_CASE("codegen: CREATE TABLE - a double-quoted implicit row id") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<int64_t> a;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"a\", &T::a)));";
+
+    for (const std::string& name: {std::string("rowid"), std::string("oid"), std::string("_rowid_")}) {
+        auto tableCheck = generateFull("CREATE TABLE t (a INTEGER, CHECK(\"" + name + "\" = 1))");
+        REQUIRE(tableCheck.code == table);
+        REQUIRE(tableCheck.warnings ==
+                std::vector<CodegenWarning>{{"the CHECK constraint of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no check()"}});
+
+        auto columnCheck = generateFull("CREATE TABLE t (a INTEGER CHECK(\"" + name + "\" = 1))");
+        REQUIRE(columnCheck.code == table);
+        REQUIRE(columnCheck.warnings ==
+                std::vector<CodegenWarning>{{"the CHECK on column 'a' of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated column has no check()"}});
+
+        auto primaryKey = generateFull("CREATE TABLE t (a INTEGER, PRIMARY KEY(\"" + name + "\"))");
+        REQUIRE(primaryKey.code == table);
+        REQUIRE(primaryKey.warnings ==
+                std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no primary_key()"}});
+
+        auto unique = generateFull("CREATE TABLE t (a INTEGER, UNIQUE(\"" + name + "\"))");
+        REQUIRE(unique.code == table);
+        REQUIRE(unique.warnings ==
+                std::vector<CodegenWarning>{{"the UNIQUE constraint of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no unique()"}});
+
+        auto foreignKey = generateFull("CREATE TABLE t (a INTEGER, FOREIGN KEY(\"" + name + "\") REFERENCES o(k))");
+        REQUIRE(foreignKey.code == table);
+        REQUIRE(foreignKey.warnings ==
+                std::vector<CodegenWarning>{{"the FOREIGN KEY of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no foreign_key()"}});
+
+        // A WITHOUT ROWID table has no row id for the name to stand for, so the double quotes make it
+        // the string SQLite takes it for, and the generated column reads it as one on either table.
+        auto withoutRowid =
+            generateFull("CREATE TABLE t (a INTEGER PRIMARY KEY, CHECK(\"" + name + "\" = 1)) WITHOUT ROWID");
+        REQUIRE(withoutRowid.code == "struct T {\n"
+                                     "    int64_t a = 0;\n"
+                                     "};\n"
+                                     "\n"
+                                     "auto storage = make_storage(\"\",\n"
+                                     "    make_table(\"t\",\n"
+                                     "        make_column(\"a\", &T::a, primary_key()),\n"
+                                     "        check(c(\"" +
+                                         name + "\") == 1)).without_rowid());");
+        REQUIRE(withoutRowid.warnings.empty());
+
+        auto generated = generateFull("CREATE TABLE t (a INTEGER, g TEXT AS (\"" + name + "\"))");
+        REQUIRE(generated.code == "struct T {\n"
+                                  "    std::optional<int64_t> a;\n"
+                                  "    std::optional<std::string> g;\n"
+                                  "};\n"
+                                  "\n"
+                                  "auto storage = make_storage(\"\",\n"
+                                  "    make_table(\"t\",\n"
+                                  "        make_column(\"a\", &T::a),\n"
+                                  "        make_column(\"g\", &T::g, as(\"" +
+                                      name + "\"))));");
+        REQUIRE(generated.warnings.empty());
+    }
+
+    // A column of that name is a column like any other, and SQLite resolves the name to it rather
+    // than to the row id — so it is written as the member the declaration produced.
+    auto declared = generateFull("CREATE TABLE t (\"RowId\" INTEGER, CHECK(\"rowid\" = 1))");
+    REQUIRE(declared.code == "struct T {\n"
+                             "    std::optional<int64_t> RowId;\n"
+                             "};\n"
+                             "\n"
+                             "auto storage = make_storage(\"\",\n"
+                             "    make_table(\"t\",\n"
+                             "        make_column(\"RowId\", &T::RowId),\n"
+                             "        check(c(&T::RowId) == 1)));");
+    REQUIRE(declared.warnings.empty());
+}
+
 // A DEFAULT written without parentheses is a literal value and not an expression, so an identifier
 // standing there names no column: SQLite reads it as a string in every spelling, and stores it even
 // beside a column of that very name. sqlite3 3.51.0 stores 'A' for the first column below, 'abc'

@@ -357,8 +357,18 @@ namespace sqlite2orm {
 
     /**
      *  Whether a column name is one of the three names SQLite answers a rowid table's implicit row id
-     *  with — `rowid`, `oid`, `_rowid_` — and no column of that name was declared. Quoting them
-     *  changes nothing, `CHECK("rowid" > 0)` is the row id as much as `CHECK(rowid > 0)` is.
+     *  with — `rowid`, `oid`, `_rowid_` — and no column of that name was declared. Where that name
+     *  stands for the row id, quoting it changes nothing; where it does not, the double quotes make
+     *  it a string literal and the statement is taken, while any other spelling is refused. Measured
+     *  on sqlite3 3.51.0 with `CHECK(typeof(X) = 'integer')` as the discriminator, for a name of the
+     *  three the table declares no column of:
+     *
+     *      clause                     | table         | bare                | "double-quoted"
+     *      CHECK (table and column)   | rowid         | the row id, taken   | the row id, taken
+     *      CHECK                      | WITHOUT ROWID | "no such column"    | a string, taken
+     *      generated column           | either        | "no such column"    | a string, taken
+     *      PRIMARY KEY / UNIQUE       | either        | "no such column"    | "expressions prohibited"
+     *      foreign key column list    | either        | "unknown column"    | "unknown column"
      */
     bool isImplicitRowIdName(std::string_view sqlIdentifier);
 

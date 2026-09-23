@@ -50,13 +50,20 @@ namespace sqlite2orm {
      */
     enum class ClauseColumnRule {
         /**
-         *  A CHECK or a generated column: the name is a column of that table, and a double-quoted
-         *  name the table declares no column of is a string literal instead — SQLite's
-         *  double-quoted string misfeature, which makes it take the statement. A name written any
-         *  other way is a column and nothing else, and SQLite refuses the statement over one it
-         *  cannot resolve ("no such column: zz").
+         *  A generated column, and a CHECK of a WITHOUT ROWID table: the name is a column of that
+         *  table, and a double-quoted name the table declares no column of is a string literal
+         *  instead — SQLite's double-quoted string misfeature, which makes it take the statement.
+         *  A name written any other way is a column and nothing else, and SQLite refuses the
+         *  statement over one it cannot resolve ("no such column: zz").
          */
         columnOrDoubleQuotedString,
+        /**
+         *  A CHECK of a rowid table, the one clause of a table declaration that resolves a name the
+         *  table declares no column of: `rowid`, `oid` and `_rowid_` are its implicit row id there,
+         *  in every spelling — so the double-quoted misfeature above does not reach them, and
+         *  sqlite_orm has no member to write one as either (see `isImplicitRowIdName`).
+         */
+        columnOrRowIdOrDoubleQuotedString,
         /**
          *  A parenthesized DEFAULT, whose value has to be constant: SQLite refuses a column
          *  reference there in every spelling, the double-quoted one included ("default value of

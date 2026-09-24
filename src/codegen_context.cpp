@@ -517,6 +517,15 @@ namespace sqlite2orm {
         this->ungeneratableViews.insert(normalizeSqlIdentifier(viewName));
     }
 
+    void CodeGeneratorContext::markUngeneratableSchemaTable(std::string_view objectName) {
+        this->ungeneratableTables.insert(normalizeSchemaObjectName(objectName));
+    }
+
+    void CodeGeneratorContext::markUngeneratableSchemaView(std::string_view objectName) {
+        this->markUngeneratableSchemaTable(objectName);
+        this->ungeneratableViews.insert(normalizeSchemaObjectName(objectName));
+    }
+
     bool CodeGeneratorContext::isNameOutsideSchema(std::string_view name) const {
         if (!this->schemaObjectNames) {
             return false;

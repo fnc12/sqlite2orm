@@ -1140,6 +1140,10 @@ namespace sqlite2orm {
         return toLowerAscii(stripIdentifierQuotes(sqlIdentifier));
     }
 
+    std::string normalizeSchemaObjectName(std::string_view objectName) {
+        return toLowerAscii(objectName);
+    }
+
     bool isImplicitRowIdName(std::string_view sqlIdentifier) {
         const auto normalized = normalizeSqlIdentifier(sqlIdentifier);
         return normalized == "rowid" || normalized == "oid" || normalized == "_rowid_";
@@ -1172,6 +1176,10 @@ namespace sqlite2orm {
             code.pop_back();
         }
         return code;
+    }
+
+    bool blobLiteralIsEmpty(std::string_view blobLiteral) {
+        return blobLiteral.size() <= 3;
     }
 
     std::string blobToCpp(std::string_view blobLiteral) {
@@ -1412,13 +1420,15 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
-    CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
-        if (astNode.sourceSpan.text.empty()) {
+    CodegenWarning sourceSpanWarning(std::string message, const SourceSpan& sourceSpan) {
+        if (sourceSpan.text.empty()) {
             return CodegenWarning{std::move(message)};
         }
-        return CodegenWarning{std::move(message),
-                              astNode.sourceSpan.location,
-                              underlineLengthOf(astNode.sourceSpan.text)};
+        return CodegenWarning{std::move(message), sourceSpan.location, underlineLengthOf(sourceSpan.text)};
+    }
+
+    CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
+        return sourceSpanWarning(std::move(message), astNode.sourceSpan);
     }
 
     namespace {

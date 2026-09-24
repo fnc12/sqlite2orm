@@ -82,6 +82,7 @@ namespace {
                    "#include <sqlite3.h>\n"
                    "\n"
                    "#include <iostream>\n"
+                   "#include <limits>\n"
                    "#include <string>\n"
                    "#include <system_error>\n"
                    "\n"
@@ -346,6 +347,162 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT real past the double range") {
             "        make_column(\"y\", &T::y, check(c(&T::y) < std::numeric_limits<double>::infinity()))));");
 }
 
+// The value travels into the generated code fine — SQLite keeps `DEFAULT 9e999` in the schema it
+// hands out, and C++ spells the infinity it stands for — so the clause is generated; what it does
+// not survive is the way back. sqlite_orm writes a double into the DDL it creates a schema object
+// with through its own serializer, and an infinity comes out of that as `inf`, which SQLite reads
+// as a column name rather than as a number: `DEFAULT (inf)` is "default value of column [x] is not
+// constant" and a CHECK over it is "no such column: inf". Measured against the pinned sqlite_orm
+// and the libsqlite3 3.45.1 the tests link in `codegen: CREATE TABLE - an infinity in a constraint
+// is what sync_schema() throws on`, and against sqlite3 3.51.0 by hand.
+TEST_CASE("codegen: CREATE TABLE - an infinite DEFAULT and CHECK warn that the schema does not sync") {
+    auto result = generateFull("CREATE TABLE t (x REAL DEFAULT 9e999, y REAL CHECK (y < 1e400))");
+    REQUIRE(result.code ==
+            "struct T {\n"
+            "    std::optional<double> x;\n"
+            "    std::optional<double> y;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"x\", &T::x, default_value(std::numeric_limits<double>::infinity())),\n"
+            "        make_column(\"y\", &T::y, check(c(&T::y) < std::numeric_limits<double>::infinity()))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"the DEFAULT of column 'x' uses 9e999, an infinity: sqlite_orm writes an infinity into DDL as "
+                 "`inf`, which SQLite reads as a column name rather than as a number, so sync_schema() throws "
+                 "instead of creating table t (sqlite_orm writes a DEFAULT in parentheses, and SQLite answers "
+                 "DEFAULT (inf) with \"default value of column [x] is not constant\")",
+                 SourceLocation{1, 32},
+                 5},
+                {"the CHECK on column 'y' uses 1e400, an infinity: sqlite_orm writes an infinity into DDL as `inf`, "
+                 "which SQLite reads as a column name rather than as a number, so sync_schema() throws instead of "
+                 "creating table t (\"no such column: inf\")",
+                 SourceLocation{1, 57},
+                 5}});
+    REQUIRE(result.errors.empty());
+}
+
+// The other two clauses of a table that carry an expression. A generated column is refused when the
+// CREATE TABLE is read, STORED or VIRTUAL alike, because the name `inf` is resolved there and not
+// when a row is written — unlike a hex literal past the int64 range, which only a VIRTUAL one is
+// refused for.
+TEST_CASE("codegen: CREATE TABLE - an infinity in a generated column and in a table CHECK warns") {
+    auto result = generateFull("CREATE TABLE t (x REAL, y REAL AS (x + 9e999) STORED, CHECK (x < 1e309))");
+    REQUIRE(result.code ==
+            "struct T {\n"
+            "    std::optional<double> x;\n"
+            "    std::optional<double> y;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"x\", &T::x),\n"
+            "        make_column(\"y\", &T::y, as(c(&T::x) + std::numeric_limits<double>::infinity()).stored()),\n"
+            "        check(c(&T::x) < std::numeric_limits<double>::infinity())));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"generated column 'y' uses 9e999, an infinity: sqlite_orm writes an infinity into DDL as `inf`, "
+                 "which SQLite reads as a column name rather than as a number, so sync_schema() throws instead of "
+                 "creating table t (\"no such column: inf\")",
+                 SourceLocation{1, 40},
+                 5},
+                {"the CHECK constraint uses 1e309, an infinity: sqlite_orm writes an infinity into DDL as `inf`, "
+                 "which SQLite reads as a column name rather than as a number, so sync_schema() throws instead of "
+                 "creating table t (\"no such column: inf\")",
+                 SourceLocation{1, 66},
+                 5}});
+    REQUIRE(result.errors.empty());
+}
+
+// Each clause of the table answers for the infinities written in it and for no others: the second
+// column's DEFAULT and the third column's CHECK are both written with a value sqlite_orm carries
+// into DDL fine, and only the first column is reported.
+TEST_CASE("codegen: CREATE TABLE - a clause without an infinity is not warned about") {
+    auto result = generateFull("CREATE TABLE t (a REAL DEFAULT 9e999, b REAL DEFAULT 1.5, c REAL CHECK (c > 0))");
+    REQUIRE(result.code ==
+            "struct T {\n"
+            "    std::optional<double> a;\n"
+            "    std::optional<double> b;\n"
+            "    std::optional<double> c;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a, default_value(std::numeric_limits<double>::infinity())),\n"
+            "        make_column(\"b\", &T::b, default_value(1.5)),\n"
+            "        make_column(\"c\", &T::c, check(c(&T::c) > 0))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"the DEFAULT of column 'a' uses 9e999, an infinity: sqlite_orm writes an infinity into DDL as "
+                 "`inf`, which SQLite reads as a column name rather than as a number, so sync_schema() throws "
+                 "instead of creating table t (sqlite_orm writes a DEFAULT in parentheses, and SQLite answers "
+                 "DEFAULT (inf) with \"default value of column [a] is not constant\")",
+                 SourceLocation{1, 32},
+                 5}});
+}
+
+// A table that is not generated has no CREATE TABLE for `sync_schema()` to run, so there is
+// nothing for an infinity in one of its clauses to stop — the warning is held back with the
+// comments and the placeholders of the clauses around it. SQLite takes this declaration and keeps
+// it in sqlite_master (checked on sqlite3 3.51.0); it is the STORED generated column that C++ has
+// no literal for, and that is the only word about the table.
+TEST_CASE("codegen: CREATE TABLE - an infinity in a table that is not generated is not warned about") {
+    auto result = generateFull("CREATE TABLE t (x REAL DEFAULT 9e999, y INTEGER AS (0x10000000000000000) STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE t \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "
+                 "stores the table but refuses every row written to it, and C++ has no literal for it, so the table "
+                 "is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// The literal is named the way SQLite spells it, separators gone, and underlined the way it is
+// written, separators and all: `9e99_9` is six characters of SQL for the same five-character value.
+// A decimal integer far enough past the range runs out of double as well, and is reported by the
+// clause it stands in just like a real literal is.
+TEST_CASE("codegen: CREATE TABLE - an infinite DEFAULT is named as spelled and underlined as written") {
+    auto separated = generateFull("CREATE TABLE t (x REAL DEFAULT 9e99_9)");
+    REQUIRE(separated.warnings ==
+            std::vector<CodegenWarning>{
+                {"the DEFAULT of column 'x' uses 9e999, an infinity: sqlite_orm writes an infinity into DDL as "
+                 "`inf`, which SQLite reads as a column name rather than as a number, so sync_schema() throws "
+                 "instead of creating table t (sqlite_orm writes a DEFAULT in parentheses, and SQLite answers "
+                 "DEFAULT (inf) with \"default value of column [x] is not constant\")",
+                 SourceLocation{1, 32},
+                 6}});
+
+    const std::string integerLiteral = "1" + std::string(309, '0');
+    auto integer = generateFull("CREATE TABLE t (x REAL DEFAULT " + integerLiteral + ")");
+    REQUIRE(integer.warnings ==
+            std::vector<CodegenWarning>{
+                {"the DEFAULT of column 'x' uses " + integerLiteral +
+                     ", an infinity: sqlite_orm writes an infinity into DDL as `inf`, which SQLite reads as a "
+                     "column name rather than as a number, so sync_schema() throws instead of creating table t "
+                     "(sqlite_orm writes a DEFAULT in parentheses, and SQLite answers DEFAULT (inf) with "
+                     "\"default value of column [x] is not constant\")",
+                 SourceLocation{1, 32},
+                 310}});
+}
+
+// A value a query carries is bound, not serialized, so an infinity reaches SQLite there as the
+// number it is — `SELECT 9e999` answers Inf — and nothing is warned about. Only the DDL sqlite_orm
+// writes a schema object with has to spell the value out.
+TEST_CASE("codegen: an infinity in a query is bound and warns about nothing") {
+    REQUIRE(generateFull("SELECT 9e999;") ==
+            CodeGenResult{"auto rows = storage.select(std::numeric_limits<double>::infinity());"});
+    REQUIRE(generateFull("INSERT INTO t (x) VALUES (9e999);") ==
+            CodeGenResult{"storage.insert(into<T>(), columns(&T::x), values(std::make_tuple(std::numeric_limits"
+                          "<double>::infinity())));"});
+    // A query written after a table whose DEFAULT holds an infinity is warned about nothing all
+    // the same.
+    const CodeGenResult query = generateLastOfBatch("CREATE TABLE t (x REAL DEFAULT 9e999); SELECT x + 9e999 FROM t;");
+    REQUIRE(query.code ==
+            "auto rows = storage.select(as_optional(c(&T::x) + std::numeric_limits<double>::infinity()));");
+    REQUIRE(query.warnings.empty());
+}
+
 // SQLite wraps a hex default around inside the int64, so this one is -1, not 18446744073709551615.
 TEST_CASE("codegen: CREATE TABLE - DEFAULT hexadecimal past the int64 range") {
     auto result = generate("CREATE TABLE t (x INTEGER DEFAULT 0xFFFFFFFFFFFFFFFF)");
@@ -495,6 +652,111 @@ TEST_CASE("codegen: CREATE TABLE - STORED generated column at the top of the int
             "        make_column(\"y\", &G::y, as(c(&G::x) + static_cast<int64_t>(0xFFFFFFFFFFFFFFFF)).stored())));");
     REQUIRE(result.warnings.empty());
     REQUIRE(result.errors.empty());
+}
+
+// A BLOB literal is the one value a DDL clause cannot carry: sqlite_orm binds a `std::vector<char>`
+// in a query, where every byte travels whole, but writes it into a CREATE TABLE through
+// `field_printer<std::vector<char>>`, which streams the bytes themselves inside `x'…'` instead of
+// their hex digits. What SQLite is handed is therefore either a blob literal of a different value
+// or no token at all — both pinned in
+// `codegen: sqlite_orm writes a BLOB in a DDL clause as its bytes rather than as hex` below — so
+// the clause is left out instead of writing a schema that cannot be created.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB DEFAULT x'0102')");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{{"the DEFAULT of column 'a' of table t uses " +
+                                                            kDdlBlobLiteralReason("x'0102'") +
+                                                            ", so the generated column has no default_value()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// An empty blob is the one that survives the printer: it prints nothing, and `x''` is the empty
+// blob in SQLite too, so the DEFAULT is generated as it stands.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT holding an empty BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB DEFAULT x'')");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, default_value(std::vector<char>{}))));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - column CHECK holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB CHECK (a <> x'0102'))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"CHECK on column 'a' uses " + kDdlBlobLiteralReason("x'0102'") +
+                                         ", so the generated column has no check()"}});
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - table-level CHECK holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB, CHECK (a <> x'0102'))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{{"table CHECK uses " + kDdlBlobLiteralReason("x'0102'") +
+                                                            ", so the generated table has no check()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// A generated column that lost its `as(...)` would be an ordinary column, which is a table SQLite
+// does not have, so the whole table goes — for a VIRTUAL one as much as for a STORED one: which of
+// the two it is only says when SQLite compiles the expression, and both are written into the
+// schema as text.
+TEST_CASE("codegen: CREATE TABLE - STORED generated column holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB, b AS (a || x'0102') STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE t — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"generated column 'b' uses " + kDdlBlobLiteralReason("x'0102'") + ", so the table is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - VIRTUAL generated column holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB, b AS (a || x'0102') VIRTUAL)");
+    REQUIRE(result.code == "/* CREATE TABLE t — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"generated column 'b' uses " + kDdlBlobLiteralReason("x'0102'") + ", so the table is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// What the pinned revision does with a blob in a DDL clause, read off it rather than assumed — the
+// three outcomes the clause is left out for. `x'4142'` is the two bytes `A` and `B`, which the
+// printer streams as the text `AB`: a blob literal SQLite accepts without a word and reads as the
+// single byte 0xAB. `x'0102'` is no hex digit at all, and the statement is refused whole
+// (`unrecognized token: "x'\x01\x02'"`, which reaches the caller as `SQL logic error`). An empty
+// blob prints nothing, and `x''` is the empty blob in SQLite too.
+TEST_CASE("codegen: sqlite_orm writes a BLOB in a DDL clause as its bytes rather than as hex") {
+    REQUIRE(syncedTableSql("make_column(\"a\", &T::a), make_column(\"b\", &T::b, "
+                           "default_value(std::vector<char>{'\\x41', '\\x42'}))") ==
+            "CREATE TABLE \"t\" (\"a\" INTEGER NOT NULL, \"b\" TEXT DEFAULT (x'AB') NOT NULL)");
+    REQUIRE(syncedTableSql("make_column(\"a\", &T::a), make_column(\"b\", &T::b, "
+                           "default_value(std::vector<char>{'\\x01', '\\x02'}))") == "threw SQL logic error");
+    REQUIRE(syncedTableSql("make_column(\"a\", &T::a), make_column(\"b\", &T::b, "
+                           "default_value(std::vector<char>{}))") ==
+            "CREATE TABLE \"t\" (\"a\" INTEGER NOT NULL, \"b\" TEXT DEFAULT (x'') NOT NULL)");
 }
 
 TEST_CASE("codegen: CREATE TABLE - DEFAULT string") {
@@ -784,6 +1046,29 @@ TEST_CASE("codegen: sqlite_orm cannot write the direction of a table-level PRIMA
             R"(CREATE TABLE "t" ("a" INTEGER NOT NULL, "b" TEXT NOT NULL, PRIMARY KEY("a", "b")))");
     REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), primary_key(&T::a, &T::b).desc())") ==
             "threw SQL logic error");
+}
+
+// The reality the warnings about an infinity in a constraint rest on, measured rather than assumed:
+// the mapping compiles and it is `sync_schema()` that throws, on the pinned sqlite_orm and the
+// libsqlite3 the tests link. The same clause holding a value the serializer can write goes through,
+// so what SQLite refuses is the `inf` and not the shape of the clause; the column a default sits on
+// is an INTEGER one here because the probe's struct has no double member, and the DDL sqlite_orm
+// writes the value into is the same either way. Should upstream start writing an infinity as a
+// spelling SQLite reads as a number — `9e999` is one — these cases go red and ask for the warnings
+// to go with them.
+TEST_CASE("codegen: CREATE TABLE - an infinity in a constraint is what sync_schema() throws on") {
+    REQUIRE(
+        syncedTableSql(
+            R"(make_column("a", &T::a, default_value(std::numeric_limits<double>::infinity())), make_column("b", &T::b))") ==
+        "threw SQL logic error");
+    REQUIRE(
+        syncedTableSql(
+            R"(make_column("a", &T::a), make_column("b", &T::b), check(c(&T::a) < std::numeric_limits<double>::infinity()))") ==
+        "threw SQL logic error");
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a, default_value(1.5)), make_column("b", &T::b))") ==
+            R"(CREATE TABLE "t" ("a" INTEGER DEFAULT (1.5) NOT NULL, "b" TEXT NOT NULL))");
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), check(c(&T::a) < 1.5))") ==
+            R"(CREATE TABLE "t" ("a" INTEGER NOT NULL, "b" TEXT NOT NULL, CHECK ("a" < 1.5)))");
 }
 
 // A table-level key takes plain member pointers, and there is no place in `primary_key(&T::a,

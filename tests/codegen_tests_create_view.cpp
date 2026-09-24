@@ -35,6 +35,43 @@ TEST_CASE("codegen: CREATE VIEW - standalone, types fall back to name heuristics
                 cpp26ViewWarning("v", 1)});
 }
 
+// A view is created from the text sqlite_orm serializes its body into, the way a table and a
+// trigger are, so an infinity written in the body does not survive `sync_schema()` either. SQLite
+// stores a view body without compiling it, so it is the query against the view that is refused and
+// not the CREATE VIEW.
+TEST_CASE("codegen: CREATE VIEW - an infinity in the body warns that querying the view fails") {
+    auto result = generateLastOfBatch("CREATE TABLE t (x REAL);\nCREATE VIEW v AS SELECT x + 9e999 AS z FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    double z = 0.0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(c(&T::x) + std::numeric_limits<double>::infinity())));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v uses 9e999, an infinity: sqlite_orm writes an infinity into DDL as `inf`, which SQLite "
+                 "reads as a column name rather than as a number, so sync_schema() creates a view that refuses "
+                 "every query against it (\"no such column: inf\")",
+                 SourceLocation{2, 29},
+                 5},
+                cpp26ViewWarning("v", 2)});
+}
+
+// And a view that is not generated is the same case as a table that is not: there is no CREATE
+// VIEW for `sync_schema()` to run, so the infinity in its body stops nothing and is not named. The
+// body still generates — the columns of `unknowntbl` are what cannot be derived — and SQLite keeps
+// this declaration in sqlite_master all the same (checked on sqlite3 3.51.0), a view over a table
+// that is not there being an error only when the view is queried.
+TEST_CASE("codegen: CREATE VIEW - an infinity in a view that is not generated is not warned about") {
+    auto result = generateFull("CREATE VIEW v AS SELECT * FROM unknowntbl WHERE x < 9e999;");
+    REQUIRE(result.code == "/* CREATE VIEW v \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE VIEW v: columns of table `unknowntbl` are unknown; cannot derive view columns from "
+                 "SELECT *"}});
+    REQUIRE(result.errors.empty());
+}
+
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
     REQUIRE(result.comments ==
@@ -445,6 +482,17 @@ TEST_CASE("codegen: CREATE VIEW - a hex literal too big leaves the view ungenera
             std::vector<CodegenWarning>{
                 {"CREATE VIEW v uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the view "
                  "but refuses every query against it, and C++ has no literal for it, so the view is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// A view body is written into the schema as text, so a BLOB literal in it is the defect a table
+// clause has (see `codegen: sqlite_orm writes a BLOB in a DDL clause as its bytes rather than as
+// hex`): the CREATE VIEW SQLite is handed either carries a different value or no token at all.
+TEST_CASE("codegen: CREATE VIEW - a BLOB literal leaves the view ungenerated") {
+    auto result = generateFull("CREATE VIEW v AS SELECT x'0102';");
+    REQUIRE(result.code == "/* CREATE VIEW v — not supported for sqlite_orm */");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{{"CREATE VIEW v uses " + kDdlBlobLiteralReason("x'0102'") +
+                                                            ", so the view is not generated"}});
     REQUIRE(result.errors.empty());
 }
 

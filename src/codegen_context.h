@@ -18,6 +18,18 @@ namespace sqlite2orm {
         std::string baseStructName;
     };
 
+    /**
+     *  A literal generated as an infinity inside an expression sqlite_orm writes into the DDL of a
+     *  schema object. sqlite_orm has no DDL spelling for the value, so the generator owning the
+     *  clause warns about it, naming the literal and underlining the SQL it was written as.
+     */
+    struct DdlInfinityLiteral {
+        /** The literal the way SQLite spells it, digit separators gone. */
+        std::string literal;
+        /** The SQL the literal was written as, for the underline of the warning about it. */
+        SourceSpan span;
+    };
+
     /** A column of a known CREATE TABLE (or view), used to infer view struct field types. */
     struct SourceTableColumn {
         std::string sqlName;
@@ -115,6 +127,25 @@ namespace sqlite2orm {
          */
         std::vector<std::string> storedHexLiteralsTooBig;
         /**
+         *  Set while generating an expression sqlite_orm writes into a DDL statement as text
+         *  instead of binding it: a column DEFAULT or CHECK, a generated column, an indexed column
+         *  or the WHERE of a partial index, a trigger and a view. It is a wider scope than
+         *  `storedExpression`, which says that SQLite itself only stores the clause; here it is
+         *  sqlite_orm that has to spell the value out, and a value it spells wrong reaches SQLite
+         *  as the text of the schema rather than as a bound parameter.
+         */
+        bool ddlSerializedExpression = false;
+        /**
+         *  The non-empty BLOB literals met since the last reset while `ddlSerializedExpression`
+         *  was set, as they are written in the SQL. `field_printer<std::vector<char>>` prints a
+         *  blob as its raw bytes rather than as their hex digits, and the serializer wraps that in
+         *  `x'…'`: the DDL SQLite is handed therefore holds a different value where every byte of
+         *  the blob is a hex digit, and an unrecognized token where one is not. The generator that
+         *  owns the clause reads this and leaves the clause out instead of writing a schema that
+         *  cannot be created.
+         */
+        std::vector<std::string> ddlBlobLiterals;
+        /**
          *  Set once an emitter has written `std::numeric_limits<double>::infinity()` for a literal
          *  C++ has no floating literal for. The type of the node does not say it — `9e999` and
          *  `1e300` are both real literals — so the emitter answers here, and the generator of a
@@ -124,6 +155,13 @@ namespace sqlite2orm {
          *  statement would drop the include of every schema whose infinity is not in the last one.
          */
         bool spelledInfinity = false;
+        /**
+         *  The infinities met since the last clear while `ddlSerializedExpression` was set. The
+         *  generator that owns the clause reads them right after and warns about each: the
+         *  generated code stays as it is — the value is the one the SQL names, and C++ spells it —
+         *  but the schema it builds does not survive `sync_schema()`.
+         */
+        std::vector<DdlInfinityLiteral> ddlInfinityLiterals;
         /**
          *  The expressions emitted since the last reset whose sqlite_orm type has no default
          *  constructor, named as SQLite spells them. `make_trigger()` keeps a trigger's WHEN
@@ -435,11 +473,22 @@ namespace sqlite2orm {
 
         void registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns);
 
-        /** Records that `tableName` is left out of the generated storage. */
+        /** Records that `tableName`, an identifier as a statement spelled it, is left out of the generated storage. */
         void markUngeneratableTable(std::string_view tableName);
 
-        /** Records that `viewName`, a view, is left out of the generated storage. */
+        /** Records that `viewName`, a view an identifier of a statement names, is left out of the generated storage. */
         void markUngeneratableView(std::string_view viewName);
+
+        /**
+         *  Records that a table the database holds under `objectName` is left out of the generated
+         *  storage. The name comes from `sqlite_master` and carries no quotes of its own, so it is
+         *  keyed by `normalizeSchemaObjectName` — the identifier `"'sqlite_foo'"` a statement wrote
+         *  and the name `'sqlite_foo'` the database stores are the same object and reach the same key.
+         */
+        void markUngeneratableSchemaTable(std::string_view objectName);
+
+        /** Records that a view the database holds under `objectName` is left out of the generated storage. */
+        void markUngeneratableSchemaView(std::string_view objectName);
 
         /** Whether `tableName` names a table of this batch that is left out of the generated storage. */
         bool isUngeneratableTable(std::string_view tableName) const;

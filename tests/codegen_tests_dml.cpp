@@ -377,6 +377,41 @@ TEST_CASE("codegen: CREATE INDEX partial WHERE") {
             "make_index(\"p\", indexed_column(&Posts::user_id), where(1));");
 }
 
+// An index and a trigger are created from the text sqlite_orm serializes them into, exactly as a
+// table is, so an infinity written in one of them cannot survive the trip either. The two differ in
+// when SQLite says so: it compiles an index as it creates it, so the CREATE INDEX is refused, while
+// a trigger is only stored, so it is created and the statement that fires it is refused. Checked
+// against sqlite3 3.51.0 and the libsqlite3 3.45.1 the tests link.
+TEST_CASE("codegen: CREATE INDEX - an infinity in a partial WHERE warns that the index does not sync") {
+    const auto result = generateFull("CREATE INDEX ix ON t (x) WHERE x < 9e999");
+    REQUIRE(result.code ==
+            "make_index(\"ix\", indexed_column(&T::x), where(c(&T::x) < std::numeric_limits<double>::infinity()));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                 "from serialized output"},
+                {"index ix uses 9e999, an infinity: sqlite_orm writes an infinity into DDL as `inf`, which SQLite "
+                 "reads as a column name rather than as a number, so sync_schema() throws instead of creating the "
+                 "index (\"no such column: inf\")",
+                 SourceLocation{1, 36},
+                 5}});
+}
+
+TEST_CASE("codegen: CREATE TRIGGER - an infinity in a WHEN clause warns that firing it fails") {
+    const auto result =
+        generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN new.x > 9e999 BEGIN INSERT INTO t (x) VALUES (1); END");
+    REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) > "
+                           "std::numeric_limits<double>::infinity()).begin(insert(into<T>(), columns(&T::x), "
+                           "values(std::make_tuple(1)))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"trigger tr uses 9e999, an infinity: sqlite_orm writes an infinity into DDL as `inf`, which SQLite "
+                 "reads as a column name rather than as a number, so sync_schema() creates a trigger that refuses "
+                 "every statement firing it (\"no such column: inf\")",
+                 SourceLocation{1, 50},
+                 5}});
+}
+
 // `make_index` deduces the table an index is made for from its first argument, and an expression
 // names no table, so an index that starts with one spells that table out. Without it the generated
 // code did not compile at all: `no matching function for call to make_index(const char[8],
@@ -627,6 +662,67 @@ TEST_CASE("codegen: CREATE INDEX IF NOT EXISTS no warning") {
                                  {}};
     const CodeGenResult codeGenResult = generateFull("CREATE INDEX IF NOT EXISTS k ON users (id)");
     REQUIRE(codeGenResult == expected);
+}
+
+// An index carries no bound parameter: both its indexed columns and the WHERE of a partial index
+// reach SQLite as the text sqlite_orm serializes the index into, so a BLOB literal there is the
+// same defect a table clause has (see `codegen: sqlite_orm writes a BLOB in a DDL clause as its
+// bytes rather than as hex`). An index that lost the expression it is made for is no index, so the
+// whole statement is left out. This case is the one that spells the warning out whole; the others
+// build it from `kDdlBlobLiteralReason`.
+TEST_CASE("codegen: CREATE INDEX over a BLOB literal is not generated") {
+    const CodeGenResult expected{
+        {},
+        {},
+        {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs from "
+         "serialized output",
+         CodegenWarning{"index i uses x'0102', a BLOB literal in a clause sqlite_orm writes into the schema as "
+                        "text: it prints a blob as the bytes themselves inside x'…' instead of as their hex "
+                        "digits, which SQLite reads as a different value where every byte of the blob is a hex "
+                        "digit and refuses as an unrecognized token where one is not, so the index is not "
+                        "generated"}}};
+    REQUIRE(generateFull("CREATE INDEX i ON t ((x'0102'))") == expected);
+}
+
+TEST_CASE("codegen: CREATE INDEX with a BLOB literal in its partial WHERE is not generated") {
+    const CodeGenResult result = generateFull("CREATE INDEX i ON t (a) WHERE a <> x'0102'");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs "
+                 "from serialized output"},
+                {"index i uses " + kDdlBlobLiteralReason("x'0102'") + ", so the index is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// An empty blob prints as `x''` either way, so it is the one that keeps its index.
+TEST_CASE("codegen: CREATE INDEX over an empty BLOB literal is generated") {
+    const CodeGenResult expected{
+        "make_index<T>(\"i\", indexed_column(std::vector<char>{}));",
+        {},
+        {"sqlite_orm serializes indexes as CREATE INDEX IF NOT EXISTS; SQL without IF NOT EXISTS differs from "
+         "serialized output"}};
+    REQUIRE(generateFull("CREATE INDEX i ON t ((x''))") == expected);
+}
+
+// Everything a trigger is made of reaches SQLite as the text of the CREATE TRIGGER — the WHEN
+// clause as much as the statements of the body — so a BLOB literal anywhere in it takes the whole
+// trigger with it.
+TEST_CASE("codegen: CREATE TRIGGER - a BLOB literal leaves the trigger ungenerated") {
+    auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET x = x'0102'; END");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE TRIGGER tr uses " + kDdlBlobLiteralReason("x'0102'") + ", so the trigger is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// The same literal in a statement of its own is bound rather than written into SQL, so it keeps
+// every byte and stays generated.
+TEST_CASE("codegen: UPDATE with a BLOB literal keeps it") {
+    REQUIRE(generate("UPDATE t SET x = x'0102' WHERE x <> x'0102'") ==
+            "storage.update_all(set(c(&T::x) = std::vector<char>{'\\x01', '\\x02'}), where(c(&T::x) != "
+            "std::vector<char>{'\\x01', '\\x02'}));");
 }
 
 TEST_CASE("codegen: UPDATE FROM warning") {

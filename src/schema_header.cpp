@@ -142,9 +142,14 @@ namespace sqlite2orm {
          *  trigger under such a name just as flatly. A storage holding one could therefore never
          *  create it — sync_schema() would stop right there — and writing to `sqlite_sequence`
          *  through it would take the bookkeeping of every AUTOINCREMENT key with it.
+         *
+         *  The name is the one `sqlite_master` holds, and SQLite reads that name as it stands, so
+         *  nothing is unquoted here: `CREATE TABLE "'sqlite_foo'"(x)` is a table sqlite3 3.51
+         *  creates without a word, under the name `'sqlite_foo'`, and a storage that left it out
+         *  would lose a table of the user's own.
          */
         [[nodiscard]] bool isReservedSqliteName(std::string_view name) {
-            return normalizeSqlIdentifier(name).rfind("sqlite_", 0) == 0;
+            return normalizeSchemaObjectName(name).rfind("sqlite_", 0) == 0;
         }
 
         /**
@@ -204,6 +209,11 @@ namespace sqlite2orm {
          *  and nothing in their SQL says whose they are, so the whole schema is needed to tell them
          *  apart from a table of the same shape a user wrote. A schema holding no FTS5 table at all
          *  is answered after one pass over the rows.
+         *
+         *  Both keys are names out of `sqlite_master` and are normalized as such, without unquoting:
+         *  the storage of `CREATE VIRTUAL TABLE "[x]" USING fts5(a)` is filed under `[x]_data` and
+         *  the four names beside it, which only cut back to the virtual table `[x]` while the
+         *  brackets stay part of both names.
          */
         [[nodiscard]] std::unordered_map<std::string, std::string>
         fts5ShadowTables(const ProcessSqliteSchemaResult& schema) {
@@ -217,8 +227,8 @@ namespace sqlite2orm {
                 if (!moduleName) {
                     plainTables.push_back(&statementResult.meta);
                 } else if (*moduleName == "fts5") {
-                    fts5TableNames.emplace(normalizeSqlIdentifier(statementResult.meta.name),
-                                           normTableName(statementResult.meta.name));
+                    fts5TableNames.emplace(normalizeSchemaObjectName(statementResult.meta.name),
+                                           statementResult.meta.name);
                 }
             }
 
@@ -227,7 +237,7 @@ namespace sqlite2orm {
                 return shadowTables;
             }
             for (const SchemaStatementMeta* meta: plainTables) {
-                const std::string normalizedName = normalizeSqlIdentifier(meta->name);
+                const std::string normalizedName = normalizeSchemaObjectName(meta->name);
                 const size_t lastUnderscore = normalizedName.rfind('_');
                 if (lastUnderscore == std::string::npos) {
                     continue;
@@ -301,7 +311,7 @@ namespace sqlite2orm {
             std::set<std::string> schemaObjectNames;
             for (const SchemaStatementResult& statementResult: schema.statements) {
                 if (statementResult.meta.type == "table" || statementResult.meta.type == "view") {
-                    schemaObjectNames.insert(normalizeSqlIdentifier(statementResult.meta.name));
+                    schemaObjectNames.insert(normalizeSchemaObjectName(statementResult.meta.name));
                 }
             }
             gen.context().schemaObjectNames = std::move(schemaObjectNames);
@@ -310,7 +320,7 @@ namespace sqlite2orm {
             // or a table a module keeps its index in. Either way the row is left out of the storage
             // before anything is generated, and the name gets no C++ type.
             const auto sqliteOwnsStatement = [&shadowTables](const SchemaStatementMeta& meta) {
-                return isReservedSqliteName(meta.name) || shadowTables.count(normalizeSqlIdentifier(meta.name)) != 0;
+                return isReservedSqliteName(meta.name) || shadowTables.count(normalizeSchemaObjectName(meta.name)) != 0;
             };
 
             std::vector<const CreateTableNode*> tableNodes;
@@ -348,9 +358,9 @@ namespace sqlite2orm {
 
             const auto markNameOfStatement = [&gen](const SchemaStatementMeta& meta) {
                 if (meta.type == "view") {
-                    gen.context().markUngeneratableView(meta.name);
+                    gen.context().markUngeneratableSchemaView(meta.name);
                 } else if (meta.type == "table") {
-                    gen.context().markUngeneratableTable(meta.name);
+                    gen.context().markUngeneratableSchemaTable(meta.name);
                 }
             };
 
@@ -380,9 +390,9 @@ namespace sqlite2orm {
                 // module. It is left out of make_storage() exactly as the virtual table it
                 // belongs to is, and its name gets no C++ type either, so whatever rests on it
                 // goes with it.
-                const auto shadowTable = shadowTables.find(normalizeSqlIdentifier(statementResult.meta.name));
+                const auto shadowTable = shadowTables.find(normalizeSchemaObjectName(statementResult.meta.name));
                 if (shadowTable != shadowTables.end()) {
-                    gen.context().markUngeneratableTable(statementResult.meta.name);
+                    gen.context().markUngeneratableSchemaTable(statementResult.meta.name);
                     allWarnings.push_back("CREATE TABLE `" + statementResult.meta.name +
                                           "` is an internal FTS5 table of virtual table `" + shadowTable->second +
                                           "` and is not merged into make_storage()");
@@ -395,7 +405,7 @@ namespace sqlite2orm {
                     // before the first table is generated.
                     if (dynamic_cast<const CreateVirtualTableNode*>(
                             statementResult.pipeline.parseResult.astNodePointer.get())) {
-                        gen.context().markUngeneratableTable(statementResult.meta.name);
+                        gen.context().markUngeneratableSchemaTable(statementResult.meta.name);
                     }
                     continue;
                 }

@@ -51,6 +51,14 @@ namespace sqlite2orm {
     ExpressionCodeGenerator::ExpressionCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
         coordinator(coordinator), context(context) {}
 
+    void ExpressionCodeGenerator::noteDdlInfinity(const AstNode& literal, std::string_view spelling) {
+        if (!this->context.ddlSerializedExpression) {
+            return;
+        }
+        this->context.ddlInfinityLiterals.push_back(
+            DdlInfinityLiteral{withoutDigitSeparators(spelling), literal.sourceSpan});
+    }
+
     CodeGenResult ExpressionCodeGenerator::generateExpression(const AstNode& astNode) {
         if (auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&astNode)) {
             if (hexLiteralExceedsInt64(integerLiteral->value)) {
@@ -69,11 +77,13 @@ namespace sqlite2orm {
             }
             if (numericLiteralGeneratesInfinity(integerLiteral->value)) {
                 this->context.spelledInfinity = true;
+                this->noteDdlInfinity(*integerLiteral, integerLiteral->value);
             }
             return CodeGenResult{integerLiteralToCpp(integerLiteral->value), {}};
         } else if (auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&astNode)) {
             if (numericLiteralGeneratesInfinity(realLiteral->value)) {
                 this->context.spelledInfinity = true;
+                this->noteDdlInfinity(*realLiteral, realLiteral->value);
             }
             return CodeGenResult{realLiteralToCpp(realLiteral->value), {}};
         } else if (auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&astNode)) {
@@ -105,6 +115,14 @@ namespace sqlite2orm {
                 "RAISE(ROLLBACK|ABORT|FAIL, ...) message should be a SQL string literal for sqlite_orm raise_*()");
             return CodeGenResult{std::string(api) + "(\"\")", {}, std::move(raiseWarnings)};
         } else if (auto* blobLiteral = dynamic_cast<const BlobLiteralNode*>(&astNode)) {
+            // A blob goes into a query as a bound parameter, where its bytes travel whole, but into
+            // a DDL statement as the text `field_printer<std::vector<char>>` prints — the raw bytes
+            // rather than their hex digits, inside `x'…'`. An empty blob is the one that survives
+            // that (`x''` either way); every other one reaches SQLite as a different value or as an
+            // unrecognized token, so a DDL clause hands it to the generator that owns the clause.
+            if (this->context.ddlSerializedExpression && !blobLiteralIsEmpty(blobLiteral->value)) {
+                this->context.ddlBlobLiterals.push_back(blobLiteral->value);
+            }
             return CodeGenResult{blobToCpp(blobLiteral->value), {}};
         } else if (auto* currentDt = dynamic_cast<const CurrentDatetimeLiteralNode*>(&astNode)) {
             switch (currentDt->kind) {

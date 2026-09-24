@@ -1290,8 +1290,13 @@ namespace sqlite2orm {
                                                 membersByName)) {
                 warnings.push_back(std::move(*warning));
             }
-            const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+            const auto cppType = sqliteColumnTypeToCpp(createTable, column);
             const bool nullable = columnMemberIsNullable(createTable, column);
+            // No mapped type is the ANY column SQLite has, and what the one chosen for it costs
+            // depends on the table around it; the warning is the only word a user gets about it.
+            if (auto anyWarning = anyColumnTypeWarning(createTable, column)) {
+                warnings.push_back(std::move(*anyWarning));
+            }
             std::string memberDeclaration = nullable ? "std::optional<" + cppType + "> " + cppName + ";\n"
                                                      : cppType + " " + cppName + defaultInitializer(cppType) + ";\n";
             structDeclaration += "    " + memberDeclaration;

@@ -785,6 +785,91 @@ TEST_CASE("codegen: CREATE TABLE - an ASC in a table-level PRIMARY KEY is silent
     REQUIRE(result.warnings == std::vector<CodegenWarning>{});
 }
 
+// A name a table-level PRIMARY KEY spells twice is one key column, not two: SQLite gives the
+// column a single position in the key, and `PRAGMA table_info` answers `pk = 1` for the `a` of
+// `PRIMARY KEY(a, a)` and nothing for a second place. sqlite_orm ranks a key column by the last
+// place its name takes in `primary_key(...)`, so a repeat used to make it rank `a` second, disagree
+// with the stored table and drop it on `sync_schema()` — see the live database case in
+// tests/schema_pipeline_tests.cpp. The name is written once.
+TEST_CASE("codegen: CREATE TABLE - a column a table-level PRIMARY KEY repeats is named once") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY (a, a))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "    std::optional<std::string> c;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        make_column(\"c\", &T::c),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+// The place the name first takes is the place it keeps: SQLite reads `PRIMARY KEY(b, a, b)` as a
+// key over `b` then `a` (`pk = 1` for `b`, `pk = 2` for `a`), not over `a` then `b`.
+TEST_CASE("codegen: CREATE TABLE - a repeated key column keeps the place it is first spelled at") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (b, a, b))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::b, &T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+// The repeat is the same column however it is spelled, because that is how SQLite resolves a
+// constraint's column name: `A`, `"a"` and `[a]` all name the column declared `a`.
+TEST_CASE("codegen: CREATE TABLE - a key column repeated under another spelling is named once") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (A, \"a\", [a], b))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a, &T::b)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+// Dropping the repeat drops what it was spelled with, and a DESC is still worth telling about: the
+// occurrence left out of the generated key carried one.
+TEST_CASE("codegen: CREATE TABLE - a DESC on a repeated key column is still reported") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a, a DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
+// What the repeat would cost, read off the pinned sqlite_orm: it writes the name as many times as
+// `primary_key(...)` takes it, and a `PRIMARY KEY("a", "a")` is a two-column key over a column the
+// stored table holds one place in. Should upstream start collapsing the repeat itself, this case
+// goes red and the codegen dedup above becomes redundant rather than wrong.
+TEST_CASE("codegen: sqlite_orm writes a repeated table-level PRIMARY KEY column twice") {
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), primary_key(&T::a, &T::a))") ==
+            R"(CREATE TABLE "t" ("a" INTEGER NOT NULL, "b" TEXT NOT NULL, PRIMARY KEY("a", "a")))");
+}
+
 TEST_CASE("codegen: CREATE TABLE - a COLLATE in a table-level PRIMARY KEY is not generated") {
     const auto result = generateFull("CREATE TABLE t (a TEXT, PRIMARY KEY (a COLLATE NOCASE DESC))");
     REQUIRE(result.code == "struct T {\n"

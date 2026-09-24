@@ -5,6 +5,7 @@
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
+#include <algorithm>
 #include <map>
 
 namespace sqlite2orm {
@@ -1760,18 +1761,42 @@ namespace sqlite2orm {
         for (const auto& tablePrimaryKey: createTable.primaryKeys) {
             std::vector<std::string> unresolvedColumns;
             std::vector<std::string> keySpellingWarnings;
+            // A name a table-level PRIMARY KEY spells more than once is written once: a column holds
+            // a single place in the key SQLite reports, and there is no second place for the repeat
+            // to take. `PRAGMA table_info` — all sqlite_orm has to compare a mapped table against —
+            // answers `pk = 1` for the `a` of `PRIMARY KEY(a, a)`, and `pk = 1, 2` for the `a` and
+            // the `b` of `PRIMARY KEY(a, b, a)`: the place a name first takes is the place it keeps.
+            // (A WITHOUT ROWID table goes further and drops the repeat from the key itself, in
+            // convertToWithoutRowidTable; a rowid table keeps it in the automatic index, where
+            // nothing sqlite_orm reads can see it.) sqlite_orm, on the other hand, ranks a key
+            // column by the *last* place its name takes in `primary_key(...)`, so writing the name
+            // twice makes `sync_schema()` see a key the stored table never had — and it answers a
+            // key that changed by dropping the table and every row in it.
+            std::vector<std::string> spelledNormalizedNames;
+            std::vector<std::string> keyMembers;
+            for (const auto& keyColumn: tablePrimaryKey.columns) {
+                std::string normalizedName = normalizeSqlIdentifier(keyColumn.name);
+                const bool alreadySpelled = std::find(spelledNormalizedNames.begin(),
+                                                      spelledNormalizedNames.end(),
+                                                      normalizedName) != spelledNormalizedNames.end();
+                if (!alreadySpelled) {
+                    spelledNormalizedNames.push_back(std::move(normalizedName));
+                    if (const auto member = this->context.constraintColumnMember(keyColumn.name)) {
+                        keyMembers.push_back(*member);
+                    } else {
+                        unresolvedColumns.push_back(stripIdentifierQuotes(keyColumn.name));
+                    }
+                }
+                // The spelling of every occurrence is told about, the dropped repeat included: a
+                // `PRIMARY KEY(a, a DESC)` does carry a DESC the generated key leaves behind.
+                warnAboutKeySpelling(keySpellingWarnings, keyColumn, "PRIMARY KEY");
+            }
             std::string constraint = "primary_key(";
-            for (size_t columnIndex = 0; columnIndex < tablePrimaryKey.columns.size(); ++columnIndex) {
-                if (columnIndex > 0) {
+            for (size_t memberIndex = 0; memberIndex < keyMembers.size(); ++memberIndex) {
+                if (memberIndex > 0) {
                     constraint += ", ";
                 }
-                const auto& keyColumn = tablePrimaryKey.columns.at(columnIndex);
-                if (const auto member = this->context.constraintColumnMember(keyColumn.name)) {
-                    constraint += "&" + structName + "::" + *member;
-                } else {
-                    unresolvedColumns.push_back(stripIdentifierQuotes(keyColumn.name));
-                }
-                warnAboutKeySpelling(keySpellingWarnings, keyColumn, "PRIMARY KEY");
+                constraint += "&" + structName + "::" + keyMembers.at(memberIndex);
             }
             constraint += ")";
             if (!unresolvedColumns.empty()) {

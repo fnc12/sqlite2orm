@@ -2250,6 +2250,53 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over the database the heade
                       "wr_table_pk);") == "3,2,2,2,2,2,2");
 }
 
+// A table-level PRIMARY KEY may name the same column twice, and SQLite reads that as one key
+// column: it gives the column a single position in the key, and `PRAGMA table_info` — all
+// sqlite_orm has to compare a mapped table against — answers `pk = 1` for the `a` of
+// `PRIMARY KEY(a, a)` and has no second place to report. sqlite_orm ranks a key column by the last
+// place its name takes in `primary_key(...)`, so naming the repeat made it rank the column second,
+// see a key that changed and drop the table to rebuild it — every row in it gone. Every spelling
+// of a repeat is probed here on a live database with rows in it, because that is what the user
+// loses. Checked against sqlite3 3.51.0 and libsqlite3 3.45.1.
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a key that repeats a column keeps the rows") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE dup_pk (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_pk_desc (a INTEGER, b INTEGER, PRIMARY KEY(a, a DESC));"
+            "CREATE TABLE dup_pk_mixed (a INTEGER, b INTEGER, PRIMARY KEY(b, a, b));"
+            "CREATE TABLE dup_pk_spelled (a INTEGER, b INTEGER, PRIMARY KEY(A, \"a\", [a]));"
+            "CREATE TABLE dup_pk_strict (a INTEGER, b INTEGER, PRIMARY KEY(a, a)) STRICT;"
+            "CREATE TABLE dup_pk_text (a TEXT, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_pk_wr (a TEXT, b TEXT, PRIMARY KEY(a, b, a)) WITHOUT ROWID;");
+    execSql(file.path,
+            "INSERT INTO dup_pk VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO dup_pk_desc VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_mixed VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_spelled VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_strict VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_text VALUES ('a', 1), ('b', 2);"
+            "INSERT INTO dup_pk_wr VALUES ('a', 'x'), ('b', 'y');");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, "") == "dup_pk=already_in_sync\n"
+                                                                 "dup_pk_desc=already_in_sync\n"
+                                                                 "dup_pk_mixed=already_in_sync\n"
+                                                                 "dup_pk_spelled=already_in_sync\n"
+                                                                 "dup_pk_strict=already_in_sync\n"
+                                                                 "dup_pk_text=already_in_sync\n"
+                                                                 "dup_pk_wr=already_in_sync\n");
+
+    REQUIRE(queryText(file.path,
+                      "SELECT (SELECT count(*) FROM dup_pk) || ',' || (SELECT count(*) FROM dup_pk_desc) || ',' || "
+                      "(SELECT count(*) FROM dup_pk_mixed) || ',' || (SELECT count(*) FROM dup_pk_spelled) || ',' || "
+                      "(SELECT count(*) FROM dup_pk_strict) || ',' || (SELECT count(*) FROM dup_pk_text) || ',' || "
+                      "(SELECT count(*) FROM dup_pk_wr);") == "2,2,2,2,2,2,2");
+}
+
 // The other table option SQLite makes a key implicitly NOT NULL for is STRICT — with one exception
 // this case is about: the rowid alias, which stays nullable there because the column *is* the
 // rowid. Getting the exception wrong in either direction loses rows: ruling the alias NOT NULL

@@ -10,7 +10,6 @@
 namespace sqlite2orm {
 
     namespace {
-
         /**
          *  Marks every expression generated while it stands as one sqlite_orm writes into the DDL
          *  of a schema object rather than binding into a query, and starts the list of infinities
@@ -39,6 +38,22 @@ namespace sqlite2orm {
             bool enclosing;
             std::vector<DdlInfinityLiteral> enclosingLiterals;
         };
+
+        /**
+         *  Why a BLOB literal has no place in a clause sqlite_orm writes into the schema, as the
+         *  first half of a warning: every site appends what its own clause becomes without it.
+         *  Measured on the pinned revision — `field_printer<std::vector<char>>` streams the bytes
+         *  of the blob themselves and `quote_blob_literal` wraps that in `x'…'`, so `x'4142'`
+         *  reaches SQLite as `x'AB'`, the single byte 0xAB, and `x'0102'` as a token SQLite does
+         *  not recognize at all.
+         */
+        std::string ddlBlobLiteralReason(std::string_view literal) {
+            return std::string(literal) +
+                   ", a BLOB literal in a clause sqlite_orm writes into the schema as text: it prints a blob as the "
+                   "bytes themselves inside x'…' instead of as their hex digits, which SQLite reads as a different "
+                   "value where every byte of the blob is a hex digit and refuses as an unrecognized token where "
+                   "one is not";
+        }
 
         /**
          *  The warning about `literal`, an infinity `subject` is written with. sqlite_orm prints a
@@ -153,6 +168,9 @@ namespace sqlite2orm {
         // Like a view body, a trigger body is stored and compiled only when the trigger fires, so
         // SQLite accepts a hex literal in it that it refuses in a query of its own.
         this->context.storedHexLiteralsTooBig.clear();
+        // Everything a trigger is made of — the WHEN clause and every statement of the body —
+        // reaches SQLite as the text of the CREATE TRIGGER, so the whole of it is serialized.
+        this->context.ddlBlobLiterals.clear();
         const bool triggerWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
         if (createTrigger.whenClause) {
@@ -209,6 +227,14 @@ namespace sqlite2orm {
             }
             return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
         }
+        if (!this->context.ddlBlobLiterals.empty()) {
+            for (const std::string& literal: this->context.ddlBlobLiterals) {
+                warnings.push_back("CREATE TRIGGER " + stripIdentifierQuotes(createTrigger.triggerName) + " uses " +
+                                   ddlBlobLiteralReason(literal) + ", so the trigger is not generated");
+            }
+            return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
+        }
+
         // SQLite stores a trigger without compiling it, so the CREATE TRIGGER carrying an `inf`
         // goes through and the statement that fires the trigger is the one refused. Checked
         // against sqlite3 3.51.0 and the libsqlite3 3.45.1 the tests link.
@@ -250,6 +276,10 @@ namespace sqlite2orm {
         std::string tableStruct = this->context.structNameForTable(createIndex.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
+
+        // An index carries no bound parameter: both its indexed columns and the WHERE of a partial
+        // index reach SQLite as the text sqlite_orm serializes the index into.
+        this->context.ddlBlobLiterals.clear();
 
         std::string functionName = createIndex.unique ? "make_unique_index" : "make_index";
         std::string indexLiteral = identifierToCppStringLiteral(createIndex.indexName);
@@ -341,6 +371,15 @@ namespace sqlite2orm {
                                " starts with an expression: sqlite_orm deduces the table an index is made "
                                "for from its first indexed column, and make_unique_index has no form that "
                                "spells that table out, so the index is not generated");
+            this->context.structName = savedStruct;
+            return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
+        }
+
+        if (!this->context.ddlBlobLiterals.empty()) {
+            for (const std::string& literal: this->context.ddlBlobLiterals) {
+                warnings.push_back("index " + stripIdentifierQuotes(createIndex.indexName) + " uses " +
+                                   ddlBlobLiteralReason(literal) + ", so the index is not generated");
+            }
             this->context.structName = savedStruct;
             return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
         }
@@ -1081,6 +1120,7 @@ namespace sqlite2orm {
         // A view body is stored, never compiled, so SQLite accepts a hex literal in it that it
         // refuses in a query; C++ has no literal for one, so the view cannot be generated.
         this->context.storedHexLiteralsTooBig.clear();
+        this->context.ddlBlobLiterals.clear();
         const bool viewWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
         CodeGenResult selectExpression = this->coordinator.tryCodegenSelectLikeSubquery(*node.selectQuery);
@@ -1092,6 +1132,13 @@ namespace sqlite2orm {
                                      "generated");
         }
         if (!this->context.storedHexLiteralsTooBig.empty()) {
+            return parts;
+        }
+        for (const std::string& literal: this->context.ddlBlobLiterals) {
+            parts.warnings.push_back("CREATE VIEW " + displayName + " uses " + ddlBlobLiteralReason(literal) +
+                                     ", so the view is not generated");
+        }
+        if (!this->context.ddlBlobLiterals.empty()) {
             return parts;
         }
         parts.decisionPoints.insert(parts.decisionPoints.end(),
@@ -1378,6 +1425,10 @@ namespace sqlite2orm {
         auto clauseExpressionCode =
             [this, &warnings](const AstNode& expression, bool stored, ClauseColumnRule rule) -> ClauseExpression {
             this->context.clauseColumnRule = rule;
+            // A VIRTUAL generated column asks for an ordinary expression, so the blob journal is
+            // cleared here rather than in `generateStoredExpression()`: every clause of the table
+            // is serialized, whether or not SQLite only stores it.
+            this->context.ddlBlobLiterals.clear();
             // Each clause of the table warns about the infinities written in it by name, so the
             // list starts empty here rather than once for the whole table.
             this->context.ddlInfinityLiterals.clear();
@@ -1556,6 +1607,12 @@ namespace sqlite2orm {
                                            rawColumnName +
                                            "] is not constant\"), so the generated column has no default_value()");
                     }
+                } else if (!this->context.ddlBlobLiterals.empty()) {
+                    for (const std::string& literal: this->context.ddlBlobLiterals) {
+                        warnings.push_back("the DEFAULT of column '" + rawColumnName + "' of table " + rawTableName +
+                                           " uses " + ddlBlobLiteralReason(literal) +
+                                           ", so the generated column has no default_value()");
+                    }
                 } else if (this->context.storedHexLiteralsTooBig.empty()) {
                     const std::string& defaultCode = *defaultClause.code;
                     makeExpression += ", default_value(" + defaultCode + ")";
@@ -1609,6 +1666,11 @@ namespace sqlite2orm {
                     warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK on column '" + rawColumnName + "'",
                                                     "the generated column has no check()");
+                } else if (!this->context.ddlBlobLiterals.empty()) {
+                    for (const std::string& literal: this->context.ddlBlobLiterals) {
+                        warnings.push_back("CHECK on column '" + rawColumnName + "' uses " +
+                                           ddlBlobLiteralReason(literal) + ", so the generated column has no check()");
+                    }
                 } else if (this->context.storedHexLiteralsTooBig.empty()) {
                     makeExpression += ", check(" + *checkClause.code + ")";
                     for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
@@ -1665,6 +1727,14 @@ namespace sqlite2orm {
                     warnUnresolvedConstraintColumns(generatedClause.refusedColumns,
                                                     "generated column '" + rawColumnName + "'",
                                                     "the table is not generated");
+                    tableIsGeneratable = false;
+                } else if (!this->context.ddlBlobLiterals.empty()) {
+                    // A column that lost its `as(...)` would be an ordinary column, so the whole
+                    // table goes rather than a table SQLite does not have.
+                    for (const std::string& literal: this->context.ddlBlobLiterals) {
+                        warnings.push_back("generated column '" + rawColumnName + "' uses " +
+                                           ddlBlobLiteralReason(literal) + ", so the table is not generated");
+                    }
                     tableIsGeneratable = false;
                 } else if (storedGenerated && !this->context.storedHexLiteralsTooBig.empty()) {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
@@ -1957,6 +2027,13 @@ namespace sqlite2orm {
                     warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK constraint",
                                                     "the generated table has no check()");
+                    continue;
+                }
+                if (!this->context.ddlBlobLiterals.empty()) {
+                    for (const std::string& literal: this->context.ddlBlobLiterals) {
+                        warnings.push_back("table CHECK uses " + ddlBlobLiteralReason(literal) +
+                                           ", so the generated table has no check()");
+                    }
                     continue;
                 }
                 if (!this->context.storedHexLiteralsTooBig.empty()) {

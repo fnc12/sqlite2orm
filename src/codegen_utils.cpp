@@ -1157,6 +1157,10 @@ namespace sqlite2orm {
         return code;
     }
 
+    bool blobLiteralIsEmpty(std::string_view blobLiteral) {
+        return blobLiteral.size() <= 3;
+    }
+
     std::string blobToCpp(std::string_view blobLiteral) {
         auto hex = blobLiteral.substr(2, blobLiteral.size() - 3);
         if (hex.empty()) {

@@ -549,6 +549,7 @@ namespace sqlite2orm {
         this->storedExpression = false;
         this->storedHexLiteralsTooBig.clear();
         this->ddlSerializedExpression = false;
+        this->ddlBlobLiterals.clear();
         this->ddlInfinityLiterals.clear();
         this->formsWithoutDefaultConstructor.clear();
         this->customFunctions.clear();

@@ -485,6 +485,17 @@ TEST_CASE("codegen: CREATE VIEW - a hex literal too big leaves the view ungenera
     REQUIRE(result.errors.empty());
 }
 
+// A view body is written into the schema as text, so a BLOB literal in it is the defect a table
+// clause has (see `codegen: sqlite_orm writes a BLOB in a DDL clause as its bytes rather than as
+// hex`): the CREATE VIEW SQLite is handed either carries a different value or no token at all.
+TEST_CASE("codegen: CREATE VIEW - a BLOB literal leaves the view ungenerated") {
+    auto result = generateFull("CREATE VIEW v AS SELECT x'0102';");
+    REQUIRE(result.code == "/* CREATE VIEW v — not supported for sqlite_orm */");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{{"CREATE VIEW v uses " + kDdlBlobLiteralReason("x'0102'") +
+                                                            ", so the view is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
 // The card's own repro: two column names of two characters each, four bytes each. Rewritten byte
 // by byte they would both come out as four underscores — one field declared twice, a header no
 // compiler takes — so the rewriting counts characters, and each name keeps a field of its own.

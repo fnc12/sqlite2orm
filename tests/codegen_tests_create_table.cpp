@@ -615,6 +615,111 @@ TEST_CASE("codegen: CREATE TABLE - STORED generated column at the top of the int
     REQUIRE(result.errors.empty());
 }
 
+// A BLOB literal is the one value a DDL clause cannot carry: sqlite_orm binds a `std::vector<char>`
+// in a query, where every byte travels whole, but writes it into a CREATE TABLE through
+// `field_printer<std::vector<char>>`, which streams the bytes themselves inside `x'…'` instead of
+// their hex digits. What SQLite is handed is therefore either a blob literal of a different value
+// or no token at all — both pinned in
+// `codegen: sqlite_orm writes a BLOB in a DDL clause as its bytes rather than as hex` below — so
+// the clause is left out instead of writing a schema that cannot be created.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB DEFAULT x'0102')");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{{"the DEFAULT of column 'a' of table t uses " +
+                                                            kDdlBlobLiteralReason("x'0102'") +
+                                                            ", so the generated column has no default_value()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// An empty blob is the one that survives the printer: it prints nothing, and `x''` is the empty
+// blob in SQLite too, so the DEFAULT is generated as it stands.
+TEST_CASE("codegen: CREATE TABLE - DEFAULT holding an empty BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB DEFAULT x'')");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, default_value(std::vector<char>{}))));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - column CHECK holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB CHECK (a <> x'0102'))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"CHECK on column 'a' uses " + kDdlBlobLiteralReason("x'0102'") +
+                                         ", so the generated column has no check()"}});
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - table-level CHECK holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB, CHECK (a <> x'0102'))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{{"table CHECK uses " + kDdlBlobLiteralReason("x'0102'") +
+                                                            ", so the generated table has no check()"}});
+    REQUIRE(result.errors.empty());
+}
+
+// A generated column that lost its `as(...)` would be an ordinary column, which is a table SQLite
+// does not have, so the whole table goes — for a VIRTUAL one as much as for a STORED one: which of
+// the two it is only says when SQLite compiles the expression, and both are written into the
+// schema as text.
+TEST_CASE("codegen: CREATE TABLE - STORED generated column holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB, b AS (a || x'0102') STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE t — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"generated column 'b' uses " + kDdlBlobLiteralReason("x'0102'") + ", so the table is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - VIRTUAL generated column holding a BLOB literal") {
+    auto result = generateFull("CREATE TABLE t (a BLOB, b AS (a || x'0102') VIRTUAL)");
+    REQUIRE(result.code == "/* CREATE TABLE t — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"generated column 'b' uses " + kDdlBlobLiteralReason("x'0102'") + ", so the table is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// What the pinned revision does with a blob in a DDL clause, read off it rather than assumed — the
+// three outcomes the clause is left out for. `x'4142'` is the two bytes `A` and `B`, which the
+// printer streams as the text `AB`: a blob literal SQLite accepts without a word and reads as the
+// single byte 0xAB. `x'0102'` is no hex digit at all, and the statement is refused whole
+// (`unrecognized token: "x'\x01\x02'"`, which reaches the caller as `SQL logic error`). An empty
+// blob prints nothing, and `x''` is the empty blob in SQLite too.
+TEST_CASE("codegen: sqlite_orm writes a BLOB in a DDL clause as its bytes rather than as hex") {
+    REQUIRE(syncedTableSql("make_column(\"a\", &T::a), make_column(\"b\", &T::b, "
+                           "default_value(std::vector<char>{'\\x41', '\\x42'}))") ==
+            "CREATE TABLE \"t\" (\"a\" INTEGER NOT NULL, \"b\" TEXT DEFAULT (x'AB') NOT NULL)");
+    REQUIRE(syncedTableSql("make_column(\"a\", &T::a), make_column(\"b\", &T::b, "
+                           "default_value(std::vector<char>{'\\x01', '\\x02'}))") == "threw SQL logic error");
+    REQUIRE(syncedTableSql("make_column(\"a\", &T::a), make_column(\"b\", &T::b, "
+                           "default_value(std::vector<char>{}))") ==
+            "CREATE TABLE \"t\" (\"a\" INTEGER NOT NULL, \"b\" TEXT DEFAULT (x'') NOT NULL)");
+}
+
 TEST_CASE("codegen: CREATE TABLE - DEFAULT string") {
     auto result = generate("CREATE TABLE t (x TEXT DEFAULT 'hello')");
     REQUIRE(result == "struct T {\n"

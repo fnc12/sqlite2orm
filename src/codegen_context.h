@@ -127,6 +127,25 @@ namespace sqlite2orm {
          */
         std::vector<std::string> storedHexLiteralsTooBig;
         /**
+         *  Set while generating an expression sqlite_orm writes into a DDL statement as text
+         *  instead of binding it: a column DEFAULT or CHECK, a generated column, an indexed column
+         *  or the WHERE of a partial index, a trigger and a view. It is a wider scope than
+         *  `storedExpression`, which says that SQLite itself only stores the clause; here it is
+         *  sqlite_orm that has to spell the value out, and a value it spells wrong reaches SQLite
+         *  as the text of the schema rather than as a bound parameter.
+         */
+        bool ddlSerializedExpression = false;
+        /**
+         *  The non-empty BLOB literals met since the last reset while `ddlSerializedExpression`
+         *  was set, as they are written in the SQL. `field_printer<std::vector<char>>` prints a
+         *  blob as its raw bytes rather than as their hex digits, and the serializer wraps that in
+         *  `x'…'`: the DDL SQLite is handed therefore holds a different value where every byte of
+         *  the blob is a hex digit, and an unrecognized token where one is not. The generator that
+         *  owns the clause reads this and leaves the clause out instead of writing a schema that
+         *  cannot be created.
+         */
+        std::vector<std::string> ddlBlobLiterals;
+        /**
          *  Set once an emitter has written `std::numeric_limits<double>::infinity()` for a literal
          *  C++ has no floating literal for. The type of the node does not say it — `9e999` and
          *  `1e300` are both real literals — so the emitter answers here, and the generator of a
@@ -136,14 +155,6 @@ namespace sqlite2orm {
          *  statement would drop the include of every schema whose infinity is not in the last one.
          */
         bool spelledInfinity = false;
-        /**
-         *  Set while generating an expression sqlite_orm writes into the DDL of a schema object —
-         *  a column DEFAULT or CHECK, a generated column, an index, a trigger, a view — rather
-         *  than binding it as a parameter of a query. A bound value carries whatever a double
-         *  holds, an infinity included, while the DDL carries what sqlite_orm's serializer prints
-         *  for it, and that is `inf`, a name to SQLite and not a number.
-         */
-        bool ddlSerializedExpression = false;
         /**
          *  The infinities met since the last clear while `ddlSerializedExpression` was set. The
          *  generator that owns the clause reads them right after and warns about each: the

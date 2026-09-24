@@ -18,6 +18,18 @@ namespace sqlite2orm {
         std::string baseStructName;
     };
 
+    /**
+     *  A literal generated as an infinity inside an expression sqlite_orm writes into the DDL of a
+     *  schema object. sqlite_orm has no DDL spelling for the value, so the generator owning the
+     *  clause warns about it, naming the literal and underlining the SQL it was written as.
+     */
+    struct DdlInfinityLiteral {
+        /** The literal the way SQLite spells it, digit separators gone. */
+        std::string literal;
+        /** The SQL the literal was written as, for the underline of the warning about it. */
+        SourceSpan span;
+    };
+
     /** A column of a known CREATE TABLE (or view), used to infer view struct field types. */
     struct SourceTableColumn {
         std::string sqlName;
@@ -124,6 +136,21 @@ namespace sqlite2orm {
          *  statement would drop the include of every schema whose infinity is not in the last one.
          */
         bool spelledInfinity = false;
+        /**
+         *  Set while generating an expression sqlite_orm writes into the DDL of a schema object —
+         *  a column DEFAULT or CHECK, a generated column, an index, a trigger, a view — rather
+         *  than binding it as a parameter of a query. A bound value carries whatever a double
+         *  holds, an infinity included, while the DDL carries what sqlite_orm's serializer prints
+         *  for it, and that is `inf`, a name to SQLite and not a number.
+         */
+        bool ddlSerializedExpression = false;
+        /**
+         *  The infinities met since the last clear while `ddlSerializedExpression` was set. The
+         *  generator that owns the clause reads them right after and warns about each: the
+         *  generated code stays as it is — the value is the one the SQL names, and C++ spells it —
+         *  but the schema it builds does not survive `sync_schema()`.
+         */
+        std::vector<DdlInfinityLiteral> ddlInfinityLiterals;
         /**
          *  The expressions emitted since the last reset whose sqlite_orm type has no default
          *  constructor, named as SQLite spells them. `make_trigger()` keeps a trigger's WHEN

@@ -532,6 +532,8 @@ namespace sqlite2orm {
      *  is a node no parse built — one a test constructed by hand, say.
      */
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
+    /** The same for a span kept on its own, away from the node it was parsed into. */
+    CodegenWarning sourceSpanWarning(std::string message, const SourceSpan& sourceSpan);
     /**
      *  The code generated in place of a construct sqlite_orm has no form for: a `/*` … `*\/`
      *  placeholder named by `label`, and `message` anchored at the construct appended to the

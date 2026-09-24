@@ -11,25 +11,32 @@ namespace sqlite2orm {
 
     namespace {
         /**
-         *  Marks the expressions generated under it as ones sqlite_orm writes into a DDL statement
-         *  as text rather than binding. The enclosing value is restored rather than cleared, so a
-         *  clause generated inside another marked one stays marked.
+         *  Marks every expression generated while it stands as one sqlite_orm writes into the DDL
+         *  of a schema object rather than binding into a query, and starts the list of infinities
+         *  met in it empty. A statement generated inside another — a trigger body — leaves both the
+         *  enclosing mark and the infinities gathered under it as it found them.
          */
-        struct DdlSerializationScope {
-            CodeGeneratorContext& context;
-            bool enclosing;
-
+        class DdlSerializationScope {
+          public:
             explicit DdlSerializationScope(CodeGeneratorContext& context) :
-                context(context), enclosing(context.ddlSerializedExpression) {
-                context.ddlSerializedExpression = true;
+                context(context), enclosing(context.ddlSerializedExpression),
+                enclosingLiterals(std::move(context.ddlInfinityLiterals)) {
+                this->context.ddlSerializedExpression = true;
+                this->context.ddlInfinityLiterals.clear();
             }
 
             ~DdlSerializationScope() {
                 this->context.ddlSerializedExpression = this->enclosing;
+                this->context.ddlInfinityLiterals = std::move(this->enclosingLiterals);
             }
 
             DdlSerializationScope(const DdlSerializationScope&) = delete;
             DdlSerializationScope& operator=(const DdlSerializationScope&) = delete;
+
+          private:
+            CodeGeneratorContext& context;
+            bool enclosing;
+            std::vector<DdlInfinityLiteral> enclosingLiterals;
         };
 
         /**
@@ -47,7 +54,25 @@ namespace sqlite2orm {
                    "value where every byte of the blob is a hex digit and refuses as an unrecognized token where "
                    "one is not";
         }
-    }
+
+        /**
+         *  The warning about `literal`, an infinity `subject` is written with. sqlite_orm prints a
+         *  double into DDL through its serializer, and an infinity comes out of it as `inf`, which
+         *  SQLite reads as a column name and not as a number, so `consequence` is what the schema
+         *  built from the generated code does. The value itself is one C++ spells
+         *  (`std::numeric_limits<double>::infinity()`) and one SQLite keeps in the schema it was
+         *  read from, so the clause is generated all the same and only warned about.
+         */
+        CodegenWarning
+        ddlInfinityWarning(const DdlInfinityLiteral& literal, std::string_view subject, std::string_view consequence) {
+            return sourceSpanWarning(std::string(subject) + " uses " + literal.literal +
+                                         ", an infinity: sqlite_orm writes an infinity into DDL as `inf`, which "
+                                         "SQLite reads as a column name rather than as a number, so " +
+                                         std::string(consequence),
+                                     literal.span);
+        }
+
+    }  // namespace
 
     DdlCodeGenerator::DdlCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
         coordinator(coordinator), context(context) {}
@@ -71,6 +96,9 @@ namespace sqlite2orm {
     }
 
     CodeGenResult DdlCodeGenerator::generateCreateTrigger(const CreateTriggerNode& createTrigger) {
+        // A trigger is created from the text sqlite_orm serializes it into, WHEN clause and body
+        // statements alike, so a value written in it reaches SQLite as that text rather than bound.
+        const DdlSerializationScope ddlScope{this->context};
         std::vector<CodegenWarning> warnings;
         if (createTrigger.ifNotExists) {
             warnings.push_back(
@@ -143,7 +171,6 @@ namespace sqlite2orm {
         // Everything a trigger is made of — the WHEN clause and every statement of the body —
         // reaches SQLite as the text of the CREATE TRIGGER, so the whole of it is serialized.
         this->context.ddlBlobLiterals.clear();
-        const DdlSerializationScope triggerDdlScope{this->context};
         const bool triggerWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
         if (createTrigger.whenClause) {
@@ -207,6 +234,17 @@ namespace sqlite2orm {
             }
             return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
         }
+
+        // SQLite stores a trigger without compiling it, so the CREATE TRIGGER carrying an `inf`
+        // goes through and the statement that fires the trigger is the one refused. Checked
+        // against sqlite3 3.51.0 and the libsqlite3 3.45.1 the tests link.
+        for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
+            warnings.push_back(
+                ddlInfinityWarning(literal,
+                                   "trigger " + stripIdentifierQuotes(createTrigger.triggerName),
+                                   "sync_schema() creates a trigger that refuses every statement firing it "
+                                   "(\"no such column: inf\")"));
+        }
         warnings.insert(warnings.end(),
                         std::make_move_iterator(whenClauseWarnings.begin()),
                         std::make_move_iterator(whenClauseWarnings.end()));
@@ -217,6 +255,9 @@ namespace sqlite2orm {
     }
 
     CodeGenResult DdlCodeGenerator::generateCreateIndex(const CreateIndexNode& createIndex) {
+        // An index is created from the text sqlite_orm serializes it into, its indexed columns and
+        // its partial WHERE alike, so a value written in it reaches SQLite as that text.
+        const DdlSerializationScope ddlScope{this->context};
         std::vector<CodegenWarning> warnings;
         if (createIndex.indexSchemaName) {
             warnings.push_back(
@@ -239,7 +280,6 @@ namespace sqlite2orm {
         // An index carries no bound parameter: both its indexed columns and the WHERE of a partial
         // index reach SQLite as the text sqlite_orm serializes the index into.
         this->context.ddlBlobLiterals.clear();
-        const DdlSerializationScope indexDdlScope{this->context};
 
         std::string functionName = createIndex.unique ? "make_unique_index" : "make_index";
         std::string indexLiteral = identifierToCppStringLiteral(createIndex.indexName);
@@ -342,6 +382,17 @@ namespace sqlite2orm {
             }
             this->context.structName = savedStruct;
             return CodeGenResult{{}, std::move(decisionPoints), std::move(warnings)};
+        }
+
+        // SQLite compiles an index when it creates it, so the CREATE INDEX carrying an `inf` is the
+        // statement refused. Warned about only here, where the index is known to be generated at
+        // all: one that is left out has no CREATE INDEX for sync_schema to run. Checked against
+        // sqlite3 3.51.0 and the libsqlite3 3.45.1 the tests link.
+        for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
+            warnings.push_back(ddlInfinityWarning(literal,
+                                                  "index " + stripIdentifierQuotes(createIndex.indexName),
+                                                  "sync_schema() throws instead of creating the index (\"no such "
+                                                  "column: inf\")"));
         }
 
         // An index that does not start with a column names the table it indexes itself.
@@ -1051,6 +1102,9 @@ namespace sqlite2orm {
     }
 
     CreateViewParts DdlCodeGenerator::viewParts(const CreateViewNode& node) {
+        // A view is created from the text sqlite_orm serializes its body into, so a value written
+        // in the body reaches SQLite as that text rather than bound the way a query's value is.
+        const DdlSerializationScope ddlScope{this->context};
         CreateViewParts parts;
         const std::string displayName = viewDisplayName(node);
         if (!node.selectQuery) {
@@ -1069,11 +1123,7 @@ namespace sqlite2orm {
         this->context.ddlBlobLiterals.clear();
         const bool viewWasStoredExpression = this->context.storedExpression;
         this->context.storedExpression = true;
-        CodeGenResult selectExpression;
-        {
-            const DdlSerializationScope viewDdlScope{this->context};
-            selectExpression = this->coordinator.tryCodegenSelectLikeSubquery(*node.selectQuery);
-        }
+        CodeGenResult selectExpression = this->coordinator.tryCodegenSelectLikeSubquery(*node.selectQuery);
         this->context.storedExpression = viewWasStoredExpression;
         for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
             parts.warnings.push_back("CREATE VIEW " + displayName + " uses " + literal +
@@ -1275,6 +1325,21 @@ namespace sqlite2orm {
         parts.structDeclaration = std::move(structDeclaration);
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
         this->context.recordComment(kCommentViewReflection);
+        // SQLite stores a view body without compiling it, so the CREATE VIEW carrying an `inf`
+        // goes through and every query against the view is the one refused — checked on sqlite3
+        // 3.51.0 and on the libsqlite3 3.45.1 the tests link. The `inf` itself comes out of the one
+        // serializer every object's DDL is written by, measured on a table and on a trigger; a
+        // generated view cannot be built here to measure, as `make_view` needs a C++26 compiler.
+        // Said only here, past every point the view is given up at: one that is not generated has
+        // no CREATE VIEW for sync_schema() to run, and the warnings of such a view would describe
+        // an object the consumer never gets.
+        for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
+            parts.warnings.push_back(
+                ddlInfinityWarning(literal,
+                                   "view " + displayName,
+                                   "sync_schema() creates a view that refuses every query against it "
+                                   "(\"no such column: inf\")"));
+        }
         // sqlite_orm maps views to C++26 reflection (make_view + [[= "…"_orm_name]]); there is no
         // pre-C++26 form. Surface a visible warning (anchored at the statement's opening keywords,
         // as the source spells them) when the target is lower.
@@ -1312,6 +1377,9 @@ namespace sqlite2orm {
     }
 
     CreateTableParts DdlCodeGenerator::createTableParts(const CreateTableNode& createTable) {
+        // A table is created from the text sqlite_orm serializes it into, so a value written in one
+        // of its clauses reaches SQLite as that text rather than bound the way a query's value is.
+        const DdlSerializationScope ddlScope{this->context};
         // Where the comments of this statement start, for the take at the end of it: a public
         // generator may have generated something else before this table, and that node's comment
         // belongs to it, not here.
@@ -1320,11 +1388,13 @@ namespace sqlite2orm {
         const auto structName = toStructName(createTable.tableName);
         this->context.structName = structName;
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
-        // Every expression a table declaration holds — a column DEFAULT or CHECK, a generated
-        // column, a table CHECK — is written into the CREATE TABLE sqlite_orm serializes, not
-        // bound.
-        const DdlSerializationScope tableDdlScope{this->context};
         std::vector<CodegenWarning> warnings;
+        // Held back until the table is known to generate, the way the trigger's WHEN-clause
+        // warnings above are: a table that is left out has no CREATE TABLE for sync_schema() to
+        // run, so naming what its sync_schema() would throw on beside `/* CREATE TABLE t — not
+        // supported for sqlite_orm */` says the opposite of what the statement says. It is the
+        // same artefact the comments and placeholders of a clause are discarded for below.
+        std::vector<CodegenWarning> ddlInfinityWarnings;
         bool tableIsGeneratable = true;
         // Whether the table ends up with a primary key at all, and whether one it declares was left
         // out for naming a column the table does not declare: a WITHOUT ROWID table needs its key.
@@ -1359,6 +1429,9 @@ namespace sqlite2orm {
             // cleared here rather than in `generateStoredExpression()`: every clause of the table
             // is serialized, whether or not SQLite only stores it.
             this->context.ddlBlobLiterals.clear();
+            // Each clause of the table warns about the infinities written in it by name, so the
+            // list starts empty here rather than once for the whole table.
+            this->context.ddlInfinityLiterals.clear();
             auto result = stored ? this->coordinator.generateStoredExpression(expression)
                                  : this->coordinator.generateNode(expression);
             warnings.insert(warnings.end(),
@@ -1543,6 +1616,19 @@ namespace sqlite2orm {
                 } else if (this->context.storedHexLiteralsTooBig.empty()) {
                     const std::string& defaultCode = *defaultClause.code;
                     makeExpression += ", default_value(" + defaultCode + ")";
+                    // SQLite keeps `DEFAULT 9e999` in the schema it reads this table from, and C++
+                    // spells the value, so the default is generated; it is the DDL sqlite_orm
+                    // writes it back as that SQLite refuses. Checked against sqlite3 3.51.0 and the
+                    // libsqlite3 3.45.1 the tests link.
+                    for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
+                        ddlInfinityWarnings.push_back(
+                            ddlInfinityWarning(literal,
+                                               "the DEFAULT of column '" + rawColumnName + "'",
+                                               "sync_schema() throws instead of creating table " + rawTableName +
+                                                   " (sqlite_orm writes a DEFAULT in parentheses, and SQLite "
+                                                   "answers DEFAULT (inf) with \"default value of column [" +
+                                                   rawColumnName + "] is not constant\")"));
+                    }
                     // An annotation is a constant expression, so only a default the compiler folds
                     // can stand as one: a text default is a pointer to a string literal and an
                     // expression default is no literal at all.
@@ -1587,6 +1673,13 @@ namespace sqlite2orm {
                     }
                 } else if (this->context.storedHexLiteralsTooBig.empty()) {
                     makeExpression += ", check(" + *checkClause.code + ")";
+                    for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
+                        ddlInfinityWarnings.push_back(
+                            ddlInfinityWarning(literal,
+                                               "the CHECK on column '" + rawColumnName + "'",
+                                               "sync_schema() throws instead of creating table " + rawTableName +
+                                                   " (\"no such column: inf\")"));
+                    }
                     // A column CHECK names the table's own members, and a member annotation is
                     // parsed inside the class, where the members it names are not all declared yet
                     // — upstream sqlite_orm states such annotations are not expressible in C++26.
@@ -1656,6 +1749,16 @@ namespace sqlite2orm {
                         makeExpression += ", generated_always_as(" + *generatedClause.code + ")";
                     } else {
                         makeExpression += ", as(" + *generatedClause.code + ")";
+                    }
+                    // A generated column is refused at CREATE TABLE time whether it is STORED or
+                    // VIRTUAL: the name `inf` is resolved against the table's columns as the
+                    // statement is read, not when a row is written.
+                    for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
+                        ddlInfinityWarnings.push_back(
+                            ddlInfinityWarning(literal,
+                                               "generated column '" + rawColumnName + "'",
+                                               "sync_schema() throws instead of creating table " + rawTableName +
+                                                   " (\"no such column: inf\")"));
                     }
                     // Same as a column CHECK: the expression names the struct's own members.
                     blockReflection("generated column `" + rawColumnName +
@@ -1942,6 +2045,12 @@ namespace sqlite2orm {
                     }
                     continue;
                 }
+                for (const DdlInfinityLiteral& literal: this->context.ddlInfinityLiterals) {
+                    ddlInfinityWarnings.push_back(ddlInfinityWarning(literal,
+                                                                     "the CHECK constraint",
+                                                                     "sync_schema() throws instead of creating table " +
+                                                                         rawTableName + " (\"no such column: inf\")"));
+                }
                 tableConstraints.push_back("check(" + *checkClause.code + ")");
             }
         }
@@ -1994,6 +2103,11 @@ namespace sqlite2orm {
             parts.warnings = std::move(warnings);
             return parts;
         }
+        // The table is generated, so there is a CREATE TABLE for sync_schema() to run and the
+        // infinities written in its clauses are worth naming.
+        warnings.insert(warnings.end(),
+                        std::make_move_iterator(ddlInfinityWarnings.begin()),
+                        std::make_move_iterator(ddlInfinityWarnings.end()));
 
         CreateTableParts parts;
         // A CREATE TABLE is a whole statement, so this is where the comments its clauses recorded —

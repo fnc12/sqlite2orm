@@ -51,6 +51,14 @@ namespace sqlite2orm {
     ExpressionCodeGenerator::ExpressionCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
         coordinator(coordinator), context(context) {}
 
+    void ExpressionCodeGenerator::noteDdlInfinity(const AstNode& literal, std::string_view spelling) {
+        if (!this->context.ddlSerializedExpression) {
+            return;
+        }
+        this->context.ddlInfinityLiterals.push_back(
+            DdlInfinityLiteral{withoutDigitSeparators(spelling), literal.sourceSpan});
+    }
+
     CodeGenResult ExpressionCodeGenerator::generateExpression(const AstNode& astNode) {
         if (auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(&astNode)) {
             if (hexLiteralExceedsInt64(integerLiteral->value)) {
@@ -69,11 +77,13 @@ namespace sqlite2orm {
             }
             if (numericLiteralGeneratesInfinity(integerLiteral->value)) {
                 this->context.spelledInfinity = true;
+                this->noteDdlInfinity(*integerLiteral, integerLiteral->value);
             }
             return CodeGenResult{integerLiteralToCpp(integerLiteral->value), {}};
         } else if (auto* realLiteral = dynamic_cast<const RealLiteralNode*>(&astNode)) {
             if (numericLiteralGeneratesInfinity(realLiteral->value)) {
                 this->context.spelledInfinity = true;
+                this->noteDdlInfinity(*realLiteral, realLiteral->value);
             }
             return CodeGenResult{realLiteralToCpp(realLiteral->value), {}};
         } else if (auto* stringLiteral = dynamic_cast<const StringLiteralNode*>(&astNode)) {

@@ -386,6 +386,19 @@ namespace sqlite2orm {
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 
     /**
+     *  The same key as `normalizeSqlIdentifier`, for a name that is already the name of the object
+     *  rather than the identifier a statement spelled it with. `sqlite_master.name` holds such a
+     *  name: SQLite took the quotes off it when it created the object and compares it as it stands
+     *  — `sqlite3_strnicmp(zName, "sqlite_", 7)` for a reserved name, `sqlite3ShadowTableName()`
+     *  for a module's own table — so only the case folding is left to do here. Taking quotes off
+     *  it a second time would read a name whose own first and last character are quotes as another
+     *  name than the database has: sqlite3 3.51 creates `CREATE TABLE "'sqlite_foo'"(x)` without a
+     *  word, under the name `'sqlite_foo'`, and files the storage of `CREATE VIRTUAL TABLE "[x]"
+     *  USING fts5(a)` under `[x]_data` and the four names beside it.
+     */
+    std::string normalizeSchemaObjectName(std::string_view objectName);
+
+    /**
      *  Whether a column name is one of the three names SQLite answers a rowid table's implicit row id
      *  with — `rowid`, `oid`, `_rowid_` — and no column of that name was declared. Where that name
      *  stands for the row id, quoting it changes nothing; where it does not, the double quotes make
@@ -537,6 +550,8 @@ namespace sqlite2orm {
      *  is a node no parse built — one a test constructed by hand, say.
      */
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
+    /** The same for a span kept on its own, away from the node it was parsed into. */
+    CodegenWarning sourceSpanWarning(std::string message, const SourceSpan& sourceSpan);
     /**
      *  The code generated in place of a construct sqlite_orm has no form for: a `/*` … `*\/`
      *  placeholder named by `label`, and `message` anchored at the construct appended to the

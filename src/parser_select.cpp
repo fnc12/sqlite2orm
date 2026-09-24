@@ -446,7 +446,7 @@ namespace sqlite2orm {
         if (!isFromTableItemStartOrParen())
             return items;
 
-        auto parseOneUnit = [&](JoinKind leadingJoin, bool expectConstraint) {
+        auto parseOneUnit = [&](JoinKind leadingJoin, bool expectConstraint, bool writtenAsComma = false) {
             if (check(TokenType::leftParen) && !isFromTableItemStart()) {
                 advanceToken();
                 // A parenthesized join group nests the way a subquery does and is walked the same
@@ -462,6 +462,7 @@ namespace sqlite2orm {
                 match(TokenType::rightParen);
                 if (!innerItems.empty()) {
                     innerItems[0].leadingJoin = leadingJoin;
+                    innerItems[0].leadingJoinWrittenAsComma = writtenAsComma;
                     if (expectConstraint) {
                         parseJoinConstraint(innerItems[0]);
                     }
@@ -472,6 +473,7 @@ namespace sqlite2orm {
             } else {
                 FromClauseItem item;
                 item.leadingJoin = leadingJoin;
+                item.leadingJoinWrittenAsComma = writtenAsComma;
                 item.table = parseFromTableItem();
                 if (expectConstraint) {
                     parseJoinConstraint(item);
@@ -487,8 +489,9 @@ namespace sqlite2orm {
                 if (!isFromTableItemStartOrParen())
                     break;
                 // A comma is a join operator like any other, so SQLite reads an ON or a USING
-                // after it the way it reads one after JOIN.
-                parseOneUnit(JoinKind::crossJoin, true);
+                // after it the way it reads one after JOIN. It joins like `CROSS JOIN` but without
+                // the barrier the keyword raises, which the item records for codegen to read.
+                parseOneUnit(JoinKind::crossJoin, true, true);
                 continue;
             }
             JoinKind joinKind = JoinKind::none;

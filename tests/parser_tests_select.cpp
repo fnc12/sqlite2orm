@@ -79,6 +79,9 @@ TEST_CASE("parser: FROM schema.table") {
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
+// A comma parses as `crossJoin`, and the item records that the operator was the comma: the two
+// spellings answer the same rows, but only the written `CROSS JOIN` keeps SQLite from reordering
+// the tables, and codegen reads the difference. The `true` below is the whole of that record.
 TEST_CASE("parser: FROM two tables comma") {
     auto parseResult = parse("SELECT * FROM users, posts");
     REQUIRE(parseResult);
@@ -89,7 +92,8 @@ TEST_CASE("parser: FROM two tables comma") {
         FromClauseItem{JoinKind::crossJoin,
                        FromTableClause{std::nullopt, std::string("posts"), std::nullopt},
                        nullptr,
-                       {}},
+                       {},
+                       true},
     };
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
@@ -125,6 +129,7 @@ TEST_CASE("parser: CROSS JOIN ON") {
     const auto& sel = requireNode<SelectNode>(parseResult);
     REQUIRE(sel.fromClause.size() == 2);
     REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE_FALSE(sel.fromClause.at(1).leadingJoinWrittenAsComma);
     REQUIRE(sel.fromClause.at(1).table.tableName == "posts");
     REQUIRE(sel.fromClause.at(1).onExpression != nullptr);
     REQUIRE(sel.fromClause.at(1).usingColumnNames.empty());
@@ -140,14 +145,29 @@ TEST_CASE("parser: CROSS JOIN USING") {
     REQUIRE(sel.fromClause.at(1).onExpression == nullptr);
 }
 
-// A comma is a join operator of its own, and sqlite3 takes a constraint after it too.
+// A comma is a join operator of its own, and sqlite3 takes a constraint after it too. It parses
+// as `crossJoin` like the keyword does, and is told apart from it by the record of the spelling.
 TEST_CASE("parser: comma join ON") {
     auto parseResult = parse("SELECT * FROM users, posts ON users.id = posts.user_id");
     REQUIRE(parseResult);
     const auto& sel = requireNode<SelectNode>(parseResult);
     REQUIRE(sel.fromClause.size() == 2);
     REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).leadingJoinWrittenAsComma);
     REQUIRE(sel.fromClause.at(1).onExpression != nullptr);
+}
+
+// sqlite3 takes a USING after a comma as well: `SELECT * FROM t1, t2 USING (a)` over rows
+// (1,2),(3,4) and (1,9),(5,6) answers the one row 1|2|9.
+TEST_CASE("parser: comma join USING") {
+    auto parseResult = parse("SELECT * FROM t1, t2 USING (a)");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).leadingJoinWrittenAsComma);
+    REQUIRE(sel.fromClause.at(1).usingColumnNames == std::vector<std::string>{"a"});
+    REQUIRE(sel.fromClause.at(1).onExpression == nullptr);
 }
 
 // The one join operator that takes no constraint: sqlite3 answers "a NATURAL join may not have an

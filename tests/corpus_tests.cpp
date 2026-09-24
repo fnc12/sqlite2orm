@@ -560,6 +560,15 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
              .rows = {"For Those About To Rock (We Salute You)|For Those About To Rock We Salute You",
                       "Balls to the Wall|Balls to the Wall",
                       "Fast As a Shark|Restless and Wild"}},
+            // A comma carries a constraint the same way, and answers the same 6 rows against the
+            // 35 of the product. It is generated through a branch of its own, so it is run here as
+            // well.
+            {.sql = "SELECT COUNT(*) FROM Track t, Album a ON t.AlbumId = a.AlbumId;", .rows = {"6"}},
+            {.sql = "SELECT t.Name, a.Title FROM Track t, Album a ON t.AlbumId = a.AlbumId ORDER BY t.TrackId "
+                    "LIMIT 3;",
+             .rows = {"For Those About To Rock (We Salute You)|For Those About To Rock We Salute You",
+                      "Balls to the Wall|Balls to the Wall",
+                      "Fast As a Shark|Restless and Wild"}},
             {.sql = "SELECT COUNT(*) FROM Track t1, Track t2 WHERE t1.TrackId = t2.TrackId;", .rows = {"7"}},
             {.sql = "SELECT COUNT(*) FROM Album a WHERE a.ArtistId = 1;", .rows = {"2"}},
             // The `count(*)` of the HAVING is the only thing naming the aliased source, and

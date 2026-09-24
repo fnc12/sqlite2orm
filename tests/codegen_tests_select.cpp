@@ -195,16 +195,24 @@ TEST_CASE("codegen: CROSS JOIN ON over aliased sources generates the constraint"
                                12}});
 }
 
-// A comma is a join operator of its own, and SQLite takes a constraint after it too.
+// A comma is a join operator of its own, and SQLite takes a constraint after it too. It is the
+// one spelling of `crossJoin` that `join<T>(...)` translates exactly: a comma raises no
+// reordering barrier — measured on sqlite3 3.51.0 with EXPLAIN QUERY PLAN, `FROM big, small ON
+// big.x = small.y` searches the indexed table just as `JOIN` does, where `CROSS JOIN` scans both
+// tables in the order written — so there is nothing to warn about, and the empty list below is
+// what says we do not tell the caller his query became worse than he wrote it.
 TEST_CASE("codegen: comma join ON generates the constraint") {
     auto result = generateFull("SELECT * FROM users, posts ON users.id = posts.user_id");
     REQUIRE(result.code == "auto rows = storage.get_all<Users>(join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
-    REQUIRE(result.warnings ==
-            std::vector<CodegenWarning>{
-                CodegenWarning{"CROSS JOIN carrying a constraint has no sqlite_orm form; generated join<Posts>(...) "
-                               "answers the same rows, but leaves SQLite free to reorder the join",
-                               SourceLocation{1, 31},
-                               24}});
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+// The same for a USING after a comma, which sqlite3 takes as well: `SELECT * FROM t1, t2 USING
+// (a)` over rows (1,2),(3,4) and (1,9),(5,6) answers the one row 1|2|9.
+TEST_CASE("codegen: comma join USING generates the constraint") {
+    auto result = generateFull("SELECT * FROM t1, t2 USING (a)");
+    REQUIRE(result.code == "auto rows = storage.get_all<T1>(join<T2>(using_(&T2::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
 }
 
 // A USING names its columns with no node of its own to anchor at, so this one warns unanchored.

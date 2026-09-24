@@ -108,9 +108,23 @@ namespace sqlite2orm {
         }
 
         /**
-         *  The warning a CROSS JOIN carrying a constraint leaves behind, anchored at the ON it was
-         *  written with. A USING names its columns with no node of its own, so there is no span to
-         *  underline and the warning goes out with no anchor at all.
+         *  Whether the join generated for `item` gives up the reordering barrier the SQL asked
+         *  for. A comma and a written `CROSS JOIN` both parse as `crossJoin` and answer the same
+         *  rows, but only the keyword keeps SQLite from reordering the tables: measured on 3.51.0
+         *  with EXPLAIN QUERY PLAN, `FROM big, small ON big.x = small.y` searches the indexed
+         *  table exactly as `JOIN` does, while `CROSS JOIN` scans both in the order written. So
+         *  `join<T>(...)` is an exact translation of the comma form and there is nothing to warn
+         *  about, while the keyword form loses the barrier along the way.
+         */
+        bool generatedJoinLosesCrossJoinBarrier(const FromClauseItem& item) {
+            return item.leadingJoin == JoinKind::crossJoin && !item.leadingJoinWrittenAsComma &&
+                   generatedJoinKind(item) != JoinKind::crossJoin;
+        }
+
+        /**
+         *  The warning a written CROSS JOIN carrying a constraint leaves behind, anchored on the
+         *  condition the ON was written with. A USING names its columns with no node of its own,
+         *  so there is no span to underline and the warning goes out with no anchor at all.
          */
         CodegenWarning constrainedCrossJoinWarning(const FromClauseItem& item, std::string_view generatedType) {
             std::string message = "CROSS JOIN carrying a constraint has no sqlite_orm form; generated join<" +
@@ -700,7 +714,7 @@ namespace sqlite2orm {
                     break;
                 default: {
                     std::string api(joinSqliteOrmApiName(joinKind));
-                    if (joinItem.leadingJoin == JoinKind::crossJoin) {
+                    if (generatedJoinLosesCrossJoinBarrier(joinItem)) {
                         selectWarnings.push_back(constrainedCrossJoinWarning(joinItem, rightType));
                     }
                     if (!joinItem.usingColumnNames.empty()) {
@@ -1355,7 +1369,7 @@ namespace sqlite2orm {
                     break;
                 default: {
                     std::string api(joinSqliteOrmApiName(joinKind));
-                    if (joinItem.leadingJoin == JoinKind::crossJoin) {
+                    if (generatedJoinLosesCrossJoinBarrier(joinItem)) {
                         subWarnings.push_back(constrainedCrossJoinWarning(joinItem, rightType));
                     }
                     if (!joinItem.usingColumnNames.empty()) {

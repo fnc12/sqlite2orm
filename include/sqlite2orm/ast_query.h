@@ -73,10 +73,23 @@ namespace sqlite2orm {
         FromTableClause table;
         std::shared_ptr<AstNode> onExpression;
         std::vector<std::string> usingColumnNames;
+        /**
+         *  Whether the `crossJoin` above was written as a comma rather than as `CROSS JOIN`. The
+         *  two answer the same rows, and SQLite reads a constraint after either, but only the
+         *  written `CROSS JOIN` keeps SQLite from reordering the tables: measured on 3.51.0 with
+         *  EXPLAIN QUERY PLAN, `FROM big, small ON big.x = small.y` searches the indexed table
+         *  exactly as `JOIN` does, while `CROSS JOIN` scans both in the order they are written.
+         *  Codegen asks this to tell the join it translates exactly from the one it translates at
+         *  the cost of that barrier. It is compared below: the two spellings are different
+         *  statements, and a generator now acts on the difference, so a parse test that pins one
+         *  must not pass for the other.
+         */
+        bool leadingJoinWrittenAsComma = false;
 
         bool operator==(const FromClauseItem& other) const {
             if (this->leadingJoin != other.leadingJoin || this->table != other.table ||
-                this->usingColumnNames != other.usingColumnNames)
+                this->usingColumnNames != other.usingColumnNames ||
+                this->leadingJoinWrittenAsComma != other.leadingJoinWrittenAsComma)
                 return false;
             if (!this->onExpression && !other.onExpression)
                 return true;

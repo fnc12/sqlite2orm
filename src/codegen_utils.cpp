@@ -89,18 +89,53 @@ namespace sqlite2orm {
         return std::string(identifier);
     }
 
+    namespace {
+
+        /** `value` in upper-case hexadecimal, padded with leading zeros to `digits` of them. */
+        std::string hexDigits(char32_t value, size_t digits) {
+            static constexpr std::string_view kDigits = "0123456789ABCDEF";
+            std::string result(digits, '0');
+            for (size_t index = digits; index > 0; --index) {
+                result[index - 1] = kDigits[value & 0xFu];
+                value >>= 4;
+            }
+            return result;
+        }
+
+    }  // namespace
+
     std::string toCppIdentifier(std::string_view sqlName) {
         auto stripped = stripIdentifierQuotes(sqlName);
         std::string result;
         result.reserve(stripped.size());
-        for (char character: stripped) {
-            if (std::isalnum(static_cast<unsigned char>(character)) || character == '_') {
-                result += character;
-            } else {
+        for (size_t index = 0; index < stripped.size();) {
+            const Utf8Character character = decodeUtf8Character(std::string_view(stripped).substr(index));
+            index += character.length;
+            if (!character.valid) {
+                result += 'x' + hexDigits(character.codePoint, 2);
+                continue;
+            }
+            // The ASCII classification is spelled out rather than asked of <cctype>, whose answer
+            // for the bytes above 0x7F depends on the locale the program happens to run in.
+            const char32_t codePoint = character.codePoint;
+            if ((codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') ||
+                (codePoint >= '0' && codePoint <= '9') || codePoint == '_') {
+                result += static_cast<char>(codePoint);
+            } else if (codePoint < 0x80) {
                 result += '_';
+            } else if (codePoint <= 0xFFFF) {
+                result += 'u' + hexDigits(codePoint, 4);
+            } else {
+                result += 'U' + hexDigits(codePoint, 8);
             }
         }
-        if (!result.empty() && std::isdigit(static_cast<unsigned char>(result[0]))) {
+        if (result.empty()) {
+            // SQLite takes an empty name — `CREATE TABLE t("" INTEGER)` is a table with a column
+            // called nothing — and C++ has no identifier of no characters, so the one character
+            // that carries no letters of its own stands for it.
+            return "_";
+        }
+        if (result[0] >= '0' && result[0] <= '9') {
             result = "_" + result;
         }
         return result;
@@ -1322,6 +1357,37 @@ namespace sqlite2orm {
     size_t underlineLengthOf(std::string_view sourceText) {
         const size_t lineBreak = sourceText.find('\n');
         return utf8CharacterCount(lineBreak == std::string_view::npos ? sourceText : sourceText.substr(0, lineBreak));
+    }
+
+    std::optional<CodegenWarning> recordMemberName(std::string_view owner,
+                                                   std::string_view sqlName,
+                                                   std::string_view memberName,
+                                                   const SourceSpan& nameSpan,
+                                                   std::map<std::string, std::string>& membersByName,
+                                                   bool mappedByMemberName) {
+        const auto anchored = [&nameSpan](std::string message) {
+            if (nameSpan.text.empty()) {
+                return CodegenWarning{std::move(message)};
+            }
+            return CodegenWarning{std::move(message), nameSpan.location, underlineLengthOf(nameSpan.text)};
+        };
+        const auto [iterator, inserted] = membersByName.emplace(std::string(memberName), std::string(sqlName));
+        if (!inserted) {
+            return anchored(std::string(owner) + ": columns `" + iterator->second + "` and `" + std::string(sqlName) +
+                            "` are both named `" + std::string(memberName) +
+                            "` in C++; the generated struct declares that member twice and does not compile");
+        }
+        if (sqlName != memberName) {
+            std::string message = std::string(owner) + ": column `" + std::string(sqlName) +
+                                  "` is not a C++ identifier; the member holding it is named `" +
+                                  std::string(memberName) + "`";
+            if (mappedByMemberName) {
+                message += ", and a view is mapped with the names of its members, so the column is named that in "
+                           "the mapping too";
+            }
+            return anchored(std::move(message));
+        }
+        return std::nullopt;
     }
 
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {

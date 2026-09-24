@@ -95,4 +95,56 @@ namespace sqlite2orm {
         return count;
     }
 
+    Utf8Character decodeUtf8Character(std::string_view text) {
+        const auto byteAt = [&text](std::size_t index) {
+            return static_cast<unsigned char>(text[index]);
+        };
+        const unsigned char lead = byteAt(0);
+        if (lead < 0x80u) {
+            return Utf8Character{lead, 1, true};
+        }
+        // The ranges the second byte is checked against are what rules out the sequences UTF-8
+        // has more than one spelling for (an overlong `0xC0 0x80`), the surrogate halves, which
+        // are code points no character is written with, and everything past U+10FFFF.
+        std::size_t length = 0;
+        char32_t codePoint = 0;
+        unsigned char secondByteFirst = 0x80u;
+        unsigned char secondByteLast = 0xBFu;
+        if (lead >= 0xC2u && lead <= 0xDFu) {
+            length = 2;
+            codePoint = lead & 0x1Fu;
+        } else if (lead >= 0xE0u && lead <= 0xEFu) {
+            length = 3;
+            codePoint = lead & 0x0Fu;
+            if (lead == 0xE0u) {
+                secondByteFirst = 0xA0u;
+            } else if (lead == 0xEDu) {
+                secondByteLast = 0x9Fu;
+            }
+        } else if (lead >= 0xF0u && lead <= 0xF4u) {
+            length = 4;
+            codePoint = lead & 0x07u;
+            if (lead == 0xF0u) {
+                secondByteFirst = 0x90u;
+            } else if (lead == 0xF4u) {
+                secondByteLast = 0x8Fu;
+            }
+        } else {
+            return Utf8Character{lead, 1, false};
+        }
+        if (text.size() < length) {
+            return Utf8Character{lead, 1, false};
+        }
+        for (std::size_t index = 1; index < length; ++index) {
+            const unsigned char byte = byteAt(index);
+            const unsigned char first = index == 1 ? secondByteFirst : 0x80u;
+            const unsigned char last = index == 1 ? secondByteLast : 0xBFu;
+            if (byte < first || byte > last) {
+                return Utf8Character{lead, 1, false};
+            }
+            codePoint = (codePoint << 6) | (byte & 0x3Fu);
+        }
+        return Utf8Character{codePoint, length, true};
+    }
+
 }  // namespace sqlite2orm

@@ -1123,6 +1123,10 @@ namespace sqlite2orm {
         return toLowerAscii(stripIdentifierQuotes(sqlIdentifier));
     }
 
+    std::string normalizeSchemaObjectName(std::string_view objectName) {
+        return toLowerAscii(objectName);
+    }
+
     bool isImplicitRowIdName(std::string_view sqlIdentifier) {
         const auto normalized = normalizeSqlIdentifier(sqlIdentifier);
         return normalized == "rowid" || normalized == "oid" || normalized == "_rowid_";

@@ -435,11 +435,22 @@ namespace sqlite2orm {
 
         void registerSourceTable(std::string_view tableName, std::vector<SourceTableColumn> columns);
 
-        /** Records that `tableName` is left out of the generated storage. */
+        /** Records that `tableName`, an identifier as a statement spelled it, is left out of the generated storage. */
         void markUngeneratableTable(std::string_view tableName);
 
-        /** Records that `viewName`, a view, is left out of the generated storage. */
+        /** Records that `viewName`, a view an identifier of a statement names, is left out of the generated storage. */
         void markUngeneratableView(std::string_view viewName);
+
+        /**
+         *  Records that a table the database holds under `objectName` is left out of the generated
+         *  storage. The name comes from `sqlite_master` and carries no quotes of its own, so it is
+         *  keyed by `normalizeSchemaObjectName` — the identifier `"'sqlite_foo'"` a statement wrote
+         *  and the name `'sqlite_foo'` the database stores are the same object and reach the same key.
+         */
+        void markUngeneratableSchemaTable(std::string_view objectName);
+
+        /** Records that a view the database holds under `objectName` is left out of the generated storage. */
+        void markUngeneratableSchemaView(std::string_view objectName);
 
         /** Whether `tableName` names a table of this batch that is left out of the generated storage. */
         bool isUngeneratableTable(std::string_view tableName) const;

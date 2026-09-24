@@ -2166,6 +2166,7 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
             "CREATE TABLE s_alias_table (id INTEGER, v TEXT, PRIMARY KEY(id)) STRICT;"
             "CREATE TABLE s_any_pk (id ANY PRIMARY KEY, v TEXT) STRICT;"
             "CREATE TABLE s_desc_pk (id INTEGER PRIMARY KEY DESC, v TEXT) STRICT;"
+            "CREATE TABLE s_desc_pk_table (id INTEGER, v TEXT, PRIMARY KEY(id DESC)) STRICT;"
             "CREATE TABLE s_int_pk (id INT PRIMARY KEY, v TEXT) STRICT;"
             "CREATE TABLE s_table_pk (a TEXT, b INT, v TEXT, PRIMARY KEY(a, b)) STRICT;"
             "CREATE TABLE s_text_pk (id TEXT PRIMARY KEY, v TEXT) STRICT;"
@@ -2177,6 +2178,7 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
             "INSERT INTO s_alias_table VALUES (1, 'keep'), (2, 'me');"
             "INSERT INTO s_any_pk VALUES ('a', 'keep'), (2, 'me');"
             "INSERT INTO s_desc_pk VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_desc_pk_table VALUES (1, 'keep'), (2, 'me');"
             "INSERT INTO s_int_pk VALUES (1, 'keep'), (2, 'me');"
             "INSERT INTO s_table_pk VALUES ('a', 1, 'keep'), ('b', 2, 'me');"
             "INSERT INTO s_text_pk VALUES ('a', 'keep'), ('b', 'me');"
@@ -2200,6 +2202,7 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                                                                       "s_alias_table=already_in_sync\n"
                                                                       "s_any_pk=already_in_sync\n"
                                                                       "s_desc_pk=already_in_sync\n"
+                                                                      "s_desc_pk_table=already_in_sync\n"
                                                                       "s_int_pk=already_in_sync\n"
                                                                       "s_table_pk=already_in_sync\n"
                                                                       "s_text_pk=already_in_sync\n"
@@ -2210,8 +2213,9 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                       "SELECT (SELECT count(*) FROM s_alias) || ',' || (SELECT count(*) FROM s_alias_asc) || ',' || "
                       "(SELECT count(*) FROM s_alias_auto) || ',' || (SELECT count(*) FROM s_alias_table) || ',' || "
                       "(SELECT count(*) FROM s_any_pk) || ',' || (SELECT count(*) FROM s_desc_pk) || ',' || (SELECT "
-                      "count(*) FROM s_int_pk) || ',' || (SELECT count(*) FROM s_table_pk) || ',' || (SELECT count(*) "
-                      "FROM s_text_pk) || ',' || (SELECT count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2");
+                      "count(*) FROM s_desc_pk_table) || ',' || (SELECT count(*) FROM s_int_pk) || ',' || (SELECT "
+                      "count(*) FROM s_table_pk) || ',' || (SELECT count(*) FROM s_text_pk) || ',' || (SELECT "
+                      "count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2,2");
 }
 
 // ANY is the one type name a STRICT table reads as "whatever the value is": SQLite stores an

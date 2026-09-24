@@ -490,7 +490,7 @@ TEST_CASE("parser: CREATE TABLE - table-level PRIMARY KEY") {
     auto parseResult = parse("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (a, b))");
     REQUIRE(parseResult);
     CreateTableNode expected("t", {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "TEXT"}}, false, {});
-    expected.primaryKeys = {TablePrimaryKey{{"a", "b"}}};
+    expected.primaryKeys = {TablePrimaryKey{{KeyColumn{"a"}, KeyColumn{"b"}}}};
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 
@@ -498,8 +498,64 @@ TEST_CASE("parser: CREATE TABLE - table-level PRIMARY KEY single column") {
     auto parseResult = parse("CREATE TABLE t (id INTEGER, PRIMARY KEY (id))");
     REQUIRE(parseResult);
     CreateTableNode expected("t", {ColumnDef{"id", "INTEGER"}}, false, {});
-    expected.primaryKeys = {TablePrimaryKey{{"id"}}};
+    expected.primaryKeys = {TablePrimaryKey{{KeyColumn{"id"}}}};
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
+}
+
+// SQLite spells a table-level key with the same `indexed-column` production `CREATE INDEX` uses,
+// so a name there can carry a collation and a direction. Unlike a DESC on the column itself, none
+// of that takes the rowid alias away: sqlite3 3.51.0 answers `PRAGMA table_info` with `notnull = 0`
+// for the `id` of `CREATE TABLE t (id INTEGER, PRIMARY KEY(id DESC))` and fills an inserted NULL in
+// with the next rowid.
+TEST_CASE("parser: CREATE TABLE - table-level PRIMARY KEY with a direction") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (a DESC, b ASC))");
+    REQUIRE(parseResult);
+    CreateTableNode expected("t", {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "TEXT"}}, false, {});
+    expected.primaryKeys = {
+        TablePrimaryKey{{KeyColumn{"a", "", SortDirection::desc}, KeyColumn{"b", "", SortDirection::asc}}}};
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: CREATE TABLE - table-level PRIMARY KEY with a collation and a direction") {
+    auto parseResult = parse("CREATE TABLE t (a TEXT, PRIMARY KEY (a COLLATE NOCASE DESC))");
+    REQUIRE(parseResult);
+    CreateTableNode expected("t", {ColumnDef{"a", "TEXT"}}, false, {});
+    expected.primaryKeys = {TablePrimaryKey{{KeyColumn{"a", "NOCASE", SortDirection::desc}}}};
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
+}
+
+// The two parts come in that order and no other: sqlite3 answers the swapped spelling with
+// `near "COLLATE": syntax error`.
+TEST_CASE("parser: CREATE TABLE - error on a table-level PRIMARY KEY with COLLATE after the direction") {
+    auto parseResult = parse("CREATE TABLE t (a TEXT, PRIMARY KEY (a DESC COLLATE NOCASE))");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: COLLATE");
+}
+
+// A key names columns, not expressions — sqlite3 refuses this one with `expressions prohibited in
+// PRIMARY KEY and UNIQUE constraints`.
+TEST_CASE("parser: CREATE TABLE - error on an expression in a table-level PRIMARY KEY") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER, PRIMARY KEY (1))");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: 1");
+}
+
+// The column list is not optional either: `PRIMARY KEY` with nothing behind it used to be read as
+// a key over no columns, where sqlite3 answers `near ")": syntax error`.
+TEST_CASE("parser: CREATE TABLE - error on a table-level PRIMARY KEY with no columns") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER, PRIMARY KEY)");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: )");
+}
+
+TEST_CASE("parser: CREATE TABLE - error on a table-level UNIQUE with no columns") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER, UNIQUE)");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: )");
 }
 
 // --- Table-level UNIQUE ---
@@ -508,7 +564,15 @@ TEST_CASE("parser: CREATE TABLE - table-level UNIQUE") {
     auto parseResult = parse("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (a, b))");
     REQUIRE(parseResult);
     CreateTableNode expected("t", {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "TEXT"}}, false, {});
-    expected.uniques = {TableUnique{{"a", "b"}}};
+    expected.uniques = {TableUnique{{KeyColumn{"a"}, KeyColumn{"b"}}}};
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: CREATE TABLE - table-level UNIQUE with a collation and a direction") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (a DESC, b COLLATE NOCASE))");
+    REQUIRE(parseResult);
+    CreateTableNode expected("t", {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "TEXT"}}, false, {});
+    expected.uniques = {TableUnique{{KeyColumn{"a", "", SortDirection::desc}, KeyColumn{"b", "NOCASE"}}}};
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 
@@ -541,8 +605,8 @@ TEST_CASE("parser: CREATE TABLE - mixed table-level constraints") {
                              {TableForeignKey{"c", ForeignKeyClause{"other", "id"}}},
                              false,
                              {});
-    expected.primaryKeys = {TablePrimaryKey{{"a", "b"}}};
-    expected.uniques = {TableUnique{{"b", "c"}}};
+    expected.primaryKeys = {TablePrimaryKey{{KeyColumn{"a"}, KeyColumn{"b"}}}};
+    expected.uniques = {TableUnique{{KeyColumn{"b"}, KeyColumn{"c"}}}};
     expected.checks = {TableCheck{makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
                                                                      makeNode<ColumnRefNode>("a"),
                                                                      makeNode<IntegerLiteralNode>("0"))}};
@@ -555,7 +619,7 @@ TEST_CASE("parser: CREATE TABLE - CONSTRAINT name prefix for table PK") {
     auto parseResult = parse("CREATE TABLE t (a INTEGER, b INTEGER, CONSTRAINT pk_t PRIMARY KEY (a, b))");
     REQUIRE(parseResult);
     CreateTableNode expected("t", {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "INTEGER"}}, false, {});
-    expected.primaryKeys = {TablePrimaryKey{{"a", "b"}}};
+    expected.primaryKeys = {TablePrimaryKey{{KeyColumn{"a"}, KeyColumn{"b"}}}};
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 

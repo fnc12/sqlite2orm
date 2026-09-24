@@ -92,14 +92,30 @@ namespace sqlite2orm {
         bool operator==(const TableForeignKey&) const = default;
     };
 
+    /**
+     *  A column named by a table-level `PRIMARY KEY` or `UNIQUE`. SQLite spells those with the
+     *  same `indexed-column` production `CREATE INDEX` uses, so a name can carry a collation and
+     *  a direction — `PRIMARY KEY(id COLLATE NOCASE DESC)` — in that order and nothing else: an
+     *  expression there is refused with `expressions prohibited in PRIMARY KEY and UNIQUE
+     *  constraints`. Neither part takes the rowid alias away, unlike a `DESC` spelled on the
+     *  column itself; see `ColumnDef::primaryKeySortDirection`.
+     */
+    struct KeyColumn {
+        std::string name;
+        std::string collation;
+        SortDirection sortDirection = SortDirection::none;
+
+        bool operator==(const KeyColumn&) const = default;
+    };
+
     struct TablePrimaryKey {
-        std::vector<std::string> columns;
+        std::vector<KeyColumn> columns;
 
         bool operator==(const TablePrimaryKey&) const = default;
     };
 
     struct TableUnique {
-        std::vector<std::string> columns;
+        std::vector<KeyColumn> columns;
 
         bool operator==(const TableUnique&) const = default;
     };

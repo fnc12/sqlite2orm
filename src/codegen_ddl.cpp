@@ -1747,15 +1747,24 @@ namespace sqlite2orm {
         // The warnings are collected per key rather than told right away: a key naming a column the
         // table declares nothing of is left out of the generated table altogether, and saying that a
         // DESC of it was ignored would describe a key the user never gets.
+        // A key may spell one column more than once, and the same spelling twice: the two
+        // occurrences of `PRIMARY KEY(a DESC, a DESC)` have the very same thing to say, and saying
+        // it twice tells the reader about two places when there is one thing to fix. A message
+        // already collected for this key is left at the one it was collected at.
         const auto warnAboutKeySpelling =
             [](std::vector<std::string>& keyWarnings, const KeyColumn& keyColumn, std::string_view keyKind) {
                 const std::string where = std::string(" on column '") + keyColumn.name + "' of a table-level " +
                                           std::string(keyKind) + " is not supported in sqlite_orm — ignored in codegen";
+                const auto tellOnce = [&keyWarnings](std::string message) {
+                    if (std::find(keyWarnings.begin(), keyWarnings.end(), message) == keyWarnings.end()) {
+                        keyWarnings.push_back(std::move(message));
+                    }
+                };
                 if (!keyColumn.collation.empty()) {
-                    keyWarnings.push_back("COLLATE " + keyColumn.collation + where);
+                    tellOnce("COLLATE " + keyColumn.collation + where);
                 }
                 if (keyColumn.sortDirection == SortDirection::desc) {
-                    keyWarnings.push_back("DESC" + where);
+                    tellOnce("DESC" + where);
                 }
             };
         for (const auto& tablePrimaryKey: createTable.primaryKeys) {
@@ -1776,9 +1785,9 @@ namespace sqlite2orm {
             std::vector<std::string> keyMembers;
             for (const auto& keyColumn: tablePrimaryKey.columns) {
                 std::string normalizedName = normalizeSqlIdentifier(keyColumn.name);
-                const bool alreadySpelled = std::find(spelledNormalizedNames.begin(),
-                                                      spelledNormalizedNames.end(),
-                                                      normalizedName) != spelledNormalizedNames.end();
+                const bool alreadySpelled =
+                    std::find(spelledNormalizedNames.begin(), spelledNormalizedNames.end(), normalizedName) !=
+                    spelledNormalizedNames.end();
                 if (!alreadySpelled) {
                     spelledNormalizedNames.push_back(std::move(normalizedName));
                     if (const auto member = this->context.constraintColumnMember(keyColumn.name)) {
@@ -1805,6 +1814,38 @@ namespace sqlite2orm {
                                                 "the generated table has no primary_key()");
                 tablePrimaryKeyWasLeftOut = true;
                 continue;
+            }
+            // Writing a repeated name once has a price on exactly one shape, and it is told about
+            // rather than left for the reader to meet in their own database. SQLite makes a column
+            // the rowid alias when the key is over ONE term and the declared type is INTEGER, so
+            // `PRIMARY KEY(a, a)` over an `a INTEGER` is no alias — two terms — while the key the
+            // generated code carries, naming `a` once, is one. sqlite_orm has no way to write a
+            // table-level key of two terms over one column, so the shape cannot be kept: what is
+            // left is to say what changed.
+            if (spelledNormalizedNames.size() == 1 && tablePrimaryKey.columns.size() > spelledNormalizedNames.size()) {
+                const std::string& keptName = spelledNormalizedNames.front();
+                for (const ColumnDef& column: createTable.columns) {
+                    if (normalizeSqlIdentifier(column.name) != keptName) {
+                        continue;
+                    }
+                    if (columnAloneInTableKeyIsRowidAlias(createTable, column)) {
+                        const std::string columnName = stripIdentifierQuotes(column.name);
+                        warnings.push_back(
+                            "the table-level PRIMARY KEY names column '" + columnName +
+                            "' more than once, and the generated primary_key() names it once, because that "
+                            "is the one place the column holds in the key SQLite reports. That makes the "
+                            "generated key a rowid alias, which the key written here is not: SQLite aliases "
+                            "the rowid onto a column when the key is over a single term of declared type "
+                            "INTEGER, and this key is written with more terms than one. A database the "
+                            "header was generated from is unaffected — `sync_schema()` leaves it alone — "
+                            "but in a database created from the generated code an INSERT that leaves '" +
+                            columnName +
+                            "' out stores the next rowid in it instead of NULL, and a NOT NULL that SQLite "
+                            "enforces on the column here, whether declared or implied by STRICT, lets that "
+                            "INSERT through rather than refusing it");
+                    }
+                    break;
+                }
             }
             warnings.insert(warnings.end(), keySpellingWarnings.begin(), keySpellingWarnings.end());
             primaryKeyGenerated = true;

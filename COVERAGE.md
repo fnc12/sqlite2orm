@@ -367,6 +367,12 @@ a compound of bitwise branches is still read back through `int`.
 - [!] COLLATE / DESC on a key column (parsed; codegen warning — a table-level key of sqlite_orm
   takes bare member pointers, and `primary_key(...).desc()` writes the keyword before the list,
   which SQLite refuses)
+- [x] A column a table-level PRIMARY KEY names more than once is named once in `primary_key(...)`,
+  at the place it is first spelled at: that is the single place SQLite gives it in the key, and
+  `PRAGMA table_info` — what `sync_schema()` compares a mapped table against — reports no second
+  one. Where the collapse leaves a lone INTEGER column of a rowid table, it also turns the key into
+  a rowid alias, which the multi-term key it came from is not; that is reported as a codegen
+  warning, because sqlite_orm has no table-level key of two terms over one column to write instead.
 - [x] CHECK(expr) → `check(expr)`
 - [x] FOREIGN KEY (column) REFERENCES table(column) + ON DELETE/UPDATE actions
 - [x] CONSTRAINT name prefix (parsed and skipped)

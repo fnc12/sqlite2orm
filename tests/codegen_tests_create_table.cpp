@@ -30,6 +30,25 @@ namespace {
     }
 
     /**
+     *  What a table-level PRIMARY KEY that names one column twice is reported as, once the
+     *  generated key names it once and SQLite reads that single-term key as the rowid alias. Only
+     *  the name of the column varies.
+     */
+    [[nodiscard]] std::string kRepeatedKeyColumnBecomesAliasWarning(std::string_view columnName) {
+        return "the table-level PRIMARY KEY names column '" + std::string(columnName) +
+               "' more than once, and the generated primary_key() names it once, because that is the one place "
+               "the column holds in the key SQLite reports. That makes the generated key a rowid alias, which the "
+               "key written here is not: SQLite aliases the rowid onto a column when the key is over a single term "
+               "of declared type INTEGER, and this key is written with more terms than one. A database the header "
+               "was generated from is unaffected — `sync_schema()` leaves it alone — but in a database created from "
+               "the generated code an INSERT that leaves '" +
+               std::string(columnName) +
+               "' out stores the next rowid in it instead of NULL, and a NOT NULL that SQLite enforces on the "
+               "column here, whether declared or implied by STRICT, lets that INSERT through rather than refusing "
+               "it";
+    }
+
+    /**
      *  Builds a storage whose `make_table("t", ...)` takes `tableArguments`, syncs it into a
      *  database file and answers with the `CREATE TABLE` SQLite kept for it — or with what
      *  `sync_schema()` threw instead. What sqlite_orm writes a constraint as is the library's to
@@ -790,7 +809,9 @@ TEST_CASE("codegen: CREATE TABLE - an ASC in a table-level PRIMARY KEY is silent
 // `PRIMARY KEY(a, a)` and nothing for a second place. sqlite_orm ranks a key column by the last
 // place its name takes in `primary_key(...)`, so a repeat used to make it rank `a` second, disagree
 // with the stored table and drop it on `sync_schema()` — see the live database case in
-// tests/schema_pipeline_tests.cpp. The name is written once.
+// tests/schema_pipeline_tests.cpp. The name is written once, and over an INTEGER column that costs
+// something the reader is told about: a key of one term is the shape SQLite aliases the rowid onto,
+// and the two-term key written here is not. The live database case pins that price as well.
 TEST_CASE("codegen: CREATE TABLE - a column a table-level PRIMARY KEY repeats is named once") {
     const auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY (a, a))");
     REQUIRE(result.code == "struct T {\n"
@@ -805,6 +826,41 @@ TEST_CASE("codegen: CREATE TABLE - a column a table-level PRIMARY KEY repeats is
                            "        make_column(\"b\", &T::b),\n"
                            "        make_column(\"c\", &T::c),\n"
                            "        primary_key(&T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{kRepeatedKeyColumnBecomesAliasWarning("a")});
+}
+
+// The price is the alias, not the collapse: a key left over a TEXT column is no rowid alias however
+// few terms it has, so nothing changed and nothing is reported. Checked against sqlite3 3.51.0,
+// where an INSERT naming neither key column stores NULL in it under both spellings of the key.
+TEST_CASE("codegen: CREATE TABLE - a repeated TEXT key column is collapsed with nothing to report") {
+    const auto result = generateFull("CREATE TABLE t (a TEXT, b INTEGER, PRIMARY KEY (a, a))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::string> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+// A WITHOUT ROWID table has no rowid to alias onto a column, so collapsing its key costs nothing
+// either — and SQLite collapses the repeat out of such a key itself, in convertToWithoutRowidTable.
+TEST_CASE("codegen: CREATE TABLE - a repeated key column of a WITHOUT ROWID table reports nothing") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a, a)) WITHOUT ROWID");
+    REQUIRE(result.code == "struct T {\n"
+                           "    int64_t a = 0;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a)).without_rowid());");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{});
 }
 
@@ -826,7 +882,8 @@ TEST_CASE("codegen: CREATE TABLE - a repeated key column keeps the place it is f
 }
 
 // The repeat is the same column however it is spelled, because that is how SQLite resolves a
-// constraint's column name: `A`, `"a"` and `[a]` all name the column declared `a`.
+// constraint's column name: `A`, `"a"` and `[a]` all name the column declared `a`. Two columns are
+// left in the key, so it is no rowid alias and there is nothing to report about the collapse.
 TEST_CASE("codegen: CREATE TABLE - a key column repeated under another spelling is named once") {
     const auto result = generateFull("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (A, \"a\", [a], b))");
     REQUIRE(result.code == "struct T {\n"
@@ -857,7 +914,53 @@ TEST_CASE("codegen: CREATE TABLE - a DESC on a repeated key column is still repo
                            "        make_column(\"b\", &T::b),\n"
                            "        primary_key(&T::a)));");
     REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{kRepeatedKeyColumnBecomesAliasWarning("a"),
+                                        "DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
+// A key may spell the same thing twice as well as the same column, and both occurrences of
+// `PRIMARY KEY(a COLLATE NOCASE DESC, a COLLATE NOCASE DESC)` have the very same thing to say.
+// Saying it twice points the reader at two places where there is one to fix, so a message already
+// collected for this key is left at the one it was collected at.
+TEST_CASE("codegen: CREATE TABLE - a spelling repeated on a repeated key column is reported once") {
+    const auto result =
+        generateFull("CREATE TABLE t (a TEXT, b INTEGER, PRIMARY KEY (a COLLATE NOCASE DESC, a COLLATE NOCASE DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::string> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE NOCASE on column 'a' of a table-level PRIMARY KEY is not supported "
+                                        "in sqlite_orm — ignored in codegen",
+                                        "DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
+// Two columns spelled the same way are two places, and each is named: what is collapsed is the
+// repeated message, not the second column's.
+TEST_CASE("codegen: CREATE TABLE - a spelling shared by two key columns is reported for each") {
+    const auto result = generateFull("CREATE TABLE t (a TEXT, b TEXT, PRIMARY KEY (a DESC, b DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::string> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a, &T::b)));");
+    REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{"DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen",
+                                        "DESC on column 'b' of a table-level PRIMARY KEY is not supported in "
                                         "sqlite_orm — ignored in codegen"});
 }
 

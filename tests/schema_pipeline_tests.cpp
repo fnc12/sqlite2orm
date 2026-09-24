@@ -170,6 +170,68 @@ int main(int argc, char** argv) {
         return output.str();
     }
 
+    /**
+     *  What each of `tables` answers when a row is inserted without naming the key column `a`:
+     *  `table=<value>` with what SQLite put in the column, or `table=refused` where the INSERT was
+     *  not taken at all. `kInsertWithoutKeyColumnProbe` prints the very same text for a database
+     *  built from a generated header, so the schema SQLite stores and the schema the header builds
+     *  are compared as one string each.
+     */
+    [[nodiscard]] std::string insertWithoutKeyColumnOutput(const std::filesystem::path& dbPath,
+                                                           const std::vector<std::string>& tables) {
+        sqlite3* db = nullptr;
+        REQUIRE(sqlite3_open(dbPath.string().c_str(), &db) == SQLITE_OK);
+        std::string output;
+        for (const std::string& table: tables) {
+            char* errMsg = nullptr;
+            const std::string insert = "INSERT INTO " + table + "(b) VALUES (7)";
+            const int rc = sqlite3_exec(db, insert.c_str(), nullptr, nullptr, &errMsg);
+            sqlite3_free(errMsg);
+            if (rc != SQLITE_OK) {
+                output += table + "=refused\n";
+                continue;
+            }
+            sqlite3_stmt* statement = nullptr;
+            const std::string select = "SELECT quote(a) FROM " + table;
+            REQUIRE(sqlite3_prepare_v2(db, select.c_str(), -1, &statement, nullptr) == SQLITE_OK);
+            REQUIRE(sqlite3_step(statement) == SQLITE_ROW);
+            output += table + "=" + reinterpret_cast<const char*>(sqlite3_column_text(statement, 0)) + "\n";
+            sqlite3_finalize(statement);
+        }
+        sqlite3_close(db);
+        return output;
+    }
+
+    /**
+     *  Spliced into the probe after the sync: the INSERT and read-back `insertWithoutKeyColumnOutput`
+     *  runs, against the database `sync_schema()` has just built from the generated header. The
+     *  table names are written out because the probe is a program of its own — it sees the header,
+     *  not the test's variables.
+     */
+    constexpr std::string_view kInsertWithoutKeyColumnProbe = R"probe(    sqlite3* db = nullptr;
+    if (sqlite3_open(argv[1], &db) != SQLITE_OK) {
+        return 1;
+    }
+    for (const std::string& table: {std::string("dup_int"),
+                                    std::string("dup_int_notnull"),
+                                    std::string("dup_text"),
+                                    std::string("dup_two")}) {
+        char* errMsg = nullptr;
+        const int rc = sqlite3_exec(db, ("INSERT INTO " + table + "(b) VALUES (7)").c_str(), nullptr, nullptr, &errMsg);
+        sqlite3_free(errMsg);
+        if (rc != SQLITE_OK) {
+            std::cout << table << "=refused\n";
+            continue;
+        }
+        sqlite3_stmt* statement = nullptr;
+        sqlite3_prepare_v2(db, ("SELECT quote(a) FROM " + table).c_str(), -1, &statement, nullptr);
+        sqlite3_step(statement);
+        std::cout << table << "=" << sqlite3_column_text(statement, 0) << "\n";
+        sqlite3_finalize(statement);
+    }
+    sqlite3_close(db);
+)probe";
+
     /** Text of the first column of the first row `sql` answers with. */
     [[nodiscard]] std::string queryText(const std::filesystem::path& dbPath, std::string_view sql) {
         sqlite3* db = nullptr;
@@ -2295,6 +2357,52 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a key that repeats a c
                       "(SELECT count(*) FROM dup_pk_mixed) || ',' || (SELECT count(*) FROM dup_pk_spelled) || ',' || "
                       "(SELECT count(*) FROM dup_pk_strict) || ',' || (SELECT count(*) FROM dup_pk_text) || ',' || "
                       "(SELECT count(*) FROM dup_pk_wr);") == "2,2,2,2,2,2,2");
+}
+
+// What naming a repeated key column once costs, on the one shape where it costs anything. SQLite
+// aliases the rowid onto a key column when the key is over a SINGLE term of declared type INTEGER,
+// so `PRIMARY KEY(a, a)` — two terms — is no alias, while the `primary_key(&T::a)` the generator
+// now writes is one, and sqlite_orm has no table-level key of two terms over one column to write
+// instead. The database the header was generated from does not move (the case above pins that), but
+// a database built from the generated code answers an INSERT that leaves the key column out
+// differently: with the next rowid rather than with NULL, and by taking an INSERT that the stored
+// schema refuses outright. That is the price of the fix, and it is pinned here rather than left for
+// the reader to meet. The report the generator hands out for it is pinned in
+// tests/codegen_tests_create_table.cpp. Measured against sqlite3 3.51.0 and the pinned sqlite_orm.
+TEST_CASE("generateSqliteSchemaHeader: a key repeating its only column is a rowid alias in a new database") {
+    TempDbFile source{makeTempDbPath()};
+    execSql(source.path,
+            "CREATE TABLE dup_int (a INTEGER, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_int_notnull (a INTEGER NOT NULL, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_text (a TEXT, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_two (a INTEGER, b INTEGER, PRIMARY KEY(b, a, b));");
+
+    SqliteSchemaReader reader(source.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    // What the schema SQLite itself stores answers: the two-term key leaves the column alone, so a
+    // row inserted without it holds NULL — and where the column is NOT NULL, there is no row.
+    REQUIRE(insertWithoutKeyColumnOutput(source.path, {"dup_int", "dup_int_notnull", "dup_text", "dup_two"}) ==
+            "dup_int=NULL\n"
+            "dup_int_notnull=refused\n"
+            "dup_text=NULL\n"
+            "dup_two=NULL\n");
+
+    // What a database built from the generated header answers instead. The TEXT key and the key
+    // left with two columns are no aliases either way and stay as they were — the divergence is the
+    // alias and nothing besides it.
+    TempDbFile built{makeTempDbPath()};
+    REQUIRE(syncSchemaProbeOutput(header.code, built.path, kInsertWithoutKeyColumnProbe) ==
+            "dup_int=new_table_created\n"
+            "dup_int_notnull=new_table_created\n"
+            "dup_text=new_table_created\n"
+            "dup_two=new_table_created\n"
+            "dup_int=1\n"
+            "dup_int_notnull=1\n"
+            "dup_text=NULL\n"
+            "dup_two=NULL\n");
 }
 
 // The other table option SQLite makes a key implicitly NOT NULL for is STRICT — with one exception

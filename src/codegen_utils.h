@@ -170,6 +170,22 @@ namespace sqlite2orm {
      */
     std::optional<CodegenWarning> anyColumnTypeWarning(const CreateTableNode& createTable, const ColumnDef& column);
 
+    /**
+     *  Whether a table-level PRIMARY KEY naming `column` and nothing besides it would make the
+     *  column the rowid alias of `createTable` — the column SQLite stores the rowid itself in
+     *  rather than beside. This is the rule `columnIsRowidAlias` reads a written key by, asked
+     *  about a key that is not written that way: the generated table names a repeated key column
+     *  once, so a `PRIMARY KEY(a, a)` — two terms, and never an alias — reaches sqlite_orm as a
+     *  key over one column, which this answers for.
+     *
+     *  Everything about the answer is spelling: the declared type has to be INTEGER and nothing
+     *  else (an `INT PRIMARY KEY` is an ordinary column with a rowid of its own behind it), the
+     *  table must hold no other key, and a WITHOUT ROWID table has no rowid to alias at all. A
+     *  DESC is not asked about: in the table-level form it leaves the alias, unlike the
+     *  column-level `INTEGER PRIMARY KEY DESC`. Checked against sqlite3 3.51.0.
+     */
+    bool columnAloneInTableKeyIsRowidAlias(const CreateTableNode& createTable, const ColumnDef& column);
+
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 

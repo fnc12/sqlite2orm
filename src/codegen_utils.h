@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,23 @@ namespace sqlite2orm {
     std::string colaliasBuiltinSlot(size_t slotIndex);
 
     std::string stripIdentifierQuotes(std::string_view identifier);
+    /**
+     *  `sqlName` as a C++ identifier: an SQL name reaches the generated code as the name of a
+     *  struct member or of a variable, and SQLite takes names C++ does not. The rewriting works
+     *  character by character rather than byte by byte, so a name written in a script of its own
+     *  keeps as many characters as it was written with — `üü` and `ää` are two characters each,
+     *  not four bytes each, and the two names stay apart instead of both collapsing into the same
+     *  member. An ASCII letter, digit or `_` stands for itself; any other ASCII character becomes
+     *  `_`; and a character C++ has no letter for is spelled the way C++ spells a universal
+     *  character name, `u` and four hex digits (`ü` → `u00FC`) or `U` and eight above the basic
+     *  multilingual plane (`🙂` → `U0001F642`), with a byte that is no character at all — SQLite
+     *  takes those in an identifier too — spelled `x` and its two hex digits.
+     *
+     *  Distinct names can still meet here: `a b` and `a-b` are both `a_b`, and a name spelled
+     *  `u00FC` in ASCII is what `ü` is rewritten to. Whoever names the members of one struct
+     *  reports that through `recordMemberName()` — the rewriting itself cannot, as it sees one
+     *  name at a time.
+     */
     std::string toCppIdentifier(std::string_view sqlName);
     std::string identifierToCppStringLiteral(std::string_view sqlIdentifier);
 
@@ -121,6 +139,36 @@ namespace sqlite2orm {
      *  Checked against sqlite3 3.51.0 through `PRAGMA table_info`.
      */
     bool columnMemberIsNullable(const CreateTableNode& createTable, const ColumnDef& column);
+
+    /**
+     *  The C++ type the member `column` is mapped to. It is `sqliteTypeToCpp` of the declared type
+     *  everywhere but on `ANY` in a STRICT table, the one place where SQLite reads a type name as
+     *  something other than an affinity: the column takes a value of any storage class and stores
+     *  it as it came, so the affinity rule — which has nothing for `ANY` and falls through to
+     *  NUMERIC, that is `double` — is not what the column holds. A CAST is left to
+     *  `sqliteTypeToCpp`, because there `ANY` *is* the affinity rule: sqlite3 3.51 answers
+     *  `CAST('x' AS ANY)` with the integer 0, exactly as it answers `CAST('x' AS NUMERIC)`.
+     *
+     *  sqlite_orm has no type that holds a storage class of its own, so the mapping for `ANY` is
+     *  `std::vector<char>`, the one type whose extractor reads a value of every storage class
+     *  rather than one kind of value and zeroes the rest. What that costs is
+     *  `anyColumnTypeWarning`'s to report.
+     */
+    std::string sqliteColumnTypeToCpp(const CreateTableNode& createTable, const ColumnDef& column);
+
+    /**
+     *  The report for a column declared `ANY`, if `column` is one. ANY is a datatype of STRICT
+     *  tables only, and the two tables owe the reader different things:
+     *  - in a STRICT table the column really does hold any storage class, and the
+     *    `std::vector<char>` it maps to reads all of them — as the bytes SQLite renders the value
+     *    as, which is not the value's storage class and, for a REAL, not all of its digits;
+     *  - anywhere else `ANY` is a type name SQLite does not know, so the column gets NUMERIC
+     *    affinity and maps to `double`, and the text NUMERIC affinity could not convert stays
+     *    text in the column and reads back as 0.
+     *  The span covers the type name, so a consumer underlines the `ANY` rather than the column.
+     *  Checked against sqlite3 3.51.0 and the pinned sqlite_orm on a live database.
+     */
+    std::optional<CodegenWarning> anyColumnTypeWarning(const CreateTableNode& createTable, const ColumnDef& column);
 
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
@@ -437,6 +485,30 @@ namespace sqlite2orm {
      *  that belongs here.
      */
     size_t underlineLengthOf(std::string_view sourceText);
+    /**
+     *  Records in `membersByName` that the member `memberName` of the struct generated for `owner`
+     *  (`"table t"`, `"view v"`) holds the column `sqlName`, and answers with what that name has
+     *  to be reported as, anchored at `nameSpan` when the parse recorded one.
+     *
+     *  Two things are worth a warning here. A member whose name is not the column's own tells the
+     *  reader which member a column ended up in — SQL takes names C++ has no letters for, so
+     *  `toCppIdentifier()` rewrites them. And a member two columns are both rewritten to is a
+     *  member the struct declares twice, which does not compile at all: the generated code looks
+     *  fine and only a compiler ever says so, which is why the collision is reported here, where
+     *  the struct is being named. The collision is what gets reported when a name does both, as
+     *  it names the member the rewriting would have named anyway.
+     *
+     *  `mappedByMemberName` says that the mapping reads the column's SQL name off the member
+     *  rather than being given it, which is what sqlite_orm's reflected `make_view<V>()` does: a
+     *  rewritten member there renames the column in the mapping as well, so the warning says so.
+     *  A classical `make_column("…", &T::x)` is handed the name and leaves it alone.
+     */
+    std::optional<CodegenWarning> recordMemberName(std::string_view owner,
+                                                   std::string_view sqlName,
+                                                   std::string_view memberName,
+                                                   const SourceSpan& nameSpan,
+                                                   std::map<std::string, std::string>& membersByName,
+                                                   bool mappedByMemberName = false);
     /**
      *  `message` anchored at the source span `astNode` was parsed from, so that a consumer
      *  underlines the very SQL the message is about. Unanchored for a node carrying no span, which

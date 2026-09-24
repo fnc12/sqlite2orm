@@ -281,6 +281,11 @@ TEST_CASE("codegen: a non-ASCII column is underlined for as many characters as i
     auto result = generateFull("CREATE VIEW v AS SELECT ключ FROM users;");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
+                {"view v: column `ключ` is not a C++ identifier; the member holding it is named "
+                 "`u043Au043Bu044Eu0447`, and a view is mapped with the names of its members, so the column is named "
+                 "that in the mapping too",
+                 SourceLocation{1, 25},
+                 4},
                 {"view v: type of column `ключ` could not be inferred; defaulting to int", SourceLocation{1, 25}, 4},
                 cpp26ViewWarning("v", 1)});
 }
@@ -318,6 +323,10 @@ TEST_CASE("codegen: a view column quoted across two lines underlines its first l
     auto result = generateFull("CREATE VIEW v AS SELECT \"a\nb\" FROM users;");
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
+                {"view v: column `a\nb` is not a C++ identifier; the member holding it is named `a_b`, and a view is "
+                 "mapped with the names of its members, so the column is named that in the mapping too",
+                 SourceLocation{1, 25},
+                 2},
                 {"view v: type of column `a\nb` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
                 cpp26ViewWarning("v", 1)});
 }
@@ -437,4 +446,83 @@ TEST_CASE("codegen: CREATE VIEW - a hex literal too big leaves the view ungenera
                 {"CREATE VIEW v uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite stores the view "
                  "but refuses every query against it, and C++ has no literal for it, so the view is not generated"}});
     REQUIRE(result.errors.empty());
+}
+
+// The card's own repro: two column names of two characters each, four bytes each. Rewritten byte
+// by byte they would both come out as four underscores — one field declared twice, a header no
+// compiler takes — so the rewriting counts characters, and each name keeps a field of its own.
+TEST_CASE("codegen: CREATE VIEW - non-ASCII column names become fields of their own") {
+    auto result = generateFull("CREATE VIEW v AS SELECT üü, ää FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int u00FCu00FC = 0;\n"
+                           "    int u00E4u00E4 = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(columns(&T::u00FCu00FC, &T::u00E4u00E4))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: column `üü` is not a C++ identifier; the member holding it is named `u00FCu00FC`, and a "
+                 "view is mapped with the names of its members, so the column is named that in the mapping too",
+                 SourceLocation{1, 25},
+                 2},
+                {"view v: type of column `üü` could not be inferred; defaulting to int", SourceLocation{1, 25}, 2},
+                {"view v: column `ää` is not a C++ identifier; the member holding it is named `u00E4u00E4`, and a "
+                 "view is mapped with the names of its members, so the column is named that in the mapping too",
+                 SourceLocation{1, 29},
+                 2},
+                {"view v: type of column `ää` could not be inferred; defaulting to int", SourceLocation{1, 29}, 2},
+                cpp26ViewWarning("v", 1)});
+}
+
+// A field is named by the view's own column list before anything else, so that is the name the
+// warning is about and the text it underlines.
+TEST_CASE("codegen: CREATE VIEW - a name from the view's column list is underlined there") {
+    auto result = generateFull("CREATE VIEW v(üü, ää) AS SELECT a, b FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int u00FCu00FC = 0;\n"
+                           "    int u00E4u00E4 = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(columns(&T::a, &T::b))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: column `üü` is not a C++ identifier; the member holding it is named `u00FCu00FC`, and a "
+                 "view is mapped with the names of its members, so the column is named that in the mapping too",
+                 SourceLocation{1, 15},
+                 2},
+                {"view v: type of column `üü` could not be inferred; defaulting to int", SourceLocation{1, 33}, 1},
+                {"view v: column `ää` is not a C++ identifier; the member holding it is named `u00E4u00E4`, and a "
+                 "view is mapped with the names of its members, so the column is named that in the mapping too",
+                 SourceLocation{1, 19},
+                 2},
+                {"view v: type of column `ää` could not be inferred; defaulting to int", SourceLocation{1, 36}, 1},
+                cpp26ViewWarning("v", 1)});
+}
+
+// Two aliases C++ spells the same way are one field declared twice, which is the view's struct not
+// compiling at all; the warning is anchored at the alias that lands on the field second.
+TEST_CASE("codegen: CREATE VIEW - two aliases mapped to one field are reported") {
+    auto result = generateFull("CREATE VIEW v AS SELECT a AS \"x y\", b AS \"x-y\" FROM t;");
+    REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
+                           "    int x_y = 0;\n"
+                           "    int x_y = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<V>(select(columns(&T::a, &T::b))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"view v: column `x y` is not a C++ identifier; the member holding it is named `x_y`, and a view is "
+                 "mapped with the names of its members, so the column is named that in the mapping too",
+                 SourceLocation{1, 30},
+                 5},
+                {"view v: type of column `x y` could not be inferred; defaulting to int", SourceLocation{1, 25}, 1},
+                {"view v: columns `x y` and `x-y` are both named `x_y` in C++; the generated struct declares that "
+                 "member twice and does not compile",
+                 SourceLocation{1, 42},
+                 5},
+                {"view v: type of column `x-y` could not be inferred; defaulting to int", SourceLocation{1, 37}, 1},
+                cpp26ViewWarning("v", 1)});
 }

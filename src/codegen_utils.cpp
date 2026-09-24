@@ -89,18 +89,53 @@ namespace sqlite2orm {
         return std::string(identifier);
     }
 
+    namespace {
+
+        /** `value` in upper-case hexadecimal, padded with leading zeros to `digits` of them. */
+        std::string hexDigits(char32_t value, size_t digits) {
+            static constexpr std::string_view kDigits = "0123456789ABCDEF";
+            std::string result(digits, '0');
+            for (size_t index = digits; index > 0; --index) {
+                result[index - 1] = kDigits[value & 0xFu];
+                value >>= 4;
+            }
+            return result;
+        }
+
+    }  // namespace
+
     std::string toCppIdentifier(std::string_view sqlName) {
         auto stripped = stripIdentifierQuotes(sqlName);
         std::string result;
         result.reserve(stripped.size());
-        for (char character: stripped) {
-            if (std::isalnum(static_cast<unsigned char>(character)) || character == '_') {
-                result += character;
-            } else {
+        for (size_t index = 0; index < stripped.size();) {
+            const Utf8Character character = decodeUtf8Character(std::string_view(stripped).substr(index));
+            index += character.length;
+            if (!character.valid) {
+                result += 'x' + hexDigits(character.codePoint, 2);
+                continue;
+            }
+            // The ASCII classification is spelled out rather than asked of <cctype>, whose answer
+            // for the bytes above 0x7F depends on the locale the program happens to run in.
+            const char32_t codePoint = character.codePoint;
+            if ((codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') ||
+                (codePoint >= '0' && codePoint <= '9') || codePoint == '_') {
+                result += static_cast<char>(codePoint);
+            } else if (codePoint < 0x80) {
                 result += '_';
+            } else if (codePoint <= 0xFFFF) {
+                result += 'u' + hexDigits(codePoint, 4);
+            } else {
+                result += 'U' + hexDigits(codePoint, 8);
             }
         }
-        if (!result.empty() && std::isdigit(static_cast<unsigned char>(result[0]))) {
+        if (result.empty()) {
+            // SQLite takes an empty name — `CREATE TABLE t("" INTEGER)` is a table with a column
+            // called nothing — and C++ has no identifier of no characters, so the one character
+            // that carries no letters of its own stands for it.
+            return "_";
+        }
+        if (result[0] >= '0' && result[0] <= '9') {
             result = "_" + result;
         }
         return result;
@@ -445,7 +480,49 @@ namespace sqlite2orm {
                    normalizeSqlName(primaryKey.columns.front().name) == normalizeSqlName(column.name);
         }
 
+        /**
+         *  Whether `column` is declared `ANY`. SQLite takes the name in every quoting it takes an
+         *  identifier in — `"ANY"`, `[ANY]`, `` `ANY` `` and `'ANY'` are all accepted in a STRICT
+         *  table — and in any case, while `ANY(10)` and `COMPANY` are refused there, so the name
+         *  is matched whole rather than as the affinity rule matches its substrings.
+         */
+        bool columnTypeIsAny(const ColumnDef& column) {
+            return normalizeSqlName(column.typeName) == "any";
+        }
+
     }  // namespace
+
+    std::string sqliteColumnTypeToCpp(const CreateTableNode& createTable, const ColumnDef& column) {
+        if (createTable.strict && columnTypeIsAny(column)) {
+            return "std::vector<char>";
+        }
+        return column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+    }
+
+    std::optional<CodegenWarning> anyColumnTypeWarning(const CreateTableNode& createTable, const ColumnDef& column) {
+        if (!columnTypeIsAny(column)) {
+            return std::nullopt;
+        }
+        const std::string columnName = stripIdentifierQuotes(column.name);
+        std::string message = "column `" + columnName + "` is declared ANY";
+        if (createTable.strict) {
+            message += ", which in a STRICT table holds a value of any storage class and stores it as it came. "
+                       "sqlite_orm has no type that carries a storage class, so the column is mapped to "
+                       "std::vector<char>, whose extractor reads every one of them rather than zeroing the ones it "
+                       "cannot use: a stored INTEGER or REAL comes back as the bytes of the text SQLite renders it "
+                       "as — a REAL keeps 15 significant digits that way, so 1.0/3 reads back as `0.333333333333333` "
+                       "— and a value written back through the member is stored as a BLOB, whatever it was before";
+        } else {
+            message += ", which is a datatype of STRICT tables only: this table is not STRICT, so SQLite reads ANY as "
+                       "a type name it does not know and gives the column NUMERIC affinity, which is why the column "
+                       "is mapped to double. Affinity is not a constraint — text NUMERIC affinity cannot convert is "
+                       "still stored as text, and `'x'` in this column reads back through the member as 0";
+        }
+        if (!column.typeNameLocation) {
+            return CodegenWarning{std::move(message)};
+        }
+        return CodegenWarning{std::move(message), *column.typeNameLocation, underlineLengthOf(column.typeName)};
+    }
 
     bool columnMemberIsNullable(const CreateTableNode& createTable, const ColumnDef& column) {
         if (column.notNull) {
@@ -466,7 +543,7 @@ namespace sqlite2orm {
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable) {
         std::vector<SourceTableColumn> columns;
         for (const ColumnDef& column: createTable.columns) {
-            const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+            const auto cppType = sqliteColumnTypeToCpp(createTable, column);
             const bool nullable = columnMemberIsNullable(createTable, column);
             // The expression is what makes a column generated; `generatedStorage` only tells
             // VIRTUAL from STORED, and stays `none` for the bare `AS (...)` spelling SQLite
@@ -1280,6 +1357,37 @@ namespace sqlite2orm {
     size_t underlineLengthOf(std::string_view sourceText) {
         const size_t lineBreak = sourceText.find('\n');
         return utf8CharacterCount(lineBreak == std::string_view::npos ? sourceText : sourceText.substr(0, lineBreak));
+    }
+
+    std::optional<CodegenWarning> recordMemberName(std::string_view owner,
+                                                   std::string_view sqlName,
+                                                   std::string_view memberName,
+                                                   const SourceSpan& nameSpan,
+                                                   std::map<std::string, std::string>& membersByName,
+                                                   bool mappedByMemberName) {
+        const auto anchored = [&nameSpan](std::string message) {
+            if (nameSpan.text.empty()) {
+                return CodegenWarning{std::move(message)};
+            }
+            return CodegenWarning{std::move(message), nameSpan.location, underlineLengthOf(nameSpan.text)};
+        };
+        const auto [iterator, inserted] = membersByName.emplace(std::string(memberName), std::string(sqlName));
+        if (!inserted) {
+            return anchored(std::string(owner) + ": columns `" + iterator->second + "` and `" + std::string(sqlName) +
+                            "` are both named `" + std::string(memberName) +
+                            "` in C++; the generated struct declares that member twice and does not compile");
+        }
+        if (sqlName != memberName) {
+            std::string message = std::string(owner) + ": column `" + std::string(sqlName) +
+                                  "` is not a C++ identifier; the member holding it is named `" +
+                                  std::string(memberName) + "`";
+            if (mappedByMemberName) {
+                message += ", and a view is mapped with the names of its members, so the column is named that in "
+                           "the mapping too";
+            }
+            return anchored(std::move(message));
+        }
+        return std::nullopt;
     }
 
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {

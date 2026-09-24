@@ -1550,6 +1550,31 @@ TEST_CASE("processMultiSql: the snippet of a batch with an index over an express
                     joinGeneratedCode(results));
 }
 
+// A name is rewritten into a C++ identifier character by character, and only a compiler ever says
+// whether that worked: `üü` and `ää` take four bytes each, so a rewriting that counted bytes gave
+// both of them the same four underscores and the struct declared one member twice. The literal
+// above says what the members are called; this says the header is one a compiler takes.
+TEST_CASE("processMultiSql: the snippet of a batch with non-ASCII column names compiles") {
+    const auto results = processMultiSql("CREATE TABLE t(üü INTEGER PRIMARY KEY, ää TEXT);");
+
+    REQUIRE(joinGeneratedCode(results) == std::string("struct T {\n"
+                                                      "    std::optional<int64_t> u00FCu00FC;\n"
+                                                      "    std::optional<std::string> u00E4u00E4;\n"
+                                                      "};\n\n"
+                                                      "auto storage = make_storage(\"\",\n"
+                                                      "    make_table(\"t\",\n"
+                                                      "        make_column(\"üü\", &T::u00FCu00FC, primary_key()),\n"
+                                                      "        make_column(\"ää\", &T::u00E4u00E4)));\n"));
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view compiles") {
     const auto results = processMultiSql("CREATE TABLE ok1(a INTEGER PRIMARY KEY);\n"
                                          "CREATE VIEW v1 AS SELECT a + 0x10000000000000000 AS b FROM ok1;\n"
@@ -2191,6 +2216,85 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                       "count(*) FROM s_desc_pk_table) || ',' || (SELECT count(*) FROM s_int_pk) || ',' || (SELECT "
                       "count(*) FROM s_table_pk) || ',' || (SELECT count(*) FROM s_text_pk) || ',' || (SELECT "
                       "count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2,2");
+}
+
+// ANY is the one type name a STRICT table reads as "whatever the value is": SQLite stores an
+// INTEGER, a REAL, a TEXT, a BLOB or a NULL in such a column exactly as it came. The affinity rule
+// has no case for the name and falls through to NUMERIC, so the column used to be mapped to a
+// `double` member, and everything in it that was not a number read back as 0 — with no error, and
+// with `sync_schema()` saying `already_in_sync`, because sqlite_orm compares a mapped column by
+// name, notnull, default, pk and hidden and never by type. A literal cannot catch that: the loss
+// happens between SQLite and the member, so the values are put in with SQLite and read back out
+// through the generated header. Checked against sqlite3 3.51.0 and libsqlite3 3.45.1.
+TEST_CASE("generateSqliteSchemaHeader: an ANY column of a STRICT table reads every value back") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE s_any (id INTEGER PRIMARY KEY, v ANY) STRICT;");
+    execSql(file.path,
+            "INSERT INTO s_any VALUES (1, 'text'), (2, 42), (3, 2.5), (4, 1.0/3), (5, x'004100'), (6, NULL);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct SAny {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::vector<char>> v;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"s_any\",\n"
+                           "        make_column(\"id\", &SAny::id, primary_key()),\n"
+                           "        make_column(\"v\", &SAny::v)));\n"
+                           "}\n");
+
+    // Every byte of the stored value reaches the caller — where a `double` member answered 0 for
+    // the text, the blob and the NULL alike. What the mapping does not carry is the storage class
+    // the value had and, for a REAL, the digits past the 15 SQLite renders: 1.0/3 is stored as
+    // 0.3333333333333331 and reads back as `0.333333333333333`. Both are the warning's to say.
+    constexpr std::string_view kReadBack = R"(    auto text = [](const std::vector<char>& bytes) {
+        static const char digits[] = "0123456789abcdef";
+        std::string out;
+        for (char byte: bytes) {
+            const auto value = static_cast<unsigned char>(byte);
+            if (value >= 0x20 && value < 0x7f) {
+                out += byte;
+            } else {
+                out += "\\x";
+                out += digits[(value >> 4) & 0xf];
+                out += digits[value & 0xf];
+            }
+        }
+        return out;
+    };
+    for (const auto& row: storage.get_all<SAny>()) {
+        std::cout << "v[" << row.id.value() << "]=" << (row.v ? text(*row.v) : std::string("<null>")) << "\n";
+    }
+    SAny written;
+    written.v = std::vector<char>{'n', 'e', 'w'};
+    std::cout << "inserted s_any id=" << storage.insert(written) << "\n";
+)";
+
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, kReadBack) == "s_any=already_in_sync\n"
+                                                                        "v[1]=text\n"
+                                                                        "v[2]=42\n"
+                                                                        "v[3]=2.5\n"
+                                                                        "v[4]=0.333333333333333\n"
+                                                                        "v[5]=\\x00A\\x00\n"
+                                                                        "v[6]=<null>\n"
+                                                                        "inserted s_any id=7\n");
+
+    // Nothing was rebuilt — the mapped type is not what `sync_schema()` compares — and the row the
+    // probe wrote through the member went in as a BLOB, which is the other half of the warning:
+    // the member has one storage class to bind, whatever the column would have taken.
+    REQUIRE(queryText(file.path, "SELECT count(*) || ',' || (SELECT typeof(v) FROM s_any WHERE id = 7) FROM s_any;") ==
+            "7,blob");
 }
 
 // sqlite_orm syncs the database objects of a storage in declaration order only in the revisions

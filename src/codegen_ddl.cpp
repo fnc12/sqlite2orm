@@ -5,6 +5,8 @@
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
+#include <map>
+
 namespace sqlite2orm {
 
     DdlCodeGenerator::DdlCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -1047,12 +1049,18 @@ namespace sqlite2orm {
         std::vector<ViewField> fields;
         std::vector<SourceTableColumn> registeredColumns;
 
+        std::map<std::string, std::string> membersByName;
         auto appendField = [&](std::string sqlName,
                                const std::optional<InferredFieldType>& inferred,
                                std::optional<SourceLocation> location,
-                               size_t underlineLength) {
+                               size_t underlineLength,
+                               const SourceSpan& nameSpan = {}) {
             ViewField field;
             field.cppName = toCppIdentifier(sqlName);
+            if (auto warning =
+                    recordMemberName("view " + rawViewName, sqlName, field.cppName, nameSpan, membersByName, true)) {
+                parts.warnings.push_back(std::move(*warning));
+            }
             if (inferred) {
                 field.cppType = inferred->cppType;
                 field.nullable = inferred->nullable;
@@ -1116,13 +1124,24 @@ namespace sqlite2orm {
                     }
                     continue;
                 }
+                // The field's name, and the stretch of the source that spells it: the view's own
+                // column list names a field before an alias does, and an alias before the column
+                // the expression reads. A name a qualified reference (`t.x`) gives has no span of
+                // its own — only the whole reference is one token's worth of location — so a
+                // warning about that name goes unanchored, as the type warning below does.
                 std::string sqlName;
+                SourceSpan nameSpan;
                 if (columnIndex < node.columnNames.size()) {
                     sqlName = stripIdentifierQuotes(node.columnNames.at(columnIndex));
+                    if (columnIndex < node.columnNameSpans.size()) {
+                        nameSpan = node.columnNameSpans.at(columnIndex);
+                    }
                 } else if (!selectColumn.alias.empty()) {
                     sqlName = stripIdentifierQuotes(selectColumn.alias);
+                    nameSpan = selectColumn.aliasSpan;
                 } else if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(selectColumn.expression.get())) {
                     sqlName = stripIdentifierQuotes(columnRef->columnName);
+                    nameSpan = SourceSpan{columnRef->location, columnRef->columnName};
                 } else if (auto* qualifiedRef =
                                dynamic_cast<const QualifiedColumnRefNode*>(selectColumn.expression.get())) {
                     sqlName = stripIdentifierQuotes(qualifiedRef->columnName);
@@ -1159,7 +1178,7 @@ namespace sqlite2orm {
                         parts.warnings.push_back(std::move(*warning));
                     }
                 }
-                appendField(std::move(sqlName), inferred, columnLocation, underlineLength);
+                appendField(std::move(sqlName), inferred, columnLocation, underlineLength, nameSpan);
             }
         }
 
@@ -1261,10 +1280,23 @@ namespace sqlite2orm {
         memberDeclarations.reserve(createTable.columns.size());
 
         std::string structDeclaration = "struct " + structName + " {\n";
+        std::map<std::string, std::string> membersByName;
         for (const auto& column: createTable.columns) {
             const auto cppName = toCppIdentifier(column.name);
-            const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+            if (auto warning = recordMemberName("table " + rawTableName,
+                                                stripIdentifierQuotes(column.name),
+                                                cppName,
+                                                column.nameSpan,
+                                                membersByName)) {
+                warnings.push_back(std::move(*warning));
+            }
+            const auto cppType = sqliteColumnTypeToCpp(createTable, column);
             const bool nullable = columnMemberIsNullable(createTable, column);
+            // No mapped type is the ANY column SQLite has, and what the one chosen for it costs
+            // depends on the table around it; the warning is the only word a user gets about it.
+            if (auto anyWarning = anyColumnTypeWarning(createTable, column)) {
+                warnings.push_back(std::move(*anyWarning));
+            }
             std::string memberDeclaration = nullable ? "std::optional<" + cppType + "> " + cppName + ";\n"
                                                      : cppType + " " + cppName + defaultInitializer(cppType) + ";\n";
             structDeclaration += "    " + memberDeclaration;

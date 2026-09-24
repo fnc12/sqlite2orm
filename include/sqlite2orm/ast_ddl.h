@@ -45,6 +45,23 @@ namespace sqlite2orm {
         bool generatedAlways = false;
         enum class GeneratedStorage { none, stored, virtual_ };
         GeneratedStorage generatedStorage = GeneratedStorage::none;
+        /**
+         *  The column's name as the source spells it, quotes and all, so a warning about the
+         *  member the column is mapped to underlines the name it is about. It comes after
+         *  everything a braced `ColumnDef{name, type, …}` fills, because a span is no part of
+         *  what such a column says. Empty for a column built by hand rather than parsed, which
+         *  leaves such a warning unanchored; it takes no part in equality, exactly as
+         *  `AstNode::sourceSpan` does not.
+         */
+        SourceSpan nameSpan;
+        /**
+         *  Where `typeName` starts, for a diagnostic that has to underline the declared type
+         *  rather than the column — `ANY` is the one type name a consumer has to be told about.
+         *  Empty for a column declared without a type. Not part of equality: a column is the same
+         *  column wherever it was written. Written last so that the positional
+         *  `ColumnDef{name, type, primaryKey, autoincrement, notNull}` initializers keep theirs.
+         */
+        std::optional<SourceLocation> typeNameLocation;
 
         bool operator==(const ColumnDef& other) const {
             if (this->name != other.name || this->typeName != other.typeName || this->primaryKey != other.primaryKey ||
@@ -253,6 +270,12 @@ namespace sqlite2orm {
         std::optional<std::string> viewSchemaName;
         std::string viewName;
         std::vector<std::string> columnNames;
+        /**
+         *  Where each name of `columnNames` stands in the source, for a warning about the member
+         *  that name is mapped to. Empty — rather than one empty span per name — for a node built
+         *  by hand; a reader takes the span of a name only when it has one at that index.
+         */
+        std::vector<SourceSpan> columnNameSpans;
         AstNodePointer selectQuery;
         /**
          *  The statement's opening keywords as written, from `CREATE` through `VIEW`, which a

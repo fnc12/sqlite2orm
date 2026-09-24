@@ -24,6 +24,7 @@ namespace sqlite2orm {
         AstNodePointer parseCreateIndexAfterKeyword(SourceLocation location, bool unique);
         AstNodePointer parseCreateVirtualTableTail(SourceLocation location, bool temporary);
         bool parseIndexColumnSpec(IndexColumnSpec& out);
+        bool parseKeyColumn(KeyColumn& out);
         AstNodePointer parseTriggerBodyStatement();
         ColumnDef parseColumnDef();
         std::string parseColumnTypeName();

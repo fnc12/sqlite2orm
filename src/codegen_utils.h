@@ -140,6 +140,36 @@ namespace sqlite2orm {
      */
     bool columnMemberIsNullable(const CreateTableNode& createTable, const ColumnDef& column);
 
+    /**
+     *  The C++ type the member `column` is mapped to. It is `sqliteTypeToCpp` of the declared type
+     *  everywhere but on `ANY` in a STRICT table, the one place where SQLite reads a type name as
+     *  something other than an affinity: the column takes a value of any storage class and stores
+     *  it as it came, so the affinity rule — which has nothing for `ANY` and falls through to
+     *  NUMERIC, that is `double` — is not what the column holds. A CAST is left to
+     *  `sqliteTypeToCpp`, because there `ANY` *is* the affinity rule: sqlite3 3.51 answers
+     *  `CAST('x' AS ANY)` with the integer 0, exactly as it answers `CAST('x' AS NUMERIC)`.
+     *
+     *  sqlite_orm has no type that holds a storage class of its own, so the mapping for `ANY` is
+     *  `std::vector<char>`, the one type whose extractor reads a value of every storage class
+     *  rather than one kind of value and zeroes the rest. What that costs is
+     *  `anyColumnTypeWarning`'s to report.
+     */
+    std::string sqliteColumnTypeToCpp(const CreateTableNode& createTable, const ColumnDef& column);
+
+    /**
+     *  The report for a column declared `ANY`, if `column` is one. ANY is a datatype of STRICT
+     *  tables only, and the two tables owe the reader different things:
+     *  - in a STRICT table the column really does hold any storage class, and the
+     *    `std::vector<char>` it maps to reads all of them — as the bytes SQLite renders the value
+     *    as, which is not the value's storage class and, for a REAL, not all of its digits;
+     *  - anywhere else `ANY` is a type name SQLite does not know, so the column gets NUMERIC
+     *    affinity and maps to `double`, and the text NUMERIC affinity could not convert stays
+     *    text in the column and reads back as 0.
+     *  The span covers the type name, so a consumer underlines the `ANY` rather than the column.
+     *  Checked against sqlite3 3.51.0 and the pinned sqlite_orm on a live database.
+     */
+    std::optional<CodegenWarning> anyColumnTypeWarning(const CreateTableNode& createTable, const ColumnDef& column);
+
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 

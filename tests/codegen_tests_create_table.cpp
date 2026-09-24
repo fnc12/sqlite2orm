@@ -1,6 +1,109 @@
 #include "codegen_tests_common.hpp"
+#include "temp_build_dir.hpp"
 
 #include <sqlite2orm/json_emit.h>
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace {
+
+    /** What a column declared ANY in a STRICT table is reported as; only the name of it varies. */
+    [[nodiscard]] std::string kAnyInStrictWarning(std::string_view columnName) {
+        return "column `" + std::string(columnName) +
+               "` is declared ANY, which in a STRICT table holds a value of any storage class and stores it as it "
+               "came. sqlite_orm has no type that carries a storage class, so the column is mapped to "
+               "std::vector<char>, whose extractor reads every one of them rather than zeroing the ones it cannot "
+               "use: a stored INTEGER or REAL comes back as the bytes of the text SQLite renders it as — a REAL "
+               "keeps 15 significant digits that way, so 1.0/3 reads back as `0.333333333333333` — and a value "
+               "written back through the member is stored as a BLOB, whatever it was before";
+    }
+
+    /** The same column outside a STRICT table, where ANY is a name SQLite does not know. */
+    [[nodiscard]] std::string kAnyOutsideStrictWarning(std::string_view columnName) {
+        return "column `" + std::string(columnName) +
+               "` is declared ANY, which is a datatype of STRICT tables only: this table is not STRICT, so SQLite "
+               "reads ANY as a type name it does not know and gives the column NUMERIC affinity, which is why the "
+               "column is mapped to double. Affinity is not a constraint — text NUMERIC affinity cannot convert is "
+               "still stored as text, and `'x'` in this column reads back through the member as 0";
+    }
+
+    /**
+     *  Builds a storage whose `make_table("t", ...)` takes `tableArguments`, syncs it into a
+     *  database file and answers with the `CREATE TABLE` SQLite kept for it — or with what
+     *  `sync_schema()` threw instead. What sqlite_orm writes a constraint as is the library's to
+     *  decide, so the direction the generator may put in a key is read off the pinned revision
+     *  rather than assumed.
+     */
+    [[nodiscard]] std::string syncedTableSql(std::string_view tableArguments) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "\n"
+                   "#include <sqlite3.h>\n"
+                   "\n"
+                   "#include <iostream>\n"
+                   "#include <string>\n"
+                   "#include <system_error>\n"
+                   "\n"
+                   "struct T {\n"
+                   "    int64_t a = 0;\n"
+                   "    std::string b;\n"
+                   "};\n"
+                   "\n"
+                   "int main(int argc, char** argv) {\n"
+                   "    using namespace sqlite_orm;\n"
+                   "    auto storage = make_storage(argv[1], make_table(\"t\",\n        "
+                << tableArguments
+                << "));\n"
+                   "    try {\n"
+                   "        storage.sync_schema();\n"
+                   "    } catch(const std::system_error& e) {\n"
+                   "        std::cout << \"threw \" << e.what() << '\\n';\n"
+                   "        return 0;\n"
+                   "    }\n"
+                   "    sqlite3* db = nullptr;\n"
+                   "    sqlite3_open(argv[1], &db);\n"
+                   "    sqlite3_stmt* statement = nullptr;\n"
+                   "    sqlite3_prepare_v2(db, \"SELECT sql FROM sqlite_master WHERE name = 't'\", -1, &statement, "
+                   "nullptr);\n"
+                   "    if(sqlite3_step(statement) == SQLITE_ROW) {\n"
+                   "        std::cout << reinterpret_cast<const char*>(sqlite3_column_text(statement, 0)) << '\\n';\n"
+                   "    }\n"
+                   "    sqlite3_finalize(statement);\n"
+                   "    sqlite3_close(db);\n"
+                   "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("check.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("check");
+        const std::filesystem::path dbpath = dir.file("check.db");
+        const std::filesystem::path outpath = dir.file("check.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << ' ' << dbpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::string outcome;
+        {
+            std::ifstream out(outpath);
+            std::getline(out, outcome);
+        }
+        if (exitCode != 0) {
+            WARN("building the table probe failed (exit " << exitCode
+                                                          << "); ensure c++, sqlite_orm headers and libsqlite3 are "
+                                                             "usable");
+        }
+        REQUIRE(exitCode == 0);
+        return outcome;
+    }
+
+}  // namespace
 
 TEST_CASE("codegen: CREATE TABLE - basic") {
     auto result = generate("CREATE TABLE users (id INTEGER, name TEXT)");
@@ -625,6 +728,141 @@ TEST_CASE("codegen: CREATE TABLE - table-level PRIMARY KEY") {
                       "        make_column(\"a\", &T::a),\n"
                       "        make_column(\"b\", &T::b),\n"
                       "        primary_key(&T::a, &T::b)));");
+}
+
+// Why the direction of a column-level key is generated and the direction of a table-level one is
+// not, read off the pinned sqlite_orm: one serializer writes `PRIMARY KEY DESC` where a column
+// constraint goes, the other writes the same keyword before the column list of a table
+// constraint, which SQLite has no grammar for. Should upstream start spelling the direction per
+// key column, this case goes red and asks for the table-level direction to be generated too.
+TEST_CASE("codegen: sqlite_orm writes the direction of a column-level PRIMARY KEY back") {
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a, primary_key().desc()), make_column("b", &T::b))") ==
+            R"(CREATE TABLE "t" ("a" INTEGER PRIMARY KEY DESC NOT NULL, "b" TEXT NOT NULL))");
+}
+
+TEST_CASE("codegen: sqlite_orm cannot write the direction of a table-level PRIMARY KEY") {
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), primary_key(&T::a, &T::b))") ==
+            R"(CREATE TABLE "t" ("a" INTEGER NOT NULL, "b" TEXT NOT NULL, PRIMARY KEY("a", "b")))");
+    REQUIRE(syncedTableSql(R"(make_column("a", &T::a), make_column("b", &T::b), primary_key(&T::a, &T::b).desc())") ==
+            "threw SQL logic error");
+}
+
+// A table-level key takes plain member pointers, and there is no place in `primary_key(&T::a,
+// &T::b)` for a direction of one of them: `primary_key(...).desc()` writes the keyword before the
+// list (`PRIMARY KEY DESC("a","b")`), which SQLite refuses as `near "DESC": syntax error`, and
+// `indexed_column(&T::a).desc()` is not a key column sqlite_orm compiles at all. So the DESC is
+// dropped, and said to be dropped.
+TEST_CASE("codegen: CREATE TABLE - a DESC in a table-level PRIMARY KEY is not generated") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (a DESC, b))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a, &T::b)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
+// An ASC is the direction SQLite takes anyway, so dropping it costs nothing and is worth no warning.
+TEST_CASE("codegen: CREATE TABLE - an ASC in a table-level PRIMARY KEY is silent") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (a ASC, b))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a, &T::b)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+TEST_CASE("codegen: CREATE TABLE - a COLLATE in a table-level PRIMARY KEY is not generated") {
+    const auto result = generateFull("CREATE TABLE t (a TEXT, PRIMARY KEY (a COLLATE NOCASE DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::string> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE NOCASE on column 'a' of a table-level PRIMARY KEY is not supported "
+                                        "in sqlite_orm — ignored in codegen",
+                                        "DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
+TEST_CASE("codegen: CREATE TABLE - a DESC in a table-level UNIQUE is not generated") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (a, b DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        sqlite_orm::unique(&T::a, &T::b)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'b' of a table-level UNIQUE is not supported in sqlite_orm "
+                                        "— ignored in codegen"});
+}
+
+// A key naming a column the table declares nothing of is left out of the generated table whole, so
+// the DESC and the COLLATE spelled on it are worth no word of their own: telling that a direction
+// was ignored would describe a `primary_key(...)` the user never gets, right next to the line saying
+// there is none. A key that survives the resolve keeps saying it, and names the column as the key
+// spelled it — the member it resolved to is in the generated code to read.
+TEST_CASE("codegen: CREATE TABLE - a dropped table-level key says nothing of its DESC") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<int64_t> a;\n"
+                              "    std::optional<std::string> b;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"a\", &T::a),\n"
+                              "        make_column(\"b\", &T::b)));";
+
+    const auto primaryKey = generateFull("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (zz DESC, b COLLATE NOCASE))");
+    REQUIRE(primaryKey.code == table);
+    REQUIRE(primaryKey.warnings ==
+            std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column 'zz', which the table does not "
+                                         "declare: SQLite refuses such a CREATE TABLE, so the generated table has "
+                                         "no primary_key()"}});
+
+    const auto unique = generateFull("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (zz DESC, b))");
+    REQUIRE(unique.code == table);
+    REQUIRE(unique.warnings ==
+            std::vector<CodegenWarning>{{"the UNIQUE constraint of table t names column 'zz', which the table does "
+                                         "not declare: SQLite refuses such a CREATE TABLE, so the generated table "
+                                         "has no unique()"}});
+
+    const auto resolved = generateFull("CREATE TABLE t (\"Id\" INTEGER, b TEXT, PRIMARY KEY (ID DESC, b))");
+    REQUIRE(resolved.code == "struct T {\n"
+                             "    std::optional<int64_t> Id;\n"
+                             "    std::optional<std::string> b;\n"
+                             "};\n"
+                             "\n"
+                             "auto storage = make_storage(\"\",\n"
+                             "    make_table(\"t\",\n"
+                             "        make_column(\"Id\", &T::Id),\n"
+                             "        make_column(\"b\", &T::b),\n"
+                             "        primary_key(&T::Id, &T::b)));");
+    REQUIRE(resolved.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'ID' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
 }
 
 TEST_CASE("codegen: CREATE TABLE - table-level UNIQUE") {
@@ -1298,7 +1536,7 @@ TEST_CASE("codegen: CREATE TABLE - a DESC PRIMARY KEY of a STRICT table is no al
                       "\n"
                       "auto storage = make_storage(\"\",\n"
                       "    make_table(\"t\",\n"
-                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"id\", &T::id, primary_key().desc()),\n"
                       "        make_column(\"v\", &T::v)));");
 }
 
@@ -1311,7 +1549,66 @@ TEST_CASE("codegen: CREATE TABLE - an ASC PRIMARY KEY of a STRICT table is still
                       "\n"
                       "auto storage = make_storage(\"\",\n"
                       "    make_table(\"t\",\n"
-                      "        make_column(\"id\", &T::id, primary_key()),\n"
+                      "        make_column(\"id\", &T::id, primary_key().asc()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// The direction is not only what tells the alias from an ordinary column, it is part of the key
+// sqlite_orm has to write back: `primary_key().desc()` serializes as `PRIMARY KEY DESC`.
+TEST_CASE("codegen: CREATE TABLE - a column-level PRIMARY KEY keeps its DESC") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY DESC, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().desc()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+TEST_CASE("codegen: CREATE TABLE - a column-level PRIMARY KEY keeps its ASC") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY ASC, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().asc()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// The direction comes before the conflict clause, the order SQLite spells the column constraint
+// in — `PRIMARY KEY ON CONFLICT REPLACE DESC` is a syntax error there.
+TEST_CASE("codegen: CREATE TABLE - a DESC PRIMARY KEY with a conflict clause") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY DESC ON CONFLICT REPLACE, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().desc().on_conflict_replace()),\n"
+                      "        make_column(\"v\", &T::v)));");
+}
+
+// AUTOINCREMENT stays last: it is the one step that leaves `primary_key_t` behind for
+// `primary_key_with_autoincrement`, which has no direction to set afterwards. SQLite takes this
+// spelling and refuses the DESC one — `AUTOINCREMENT is only allowed on an INTEGER PRIMARY KEY`.
+TEST_CASE("codegen: CREATE TABLE - an ASC PRIMARY KEY with AUTOINCREMENT") {
+    const auto result = generate("CREATE TABLE t (id INTEGER PRIMARY KEY ASC AUTOINCREMENT, v TEXT);");
+    REQUIRE(result == "struct T {\n"
+                      "    std::optional<int64_t> id;\n"
+                      "    std::optional<std::string> v;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"t\",\n"
+                      "        make_column(\"id\", &T::id, primary_key().asc().autoincrement()),\n"
                       "        make_column(\"v\", &T::v)));");
 }
 
@@ -1355,6 +1652,107 @@ TEST_CASE("codegen: CREATE TABLE - a STRICT WITHOUT ROWID table has no alias to 
                       "    make_table(\"t\",\n"
                       "        make_column(\"id\", &T::id, primary_key()),\n"
                       "        make_column(\"v\", &T::v)).without_rowid());");
+}
+
+// ANY is a datatype of STRICT tables, and it is the one type name that is not an affinity: the
+// column takes a value of any storage class and stores it as it came. The affinity rule has
+// nothing for the name and falls through to NUMERIC, so `ANY` used to map to `double` and read
+// every text and blob in the column back as 0, silently — see the round-trip case in
+// schema_pipeline_tests. `std::vector<char>` is the one mapped type whose extractor reads every
+// storage class, and what it costs is in the warning.
+TEST_CASE("codegen: CREATE TABLE - an ANY column of a STRICT table") {
+    const auto result = generateFull("CREATE TABLE s (id ANY PRIMARY KEY, v ANY) STRICT;");
+    REQUIRE(result.code == "struct S {\n"
+                           "    std::vector<char> id;\n"
+                           "    std::optional<std::vector<char>> v;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"s\",\n"
+                           "        make_column(\"id\", &S::id, primary_key()),\n"
+                           "        make_column(\"v\", &S::v)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kAnyInStrictWarning("id"), SourceLocation{1, 20}, 3},
+                                   {kAnyInStrictWarning("v"), SourceLocation{1, 39}, 3},
+                                   {"STRICT is not yet supported in sqlite_orm and was ignored for table s "
+                                    "(converted as a regular table)"},
+                               });
+    REQUIRE(result.errors.empty());
+}
+
+// SQLite takes the datatype in every quoting it takes an identifier in — `CREATE TABLE s(a "ANY")
+// STRICT` is accepted by sqlite3 3.51, while `ANY(10)` and `COMPANY` are `unknown datatype` — so
+// the name is matched whole and unquoted, and the span covers the text as written.
+TEST_CASE("codegen: CREATE TABLE - a quoted ANY column of a STRICT table") {
+    const auto result = generateFull("CREATE TABLE s (a \"ANY\", b [any], c `Any`) STRICT;");
+    REQUIRE(result.code == "struct S {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "    std::optional<std::vector<char>> b;\n"
+                           "    std::optional<std::vector<char>> c;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"s\",\n"
+                           "        make_column(\"a\", &S::a),\n"
+                           "        make_column(\"b\", &S::b),\n"
+                           "        make_column(\"c\", &S::c)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kAnyInStrictWarning("a"), SourceLocation{1, 19}, 5},
+                                   {kAnyInStrictWarning("b"), SourceLocation{1, 28}, 5},
+                                   {kAnyInStrictWarning("c"), SourceLocation{1, 37}, 5},
+                                   {"STRICT is not yet supported in sqlite_orm and was ignored for table s "
+                                    "(converted as a regular table)"},
+                               });
+    REQUIRE(result.errors.empty());
+}
+
+// Outside a STRICT table ANY is a type name SQLite does not know, which is NUMERIC affinity — the
+// same the column would have with DECIMAL or DATE on it — so the mapping stays `double` and only
+// the report is new. Affinity converts what it can and stores the rest as it is: sqlite3 3.51
+// stores `'2.5'` in such a column as the REAL 2.5 and `'x'` as the text 'x', and the text is the
+// one a `double` member reads back as 0.
+TEST_CASE("codegen: CREATE TABLE - an ANY column outside a STRICT table") {
+    const auto result = generateFull("CREATE TABLE t (a ANY, b DECIMAL(10, 2));");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<double> a;\n"
+                           "    std::optional<double> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kAnyOutsideStrictWarning("a"), SourceLocation{1, 19}, 3},
+                               });
+    REQUIRE(result.errors.empty());
+}
+
+// The affinity rule reads its names as substrings, and this is where the two rules part: `COMPANY`
+// holds `any` and is an ordinary NUMERIC-affinity name — sqlite3 3.51 refuses it in a STRICT table
+// outright — so neither the mapping nor the report is the one ANY gets.
+TEST_CASE("codegen: CREATE TABLE - a type name holding `any` is not ANY") {
+    const auto result = generateFull("CREATE TABLE t (a COMPANY, b ANYTHING);");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<double> a;\n"
+                           "    std::optional<double> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b)));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A CAST keeps the affinity rule, because there ANY really is one: sqlite3 3.51 answers
+// `CAST('x' AS ANY)` with the integer 0, exactly as it answers `CAST('x' AS NUMERIC)`. Only the
+// column mapping moved.
+TEST_CASE("codegen: CAST to ANY stays the NUMERIC cast it is") {
+    const auto result = generateFull("SELECT CAST(a AS ANY) FROM t;");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(cast<double>(&T::a)));");
+    REQUIRE(result.warnings.empty());
 }
 
 TEST_CASE("codegen: STRICT table warning") {

@@ -47,13 +47,21 @@ namespace sqlite2orm {
         GeneratedStorage generatedStorage = GeneratedStorage::none;
         /**
          *  The column's name as the source spells it, quotes and all, so a warning about the
-         *  member the column is mapped to underlines the name it is about. It is last because
-         *  everything before it is what a braced `ColumnDef{name, type, …}` fills, and a span is
-         *  no part of what such a column says. Empty for a column built by hand rather than
-         *  parsed, which leaves such a warning unanchored; it takes no part in equality, exactly
-         *  as `AstNode::sourceSpan` does not.
+         *  member the column is mapped to underlines the name it is about. It comes after
+         *  everything a braced `ColumnDef{name, type, …}` fills, because a span is no part of
+         *  what such a column says. Empty for a column built by hand rather than parsed, which
+         *  leaves such a warning unanchored; it takes no part in equality, exactly as
+         *  `AstNode::sourceSpan` does not.
          */
         SourceSpan nameSpan;
+        /**
+         *  Where `typeName` starts, for a diagnostic that has to underline the declared type
+         *  rather than the column — `ANY` is the one type name a consumer has to be told about.
+         *  Empty for a column declared without a type. Not part of equality: a column is the same
+         *  column wherever it was written. Written last so that the positional
+         *  `ColumnDef{name, type, primaryKey, autoincrement, notNull}` initializers keep theirs.
+         */
+        std::optional<SourceLocation> typeNameLocation;
 
         bool operator==(const ColumnDef& other) const {
             if (this->name != other.name || this->typeName != other.typeName || this->primaryKey != other.primaryKey ||
@@ -84,14 +92,30 @@ namespace sqlite2orm {
         bool operator==(const TableForeignKey&) const = default;
     };
 
+    /**
+     *  A column named by a table-level `PRIMARY KEY` or `UNIQUE`. SQLite spells those with the
+     *  same `indexed-column` production `CREATE INDEX` uses, so a name can carry a collation and
+     *  a direction — `PRIMARY KEY(id COLLATE NOCASE DESC)` — in that order and nothing else: an
+     *  expression there is refused with `expressions prohibited in PRIMARY KEY and UNIQUE
+     *  constraints`. Neither part takes the rowid alias away, unlike a `DESC` spelled on the
+     *  column itself; see `ColumnDef::primaryKeySortDirection`.
+     */
+    struct KeyColumn {
+        std::string name;
+        std::string collation;
+        SortDirection sortDirection = SortDirection::none;
+
+        bool operator==(const KeyColumn&) const = default;
+    };
+
     struct TablePrimaryKey {
-        std::vector<std::string> columns;
+        std::vector<KeyColumn> columns;
 
         bool operator==(const TablePrimaryKey&) const = default;
     };
 
     struct TableUnique {
-        std::vector<std::string> columns;
+        std::vector<KeyColumn> columns;
 
         bool operator==(const TableUnique&) const = default;
     };

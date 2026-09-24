@@ -330,11 +330,12 @@ a compound of bitwise branches is still read back through `int`.
 - [x] Multi-word type names (UNSIGNED BIG INT)
 - [x] Type with size spec (VARCHAR(255))
 - [x] Type with precision (DECIMAL(10, 2))
+- [~] `ANY` → `std::vector<char>` in a STRICT table, where ANY is a datatype and not an affinity: the column takes a value of any storage class and stores it as it came, while the affinity rule has no case for the name and falls through to NUMERIC, so the column used to be mapped to a `double` member that read every text and blob in it back as 0 — silently, `sync_schema()` comparing a mapped column by name, notnull, default, pk and hidden and never by type. `std::vector<char>` is the one mapped type whose extractor reads every storage class rather than one of them. Partial because sqlite_orm has no type that carries a storage class: a stored INTEGER or REAL comes back as the bytes of the text SQLite renders it as, which for a REAL is 15 significant digits (`1.0/3` reads back as `0.333333333333333`), and a value written back through the member is stored as a BLOB whatever it was before — codegen warning, anchored at the type name. Outside a STRICT table `ANY` is a type name SQLite does not know, so the column has NUMERIC affinity and stays a `double`; the text that affinity could not convert is still stored as text and still reads back as 0, which the warning says instead. A CAST keeps the affinity rule either way, ANY being one there: sqlite3 3.51 answers `CAST('x' AS ANY)` with the integer 0, as it answers `CAST('x' AS NUMERIC)`
 
 ### Column constraints
 - [x] PRIMARY KEY
-- [x] PRIMARY KEY ASC (parsed, ASC/DESC skipped)
-- [x] PRIMARY KEY DESC (parsed, ASC/DESC skipped)
+- [x] PRIMARY KEY ASC → `primary_key().asc()`
+- [x] PRIMARY KEY DESC → `primary_key().desc()` (and the column is no rowid alias, unlike ASC)
 - [x] PRIMARY KEY conflict-clause → `primary_key().on_conflict_XXX()`
 - [x] PRIMARY KEY AUTOINCREMENT
 - [x] NOT NULL
@@ -363,6 +364,9 @@ a compound of bitwise branches is still read back through `int`.
 ### Table constraints
 - [x] PRIMARY KEY (columns) → `primary_key(&T::a, &T::b)`
 - [x] UNIQUE (columns) → `unique(&T::a, &T::b)`
+- [!] COLLATE / DESC on a key column (parsed; codegen warning — a table-level key of sqlite_orm
+  takes bare member pointers, and `primary_key(...).desc()` writes the keyword before the list,
+  which SQLite refuses)
 - [x] CHECK(expr) → `check(expr)`
 - [x] FOREIGN KEY (column) REFERENCES table(column) + ON DELETE/UPDATE actions
 - [x] CONSTRAINT name prefix (parsed and skipped)

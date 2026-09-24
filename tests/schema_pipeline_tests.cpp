@@ -2265,6 +2265,7 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
             "CREATE TABLE s_alias_table (id INTEGER, v TEXT, PRIMARY KEY(id)) STRICT;"
             "CREATE TABLE s_any_pk (id ANY PRIMARY KEY, v TEXT) STRICT;"
             "CREATE TABLE s_desc_pk (id INTEGER PRIMARY KEY DESC, v TEXT) STRICT;"
+            "CREATE TABLE s_desc_pk_table (id INTEGER, v TEXT, PRIMARY KEY(id DESC)) STRICT;"
             "CREATE TABLE s_int_pk (id INT PRIMARY KEY, v TEXT) STRICT;"
             "CREATE TABLE s_table_pk (a TEXT, b INT, v TEXT, PRIMARY KEY(a, b)) STRICT;"
             "CREATE TABLE s_text_pk (id TEXT PRIMARY KEY, v TEXT) STRICT;"
@@ -2276,6 +2277,7 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
             "INSERT INTO s_alias_table VALUES (1, 'keep'), (2, 'me');"
             "INSERT INTO s_any_pk VALUES ('a', 'keep'), (2, 'me');"
             "INSERT INTO s_desc_pk VALUES (1, 'keep'), (2, 'me');"
+            "INSERT INTO s_desc_pk_table VALUES (1, 'keep'), (2, 'me');"
             "INSERT INTO s_int_pk VALUES (1, 'keep'), (2, 'me');"
             "INSERT INTO s_table_pk VALUES ('a', 1, 'keep'), ('b', 2, 'me');"
             "INSERT INTO s_text_pk VALUES ('a', 'keep'), ('b', 'me');"
@@ -2299,6 +2301,7 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                                                                       "s_alias_table=already_in_sync\n"
                                                                       "s_any_pk=already_in_sync\n"
                                                                       "s_desc_pk=already_in_sync\n"
+                                                                      "s_desc_pk_table=already_in_sync\n"
                                                                       "s_int_pk=already_in_sync\n"
                                                                       "s_table_pk=already_in_sync\n"
                                                                       "s_text_pk=already_in_sync\n"
@@ -2309,8 +2312,88 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a STRICT database keep
                       "SELECT (SELECT count(*) FROM s_alias) || ',' || (SELECT count(*) FROM s_alias_asc) || ',' || "
                       "(SELECT count(*) FROM s_alias_auto) || ',' || (SELECT count(*) FROM s_alias_table) || ',' || "
                       "(SELECT count(*) FROM s_any_pk) || ',' || (SELECT count(*) FROM s_desc_pk) || ',' || (SELECT "
-                      "count(*) FROM s_int_pk) || ',' || (SELECT count(*) FROM s_table_pk) || ',' || (SELECT count(*) "
-                      "FROM s_text_pk) || ',' || (SELECT count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2");
+                      "count(*) FROM s_desc_pk_table) || ',' || (SELECT count(*) FROM s_int_pk) || ',' || (SELECT "
+                      "count(*) FROM s_table_pk) || ',' || (SELECT count(*) FROM s_text_pk) || ',' || (SELECT "
+                      "count(*) FROM s_wr_pk);") == "2,2,3,2,2,2,2,2,2,2,2");
+}
+
+// ANY is the one type name a STRICT table reads as "whatever the value is": SQLite stores an
+// INTEGER, a REAL, a TEXT, a BLOB or a NULL in such a column exactly as it came. The affinity rule
+// has no case for the name and falls through to NUMERIC, so the column used to be mapped to a
+// `double` member, and everything in it that was not a number read back as 0 — with no error, and
+// with `sync_schema()` saying `already_in_sync`, because sqlite_orm compares a mapped column by
+// name, notnull, default, pk and hidden and never by type. A literal cannot catch that: the loss
+// happens between SQLite and the member, so the values are put in with SQLite and read back out
+// through the generated header. Checked against sqlite3 3.51.0 and libsqlite3 3.45.1.
+TEST_CASE("generateSqliteSchemaHeader: an ANY column of a STRICT table reads every value back") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE s_any (id INTEGER PRIMARY KEY, v ANY) STRICT;");
+    execSql(file.path,
+            "INSERT INTO s_any VALUES (1, 'text'), (2, 42), (3, 2.5), (4, 1.0/3), (5, x'004100'), (6, NULL);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct SAny {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::vector<char>> v;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"s_any\",\n"
+                           "        make_column(\"id\", &SAny::id, primary_key()),\n"
+                           "        make_column(\"v\", &SAny::v)));\n"
+                           "}\n");
+
+    // Every byte of the stored value reaches the caller — where a `double` member answered 0 for
+    // the text, the blob and the NULL alike. What the mapping does not carry is the storage class
+    // the value had and, for a REAL, the digits past the 15 SQLite renders: 1.0/3 is stored as
+    // 0.3333333333333331 and reads back as `0.333333333333333`. Both are the warning's to say.
+    constexpr std::string_view kReadBack = R"(    auto text = [](const std::vector<char>& bytes) {
+        static const char digits[] = "0123456789abcdef";
+        std::string out;
+        for (char byte: bytes) {
+            const auto value = static_cast<unsigned char>(byte);
+            if (value >= 0x20 && value < 0x7f) {
+                out += byte;
+            } else {
+                out += "\\x";
+                out += digits[(value >> 4) & 0xf];
+                out += digits[value & 0xf];
+            }
+        }
+        return out;
+    };
+    for (const auto& row: storage.get_all<SAny>()) {
+        std::cout << "v[" << row.id.value() << "]=" << (row.v ? text(*row.v) : std::string("<null>")) << "\n";
+    }
+    SAny written;
+    written.v = std::vector<char>{'n', 'e', 'w'};
+    std::cout << "inserted s_any id=" << storage.insert(written) << "\n";
+)";
+
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, kReadBack) == "s_any=already_in_sync\n"
+                                                                        "v[1]=text\n"
+                                                                        "v[2]=42\n"
+                                                                        "v[3]=2.5\n"
+                                                                        "v[4]=0.333333333333333\n"
+                                                                        "v[5]=\\x00A\\x00\n"
+                                                                        "v[6]=<null>\n"
+                                                                        "inserted s_any id=7\n");
+
+    // Nothing was rebuilt — the mapped type is not what `sync_schema()` compares — and the row the
+    // probe wrote through the member went in as a BLOB, which is the other half of the warning:
+    // the member has one storage class to bind, whatever the column would have taken.
+    REQUIRE(queryText(file.path, "SELECT count(*) || ',' || (SELECT typeof(v) FROM s_any WHERE id = 7) FROM s_any;") ==
+            "7,blob");
 }
 
 // sqlite_orm syncs the database objects of a storage in declaration order only in the revisions

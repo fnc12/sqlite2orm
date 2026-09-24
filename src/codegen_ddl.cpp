@@ -1318,8 +1318,13 @@ namespace sqlite2orm {
                                                 membersByName)) {
                 warnings.push_back(std::move(*warning));
             }
-            const auto cppType = column.typeName.empty() ? "std::vector<char>" : sqliteTypeToCpp(column.typeName);
+            const auto cppType = sqliteColumnTypeToCpp(createTable, column);
             const bool nullable = columnMemberIsNullable(createTable, column);
+            // No mapped type is the ANY column SQLite has, and what the one chosen for it costs
+            // depends on the table around it; the warning is the only word a user gets about it.
+            if (auto anyWarning = anyColumnTypeWarning(createTable, column)) {
+                warnings.push_back(std::move(*anyWarning));
+            }
             std::string memberDeclaration = nullable ? "std::optional<" + cppType + "> " + cppName + ";\n"
                                                      : cppType + " " + cppName + defaultInitializer(cppType) + ";\n";
             structDeclaration += "    " + memberDeclaration;
@@ -1394,6 +1399,15 @@ namespace sqlite2orm {
             makeExpression += ",\n        make_column(\"" + rawColumnName + "\", &" + structName + "::" + cppName;
             if (column.primaryKey) {
                 std::string primaryKey = "primary_key()";
+                // The direction is part of what the key means here: an `INTEGER PRIMARY KEY DESC`
+                // is an ordinary column with an index over it rather than the rowid alias, and
+                // sqlite_orm writes it back out of `primary_key().desc()`. It goes before the
+                // conflict clause, the order SQLite spells the column constraint in.
+                if (column.primaryKeySortDirection == SortDirection::asc) {
+                    primaryKey += ".asc()";
+                } else if (column.primaryKeySortDirection == SortDirection::desc) {
+                    primaryKey += ".desc()";
+                }
                 switch (column.primaryKeyConflict) {
                     case ConflictClause::rollback:
                         primaryKey += ".on_conflict_rollback()";
@@ -1570,7 +1584,7 @@ namespace sqlite2orm {
                     // declares no column of answers nothing, the same as a table with no key at all —
                     // its `primary_key()` is left out below too.
                     if (const auto member =
-                            this->context.constraintColumnMember(createTable.primaryKeys[0].columns[0])) {
+                            this->context.constraintColumnMember(createTable.primaryKeys[0].columns[0].name)) {
                         return *member;
                     }
                 }
@@ -1723,19 +1737,41 @@ namespace sqlite2orm {
                                    "' is not supported in sqlite_orm — ignored in codegen");
             }
         }
+        // sqlite_orm takes plain member pointers in a table-level key: there is no place in
+        // `primary_key(&T::a, &T::b)` for the collation or the direction one of those names was
+        // spelled with. `primary_key(...).desc()` is no substitute — it is the column-level
+        // `PRIMARY KEY DESC` spelling and puts the keyword before the list, which SQLite refuses
+        // as `near "DESC": syntax error`. An ASC is the direction SQLite would take anyway, so
+        // only a DESC is worth telling about.
+        // The warnings are collected per key rather than told right away: a key naming a column the
+        // table declares nothing of is left out of the generated table altogether, and saying that a
+        // DESC of it was ignored would describe a key the user never gets.
+        const auto warnAboutKeySpelling =
+            [](std::vector<std::string>& keyWarnings, const KeyColumn& keyColumn, std::string_view keyKind) {
+                const std::string where = std::string(" on column '") + keyColumn.name + "' of a table-level " +
+                                          std::string(keyKind) + " is not supported in sqlite_orm — ignored in codegen";
+                if (!keyColumn.collation.empty()) {
+                    keyWarnings.push_back("COLLATE " + keyColumn.collation + where);
+                }
+                if (keyColumn.sortDirection == SortDirection::desc) {
+                    keyWarnings.push_back("DESC" + where);
+                }
+            };
         for (const auto& tablePrimaryKey: createTable.primaryKeys) {
             std::vector<std::string> unresolvedColumns;
+            std::vector<std::string> keySpellingWarnings;
             std::string constraint = "primary_key(";
             for (size_t columnIndex = 0; columnIndex < tablePrimaryKey.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
                     constraint += ", ";
                 }
-                const auto& columnName = tablePrimaryKey.columns.at(columnIndex);
-                if (const auto member = this->context.constraintColumnMember(columnName)) {
+                const auto& keyColumn = tablePrimaryKey.columns.at(columnIndex);
+                if (const auto member = this->context.constraintColumnMember(keyColumn.name)) {
                     constraint += "&" + structName + "::" + *member;
                 } else {
-                    unresolvedColumns.push_back(stripIdentifierQuotes(columnName));
+                    unresolvedColumns.push_back(stripIdentifierQuotes(keyColumn.name));
                 }
+                warnAboutKeySpelling(keySpellingWarnings, keyColumn, "PRIMARY KEY");
             }
             constraint += ")";
             if (!unresolvedColumns.empty()) {
@@ -1745,6 +1781,7 @@ namespace sqlite2orm {
                 tablePrimaryKeyWasLeftOut = true;
                 continue;
             }
+            warnings.insert(warnings.end(), keySpellingWarnings.begin(), keySpellingWarnings.end());
             primaryKeyGenerated = true;
             tableConstraints.push_back(std::move(constraint));
         }
@@ -1752,17 +1789,19 @@ namespace sqlite2orm {
             // Qualified on purpose: an unqualified unique() with two or more member pointers of the same
             // type is hijacked by std::unique via ADL, because mapped fields live in namespace std.
             std::vector<std::string> unresolvedColumns;
+            std::vector<std::string> keySpellingWarnings;
             std::string constraint = "sqlite_orm::unique(";
             for (size_t columnIndex = 0; columnIndex < tableUnique.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
                     constraint += ", ";
                 }
-                const auto& columnName = tableUnique.columns.at(columnIndex);
-                if (const auto member = this->context.constraintColumnMember(columnName)) {
+                const auto& keyColumn = tableUnique.columns.at(columnIndex);
+                if (const auto member = this->context.constraintColumnMember(keyColumn.name)) {
                     constraint += "&" + structName + "::" + *member;
                 } else {
-                    unresolvedColumns.push_back(stripIdentifierQuotes(columnName));
+                    unresolvedColumns.push_back(stripIdentifierQuotes(keyColumn.name));
                 }
+                warnAboutKeySpelling(keySpellingWarnings, keyColumn, "UNIQUE");
             }
             constraint += ")";
             if (!unresolvedColumns.empty()) {
@@ -1771,6 +1810,7 @@ namespace sqlite2orm {
                                                 "the generated table has no unique()");
                 continue;
             }
+            warnings.insert(warnings.end(), keySpellingWarnings.begin(), keySpellingWarnings.end());
             tableConstraints.push_back(std::move(constraint));
         }
         for (const auto& tableCheck: createTable.checks) {

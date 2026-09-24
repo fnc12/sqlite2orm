@@ -408,6 +408,11 @@ namespace sqlite2orm {
     std::string stripStoragePrefixAndTrailingSemicolon(std::string code);
 
     std::string blobToCpp(std::string_view blobLiteral);
+    /**
+     *  Whether a BLOB literal carries no bytes — `x''`, the one blob sqlite_orm serializes into a
+     *  DDL statement as the value it stands for.
+     */
+    bool blobLiteralIsEmpty(std::string_view blobLiteral);
     /** SQL numeric literal to C++: SQLite's `_` digit separators become C++'s `'` (1_000 -> 1'000). */
     std::string numericLiteralToCpp(std::string_view numericLiteral);
     /**

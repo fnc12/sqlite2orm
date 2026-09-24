@@ -28,6 +28,26 @@ namespace sqlite2orm {
         return toLowerAscii(stripSqlQuotes(identifier));
     }
 
+    std::string identifierAsStringLiteral(std::string_view identifier) {
+        const std::string body = stripSqlQuotes(identifier);
+        // The quote an identifier is written with stands for itself inside it when it is doubled;
+        // a bracketed identifier has no escape at all, the first `]` ending it.
+        const bool quoted = body.size() + 2 == identifier.size();
+        const char quote = quoted && identifier.front() != '[' ? identifier.front() : '\0';
+        std::string literal = "'";
+        for (size_t index = 0; index < body.size(); ++index) {
+            if (body[index] == quote && index + 1 < body.size() && body[index + 1] == quote) {
+                ++index;
+            }
+            literal += body[index];
+            if (body[index] == '\'') {
+                literal += '\'';
+            }
+        }
+        literal += "'";
+        return literal;
+    }
+
     std::string keywordTypoSuggestion(std::string_view token) {
         // Glued/hyphenated/partial keyword typos → the correct SQLite spelling. Compared
         // case-insensitively; the returned form is what a "did you mean …?" hint should show.

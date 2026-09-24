@@ -4,6 +4,8 @@
 
 #include <sqlite2orm/utils.h>
 
+#include <utility>
+
 namespace sqlite2orm {
 
     bool CodeGeneratorContext::useCpp20ColumnAliasStyle() const {
@@ -69,6 +71,75 @@ namespace sqlite2orm {
             }
         }
         return nullptr;
+    }
+
+    std::optional<std::string> CodeGeneratorContext::constraintColumnMember(std::string_view columnName) const {
+        if (!this->constraintColumnsTableIsBeingGenerated()) {
+            return toCppIdentifier(columnName);
+        }
+        const auto memberIterator =
+            this->constraintColumnMemberByNormalizedName.find(normalizeSqlIdentifier(columnName));
+        if (memberIterator == this->constraintColumnMemberByNormalizedName.end()) {
+            return std::nullopt;
+        }
+        return memberIterator->second;
+    }
+
+    std::string CodeGeneratorContext::clauseColumnMember(std::string_view columnName) {
+        if (!this->constraintColumnsTableIsBeingGenerated()) {
+            return toCppIdentifier(columnName);
+        }
+        const auto member = this->constraintColumnMember(columnName);
+        if (member && this->clauseColumnRule != ClauseColumnRule::noColumn) {
+            return *member;
+        }
+        // Either the table declares no column of that name, or the clause takes no column reference
+        // at all: there is no member this clause may be written from, and the site that asked for
+        // the expression answers with a diagnostic instead of with the clause.
+        this->refusedClauseColumns.push_back(stripIdentifierQuotes(columnName));
+        return member.value_or(toCppIdentifier(columnName));
+    }
+
+    std::optional<std::string> CodeGeneratorContext::clauseColumnAsStringLiteral(std::string_view columnName) const {
+        if (!this->constraintColumnsTableIsBeingGenerated() || this->clauseColumnRule == ClauseColumnRule::noColumn) {
+            return std::nullopt;
+        }
+        if (columnName.size() < 2 || columnName.front() != '"' || columnName.back() != '"') {
+            return std::nullopt;
+        }
+        if (this->constraintColumnMember(columnName)) {
+            return std::nullopt;
+        }
+        // SQLite reads a double-quoted name as a string only where it resolves to nothing at all,
+        // and a CHECK of a rowid table resolves `"rowid"`, `"oid"` and `"_rowid_"` to the implicit
+        // row id: the name is that row id there and not a string, so it is answered like any other
+        // name no member may be written from.
+        if (this->clauseColumnRule == ClauseColumnRule::columnOrRowIdOrDoubleQuotedString &&
+            isImplicitRowIdName(columnName)) {
+            return std::nullopt;
+        }
+        return sqlStringLiteralText(columnName);
+    }
+
+    std::vector<std::string> CodeGeneratorContext::takeRefusedClauseColumns() {
+        return std::exchange(this->refusedClauseColumns, {});
+    }
+
+    bool CodeGeneratorContext::constraintColumnsTableIsBeingGenerated() const {
+        return !this->constraintColumnTableNameNormalized.empty();
+    }
+
+    bool CodeGeneratorContext::constraintColumnsAreOfTable(std::string_view tableName) const {
+        return this->constraintColumnsTableIsBeingGenerated() &&
+               normalizeSqlIdentifier(tableName) == this->constraintColumnTableNameNormalized;
+    }
+
+    std::string CodeGeneratorContext::sourceColumnMember(std::string_view tableName,
+                                                         std::string_view columnName) const {
+        if (const SourceTableColumn* declared = this->findSourceTableColumn(tableName, columnName)) {
+            return toCppIdentifier(declared->sqlName);
+        }
+        return toCppIdentifier(columnName);
     }
 
     const SourceTableColumn* CodeGeneratorContext::findReferencedColumn(const AstNode& node) const {

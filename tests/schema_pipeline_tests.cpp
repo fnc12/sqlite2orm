@@ -1365,6 +1365,105 @@ TEST_CASE("processMultiSql: the snippet of a batch with an unmappable table comp
                     joinGeneratedCode(results));
 }
 
+// A table constraint names its columns in whatever case and quoting the SQL was written with, while
+// the member each of them has to be written as is named after the column's declaration. SQLite reads
+// `ID`, `"Id"` and `[id]` as one and the same column and takes every statement below (checked against
+// sqlite3 3.51.0); before the constraint's column was resolved against the declarations, each of the
+// four generated a member pointer into a member the struct never declared — `&T::ID` beside
+// `std::optional<int64_t> Id` — and only a compiler ever saw it, the CLI having exited 0 with no
+// warning. A literal test cannot stand in for this one: it would fix whatever text came out.
+TEST_CASE("processMultiSql: a table constraint spelling its column otherwise compiles") {
+    const std::string prologue = "#include <sqlite_orm/sqlite_orm.h>\n"
+                                 "#include <cstdint>\n"
+                                 "#include <optional>\n"
+                                 "#include <string>\n"
+                                 "#include <vector>\n"
+                                 "using namespace sqlite_orm;\n";
+
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, PRIMARY KEY(ID));")));
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, UNIQUE(ID));")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql(
+                                   "CREATE TABLE o (k INTEGER PRIMARY KEY);\n"
+                                   "CREATE TABLE t (\"Id\" INTEGER, v TEXT, FOREIGN KEY(ID) REFERENCES o(K));")));
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, CHECK(ID > 0));")));
+
+    // A key back into the table's own PRIMARY KEY without naming the parent's column takes the
+    // spelling from that key's constraint, in both the places a key can be written. sqlite3 3.51.0
+    // takes both statements and enforces the key with PRAGMA foreign_keys=ON, and this is the last
+    // place inside a CREATE TABLE that wrote a member from a constraint's own spelling: the two
+    // forms came out as `references(&T::ID)` beside `primary_key(&T::Id)` — one column of one table
+    // written as two different members of one `make_table`, and only a compiler ever saw it.
+    requireCompiles(prologue +
+                    joinGeneratedCode(processMultiSql("CREATE TABLE t (\"Id\" INTEGER, v TEXT, PRIMARY KEY(ID), "
+                                                      "FOREIGN KEY(v) REFERENCES t);")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql(
+                                   "CREATE TABLE t (\"Id\" INTEGER, v TEXT REFERENCES t, PRIMARY KEY(ID));")));
+}
+
+// The names inside a table declaration that are not columns at all, and that the resolution above
+// had turned into member pointers into members no struct declares. A DEFAULT written without
+// parentheses is a string to SQLite in every spelling, and a double-quoted name no column answers
+// in a CHECK or a generated column is a string too — sqlite3 3.51.0 takes every statement below and
+// stores 'A' for the default, computes 'a' || 'zz' for the generated column and enforces the CHECK.
+// A literal test says what came out; only a compiler says whether `default_value("A")`,
+// `check(c(&T::v) != "zz")` and `as(c(&T::v) || "zz")` are things sqlite_orm can be handed.
+TEST_CASE("processMultiSql: a name in a table declaration that is not a column compiles") {
+    const std::string prologue = "#include <sqlite_orm/sqlite_orm.h>\n"
+                                 "#include <cstdint>\n"
+                                 "#include <optional>\n"
+                                 "#include <string>\n"
+                                 "#include <vector>\n"
+                                 "using namespace sqlite_orm;\n";
+
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql(
+                                   "CREATE TABLE t (\"a\" INT, b TEXT DEFAULT A, c TEXT DEFAULT \"a\"\"b\");")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql("CREATE TABLE t (v TEXT, CHECK(v <> \"zz\"));")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql("CREATE TABLE t (v TEXT CHECK(v <> \"zz\"));")));
+    requireCompiles(prologue + joinGeneratedCode(processMultiSql("CREATE TABLE t (v TEXT, g TEXT AS (v || \"zz\"));")));
+}
+
+// A generated column is the one clause whose loss takes the whole table with it, and everything
+// that rests on the table goes along — so reading a double-quoted string as a column cost this
+// batch the table and the index as well as the child's foreign key. sqlite3 3.51.0 takes all three
+// statements and computes `g` as 'a' || 'sfx'.
+TEST_CASE("processMultiSql: a batch resting on a table with a double-quoted string compiles") {
+    const auto results = processMultiSql("CREATE TABLE t (v TEXT, g TEXT AS (v || \"sfx\"));\n"
+                                         "CREATE TABLE d (x INTEGER REFERENCES t(v));\n"
+                                         "CREATE INDEX ix ON t(v);");
+
+    REQUIRE(results.size() == 3);
+    REQUIRE(results[0].codegen.warnings.empty());
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
+// The same two spellings a column constraint can be written with: a CHECK that qualifies the column
+// with the table it is declared on, and a generated column over one. SQLite takes both.
+TEST_CASE("processMultiSql: a column constraint spelling its column otherwise compiles") {
+    const auto results = processMultiSql("CREATE TABLE t (\"Id\" INTEGER CHECK(t.ID > 0), g INTEGER AS (ID + 1));");
+
+    for (const auto& result: results) {
+        REQUIRE(result.codegen.warnings.empty());
+    }
+
+    requireCompiles("#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n"
+                    "using namespace sqlite_orm;\n" +
+                    joinGeneratedCode(results));
+}
+
 // The snippet path carries the same hole: a batch is one database, so a parent none of its
 // statements creates has no struct in the snippet either. Both spellings of the key are here,
 // and SQLite stores both schemas without a word (checked against sqlite3 3.51.0).
@@ -2373,4 +2472,45 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() creates the index and the t
     REQUIRE(queryText(empty.path,
                       "SELECT group_concat(type || ':' || name, ',') FROM (SELECT type, name FROM sqlite_master "
                       "ORDER BY name);") == "table:t,index:t_a_idx,trigger:t_trg,table:u");
+}
+
+// The row id is the one name a CREATE TABLE resolves that the table declares no column of, and a
+// CHECK of a rowid table resolves it in every spelling — so the double quotes that make an unknown
+// name a string literal elsewhere do not reach it. Written as a string, the CHECK below came out
+// `check(c("rowid") == 1)`, and this is what that costs past the compiler, which takes it: the table
+// sync_schema() creates carries `CHECK ('rowid' = 1)`, a comparison of two constants that is false
+// for every row, so nothing can be written to it — silently, the CLI exiting 0 with no warning,
+// where sqlite3 3.51.0 enforces the constraint over the actual row id. There is no member to map the
+// row id onto, so the constraint is left out and said so instead. A WITHOUT ROWID table has no row
+// id for the name to stand for, and there the string is what SQLite itself reads: that CHECK is kept
+// and syncs as the very comparison the database held.
+TEST_CASE("generateSqliteSchemaHeader: a CHECK over a double-quoted row id is left out, not made a string") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (a INTEGER, CHECK(\"rowid\" = 1));"
+            "CREATE TABLE w (a INTEGER PRIMARY KEY, CHECK(\"rowid\" = 1)) WITHOUT ROWID;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK constraint of table t names column 'rowid', which the table does "
+                                         "not declare: sqlite_orm maps no member onto the implicit row id, so the "
+                                         "generated table has no check()"}});
+
+    constexpr std::string_view kInsert = R"(    T row;
+    row.a = 7;
+    storage.insert(row);
+    std::cout << "rows=" << storage.count<T>() << "\n";
+)";
+
+    TempDbFile empty{makeTempDbPath()};
+    REQUIRE(syncSchemaProbeOutput(header.code, empty.path, kInsert) == "t=new_table_created\n"
+                                                                       "w=new_table_created\n"
+                                                                       "rows=1\n");
+    REQUIRE(
+        queryText(empty.path, "SELECT group_concat(sql, ' | ') FROM (SELECT sql FROM sqlite_master ORDER BY name);") ==
+        "CREATE TABLE \"t\" (\"a\" INTEGER NULL) | "
+        "CREATE TABLE \"w\" (\"a\" INTEGER PRIMARY KEY NOT NULL, CHECK ('rowid' = 1)) WITHOUT ROWID");
 }

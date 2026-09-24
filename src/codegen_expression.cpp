@@ -130,7 +130,17 @@ namespace sqlite2orm {
                     return CodeGenResult{"get<" + aliasIt->second + ">()", {}};
                 }
             }
-            auto cppName = toCppIdentifier(columnRef->columnName);
+            // A double-quoted name a CHECK or a generated column of the table being generated
+            // writes, and that table declares no column of, is no column reference at all: SQLite
+            // reads it as a string literal and takes the statement. A qualified one it does not
+            // ("no such column: t.zz"), which is why this stands under the bare form alone.
+            if (const auto text = this->context.clauseColumnAsStringLiteral(columnRef->columnName)) {
+                return CodeGenResult{cppStringLiteral(*text), {}};
+            }
+            // Inside a CREATE TABLE — a CHECK, a generated column or a DEFAULT — the name is resolved
+            // against the columns that table declares, so a spelling SQLite reads as the same column is
+            // written as the member the declaration produced. Anywhere else the name itself.
+            auto cppName = this->context.clauseColumnMember(columnRef->columnName);
             this->context.registerPrefixColumn(cppName, this->context.syntheticColumnCppType(cppName));
             if (this->context.implicitSingleSourceCteTypedef) {
                 // Every form below this point names that CTE, whichever of them the column takes.
@@ -350,10 +360,20 @@ namespace sqlite2orm {
             std::string structForColumn = aliasIt != this->context.fromTableAliasToStructName.end()
                                               ? aliasIt->second
                                               : this->context.structNameForTable(qualifiedRef->tableName);
-            const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+            // A CHECK may qualify the column with the table it is declared on, and that is the one
+            // qualifier the table being generated answers for. A qualifier naming another table is
+            // that table's column — SQLite refuses such a CREATE TABLE ("no such column: o.k") — so
+            // it is written as that table declares it. Outside a CREATE TABLE there is nothing to
+            // resolve against and the name goes as it was written.
+            std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+            if (this->context.constraintColumnsAreOfTable(qualifiedRef->tableName)) {
+                colCpp = this->context.clauseColumnMember(qualifiedRef->columnName);
+            } else if (this->context.constraintColumnsTableIsBeingGenerated()) {
+                colCpp = this->context.sourceColumnMember(qualifiedRef->tableName, qualifiedRef->columnName);
+            }
             this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
             this->context.recordEmittedTableType(structForColumn);
-            std::string memberPointer = "&" + structForColumn + "::" + toCppIdentifier(qualifiedRef->columnName);
+            std::string memberPointer = "&" + structForColumn + "::" + colCpp;
             std::string columnPointer = "column<" + structForColumn + ">(" + memberPointer + ")";
             if (this->context.columnRefUnderLogicalNot) {
                 // Only the column-pointer form survives under a NOT, so there is no style left to

@@ -1245,6 +1245,10 @@ namespace sqlite2orm {
         const auto rawTableName = stripIdentifierQuotes(createTable.tableName);
         std::vector<CodegenWarning> warnings;
         bool tableIsGeneratable = true;
+        // Whether the table ends up with a primary key at all, and whether one it declares was left
+        // out for naming a column the table does not declare: a WITHOUT ROWID table needs its key.
+        bool primaryKeyGenerated = false;
+        bool tablePrimaryKeyWasLeftOut = false;
         // A DEFAULT / CHECK / generated-column expression is the one place an expression clause
         // reaches codegen without going through the validator, so its warnings are the only word a
         // user gets about it — `-0x8000000000000000` is refused by SQLite wherever it is used, and a
@@ -1255,14 +1259,38 @@ namespace sqlite2orm {
         // literal to be collected in `storedHexLiteralsTooBig`, which the caller reads right after,
         // rather than to fail the statement. A VIRTUAL generated column is the one clause SQLite
         // compiles at CREATE TABLE time, so it is generated as an ordinary expression.
-        auto clauseExpressionCode = [this, &warnings](const AstNode& expression, bool stored) {
+        //
+        // A column reference in such a clause is resolved against the columns this table declares
+        // (see the map filled below) under the `ClauseColumnRule` the caller names, because what a
+        // name written in one stands for is not the same in every clause. A name the rule leaves no
+        // member to be written from is handed back instead of the code, so that a caller cannot
+        // reach the generated text without saying what its clause becomes without it.
+        struct ClauseExpression {
+            /** Generated code, or nothing when `refusedColumns` is not empty. */
+            std::optional<std::string> code;
+            /** Names the clause referenced that no member may be written from under its rule. */
+            std::vector<std::string> refusedColumns;
+        };
+        auto clauseExpressionCode =
+            [this, &warnings](const AstNode& expression, bool stored, ClauseColumnRule rule) -> ClauseExpression {
+            this->context.clauseColumnRule = rule;
             auto result = stored ? this->coordinator.generateStoredExpression(expression)
                                  : this->coordinator.generateNode(expression);
             warnings.insert(warnings.end(),
                             std::make_move_iterator(result.warnings.begin()),
                             std::make_move_iterator(result.warnings.end()));
-            return std::move(result.code);
+            auto refusedColumns = this->context.takeRefusedClauseColumns();
+            if (!refusedColumns.empty()) {
+                return {std::nullopt, std::move(refusedColumns)};
+            }
+            return {std::move(result.code), {}};
         };
+        // A CHECK is the one clause of this declaration that resolves a name the table declares no
+        // column of — `rowid`, `oid`, `_rowid_` are the implicit row id there — and only while the
+        // table has a row id at all: on a WITHOUT ROWID one sqlite3 3.51.0 answers `CHECK(rowid>0)`
+        // with "no such column: rowid" and reads `CHECK("rowid">0)` as a string like any other name.
+        const auto checkClauseRule = createTable.withoutRowid ? ClauseColumnRule::columnOrDoubleQuotedString
+                                                              : ClauseColumnRule::columnOrRowIdOrDoubleQuotedString;
 
         // The reflected form of the table (C++26 `make_table<T>()` over an annotated struct,
         // sqlite_orm #1492) is built beside the classical one: the members are the same, a column
@@ -1313,6 +1341,50 @@ namespace sqlite2orm {
         structDeclaration += "};\n";
         this->context.registerSourceTable(rawTableName, sourceTableColumnsFromCreateTable(createTable));
 
+        // From here on every column name a constraint of this table writes is resolved against the
+        // declarations above, so that a spelling SQLite reads as the same column — `ID`, `"Id"`,
+        // `[id]` for a column declared `"Id"` — is written as the member the declaration produced
+        // and not as itself. The map belongs to this table alone; it is emptied again whichever way
+        // this function returns, so that a statement generated after it resolves nothing.
+        struct ClearConstraintColumnMembers {
+            CodeGeneratorContext* context;
+
+            ~ClearConstraintColumnMembers() {
+                context->constraintColumnMemberByNormalizedName.clear();
+                context->constraintColumnTableNameNormalized.clear();
+                context->refusedClauseColumns.clear();
+                context->clauseColumnRule = ClauseColumnRule::columnOrDoubleQuotedString;
+            }
+        } clearConstraintColumnMembers{&this->context};
+
+        this->context.constraintColumnTableNameNormalized = normalizeSqlIdentifier(createTable.tableName);
+        for (const auto& column: createTable.columns) {
+            this->context.constraintColumnMemberByNormalizedName[normalizeSqlIdentifier(column.name)] =
+                toCppIdentifier(column.name);
+        }
+
+        // A constraint over a column the table declares none of has no generated form: a member
+        // pointer written from a name no declaration answers names nothing, so the header would not
+        // compile, and SQLite refuses such a CREATE TABLE outright ("no such column").
+        //
+        // Except over the implicit row id: `CHECK(rowid > 0)` is a statement sqlite3 3.51.0 takes on
+        // a rowid table, and refuses on a WITHOUT ROWID one, and a generated column over `rowid` it
+        // refuses either way — so the warning says nothing about the DDL there and names the reason
+        // that holds for all of them, that sqlite_orm maps no member onto a row id it never declared.
+        const auto warnUnresolvedConstraintColumns = [&warnings,
+                                                      &rawTableName](const std::vector<std::string>& columnNames,
+                                                                     std::string_view subject,
+                                                                     std::string_view consequence) {
+            for (const std::string& columnName: columnNames) {
+                warnings.push_back(std::string(subject) + " of table " + rawTableName + " names column '" + columnName +
+                                   "', which the table does not declare: " +
+                                   (isImplicitRowIdName(columnName)
+                                        ? "sqlite_orm maps no member onto the implicit row id, so "
+                                        : "SQLite refuses such a CREATE TABLE, so ") +
+                                   std::string(consequence));
+            }
+        };
+
         std::vector<std::string> memberAnnotations(createTable.columns.size());
 
         std::string makeExpression = "make_table(\"" + rawTableName + "\"";
@@ -1360,10 +1432,25 @@ namespace sqlite2orm {
                 }
                 makeExpression += ", " + primaryKey;
                 annotate(primaryKey);
+                primaryKeyGenerated = true;
             }
             if (column.defaultValue) {
-                const auto defaultCode = clauseExpressionCode(*column.defaultValue, true);
-                if (this->context.storedHexLiteralsTooBig.empty()) {
+                // Only a parenthesized DEFAULT reaches here as an expression — an identifier written
+                // without the parentheses is a string to SQLite and the parser reads it as one — and
+                // an expression DEFAULT has to be constant, so SQLite refuses every column reference
+                // in it, in every spelling and whether or not the table declares such a column.
+                const auto defaultClause = clauseExpressionCode(*column.defaultValue, true, ClauseColumnRule::noColumn);
+                if (!defaultClause.code) {
+                    for (const std::string& columnName: defaultClause.refusedColumns) {
+                        warnings.push_back("the DEFAULT of column '" + rawColumnName + "' of table " + rawTableName +
+                                           " names column '" + columnName +
+                                           "': SQLite refuses a DEFAULT that is not constant (\"default value of "
+                                           "column [" +
+                                           rawColumnName +
+                                           "] is not constant\"), so the generated column has no default_value()");
+                    }
+                } else if (this->context.storedHexLiteralsTooBig.empty()) {
+                    const std::string& defaultCode = *defaultClause.code;
                     makeExpression += ", default_value(" + defaultCode + ")";
                     // An annotation is a constant expression, so only a default the compiler folds
                     // can stand as one: a text default is a pointer to a string literal and an
@@ -1397,9 +1484,13 @@ namespace sqlite2orm {
                 }
             }
             if (column.checkExpression) {
-                const auto checkCode = clauseExpressionCode(*column.checkExpression, true);
-                if (this->context.storedHexLiteralsTooBig.empty()) {
-                    makeExpression += ", check(" + checkCode + ")";
+                const auto checkClause = clauseExpressionCode(*column.checkExpression, true, checkClauseRule);
+                if (!checkClause.code) {
+                    warnUnresolvedConstraintColumns(checkClause.refusedColumns,
+                                                    "the CHECK on column '" + rawColumnName + "'",
+                                                    "the generated column has no check()");
+                } else if (this->context.storedHexLiteralsTooBig.empty()) {
+                    makeExpression += ", check(" + *checkClause.code + ")";
                     // A column CHECK names the table's own members, and a member annotation is
                     // parsed inside the class, where the members it names are not all declared yet
                     // — upstream sqlite_orm states such annotations are not expressible in C++26.
@@ -1437,8 +1528,18 @@ namespace sqlite2orm {
                 // it, and a column that lost its as(...) would be an ordinary column instead of a
                 // generated one, so the whole table is left out rather than reshaped.
                 const bool storedGenerated = column.generatedStorage == ColumnDef::GeneratedStorage::stored;
-                const auto expressionCode = clauseExpressionCode(*column.generatedExpression, storedGenerated);
-                if (storedGenerated && !this->context.storedHexLiteralsTooBig.empty()) {
+                const auto generatedClause = clauseExpressionCode(*column.generatedExpression,
+                                                                  storedGenerated,
+                                                                  ClauseColumnRule::columnOrDoubleQuotedString);
+                if (!generatedClause.code) {
+                    // A generated column that lost its `as(...)` would be an ordinary column, which
+                    // is a table SQLite does not have — the same reason the hex-literal case below
+                    // leaves the whole table out rather than reshaping it.
+                    warnUnresolvedConstraintColumns(generatedClause.refusedColumns,
+                                                    "generated column '" + rawColumnName + "'",
+                                                    "the table is not generated");
+                    tableIsGeneratable = false;
+                } else if (storedGenerated && !this->context.storedHexLiteralsTooBig.empty()) {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("STORED generated column '" + rawColumnName + "' uses " + literal +
                                            ", too big for a signed 64-bit integer: SQLite stores the table but "
@@ -1448,9 +1549,9 @@ namespace sqlite2orm {
                     tableIsGeneratable = false;
                 } else {
                     if (column.generatedAlways) {
-                        makeExpression += ", generated_always_as(" + expressionCode + ")";
+                        makeExpression += ", generated_always_as(" + *generatedClause.code + ")";
                     } else {
-                        makeExpression += ", as(" + expressionCode + ")";
+                        makeExpression += ", as(" + *generatedClause.code + ")";
                     }
                     // Same as a column CHECK: the expression names the struct's own members.
                     blockReflection("generated column `" + rawColumnName +
@@ -1469,7 +1570,7 @@ namespace sqlite2orm {
         // text to `make_table<T>(…)`, whose columns come from the struct instead.
         std::vector<std::string> tableConstraints;
 
-        auto findPrimaryKeyColumnCpp = [&createTable](std::string_view refTable) -> std::string {
+        auto findPrimaryKeyColumnCpp = [this, &createTable](std::string_view refTable) -> std::string {
             if (toLowerAscii(std::string(refTable)) == toLowerAscii(createTable.tableName)) {
                 for (const auto& column: createTable.columns) {
                     if (column.primaryKey) {
@@ -1477,7 +1578,15 @@ namespace sqlite2orm {
                     }
                 }
                 if (!createTable.primaryKeys.empty() && !createTable.primaryKeys[0].columns.empty()) {
-                    return toCppIdentifier(createTable.primaryKeys[0].columns[0].name);
+                    // The key names its column as the constraint spelled it, and the member is named
+                    // after the declaration: `REFERENCES t` back into a table whose `PRIMARY KEY(ID)`
+                    // stands over a column declared `"Id"` is the member `Id`. A name the table
+                    // declares no column of answers nothing, the same as a table with no key at all —
+                    // its `primary_key()` is left out below too.
+                    if (const auto member =
+                            this->context.constraintColumnMember(createTable.primaryKeys[0].columns[0].name)) {
+                        return *member;
+                    }
                 }
             }
             return {};
@@ -1510,7 +1619,7 @@ namespace sqlite2orm {
             const auto referencedStructName = toStructName(foreignKey.table);
             std::string referencedColumnName;
             if (!foreignKey.column.empty()) {
-                referencedColumnName = toCppIdentifier(foreignKey.column);
+                referencedColumnName = this->context.sourceColumnMember(foreignKey.table, foreignKey.column);
             } else {
                 referencedColumnName = findPrimaryKeyColumnCpp(foreignKey.table);
                 if (referencedColumnName.empty()) {
@@ -1555,7 +1664,14 @@ namespace sqlite2orm {
             }
         }
         for (const auto& tableForeignKey: createTable.foreignKeys) {
-            const auto cppName = toCppIdentifier(tableForeignKey.column);
+            const auto keyColumnMember = this->context.constraintColumnMember(tableForeignKey.column);
+            if (!keyColumnMember) {
+                warnUnresolvedConstraintColumns({stripIdentifierQuotes(tableForeignKey.column)},
+                                                "the FOREIGN KEY",
+                                                "the generated table has no foreign_key()");
+                continue;
+            }
+            const std::string& cppName = *keyColumnMember;
             if (this->context.isUngeneratableTable(tableForeignKey.references.table)) {
                 warnings.push_back("table-level foreign key on column '" +
                                    stripIdentifierQuotes(tableForeignKey.column) + "' references " +
@@ -1575,7 +1691,8 @@ namespace sqlite2orm {
             const auto referencedStructName = toStructName(tableForeignKey.references.table);
             std::string referencedColumnName;
             if (!tableForeignKey.references.column.empty()) {
-                referencedColumnName = toCppIdentifier(tableForeignKey.references.column);
+                referencedColumnName = this->context.sourceColumnMember(tableForeignKey.references.table,
+                                                                        tableForeignKey.references.column);
             } else {
                 referencedColumnName = findPrimaryKeyColumnCpp(tableForeignKey.references.table);
                 if (referencedColumnName.empty()) {
@@ -1626,47 +1743,85 @@ namespace sqlite2orm {
         // `PRIMARY KEY DESC` spelling and puts the keyword before the list, which SQLite refuses
         // as `near "DESC": syntax error`. An ASC is the direction SQLite would take anyway, so
         // only a DESC is worth telling about.
-        const auto warnAboutKeySpelling = [&warnings](const KeyColumn& keyColumn, std::string_view keyKind) {
-            const std::string where = std::string(" on column '") + keyColumn.name + "' of a table-level " +
-                                      std::string(keyKind) + " is not supported in sqlite_orm — ignored in codegen";
-            if (!keyColumn.collation.empty()) {
-                warnings.push_back("COLLATE " + keyColumn.collation + where);
-            }
-            if (keyColumn.sortDirection == SortDirection::desc) {
-                warnings.push_back("DESC" + where);
-            }
-        };
+        // The warnings are collected per key rather than told right away: a key naming a column the
+        // table declares nothing of is left out of the generated table altogether, and saying that a
+        // DESC of it was ignored would describe a key the user never gets.
+        const auto warnAboutKeySpelling =
+            [](std::vector<std::string>& keyWarnings, const KeyColumn& keyColumn, std::string_view keyKind) {
+                const std::string where = std::string(" on column '") + keyColumn.name + "' of a table-level " +
+                                          std::string(keyKind) + " is not supported in sqlite_orm — ignored in codegen";
+                if (!keyColumn.collation.empty()) {
+                    keyWarnings.push_back("COLLATE " + keyColumn.collation + where);
+                }
+                if (keyColumn.sortDirection == SortDirection::desc) {
+                    keyWarnings.push_back("DESC" + where);
+                }
+            };
         for (const auto& tablePrimaryKey: createTable.primaryKeys) {
+            std::vector<std::string> unresolvedColumns;
+            std::vector<std::string> keySpellingWarnings;
             std::string constraint = "primary_key(";
             for (size_t columnIndex = 0; columnIndex < tablePrimaryKey.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
                     constraint += ", ";
                 }
                 const auto& keyColumn = tablePrimaryKey.columns.at(columnIndex);
-                constraint += "&" + structName + "::" + toCppIdentifier(keyColumn.name);
-                warnAboutKeySpelling(keyColumn, "PRIMARY KEY");
+                if (const auto member = this->context.constraintColumnMember(keyColumn.name)) {
+                    constraint += "&" + structName + "::" + *member;
+                } else {
+                    unresolvedColumns.push_back(stripIdentifierQuotes(keyColumn.name));
+                }
+                warnAboutKeySpelling(keySpellingWarnings, keyColumn, "PRIMARY KEY");
             }
             constraint += ")";
+            if (!unresolvedColumns.empty()) {
+                warnUnresolvedConstraintColumns(unresolvedColumns,
+                                                "the PRIMARY KEY",
+                                                "the generated table has no primary_key()");
+                tablePrimaryKeyWasLeftOut = true;
+                continue;
+            }
+            warnings.insert(warnings.end(), keySpellingWarnings.begin(), keySpellingWarnings.end());
+            primaryKeyGenerated = true;
             tableConstraints.push_back(std::move(constraint));
         }
         for (const auto& tableUnique: createTable.uniques) {
             // Qualified on purpose: an unqualified unique() with two or more member pointers of the same
             // type is hijacked by std::unique via ADL, because mapped fields live in namespace std.
+            std::vector<std::string> unresolvedColumns;
+            std::vector<std::string> keySpellingWarnings;
             std::string constraint = "sqlite_orm::unique(";
             for (size_t columnIndex = 0; columnIndex < tableUnique.columns.size(); ++columnIndex) {
                 if (columnIndex > 0) {
                     constraint += ", ";
                 }
                 const auto& keyColumn = tableUnique.columns.at(columnIndex);
-                constraint += "&" + structName + "::" + toCppIdentifier(keyColumn.name);
-                warnAboutKeySpelling(keyColumn, "UNIQUE");
+                if (const auto member = this->context.constraintColumnMember(keyColumn.name)) {
+                    constraint += "&" + structName + "::" + *member;
+                } else {
+                    unresolvedColumns.push_back(stripIdentifierQuotes(keyColumn.name));
+                }
+                warnAboutKeySpelling(keySpellingWarnings, keyColumn, "UNIQUE");
             }
             constraint += ")";
+            if (!unresolvedColumns.empty()) {
+                warnUnresolvedConstraintColumns(unresolvedColumns,
+                                                "the UNIQUE constraint",
+                                                "the generated table has no unique()");
+                continue;
+            }
+            warnings.insert(warnings.end(), keySpellingWarnings.begin(), keySpellingWarnings.end());
             tableConstraints.push_back(std::move(constraint));
         }
         for (const auto& tableCheck: createTable.checks) {
             if (tableCheck.expression) {
-                const auto checkCode = clauseExpressionCode(*tableCheck.expression, true);
+                const auto checkClause = clauseExpressionCode(*tableCheck.expression, true, checkClauseRule);
+                if (!checkClause.code) {
+                    warnUnresolvedConstraintColumns(checkClause.refusedColumns,
+                                                    "the CHECK constraint",
+                                                    "the generated table has no check()");
+                    continue;
+                }
                 if (!this->context.storedHexLiteralsTooBig.empty()) {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("table CHECK uses " + literal +
@@ -1676,7 +1831,7 @@ namespace sqlite2orm {
                     }
                     continue;
                 }
-                tableConstraints.push_back("check(" + checkCode + ")");
+                tableConstraints.push_back("check(" + *checkClause.code + ")");
             }
         }
         for (const std::string& constraint: tableConstraints) {
@@ -1685,6 +1840,17 @@ namespace sqlite2orm {
         makeExpression += ")";
         if (createTable.withoutRowid) {
             makeExpression += ".without_rowid()";
+            if (tablePrimaryKeyWasLeftOut && !primaryKeyGenerated) {
+                // A WITHOUT ROWID table has no row id to fall back on, so one that lost the only
+                // PRIMARY KEY it declares has nothing left to identify a row by: SQLite refuses such
+                // a CREATE TABLE ("PRIMARY KEY missing on table t"), and that is the statement
+                // sync_schema would run, so the table is left out whole rather than handed over as
+                // a mapping that only compiles.
+                warnings.push_back("table " + rawTableName +
+                                   " is WITHOUT ROWID and the PRIMARY KEY it declares was left out, so the table "
+                                   "is not generated");
+                tableIsGeneratable = false;
+            }
         }
         if (createTable.strict) {
             warnings.push_back("STRICT is not yet supported in sqlite_orm and was ignored for table " +

@@ -819,6 +819,52 @@ TEST_CASE("codegen: CREATE TABLE - a DESC in a table-level UNIQUE is not generat
                                         "— ignored in codegen"});
 }
 
+// A key naming a column the table declares nothing of is left out of the generated table whole, so
+// the DESC and the COLLATE spelled on it are worth no word of their own: telling that a direction
+// was ignored would describe a `primary_key(...)` the user never gets, right next to the line saying
+// there is none. A key that survives the resolve keeps saying it, and names the column as the key
+// spelled it — the member it resolved to is in the generated code to read.
+TEST_CASE("codegen: CREATE TABLE - a dropped table-level key says nothing of its DESC") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<int64_t> a;\n"
+                              "    std::optional<std::string> b;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"a\", &T::a),\n"
+                              "        make_column(\"b\", &T::b)));";
+
+    const auto primaryKey = generateFull("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (zz DESC, b COLLATE NOCASE))");
+    REQUIRE(primaryKey.code == table);
+    REQUIRE(primaryKey.warnings ==
+            std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column 'zz', which the table does not "
+                                         "declare: SQLite refuses such a CREATE TABLE, so the generated table has "
+                                         "no primary_key()"}});
+
+    const auto unique = generateFull("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (zz DESC, b))");
+    REQUIRE(unique.code == table);
+    REQUIRE(unique.warnings ==
+            std::vector<CodegenWarning>{{"the UNIQUE constraint of table t names column 'zz', which the table does "
+                                         "not declare: SQLite refuses such a CREATE TABLE, so the generated table "
+                                         "has no unique()"}});
+
+    const auto resolved = generateFull("CREATE TABLE t (\"Id\" INTEGER, b TEXT, PRIMARY KEY (ID DESC, b))");
+    REQUIRE(resolved.code == "struct T {\n"
+                             "    std::optional<int64_t> Id;\n"
+                             "    std::optional<std::string> b;\n"
+                             "};\n"
+                             "\n"
+                             "auto storage = make_storage(\"\",\n"
+                             "    make_table(\"t\",\n"
+                             "        make_column(\"Id\", &T::Id),\n"
+                             "        make_column(\"b\", &T::b),\n"
+                             "        primary_key(&T::Id, &T::b)));");
+    REQUIRE(resolved.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'ID' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen"});
+}
+
 TEST_CASE("codegen: CREATE TABLE - table-level UNIQUE") {
     auto result = generate("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (a, b))");
     REQUIRE(result == "struct T {\n"
@@ -894,6 +940,495 @@ TEST_CASE("codegen: CREATE TABLE - mixed table-level constraints") {
                       "        primary_key(&T::a, &T::b),\n"
                       "        sqlite_orm::unique(&T::b, &T::c),\n"
                       "        check(c(&T::a) > 0)));");
+}
+
+// SQLite matches a column name written in a table constraint against the declared columns ignoring
+// case and quotes, so every constraint below is over the one column the table has, and SQLite takes
+// all five statements (checked against sqlite3 3.51.0). The member the constraint has to be written
+// as is named after the declaration, not after the constraint's own spelling: before it was resolved
+// there, each of these generated a member pointer into a member the struct never declared — a header
+// that does not compile, handed out at exit 0 and without a warning.
+TEST_CASE("codegen: CREATE TABLE - a table PRIMARY KEY naming its column in another case") {
+    auto result = generateFull("CREATE TABLE t (\"Id\" INTEGER, v TEXT, PRIMARY KEY(ID))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> Id;\n"
+                           "    std::optional<std::string> v;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"Id\", &T::Id),\n"
+                           "        make_column(\"v\", &T::v),\n"
+                           "        primary_key(&T::Id)));");
+    REQUIRE(result.warnings.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - a table UNIQUE naming its column in brackets") {
+    auto result = generateFull("CREATE TABLE t (\"Id\" INTEGER, v TEXT, UNIQUE([id]))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> Id;\n"
+                           "    std::optional<std::string> v;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"Id\", &T::Id),\n"
+                           "        make_column(\"v\", &T::v),\n"
+                           "        sqlite_orm::unique(&T::Id)));");
+    REQUIRE(result.warnings.empty());
+}
+
+// Both sides of the key are resolved: the column of this table against its declarations, the column
+// of the referenced one against the declarations `o` was registered with.
+TEST_CASE("codegen: CREATE TABLE - a table FOREIGN KEY naming both columns in another case") {
+    auto result = generateLastOfBatch("CREATE TABLE o (\"k\" INTEGER PRIMARY KEY);"
+                                      "CREATE TABLE t (\"Id\" INTEGER, v TEXT, FOREIGN KEY(ID) REFERENCES o(K));");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> Id;\n"
+                           "    std::optional<std::string> v;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"Id\", &T::Id),\n"
+                           "        make_column(\"v\", &T::v),\n"
+                           "        foreign_key(&T::Id).references(&O::k)));");
+    REQUIRE(result.warnings.empty());
+}
+
+TEST_CASE("codegen: CREATE TABLE - a table CHECK naming its column in another case") {
+    auto result = generateFull("CREATE TABLE t (\"Id\" INTEGER, v TEXT, CHECK(ID > 0))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> Id;\n"
+                           "    std::optional<std::string> v;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"Id\", &T::Id),\n"
+                           "        make_column(\"v\", &T::v),\n"
+                           "        check(c(&T::Id) > 0)));");
+    REQUIRE(result.warnings.empty());
+}
+
+// A CHECK may qualify the column with the table it is declared on, and a column constraint holds the
+// same kind of expression as a table one — both reach the same resolver.
+TEST_CASE("codegen: CREATE TABLE - a qualified CHECK naming its column in another case") {
+    auto result = generateFull("CREATE TABLE t (\"Id\" INTEGER CHECK(t.ID > 0), g INTEGER AS (ID + 1))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> Id;\n"
+                           "    std::optional<int64_t> g;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"Id\", &T::Id, check(c(&T::Id) > 0)),\n"
+                           "        make_column(\"g\", &T::g, as(c(&T::Id) + 1))));");
+    REQUIRE(result.warnings.empty());
+}
+
+// The other end of the resolution: a name no declaration answers. SQLite refuses every one of these
+// CREATE TABLE statements — "no such column: zz", and "unknown column \"zz\" in foreign key
+// definition" for the key (checked against sqlite3 3.51.0) — so there is no member to point at and
+// the constraint is left out with a warning rather than generated into a header that cannot be built.
+TEST_CASE("codegen: CREATE TABLE - a table constraint over a column the table does not declare") {
+    auto primaryKey = generateFull("CREATE TABLE t (a INTEGER, PRIMARY KEY(zz))");
+    REQUIRE(primaryKey.code == "struct T {\n"
+                               "    std::optional<int64_t> a;\n"
+                               "};\n"
+                               "\n"
+                               "auto storage = make_storage(\"\",\n"
+                               "    make_table(\"t\",\n"
+                               "        make_column(\"a\", &T::a)));");
+    REQUIRE(primaryKey.warnings ==
+            std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column 'zz', which the table does not "
+                                         "declare: SQLite refuses such a CREATE TABLE, so the generated table has "
+                                         "no primary_key()"}});
+
+    auto unique = generateFull("CREATE TABLE t (a INTEGER, UNIQUE(zz))");
+    REQUIRE(unique.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));");
+    REQUIRE(unique.warnings ==
+            std::vector<CodegenWarning>{{"the UNIQUE constraint of table t names column 'zz', which the table does "
+                                         "not declare: SQLite refuses such a CREATE TABLE, so the generated table "
+                                         "has no unique()"}});
+
+    auto foreignKey = generateFull("CREATE TABLE t (a INTEGER, FOREIGN KEY(zz) REFERENCES o(k))");
+    REQUIRE(foreignKey.code == "struct T {\n"
+                               "    std::optional<int64_t> a;\n"
+                               "};\n"
+                               "\n"
+                               "auto storage = make_storage(\"\",\n"
+                               "    make_table(\"t\",\n"
+                               "        make_column(\"a\", &T::a)));");
+    REQUIRE(foreignKey.warnings ==
+            std::vector<CodegenWarning>{{"the FOREIGN KEY of table t names column 'zz', which the table does not "
+                                         "declare: SQLite refuses such a CREATE TABLE, so the generated table has "
+                                         "no foreign_key()"}});
+
+    auto check = generateFull("CREATE TABLE t (a INTEGER, CHECK(zz > 0))");
+    REQUIRE(check.code == "struct T {\n"
+                          "    std::optional<int64_t> a;\n"
+                          "};\n"
+                          "\n"
+                          "auto storage = make_storage(\"\",\n"
+                          "    make_table(\"t\",\n"
+                          "        make_column(\"a\", &T::a)));");
+    REQUIRE(check.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK constraint of table t names column 'zz', which the table does "
+                                         "not declare: SQLite refuses such a CREATE TABLE, so the generated table "
+                                         "has no check()"}});
+}
+
+// A generated column that lost its `as(...)` would be an ordinary column, which is a table SQLite
+// does not have, so the table is left out whole — the same answer a STORED generated column holding
+// a hex literal past the int64 range gets.
+TEST_CASE("codegen: CREATE TABLE - a column constraint over a column the table does not declare") {
+    auto columnCheck = generateFull("CREATE TABLE t (a INTEGER CHECK(zz > 0))");
+    REQUIRE(columnCheck.code == "struct T {\n"
+                                "    std::optional<int64_t> a;\n"
+                                "};\n"
+                                "\n"
+                                "auto storage = make_storage(\"\",\n"
+                                "    make_table(\"t\",\n"
+                                "        make_column(\"a\", &T::a)));");
+    REQUIRE(columnCheck.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK on column 'a' of table t names column 'zz', which the table does "
+                                         "not declare: SQLite refuses such a CREATE TABLE, so the generated column "
+                                         "has no check()"}});
+
+    auto generated = generateFull("CREATE TABLE t (a INTEGER, g INTEGER AS (zz + 1))");
+    REQUIRE(generated.code == "/* CREATE TABLE t \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(generated.warnings ==
+            std::vector<CodegenWarning>{{"generated column 'g' of table t names column 'zz', which the table does "
+                                         "not declare: SQLite refuses such a CREATE TABLE, so the table is not "
+                                         "generated"}});
+}
+
+// A key back into the table's own primary key names no column of the parent, so the member it
+// references is the one that key stands over — and that key spells its column the way its own
+// constraint was written. sqlite3 3.51.0 takes both statements and enforces the key with PRAGMA
+// foreign_keys=ON. Written from the constraint's spelling, the two came out as `references(&T::ID)`
+// beside `primary_key(&T::Id)`: one column of one table written as two different members.
+TEST_CASE("codegen: CREATE TABLE - a FOREIGN KEY into a table key naming its column in another case") {
+    const std::string expected = "struct T {\n"
+                                 "    std::optional<int64_t> Id;\n"
+                                 "    std::optional<std::string> v;\n"
+                                 "};\n"
+                                 "\n"
+                                 "auto storage = make_storage(\"\",\n"
+                                 "    make_table(\"t\",\n"
+                                 "        make_column(\"Id\", &T::Id),\n"
+                                 "        make_column(\"v\", &T::v),\n"
+                                 "        foreign_key(&T::v).references(&T::Id),\n"
+                                 "        primary_key(&T::Id)));";
+
+    auto tableLevel = generateFull("CREATE TABLE t (\"Id\" INTEGER, v TEXT, PRIMARY KEY(ID), "
+                                   "FOREIGN KEY(v) REFERENCES t)");
+    REQUIRE(tableLevel.code == expected);
+    REQUIRE(tableLevel.warnings.empty());
+
+    auto columnLevel = generateFull("CREATE TABLE t (\"Id\" INTEGER, v TEXT REFERENCES t, PRIMARY KEY(ID))");
+    REQUIRE(columnLevel.code == expected);
+    REQUIRE(columnLevel.warnings.empty());
+}
+
+// `rowid`, `oid` and `_rowid_` are the implicit row id of a rowid table rather than a column it
+// declares, and what SQLite does with a constraint over one depends on the constraint and on the
+// table: sqlite3 3.51.0 takes `CHECK(rowid > 0)` on a rowid table, refuses it on a WITHOUT ROWID one
+// ("no such column: rowid"), and refuses `PRIMARY KEY(rowid)` and a generated column over `rowid`
+// either way. So the warning speaks for sqlite_orm, which maps no member onto a row id the table
+// never declared, and says nothing about the statement SQLite was handed.
+TEST_CASE("codegen: CREATE TABLE - a constraint over the implicit row id") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<int64_t> a;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"a\", &T::a)));";
+
+    auto tableCheck = generateFull("CREATE TABLE t (a INTEGER, CHECK(rowid > 0))");
+    REQUIRE(tableCheck.code == table);
+    REQUIRE(tableCheck.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK constraint of table t names column 'rowid', which the table does "
+                                         "not declare: sqlite_orm maps no member onto the implicit row id, so the "
+                                         "generated table has no check()"}});
+
+    auto columnCheck = generateFull("CREATE TABLE t (a INTEGER CHECK(_rowid_ > 0))");
+    REQUIRE(columnCheck.code == table);
+    REQUIRE(columnCheck.warnings ==
+            std::vector<CodegenWarning>{{"the CHECK on column 'a' of table t names column '_rowid_', which the table "
+                                         "does not declare: sqlite_orm maps no member onto the implicit row id, so "
+                                         "the generated column has no check()"}});
+
+    auto primaryKey = generateFull("CREATE TABLE t (a INTEGER, PRIMARY KEY(oid))");
+    REQUIRE(primaryKey.code == table);
+    REQUIRE(primaryKey.warnings ==
+            std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column 'oid', which the table does not "
+                                         "declare: sqlite_orm maps no member onto the implicit row id, so the "
+                                         "generated table has no primary_key()"}});
+}
+
+// SQLite reads a double-quoted name as a string only where the name resolves to nothing at all, and
+// a CHECK of a rowid table resolves all three row id names: sqlite3 3.51.0 answers `CHECK("rowid" =
+// 1)` there with the row id itself, not with the string 'rowid' (measured with
+// `CHECK(typeof("rowid") = 'integer')`, which takes the insert). Everywhere else in a table
+// declaration the double quotes do carry the misfeature — a CHECK of a WITHOUT ROWID table and a
+// generated column read the same name as a string and take the statement, while the bare spelling is
+// refused ("no such column: rowid") — and a PRIMARY KEY, a UNIQUE or a foreign key column list is
+// refused in both spellings. Written as the string, `CHECK("rowid" = 1)` generated
+// `check(c("rowid") == 1)`, which syncs as `CHECK ('rowid' = 1)`: a table no row can be written to,
+// silently and without a warning.
+TEST_CASE("codegen: CREATE TABLE - a double-quoted implicit row id") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<int64_t> a;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"a\", &T::a)));";
+
+    for (const std::string& name: {std::string("rowid"), std::string("oid"), std::string("_rowid_")}) {
+        auto tableCheck = generateFull("CREATE TABLE t (a INTEGER, CHECK(\"" + name + "\" = 1))");
+        REQUIRE(tableCheck.code == table);
+        REQUIRE(tableCheck.warnings ==
+                std::vector<CodegenWarning>{{"the CHECK constraint of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no check()"}});
+
+        auto columnCheck = generateFull("CREATE TABLE t (a INTEGER CHECK(\"" + name + "\" = 1))");
+        REQUIRE(columnCheck.code == table);
+        REQUIRE(columnCheck.warnings ==
+                std::vector<CodegenWarning>{{"the CHECK on column 'a' of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated column has no check()"}});
+
+        auto primaryKey = generateFull("CREATE TABLE t (a INTEGER, PRIMARY KEY(\"" + name + "\"))");
+        REQUIRE(primaryKey.code == table);
+        REQUIRE(primaryKey.warnings ==
+                std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no primary_key()"}});
+
+        auto unique = generateFull("CREATE TABLE t (a INTEGER, UNIQUE(\"" + name + "\"))");
+        REQUIRE(unique.code == table);
+        REQUIRE(unique.warnings ==
+                std::vector<CodegenWarning>{{"the UNIQUE constraint of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no unique()"}});
+
+        auto foreignKey = generateFull("CREATE TABLE t (a INTEGER, FOREIGN KEY(\"" + name + "\") REFERENCES o(k))");
+        REQUIRE(foreignKey.code == table);
+        REQUIRE(foreignKey.warnings ==
+                std::vector<CodegenWarning>{{"the FOREIGN KEY of table t names column '" + name +
+                                             "', which the table does not declare: sqlite_orm maps no member onto "
+                                             "the implicit row id, so the generated table has no foreign_key()"}});
+
+        // A WITHOUT ROWID table has no row id for the name to stand for, so the double quotes make it
+        // the string SQLite takes it for, and the generated column reads it as one on either table.
+        auto withoutRowid =
+            generateFull("CREATE TABLE t (a INTEGER PRIMARY KEY, CHECK(\"" + name + "\" = 1)) WITHOUT ROWID");
+        REQUIRE(withoutRowid.code == "struct T {\n"
+                                     "    int64_t a = 0;\n"
+                                     "};\n"
+                                     "\n"
+                                     "auto storage = make_storage(\"\",\n"
+                                     "    make_table(\"t\",\n"
+                                     "        make_column(\"a\", &T::a, primary_key()),\n"
+                                     "        check(c(\"" +
+                                         name + "\") == 1)).without_rowid());");
+        REQUIRE(withoutRowid.warnings.empty());
+
+        auto generated = generateFull("CREATE TABLE t (a INTEGER, g TEXT AS (\"" + name + "\"))");
+        REQUIRE(generated.code == "struct T {\n"
+                                  "    std::optional<int64_t> a;\n"
+                                  "    std::optional<std::string> g;\n"
+                                  "};\n"
+                                  "\n"
+                                  "auto storage = make_storage(\"\",\n"
+                                  "    make_table(\"t\",\n"
+                                  "        make_column(\"a\", &T::a),\n"
+                                  "        make_column(\"g\", &T::g, as(\"" +
+                                      name + "\"))));");
+        REQUIRE(generated.warnings.empty());
+    }
+
+    // A column of that name is a column like any other, and SQLite resolves the name to it rather
+    // than to the row id — so it is written as the member the declaration produced.
+    auto declared = generateFull("CREATE TABLE t (\"RowId\" INTEGER, CHECK(\"rowid\" = 1))");
+    REQUIRE(declared.code == "struct T {\n"
+                             "    std::optional<int64_t> RowId;\n"
+                             "};\n"
+                             "\n"
+                             "auto storage = make_storage(\"\",\n"
+                             "    make_table(\"t\",\n"
+                             "        make_column(\"RowId\", &T::RowId),\n"
+                             "        check(c(&T::RowId) == 1)));");
+    REQUIRE(declared.warnings.empty());
+}
+
+// A DEFAULT written without parentheses is a literal value and not an expression, so an identifier
+// standing there names no column: SQLite reads it as a string in every spelling, and stores it even
+// beside a column of that very name. sqlite3 3.51.0 stores 'A' for the first column below, 'abc'
+// for the second and 'a"b', 'x y' and 'q' for the rest; before the parser read the term as the
+// string it is, each of them generated `default_value(&T::…)` — a member pointer where a string
+// belongs, and for `DEFAULT A` beside a column `"a"` one that compiles.
+TEST_CASE("codegen: CREATE TABLE - an identifier in a DEFAULT without parentheses is a string") {
+    auto result = generateFull("CREATE TABLE t (\"a\" INT, b TEXT DEFAULT A, c TEXT DEFAULT abc, "
+                               "d TEXT DEFAULT \"a\"\"b\", e TEXT DEFAULT [x y], f TEXT DEFAULT `q`)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "    std::optional<std::string> c;\n"
+                           "    std::optional<std::string> d;\n"
+                           "    std::optional<std::string> e;\n"
+                           "    std::optional<std::string> f;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b, default_value(\"A\")),\n"
+                           "        make_column(\"c\", &T::c, default_value(\"abc\")),\n"
+                           "        make_column(\"d\", &T::d, default_value(\"a\\\"b\")),\n"
+                           "        make_column(\"e\", &T::e, default_value(\"x y\")),\n"
+                           "        make_column(\"f\", &T::f, default_value(\"q\"))));");
+    REQUIRE(result.warnings.empty());
+}
+
+// The other side of the same fork: a parenthesized DEFAULT is an expression, and an expression
+// DEFAULT has to be constant, so sqlite3 3.51.0 refuses every column reference written in one
+// ("default value of column [b] is not constant") — whichever spelling it takes, and whether or not
+// the table declares a column of that name. There is no member to write it from either way.
+TEST_CASE("codegen: CREATE TABLE - a parenthesized DEFAULT over a column") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<int64_t> a;\n"
+                              "    std::optional<int64_t> b;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"a\", &T::a),\n"
+                              "        make_column(\"b\", &T::b)));";
+
+    auto undeclared = generateFull("CREATE TABLE t (a INTEGER, b INTEGER DEFAULT (zz))");
+    REQUIRE(undeclared.code == table);
+    REQUIRE(undeclared.warnings ==
+            std::vector<CodegenWarning>{{"the DEFAULT of column 'b' of table t names column 'zz': SQLite refuses a "
+                                         "DEFAULT that is not constant (\"default value of column [b] is not "
+                                         "constant\"), so the generated column has no default_value()"}});
+
+    auto declared = generateFull("CREATE TABLE t (\"a\" INTEGER, b INTEGER DEFAULT (A))");
+    REQUIRE(declared.code == table);
+    REQUIRE(declared.warnings ==
+            std::vector<CodegenWarning>{{"the DEFAULT of column 'b' of table t names column 'A': SQLite refuses a "
+                                         "DEFAULT that is not constant (\"default value of column [b] is not "
+                                         "constant\"), so the generated column has no default_value()"}});
+}
+
+// SQLite reads a double-quoted name that no column of the table answers as a string literal instead
+// of refusing the statement — its "double-quoted string" misfeature — and takes every CHECK and
+// generated column below, computing 'a' || 'zz' for the generated one (checked against sqlite3
+// 3.51.0). Before the clause told the two apart, all three lost the constraint and the generated
+// one lost the whole table, and the warning said SQLite had refused a statement it takes.
+TEST_CASE("codegen: CREATE TABLE - a double-quoted string in a CHECK or a generated column") {
+    auto tableCheck = generateFull("CREATE TABLE t (\"V\" TEXT, CHECK(\"V\" <> \"zz\"), CHECK(\"v\" <> \"a\"\"b\"))");
+    REQUIRE(tableCheck.code == "struct T {\n"
+                               "    std::optional<std::string> V;\n"
+                               "};\n"
+                               "\n"
+                               "auto storage = make_storage(\"\",\n"
+                               "    make_table(\"t\",\n"
+                               "        make_column(\"V\", &T::V),\n"
+                               "        check(c(&T::V) != \"zz\"),\n"
+                               "        check(c(&T::V) != \"a\\\"b\")));");
+    REQUIRE(tableCheck.warnings.empty());
+
+    auto columnCheck = generateFull("CREATE TABLE t (v TEXT CHECK(v <> \"zz\"))");
+    REQUIRE(columnCheck.code == "struct T {\n"
+                                "    std::optional<std::string> v;\n"
+                                "};\n"
+                                "\n"
+                                "auto storage = make_storage(\"\",\n"
+                                "    make_table(\"t\",\n"
+                                "        make_column(\"v\", &T::v, check(c(&T::v) != \"zz\"))));");
+    REQUIRE(columnCheck.warnings.empty());
+
+    auto generated = generateFull("CREATE TABLE t (v TEXT, g TEXT AS (v || \"zz\"))");
+    REQUIRE(generated.code == "struct T {\n"
+                              "    std::optional<std::string> v;\n"
+                              "    std::optional<std::string> g;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"v\", &T::v),\n"
+                              "        make_column(\"g\", &T::g, as(c(&T::v) || \"zz\"))));");
+    REQUIRE(generated.warnings.empty());
+}
+
+// Only the double quote carries that misfeature. sqlite3 3.51.0 refuses the same name written bare,
+// in backticks or in brackets ("no such column: zz"), and refuses a qualified double-quoted one
+// ("no such column: t.zz") — so those stay the constraint SQLite has no column for, and the warning
+// that says as much stays true.
+TEST_CASE("codegen: CREATE TABLE - a name no column answers written any other way") {
+    const std::string table = "struct T {\n"
+                              "    std::optional<std::string> v;\n"
+                              "};\n"
+                              "\n"
+                              "auto storage = make_storage(\"\",\n"
+                              "    make_table(\"t\",\n"
+                              "        make_column(\"v\", &T::v)));";
+    const std::vector<CodegenWarning> warnings{
+        {"the CHECK constraint of table t names column 'zz', which the table does not declare: SQLite refuses such "
+         "a CREATE TABLE, so the generated table has no check()"}};
+
+    for (const std::string& expression:
+         {std::string("v <> zz"), std::string("v <> `zz`"), std::string("v <> [zz]"), std::string("t.\"zz\" <> v")}) {
+        auto result = generateFull("CREATE TABLE t (v TEXT, CHECK(" + expression + "))");
+        REQUIRE(result.code == table);
+        REQUIRE(result.warnings == warnings);
+    }
+}
+
+// A WITHOUT ROWID table has no row id to fall back on, so one whose only PRIMARY KEY was left out
+// has nothing left to identify a row by: the mapping would compile and the CREATE TABLE sync_schema
+// runs from it is one sqlite3 3.51.0 refuses ("PRIMARY KEY missing on table t"). It is left out
+// whole instead, the same answer a generated column that lost its `as(...)` gets.
+TEST_CASE("codegen: CREATE TABLE - WITHOUT ROWID whose PRIMARY KEY was left out") {
+    auto result = generateFull("CREATE TABLE t (a INTEGER, PRIMARY KEY(zz)) WITHOUT ROWID");
+    REQUIRE(result.code == "/* CREATE TABLE t \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"the PRIMARY KEY of table t names column 'zz', which the table does not "
+                                         "declare: SQLite refuses such a CREATE TABLE, so the generated table has "
+                                         "no primary_key()"},
+                                        {"table t is WITHOUT ROWID and the PRIMARY KEY it declares was left out, so "
+                                         "the table is not generated"}});
+}
+
+// A CHECK qualified with a table other than the one it is declared on is that other table's column,
+// and is written as that table declares it rather than as this one does — the declarations of the
+// table being generated answer for its own name only. sqlite3 3.51.0 refuses such a CREATE TABLE
+// ("no such column: o.k"), so there is no valid statement behind this shape; the member written
+// stays the one `o` declares rather than a member of `O` picked from `t`'s columns.
+TEST_CASE("codegen: CREATE TABLE - a CHECK qualified with another table") {
+    auto result = generateLastOfBatch("CREATE TABLE o (\"K\" INTEGER);"
+                                      "CREATE TABLE t (a INTEGER, CHECK(o.k > 0));");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        check(c(&O::K) > 0)));");
+    REQUIRE(result.warnings.empty());
 }
 
 TEST_CASE("codegen: CREATE TABLE - WITHOUT ROWID") {

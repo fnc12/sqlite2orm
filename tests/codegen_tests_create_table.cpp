@@ -403,6 +403,22 @@ TEST_CASE("codegen: CREATE TABLE - a clause without an infinity is not warned ab
                  5}});
 }
 
+// A table that is not generated has no CREATE TABLE for `sync_schema()` to run, so there is
+// nothing for an infinity in one of its clauses to stop — the warning is held back with the
+// comments and the placeholders of the clauses around it. SQLite takes this declaration and keeps
+// it in sqlite_master (checked on sqlite3 3.51.0); it is the STORED generated column that C++ has
+// no literal for, and that is the only word about the table.
+TEST_CASE("codegen: CREATE TABLE - an infinity in a table that is not generated is not warned about") {
+    auto result = generateFull("CREATE TABLE t (x REAL DEFAULT 9e999, y INTEGER AS (0x10000000000000000) STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE t \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: SQLite "
+                 "stores the table but refuses every row written to it, and C++ has no literal for it, so the table "
+                 "is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
 // The literal is named the way SQLite spells it, separators gone, and underlined the way it is
 // written, separators and all: `9e99_9` is six characters of SQL for the same five-character value.
 // A decimal integer far enough past the range runs out of double as well, and is reported by the

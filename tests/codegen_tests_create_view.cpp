@@ -57,6 +57,21 @@ TEST_CASE("codegen: CREATE VIEW - an infinity in the body warns that querying th
                 cpp26ViewWarning("v", 2)});
 }
 
+// And a view that is not generated is the same case as a table that is not: there is no CREATE
+// VIEW for `sync_schema()` to run, so the infinity in its body stops nothing and is not named. The
+// body still generates — the columns of `unknowntbl` are what cannot be derived — and SQLite keeps
+// this declaration in sqlite_master all the same (checked on sqlite3 3.51.0), a view over a table
+// that is not there being an error only when the view is queried.
+TEST_CASE("codegen: CREATE VIEW - an infinity in a view that is not generated is not warned about") {
+    auto result = generateFull("CREATE VIEW v AS SELECT * FROM unknowntbl WHERE x < 9e999;");
+    REQUIRE(result.code == "/* CREATE VIEW v \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE VIEW v: columns of table `unknowntbl` are unknown; cannot derive view columns from "
+                 "SELECT *"}});
+    REQUIRE(result.errors.empty());
+}
+
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
     REQUIRE(result.comments ==

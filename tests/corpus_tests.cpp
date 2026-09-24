@@ -551,6 +551,15 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
             {.sql = "SELECT Title FROM Album a LEFT JOIN Track t ON a.AlbumId = t.AlbumId WHERE t.TrackId IS NULL "
                     "ORDER BY a.AlbumId LIMIT 3;",
              .rows = {"Let There Be Rock", "Big Ones"}},
+            // A CROSS JOIN reads a constraint the way a JOIN does, and the rows it answers are the
+            // rows the constraint keeps: dropping the ON leaves the product of the two tables, 35
+            // rows where sqlite3 answers 6.
+            {.sql = "SELECT COUNT(*) FROM Track t CROSS JOIN Album a ON t.AlbumId = a.AlbumId;", .rows = {"6"}},
+            {.sql = "SELECT t.Name, a.Title FROM Track t CROSS JOIN Album a ON t.AlbumId = a.AlbumId ORDER BY "
+                    "t.TrackId LIMIT 3;",
+             .rows = {"For Those About To Rock (We Salute You)|For Those About To Rock We Salute You",
+                      "Balls to the Wall|Balls to the Wall",
+                      "Fast As a Shark|Restless and Wild"}},
             {.sql = "SELECT COUNT(*) FROM Track t1, Track t2 WHERE t1.TrackId = t2.TrackId;", .rows = {"7"}},
             {.sql = "SELECT COUNT(*) FROM Album a WHERE a.ArtistId = 1;", .rows = {"2"}},
             // The `count(*)` of the HAVING is the only thing naming the aliased source, and

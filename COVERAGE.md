@@ -373,6 +373,12 @@ a compound of bitwise branches is still read back through `int`.
   one. Where the collapse leaves a lone INTEGER column of a rowid table, it also turns the key into
   a rowid alias, which the multi-term key it came from is not; that is reported as a codegen
   warning, because sqlite_orm has no table-level key of two terms over one column to write instead.
+- [!] A repeat standing before a column the key has not named yet (`PRIMARY KEY(a, a, b)`) is a key
+  no `primary_key(...)` is read back as: a rowid table ranks a key column by the term its name is
+  first spelled at and leaves the rank the repeat sits at unused, so SQLite ranks `b` third while
+  the generated key ranks it second and the key written as spelled ranks `a` second. Codegen
+  warning — `sync_schema()` rebuilds such a table and the rows in it are lost. A WITHOUT ROWID
+  table drops the repeat out of the key itself and leaves no gap, so it is carried over as stored.
 - [x] CHECK(expr) → `check(expr)`
 - [x] FOREIGN KEY (column) REFERENCES table(column) + ON DELETE/UPDATE actions
 - [x] CONSTRAINT name prefix (parsed and skipped)

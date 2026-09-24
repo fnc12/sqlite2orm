@@ -1774,13 +1774,22 @@ namespace sqlite2orm {
             // a single place in the key SQLite reports, and there is no second place for the repeat
             // to take. `PRAGMA table_info` — all sqlite_orm has to compare a mapped table against —
             // answers `pk = 1` for the `a` of `PRIMARY KEY(a, a)`, and `pk = 1, 2` for the `a` and
-            // the `b` of `PRIMARY KEY(a, b, a)`: the place a name first takes is the place it keeps.
-            // (A WITHOUT ROWID table goes further and drops the repeat from the key itself, in
-            // convertToWithoutRowidTable; a rowid table keeps it in the automatic index, where
-            // nothing sqlite_orm reads can see it.) sqlite_orm, on the other hand, ranks a key
-            // column by the *last* place its name takes in `primary_key(...)`, so writing the name
-            // twice makes `sync_schema()` see a key the stored table never had — and it answers a
-            // key that changed by dropping the table and every row in it.
+            // the `b` of `PRIMARY KEY(a, b, a)`. sqlite_orm, on the other hand, ranks a key column
+            // by the *last* place its name takes in `primary_key(...)`, so writing the name twice
+            // makes `sync_schema()` see a key the stored table never had — and it answers a key
+            // that changed by dropping the table and every row in it.
+            // What the place of a column in the key is, exactly, differs between the two kinds of
+            // table, and only one of them is a place the collapsed key can keep. A WITHOUT ROWID
+            // table drops the repeat from the key itself (convertToWithoutRowidTable) and ranks
+            // what is left one after another, which is what naming each column once writes. A rowid
+            // table keeps the repeat — in the automatic index, where nothing sqlite_orm reads can
+            // see it — and ranks a key column by the TERM its name is first spelled at, leaving the
+            // rank the repeat sits at unused: `PRIMARY KEY(a, a, b)` is reported as `pk = 1` for
+            // `a` and `pk = 3` for `b`, with no column at 2. (`PRAGMA table_info` stops looking
+            // after as many ranks as the table has columns and answers one past that for anything
+            // further, so the rank of `b` in `t(a, b)` reads 3 rather than 4 under
+            // `PRIMARY KEY(a, a, a, b)` — still not the rank a collapsed key would give it.)
+            // Checked against sqlite3 3.51.0.
             std::vector<std::string> spelledNormalizedNames;
             std::vector<std::string> keyMembers;
             for (const auto& keyColumn: tablePrimaryKey.columns) {
@@ -1814,6 +1823,38 @@ namespace sqlite2orm {
                                                 "the generated table has no primary_key()");
                 tablePrimaryKeyWasLeftOut = true;
                 continue;
+            }
+            // Naming a repeated column once keeps the ranks SQLite reports only while every repeat
+            // sits behind the last column the key names for the first time. Where one does not, the
+            // rank it leaves unused is a rank `primary_key(...)` cannot leave: it ranks its columns
+            // by their place in its list, one after another. Writing the repeat instead misses by
+            // the same one column, the other way — sqlite_orm ranks a name written twice by its
+            // last place — so the key cannot be carried over at all, and what is left is to say so
+            // before `sync_schema()` drops the table over it.
+            std::optional<std::string> columnRepeatedBeforeTheRestIsNamed;
+            if (!createTable.withoutRowid) {
+                for (size_t termIndex = 0; termIndex < spelledNormalizedNames.size(); ++termIndex) {
+                    const auto& keyColumn = tablePrimaryKey.columns.at(termIndex);
+                    if (normalizeSqlIdentifier(keyColumn.name) != spelledNormalizedNames.at(termIndex)) {
+                        columnRepeatedBeforeTheRestIsNamed = stripIdentifierQuotes(keyColumn.name);
+                        break;
+                    }
+                }
+            }
+            if (columnRepeatedBeforeTheRestIsNamed) {
+                warnings.push_back(
+                    "the table-level PRIMARY KEY names column '" + *columnRepeatedBeforeTheRestIsNamed +
+                    "' again before the last column of the key is named for the first time, and no key "
+                    "sqlite_orm can write is read back as this one. SQLite ranks a key column of a rowid "
+                    "table by the term its name is first spelled at and leaves the rank the repeat sits at "
+                    "unused — `PRIMARY KEY(a, a, b)` reports 'a' at rank 1 and 'b' at rank 3, with nothing "
+                    "at rank 2 — while primary_key() ranks its columns by their place in the list and has "
+                    "no rank to leave out. Naming the repeat there instead is no closer: sqlite_orm ranks a "
+                    "name written twice by its last place. Either way the mapped key differs from the stored "
+                    "one by the rank of a column, so `sync_schema()` drops the table and creates it again, "
+                    "losing every row in it. A key whose repeats all come after the last column it names "
+                    "first, `PRIMARY KEY(a, b, a)`, and a WITHOUT ROWID table, where SQLite drops the repeat "
+                    "from the key itself, leave no unused rank and are mapped as stored");
             }
             // Writing a repeated name once has a price on exactly one shape, and it is told about
             // rather than left for the reader to meet in their own database. SQLite makes a column

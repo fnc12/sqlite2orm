@@ -2405,6 +2405,53 @@ TEST_CASE("generateSqliteSchemaHeader: a key repeating its only column is a rowi
             "dup_two=NULL\n");
 }
 
+// The shape naming a repeated column once cannot carry over, and what it costs on a live database
+// with rows in it. SQLite ranks a key column of a rowid table by the term its name is first spelled
+// at and leaves the rank a repeat sits at unused, so a repeat standing before a column the key has
+// not named yet takes that column's rank away: sqlite3 3.51.0 ranks the `b` of
+// `PRIMARY KEY(a, a, b)` third, with nothing at 2. The collapsed key ranks `b` second and the key
+// written as spelled ranks `a` second — sqlite_orm takes the last place a repeated name holds — so
+// neither is the stored key, and `sync_schema()` answers a key that changed by dropping the table
+// and rebuilding it empty. That is pinned here as the known price rather than left to be met in a
+// user's database; the report the generator hands out for it is pinned in
+// tests/codegen_tests_create_table.cpp. Beside it stand the shapes that are carried over: the same
+// key under WITHOUT ROWID, where SQLite drops the repeat out of the key itself and closes the gap,
+// and a repeat standing behind every column the key names first.
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a key whose repeat takes a rank rebuilds it") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gap_pk (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a, b));"
+            "CREATE TABLE gap_pk_middle (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, b, b, c));"
+            "CREATE TABLE gap_pk_spelled (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(A, \"a\", [a], b));"
+            "CREATE TABLE gap_pk_twice (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a, a, b));"
+            "CREATE TABLE gap_pk_wr (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a, b)) WITHOUT ROWID;"
+            "CREATE TABLE tail_pk (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, b, a));");
+    execSql(file.path,
+            "INSERT INTO gap_pk VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_middle VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_spelled VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_twice VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_wr VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO tail_pk VALUES (1, 1, 'keep'), (2, 2, 'me');");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, "") == "gap_pk=dropped_and_recreated\n"
+                                                                 "gap_pk_middle=dropped_and_recreated\n"
+                                                                 "gap_pk_spelled=dropped_and_recreated\n"
+                                                                 "gap_pk_twice=dropped_and_recreated\n"
+                                                                 "gap_pk_wr=already_in_sync\n"
+                                                                 "tail_pk=already_in_sync\n");
+
+    REQUIRE(queryText(file.path,
+                      "SELECT (SELECT count(*) FROM gap_pk) || ',' || (SELECT count(*) FROM gap_pk_middle) || ',' || "
+                      "(SELECT count(*) FROM gap_pk_spelled) || ',' || (SELECT count(*) FROM gap_pk_twice) || ',' || "
+                      "(SELECT count(*) FROM gap_pk_wr) || ',' || (SELECT count(*) FROM tail_pk);") == "0,0,0,0,2,2");
+}
+
 // The other table option SQLite makes a key implicitly NOT NULL for is STRICT — with one exception
 // this case is about: the rowid alias, which stays nullable there because the column *is* the
 // rowid. Getting the exception wrong in either direction loses rows: ruling the alias NOT NULL

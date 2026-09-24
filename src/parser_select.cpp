@@ -486,7 +486,9 @@ namespace sqlite2orm {
             if (match(TokenType::comma)) {
                 if (!isFromTableItemStartOrParen())
                     break;
-                parseOneUnit(JoinKind::crossJoin, false);
+                // A comma is a join operator like any other, so SQLite reads an ON or a USING
+                // after it the way it reads one after JOIN.
+                parseOneUnit(JoinKind::crossJoin, true);
                 continue;
             }
             JoinKind joinKind = JoinKind::none;
@@ -572,7 +574,10 @@ namespace sqlite2orm {
 
     void SelectParser::parseJoinConstraint(FromClauseItem& item) {
         switch (item.leadingJoin) {
-            case JoinKind::crossJoin:
+            // A NATURAL join names its columns by itself, and SQLite refuses a constraint after
+            // one: "a NATURAL join may not have an ON or USING clause". Left unread here, the
+            // keyword is the token the statement ends on, which is the refusal. Every other join
+            // operator — CROSS JOIN and a comma included — takes a constraint.
             case JoinKind::naturalInnerJoin:
             case JoinKind::naturalLeftJoin:
                 return;

@@ -116,6 +116,54 @@ TEST_CASE("parser: LEFT OUTER JOIN USING") {
     REQUIRE(sel.fromClause.at(1).onExpression == nullptr);
 }
 
+// sqlite3 reads a constraint after CROSS JOIN the way it reads one after any other join
+// operator: `SELECT a.name FROM users a CROSS JOIN orders b ON a.id = b.uid` answers the rows the
+// ON keeps, not the whole cartesian product.
+TEST_CASE("parser: CROSS JOIN ON") {
+    auto parseResult = parse("SELECT * FROM users CROSS JOIN posts ON users.id = posts.user_id");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).table.tableName == "posts");
+    REQUIRE(sel.fromClause.at(1).onExpression != nullptr);
+    REQUIRE(sel.fromClause.at(1).usingColumnNames.empty());
+}
+
+TEST_CASE("parser: CROSS JOIN USING") {
+    auto parseResult = parse("SELECT * FROM users CROSS JOIN posts USING (user_id)");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).usingColumnNames == std::vector<std::string>{"user_id"});
+    REQUIRE(sel.fromClause.at(1).onExpression == nullptr);
+}
+
+// A comma is a join operator of its own, and sqlite3 takes a constraint after it too.
+TEST_CASE("parser: comma join ON") {
+    auto parseResult = parse("SELECT * FROM users, posts ON users.id = posts.user_id");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).onExpression != nullptr);
+}
+
+// The one join operator that takes no constraint: sqlite3 answers "a NATURAL join may not have an
+// ON or USING clause". The keyword is left unread, so the statement ends on a token of its own.
+TEST_CASE("parser: error on NATURAL JOIN with ON") {
+    auto parseResult = parse("SELECT * FROM users NATURAL JOIN posts ON users.id = posts.user_id");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on NATURAL JOIN with USING") {
+    auto parseResult = parse("SELECT * FROM users NATURAL JOIN posts USING (user_id)");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
 TEST_CASE("parser: comma then INNER JOIN") {
     auto parseResult = parse("SELECT * FROM users, posts INNER JOIN comments ON posts.id = comments.post_id");
     REQUIRE(parseResult);

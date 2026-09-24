@@ -1277,38 +1277,56 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
     REQUIRE(schema.allOk());
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
-    const CodeGenResult expected{std::string("#pragma once\n\n"
-                                             "#include <sqlite_orm/sqlite_orm.h>\n"
-                                             "#include <cstdint>\n"
-                                             "#include <limits>\n"
-                                             "#include <optional>\n"
-                                             "#include <string>\n"
-                                             "#include <vector>\n\n"
-                                             "struct InfT {\n"
-                                             "    std::optional<double> a;\n"
-                                             "    std::optional<double> b;\n"
-                                             "    std::optional<double> c;\n"
-                                             "};\n\n"
-                                             "struct TailT {\n"
-                                             "    std::optional<std::string> t;\n"
-                                             "};\n\n\n"
-                                             "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
-                                             "    using namespace sqlite_orm;\n"
-                                             "    return make_storage(db_path,\n"
-                                             "        make_trigger(\"tail_tr\", "
-                                             "after().insert().on<TailT>().begin(insert(into<TailT>(), "
-                                             "columns(&TailT::t), values(std::make_tuple(\"x\"))))),\n"
-                                             "        make_table(\"inf_t\",\n"
-                                             "        make_column(\"a\", &InfT::a, "
-                                             "default_value(std::numeric_limits<double>::infinity())),\n"
-                                             "        make_column(\"b\", &InfT::b, default_value(0.0)),\n"
-                                             "        make_column(\"c\", &InfT::c, "
-                                             "check(c(&InfT::c) < std::numeric_limits<double>::infinity()))),\n"
-                                             "        make_table(\"tail_t\",\n"
-                                             "        make_column(\"t\", &TailT::t)));\n"
-                                             "}\n"),
-                                 {},
-                                 {}};
+    const CodeGenResult expected{
+        std::string("#pragma once\n\n"
+                    "#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <limits>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n\n"
+                    "struct InfT {\n"
+                    "    std::optional<double> a;\n"
+                    "    std::optional<double> b;\n"
+                    "    std::optional<double> c;\n"
+                    "};\n\n"
+                    "struct TailT {\n"
+                    "    std::optional<std::string> t;\n"
+                    "};\n\n\n"
+                    "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                    "    using namespace sqlite_orm;\n"
+                    "    return make_storage(db_path,\n"
+                    "        make_trigger(\"tail_tr\", "
+                    "after().insert().on<TailT>().begin(insert(into<TailT>(), "
+                    "columns(&TailT::t), values(std::make_tuple(\"x\"))))),\n"
+                    "        make_table(\"inf_t\",\n"
+                    "        make_column(\"a\", &InfT::a, "
+                    "default_value(std::numeric_limits<double>::infinity())),\n"
+                    "        make_column(\"b\", &InfT::b, default_value(0.0)),\n"
+                    "        make_column(\"c\", &InfT::c, "
+                    "check(c(&InfT::c) < std::numeric_limits<double>::infinity()))),\n"
+                    "        make_table(\"tail_t\",\n"
+                    "        make_column(\"t\", &TailT::t)));\n"
+                    "}\n"),
+        {},
+        // The infinity is spelled, and said not to survive `sync_schema()`:
+        // sqlite_orm writes it into the DDL it creates a schema object with
+        // as `inf`, a name to SQLite. The zero the literal below the range
+        // rounds to is a value sqlite_orm writes back fine, so it is not
+        // warned about.
+        {CodegenWarning{"the DEFAULT of column 'a' uses 9e999, an infinity: sqlite_orm writes an "
+                        "infinity into DDL as `inf`, which SQLite reads as a column name rather than "
+                        "as a number, so sync_schema() throws instead of creating table inf_t "
+                        "(sqlite_orm writes a DEFAULT in parentheses, and SQLite answers DEFAULT (inf) "
+                        "with \"default value of column [a] is not constant\")",
+                        SourceLocation{1, 36},
+                        5},
+         CodegenWarning{"the CHECK on column 'c' uses 1e309, an infinity: sqlite_orm writes an infinity "
+                        "into DDL as `inf`, which SQLite reads as a column name rather than as a "
+                        "number, so sync_schema() throws instead of creating table inf_t (\"no such "
+                        "column: inf\")",
+                        SourceLocation{1, 84},
+                        5}}};
 
     REQUIRE(header == expected);
 

@@ -19,6 +19,20 @@ namespace codegen_test_helpers {
     inline const std::string kStatementNotGenerated =
         "a construct in this statement is not mapped to sqlite_orm, so the statement is not generated";
 
+    /**
+     *  Why a BLOB literal is left out of a clause sqlite_orm writes into the schema as text, as the
+     *  middle of the warning: a site names the clause before it and what the clause becomes without
+     *  the literal after it. The whole sentence is spelled out once in
+     *  `codegen: CREATE INDEX over a BLOB literal is not generated`.
+     */
+    inline std::string kDdlBlobLiteralReason(std::string_view literal) {
+        return std::string(literal) +
+               ", a BLOB literal in a clause sqlite_orm writes into the schema as text: it prints a blob as the "
+               "bytes themselves inside x'…' instead of as their hex digits, which SQLite reads as a different "
+               "value where every byte of the blob is a hex digit and refuses as an unrecognized token where "
+               "one is not";
+    }
+
     std::string generate(std::string_view sql);
     CodeGenResult generateFull(std::string_view sql);
     /**

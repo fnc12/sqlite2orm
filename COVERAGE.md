@@ -36,7 +36,7 @@ Statuses:
 - [x] numeric-literal (real / float)
 - [x] numeric-literal `_` digit separators (SQLite 3.46+) — `1_000_000` → `1'000'000`, `0x1_ffff` → `0x1'ffff`; a misplaced separator (`100_`, `1__0`, `0x_1f`) is an unrecognized token, as in SQLite
 - [x] string-literal
-- [x] blob-literal
+- [~] blob-literal — `x'0102'` → `std::vector<char>{'\x01', '\x02'}`, which a query binds, so every byte of it travels whole. Partial because a clause sqlite_orm writes into the schema as text carries no bind: `field_printer<std::vector<char>>` prints a blob as the bytes themselves and `quote_blob_literal` wraps that in `x'…'`, so `x'4142'` reaches SQLite as `x'AB'`, a blob literal of the single byte 0xAB that it accepts without a word, and `x'0102'` as `unrecognized token: "x'\x01\x02'"`, which refuses the whole statement — the same printer on the pinned revision and on the v1.9.1 release. Such a clause is therefore left out with a warning: a column `DEFAULT`, a column or table `CHECK`, an indexed column or the `WHERE` of a partial index (the whole index goes — an index without the expression it is made for is a different index), a `STORED` or `VIRTUAL` generated column (the whole table goes, a column that lost its `as(...)` being an ordinary column), a trigger and a view (both whole, everything they are made of being that same text). `x''` is the one that survives: the printer writes nothing for it and `x''` is the empty blob in SQLite too, so an empty blob literal is generated wherever it stands
 - [x] NULL
 - [x] TRUE
 - [x] FALSE

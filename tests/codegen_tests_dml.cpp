@@ -717,6 +717,21 @@ TEST_CASE("codegen: CREATE TRIGGER - a BLOB literal leaves the trigger ungenerat
     REQUIRE(result.errors.empty());
 }
 
+// A SELECT in a trigger body is generated as a select subexpression too, so a HAVING with no GROUP
+// BY there leaves the step unmapped and the trigger with it, rather than a trigger running the
+// query without the condition. SQLite stores and fires this trigger (checked on sqlite3 3.51.0).
+TEST_CASE("codegen: CREATE TRIGGER - HAVING and no GROUP BY in the body leaves the trigger ungenerated") {
+    auto result = generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT count(*) FROM t HAVING count(*) > 1; "
+                               "END");
+    REQUIRE(result.code.empty());
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"HAVING without GROUP BY in subquery is not mapped to sqlite_orm select(...)"},
+                {"a statement in the trigger body is not mapped to sqlite_orm codegen", SourceLocation{1, 43}, 42},
+                {kStatementNotGenerated}});
+    REQUIRE(result.errors.empty());
+}
+
 // The same literal in a statement of its own is bound rather than written into SQL, so it keeps
 // every byte and stays generated.
 TEST_CASE("codegen: UPDATE with a BLOB literal keeps it") {

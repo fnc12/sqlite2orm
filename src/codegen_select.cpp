@@ -344,6 +344,25 @@ namespace sqlite2orm {
                                                        std::move(carried));
             }
         }
+        // sqlite_orm spells a HAVING condition only as a tail of the GROUP BY clause
+        // (`group_by(...).having(...)`), and there is no faithful stand-in for the form SQLite also
+        // takes, HAVING with no GROUP BY: `group_by()` with no term is not SQL, and grouping by a
+        // constant is a different query — over an empty table `SELECT count(*) FROM t HAVING
+        // count(*) >= 0` answers one row on 3.51.0 where `... GROUP BY NULL HAVING ...` answers
+        // none. So the statement is not generated, rather than generated as the query without the
+        // condition, which would answer rows the SQL does not.
+        if (selectNode.having && !selectNode.groupBy) {
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(selectDecisionPoints);
+            carried.warnings = std::move(selectWarnings);
+            return unsupportedStatementPlaceholder(this->context,
+                                                   "SELECT with HAVING and no GROUP BY",
+                                                   "HAVING without GROUP BY is not mapped to sqlite_orm codegen; "
+                                                   "sqlite_orm spells a HAVING condition only as "
+                                                   "group_by(...).having(...)",
+                                                   *selectNode.having,
+                                                   std::move(carried));
+        }
         this->context.fromTableAliasToStructName.clear();
         this->context.activeTableAliases.clear();
         this->context.implicitSourceAlias.reset();
@@ -713,8 +732,8 @@ namespace sqlite2orm {
                 groupCode += expressionCode(*selectNode.groupBy->expressions.at(i));
             }
             groupCode += ")";
-            if (selectNode.groupBy->having) {
-                groupCode += ".having(" + expressionCode(*selectNode.groupBy->having) + ")";
+            if (selectNode.having) {
+                groupCode += ".having(" + expressionCode(*selectNode.having) + ")";
             }
             appendClause(groupCode);
         }
@@ -1028,6 +1047,10 @@ namespace sqlite2orm {
 
         if (selectNode.groupBy) {
             subWarnings.push_back("GROUP BY in subquery is not yet mapped to sqlite_orm select(...)");
+            return CodeGenResult{{}, {}, std::move(subWarnings)};
+        }
+        if (selectNode.having) {
+            subWarnings.push_back("HAVING without GROUP BY in subquery is not mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
         }
         if (selectNode.offsetValue && !selectNode.limitValue) {

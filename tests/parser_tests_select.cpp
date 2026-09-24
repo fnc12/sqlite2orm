@@ -431,6 +431,52 @@ TEST_CASE("parser: error on HAVING without an expression") {
     REQUIRE(parseResult.errors.size() == 1);
 }
 
+// HAVING is a clause of the select core of its own: SQLite takes one with no GROUP BY in front of
+// it and answers the aggregate over the whole table, `SELECT count(*) FROM users HAVING count(*) >
+// 1` on 3.51.0. Read as a tail of GROUP BY alone, the clause was left in the token stream and the
+// SELECT parsed as the query without it.
+TEST_CASE("parser: SELECT with HAVING and no GROUP BY") {
+    auto parseResult = parse("SELECT count(*) FROM users HAVING count(*) > 1");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""}};
+    expected.fromClause = fromOne("users");
+    expected.having = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                         makeFunc("count", false, true),
+                                                         makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: error on HAVING without an expression and no GROUP BY") {
+    auto parseResult = parse("SELECT count(*) FROM users HAVING");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+// The clause stands where SQLite reads it, after GROUP BY and before WINDOW, ORDER BY and LIMIT:
+// `SELECT count(*) FROM users ORDER BY 1 HAVING count(*) > 1` and the LIMIT form of it are both
+// `near "HAVING": syntax error` on 3.51.0.
+TEST_CASE("parser: SELECT with HAVING before ORDER BY and LIMIT") {
+    auto parseResult = parse("SELECT count(*) FROM users HAVING count(*) > 1 ORDER BY 1 LIMIT 2");
+    REQUIRE(parseResult);
+    const auto& selectNode = requireNode<SelectNode>(parseResult);
+    REQUIRE(selectNode.having != nullptr);
+    REQUIRE(selectNode.orderBy.size() == 1);
+    REQUIRE(*selectNode.limitValue == *makeNode<IntegerLiteralNode>("2"));
+}
+
+TEST_CASE("parser: error on HAVING after ORDER BY") {
+    auto parseResult = parse("SELECT count(*) FROM users ORDER BY 1 HAVING count(*) > 1");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on HAVING after LIMIT") {
+    auto parseResult = parse("SELECT count(*) FROM users LIMIT 1 HAVING count(*) > 1");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
 // --- GROUP BY ---
 
 TEST_CASE("parser: SELECT with GROUP BY") {
@@ -442,7 +488,7 @@ TEST_CASE("parser: SELECT with GROUP BY") {
         SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""},
     };
     expected.fromClause = fromOne("users");
-    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}, nullptr};
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}};
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -455,10 +501,10 @@ TEST_CASE("parser: SELECT with GROUP BY HAVING") {
         SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""},
     };
     expected.fromClause = fromOne("users");
-    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")},
-                                     makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                        makeFunc("count", false, true),
-                                                                        makeNode<IntegerLiteralNode>("1"))};
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}};
+    expected.having = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                         makeFunc("count", false, true),
+                                                         makeNode<IntegerLiteralNode>("1"));
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -472,7 +518,7 @@ TEST_CASE("parser: SELECT with GROUP BY multiple columns") {
     };
     expected.fromClause = fromOne("users");
     expected.groupBy =
-        GroupByClause{{makeSharedNode<ColumnRefNode>("department"), makeSharedNode<ColumnRefNode>("role")}, nullptr};
+        GroupByClause{{makeSharedNode<ColumnRefNode>("department"), makeSharedNode<ColumnRefNode>("role")}};
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -505,7 +551,7 @@ TEST_CASE("parser: SELECT with all clauses") {
     expected.whereClause = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
                                                               makeNode<ColumnRefNode>("age"),
                                                               makeNode<IntegerLiteralNode>("18"));
-    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}, nullptr};
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}};
     expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::asc}};
     expected.limitValue = makeNode<IntegerLiteralNode>("10");
     expected.offsetValue = makeNode<IntegerLiteralNode>("5");

@@ -259,7 +259,7 @@ schema knows — a column reference, a call, a literal — is left alone for the
 a compound of bitwise branches is still read back through `int`.
 
 ### WITH (CTE)
-- [x] WITH cte AS (select-stmt)
+- [x] WITH cte AS (select-stmt) — a select reading a CTE spells its FROM out as `from<cte_0>()` wherever leaving it implicit would get it wrong, by the same rule an ordinary select is under: a subquery in the WHERE named its own table and sqlite_orm collected it into this FROM as a second source (`WITH recent AS (SELECT id, name FROM users) SELECT name FROM recent WHERE id IN (SELECT uid FROM orders)` answered the four rows of the product where SQLite answers two), and a select naming no recordset of its own left sqlite_orm nothing to infer a FROM from at all (`SELECT 1 FROM recent` answered one row where SQLite answers three)
 - [x] WITH RECURSIVE cte AS (select-stmt)
 - [x] Multiple CTEs
 - [x] CTE column names

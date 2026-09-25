@@ -5,6 +5,7 @@
 #include <sqlite2orm/utils.h>
 
 #include <algorithm>
+#include <utility>
 
 namespace sqlite2orm {
 
@@ -85,9 +86,9 @@ namespace sqlite2orm {
             /** Base structs of the aliased sources: mentioned by the code, named by no clause. */
             std::set<std::string> aliasBaseStructs;
             /**
-             *  A CTE among the sources sqlite_orm infers. `from<cte_0>()` does name one, so the
-             *  widening reaches these selects too; pinning them down is a change of its own and
-             *  they are left as they were here.
+             *  A CTE among the sources sqlite_orm infers. `from<cte_0>()` names one, so the FROM of
+             *  such a select is spelled out like any other; what a CTE source does rule out is the
+             *  alias half of the criterion, a CTE carrying no SQL alias of its own to lose.
              */
             bool hasCteSource = false;
         };
@@ -326,7 +327,7 @@ namespace sqlite2orm {
                 explicitFrom =
                     explicitFromClause(sourcesNamedByFromClause > 0u ? sources.leadingTypes : sources.implicitTypes);
                 context.recordComment(kCommentAliasedFromSources);
-            } else if (!sources.hasCteSource && !sources.implicitTypes.empty() &&
+            } else if (!sources.implicitTypes.empty() &&
                        clausesNameEveryMention(sources, context.ownEmittedTableTypes) &&
                        implicitFromDiffers(sources, context.emittedTableTypes, context.ownVisibleEmittedTableTypes)) {
                 explicitFrom = explicitFromClause(sources.implicitTypes);
@@ -1069,9 +1070,14 @@ namespace sqlite2orm {
                 savedColumnAliases(context->activeSelectColumnAliases),
                 savedColumnAliasCpp20Vars(context->activeSelectColumnAliasCpp20Vars),
                 savedStructName(context->structName),
-                savedImplicitCte(std::move(context->implicitSingleSourceCteTypedef)),
-                savedImplicitCteTableKey(std::move(context->implicitCteFromTableKeyNorm)),
-                savedImplicitSourceAlias(std::move(context->implicitSourceAlias)),
+                // Taken with `exchange`, not `move`: moving out of an engaged `std::optional`
+                // leaves it engaged over an emptied string, and a subquery whose own FROM names no
+                // CTE then read that leftover as its implicit CTE source and spelled its columns
+                // `column<>("b")` — a form sqlite_orm has no overload for. The subquery sets these
+                // from its own FROM clause below, so it has to start out with neither.
+                savedImplicitCte(std::exchange(context->implicitSingleSourceCteTypedef, std::nullopt)),
+                savedImplicitCteTableKey(std::exchange(context->implicitCteFromTableKeyNorm, std::nullopt)),
+                savedImplicitSourceAlias(std::exchange(context->implicitSourceAlias, std::nullopt)),
                 savedCanNameInferredFromSources(context->canNameInferredFromSources),
                 savedCountedAliasedSource(context->countedAliasedSource) {}
 

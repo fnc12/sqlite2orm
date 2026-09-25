@@ -3,6 +3,7 @@
 #include <sqlite2orm/ast_base.h>
 #include <sqlite2orm/codegen_result.h>
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,10 +33,14 @@ namespace sqlite2orm {
      */
     GeneratedFrom generatedFromStatement(size_t statementIndex, const AstNode& statement);
 
-    /** A fragment of generated code waiting to be placed, and the statement it came from. */
+    /**
+     *  A fragment of generated code waiting to be placed, and the statement it came from — none
+     *  when that is not known, in which case the fragment is placed without a span rather than
+     *  with a made-up one.
+     */
     struct PlacedFragment {
         std::string text;
-        GeneratedFrom origin;
+        std::optional<GeneratedFrom> origin;
     };
 
     /**
@@ -53,8 +58,12 @@ namespace sqlite2orm {
       public:
         /** Appends text no statement is behind: separators, blank lines, a wrapping call. */
         void append(std::string_view text);
-        /** Appends a fragment `origin` generated, recording the span it takes in the code. */
-        void appendFragment(std::string_view text, const GeneratedFrom& origin);
+        /**
+         *  Appends a fragment `origin` generated, recording the span it takes in the code. With no
+         *  origin the text is appended as it is and names no statement: a span that is missing is
+         *  a gap a consumer sees, one pointing at the wrong statement is a lie it believes.
+         */
+        void appendFragment(std::string_view text, const std::optional<GeneratedFrom>& origin);
         /** Appends another piece of assembled code, its spans moved to where its text lands. */
         void appendBuilt(const CodeSpanBuilder& other);
         /** Puts text in front of everything, moving every span it pushes along. */
@@ -69,8 +78,8 @@ namespace sqlite2orm {
         [[nodiscard]] const std::string& code() const {
             return this->text;
         }
-        [[nodiscard]] const std::vector<GeneratedCodeSpan>& spans() const {
-            return this->recordedSpans;
+        [[nodiscard]] std::string takeCode() {
+            return std::move(this->text);
         }
         [[nodiscard]] std::vector<GeneratedCodeSpan> takeSpans() {
             return std::move(this->recordedSpans);

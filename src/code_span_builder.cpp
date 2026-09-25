@@ -25,7 +25,11 @@ namespace sqlite2orm {
         this->characters += utf8CharacterCount(text);
     }
 
-    void CodeSpanBuilder::appendFragment(std::string_view text, const GeneratedFrom& origin) {
+    void CodeSpanBuilder::appendFragment(std::string_view text, const std::optional<GeneratedFrom>& origin) {
+        if (!origin) {
+            this->append(text);
+            return;
+        }
         if (text.empty()) {
             return;
         }
@@ -33,9 +37,9 @@ namespace sqlite2orm {
         this->append(text);
         this->recordedSpans.push_back(GeneratedCodeSpan{offset,
                                                         this->characters - offset,
-                                                        origin.statementIndex,
-                                                        origin.sqlLocation,
-                                                        origin.sqlLength});
+                                                        origin->statementIndex,
+                                                        origin->sqlLocation,
+                                                        origin->sqlLength});
     }
 
     void CodeSpanBuilder::appendBuilt(const CodeSpanBuilder& other) {

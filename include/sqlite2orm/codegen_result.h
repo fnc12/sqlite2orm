@@ -62,11 +62,15 @@ namespace sqlite2orm {
      *  the order the code is written in; what they leave uncovered is what no statement generated,
      *  the punctuation the assembly writes itself among it: blank lines, a header's prologue, the
      *  `make_storage(...)` call the arguments sit in.
+     *
+     *  A list of these is statement level for good, and so is the promise that its spans never
+     *  overlap: a finer map — down to the expressions inside a statement — comes as a list of its
+     *  own and is never mixed into this one, so a consumer built on this list keeps working as is.
      */
     struct GeneratedCodeSpan {
         /**
          *  Start of this stretch in the generated code, counted in characters from its beginning.
-         *  A character is one Unicode code point, exactly as in `CodegenWarning::length` — SQL
+         *  A character is one Unicode code point, the unit `CodegenWarning::length` counts in — SQL
          *  takes non-ASCII wherever it takes a name, and a name reaches the generated code as it
          *  is written, so a consumer measuring the code in characters indexes it directly.
          */

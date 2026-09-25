@@ -183,6 +183,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/corpus_tests.cpp
         tests/validator_tests.cpp
         tests/process_tests.cpp
+        tests/code_span_builder_tests.cpp
         tests/ast_lifetime_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp

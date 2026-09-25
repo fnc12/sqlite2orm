@@ -343,9 +343,15 @@ namespace sqlite2orm {
                     tableNodes.push_back(createTable);
                 }
             }
-            const auto originOfStatement = [&statementIndexByNode](const AstNode& node) {
+            // A node that is not a statement of this schema has no row to name, and gets no span
+            // rather than one borrowing the first row's.
+            const auto originOfStatement =
+                [&statementIndexByNode](const AstNode& node) -> std::optional<GeneratedFrom> {
                 const auto found = statementIndexByNode.find(&node);
-                return generatedFromStatement(found == statementIndexByNode.end() ? 0 : found->second, node);
+                if (found == statementIndexByNode.end()) {
+                    return std::nullopt;
+                }
+                return generatedFromStatement(found->second, node);
             };
 
             const std::vector<const CreateTableNode*> sortedTables = topoSortTables(tableNodes);
@@ -448,7 +454,7 @@ namespace sqlite2orm {
                                           "` is not merged into make_storage()");
                     continue;
                 }
-                const GeneratedFrom origin = originOfStatement(*sortedTables[tableIndex]);
+                const std::optional<GeneratedFrom> origin = originOfStatement(*sortedTables[tableIndex]);
                 declarations.appendFragment(parts.structDeclaration, origin);
                 declarations.append("\n");
                 declarationsCarryAnnotations = declarationsCarryAnnotations || parts.structIsReflected;
@@ -520,7 +526,7 @@ namespace sqlite2orm {
                     }
                     // A view has no classical form at all: sqlite_orm maps every one of them by
                     // reflection, so its struct always carries the `[[= "…"_orm_name]]` annotation.
-                    const GeneratedFrom origin = originOfStatement(*createView);
+                    const std::optional<GeneratedFrom> origin = originOfStatement(*createView);
                     declarations.appendFragment(viewParts.structDeclaration, origin);
                     declarations.append("\n");
                     declarationsCarryAnnotations = true;
@@ -626,7 +632,7 @@ namespace sqlite2orm {
 
             ungeneratableTables = gen.context().ungeneratableTables;
             ungeneratableViews = gen.context().ungeneratableViews;
-            return CodeGenResult{body.code(),
+            return CodeGenResult{body.takeCode(),
                                  std::move(allDecisionPoints),
                                  std::move(allWarnings),
                                  {},

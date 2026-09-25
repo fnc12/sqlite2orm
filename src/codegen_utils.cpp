@@ -225,15 +225,6 @@ namespace sqlite2orm {
         return cppStringLiteral(sqlStringLiteralText(sqlString));
     }
 
-    std::vector<std::string> storageArgumentOrder(std::vector<std::string> tablesAndViews,
-                                                  std::vector<std::string> indexesAndTriggers) {
-        std::vector<std::string> ordered = std::move(indexesAndTriggers);
-        ordered.insert(ordered.end(),
-                       std::make_move_iterator(tablesAndViews.begin()),
-                       std::make_move_iterator(tablesAndViews.end()));
-        return ordered;
-    }
-
     std::string stripColumnAliasQuotes(std::string_view alias) {
         if (alias.size() >= 2) {
             char first = alias.front();

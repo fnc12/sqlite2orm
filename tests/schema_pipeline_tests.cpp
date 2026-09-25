@@ -1165,6 +1165,29 @@ TEST_CASE("sqliteSchemaResultToJson: a comment from a CHECK reaches its statemen
             R"(back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for )"
             R"(alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof )"
             R"(included."],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})");
+
+    // The same two hints in the C++ API carry the span of the clause each explains. This JSON is the
+    // summary a `--db --json` run prints and reports no anchor for a warning either, so a hint goes
+    // into it as its message alone: a consumer that underlines — the playground, SQLite ORM Studio —
+    // reads the anchors from here.
+    REQUIRE(schema.statements.at(0).pipeline.codegen.comments ==
+            std::vector<CodegenComment>{
+                CodegenComment{"A column under a NOT is generated as `column<T>(&T::x)`: `operator!` is the one "
+                               "sqlite_orm operator that keeps the `c(...)` its operand carries instead of "
+                               "unwrapping it, and the walker that collects the tables a statement reads stops at "
+                               "such a wrapper — `select(not c(&T::x))` comes out with no FROM clause at all and "
+                               "throws `SQL logic error`. The column pointer names the same column and serializes "
+                               "to the same SQL.",
+                               SourceLocation{1, 37},
+                               1},
+                CodegenComment{"A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
+                               "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without "
+                               "parentheses, and SQLite binds them looser than the operator around them, so "
+                               "`1 - (a IS NULL)` would be read back as `(1 - a) IS NULL`. The CAST delimits the "
+                               "predicate and leaves what it stands for alone — a predicate is 0, 1 or NULL, and a "
+                               "CAST to INTEGER keeps all three, typeof included.",
+                               SourceLocation{1, 61},
+                               12}});
 }
 
 // Same for a view: its body is generated through the subquery form of the SELECT generator, and the
@@ -1181,17 +1204,24 @@ TEST_CASE("processSqliteSchema: a comment from a view body reaches its statement
     REQUIRE(schema.statements.at(0).meta.name == "t");
     REQUIRE(schema.statements.at(0).pipeline.codegen.comments.empty());
     REQUIRE(schema.statements.at(1).meta.name == "v");
+    // Each statement is read back as its own DDL, so the anchors count from the start of that DDL.
     REQUIRE(schema.statements.at(1).pipeline.codegen.comments ==
-            std::vector<std::string>{
-                "A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
-                "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses, and "
-                "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
-                "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
-                "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.",
-                "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
-                "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
-                "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
-                "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
+            std::vector<CodegenComment>{
+                CodegenComment{"A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
+                               "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without "
+                               "parentheses, and SQLite binds them looser than the operator around them, so "
+                               "`1 - (a IS NULL)` would be read back as `(1 - a) IS NULL`. The CAST delimits the "
+                               "predicate and leaves what it stands for alone — a predicate is 0, 1 or NULL, and a "
+                               "CAST to INTEGER keeps all three, typeof included.",
+                               SourceLocation{1, 29},
+                               12},
+                CodegenComment{"SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields "
+                               "and the `[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection "
+                               "(P2996/P3394). sqlite_orm detects support automatically "
+                               "(SQLITE_ORM_REFLECTION_SUPPORTED enables SQLITE_ORM_WITH_VIEW); on older compilers "
+                               "this code does not compile.",
+                               SourceLocation{1, 1},
+                               11}});
 }
 
 // The other side of the same channel: a statement that ends up as a `not supported` placeholder has
@@ -1206,7 +1236,7 @@ TEST_CASE("sqliteSchemaResultToJson: a table that generates nothing reports no c
     REQUIRE(
         sqliteSchemaResultToJson(schema) ==
         R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":true,"tableName":"q","type":"table"}]})");
-    REQUIRE(generateSqliteSchemaHeader(schema).comments == std::vector<std::string>{});
+    REQUIRE(generateSqliteSchemaHeader(schema).comments == std::vector<CodegenComment>{});
 }
 
 // The header assembles a table from its `CreateTableParts`, a channel of its own next to the
@@ -1218,10 +1248,13 @@ TEST_CASE("generateSqliteSchemaHeader: a comment from a table clause reaches the
     SqliteSchemaReader reader(file.path.string());
     const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
     REQUIRE(generateSqliteSchemaHeader(schema).comments ==
-            std::vector<std::string>{
-                "Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong result "
-                "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
-                "computes for `-expr` — same value and same typeof for every operand kind."});
+            std::vector<CodegenComment>{
+                CodegenComment{"Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong "
+                               "result type, so it hands the caller 0 (and throws over a column), while `0 - expr` "
+                               "is what SQLite computes for `-expr` — same value and same typeof for every operand "
+                               "kind.",
+                               SourceLocation{1, 33},
+                               2}});
 }
 
 // The view path of the same rule: SQLite stores a body holding that literal and refuses every query
@@ -1288,10 +1321,13 @@ TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C+
         {{tooBig, SourceLocation{1, 43}, 1}, {tooBig, SourceLocation{1, 71}, 1}},
         {},
         // Both clauses generate the negation as a subtraction from zero, so the comment that
-        // explains that form reaches the header from a DEFAULT and from a generated column.
-        {"Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong result "
-         "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
-         "computes for `-expr` — same value and same typeof for every operand kind."}};
+        // explains that form reaches the header from a DEFAULT and from a generated column — once,
+        // anchored at the first of the two, as a warning met twice is.
+        {CodegenComment{"Unary minus is generated as `0 - expr`: sqlite_orm's own unary minus reports a wrong result "
+                        "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
+                        "computes for `-expr` — same value and same typeof for every operand kind.",
+                        SourceLocation{1, 43},
+                        19}}};
 
     REQUIRE(header == expected);
 

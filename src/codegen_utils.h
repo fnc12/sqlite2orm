@@ -974,6 +974,16 @@ namespace sqlite2orm {
     std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode);
 
     std::string sqliteTypeToCpp(std::string_view typeName);
+
+    /**
+     *  The C++ type a `CAST(… AS typeName)` is read back through. A CAST converts by the affinity
+     *  rule alone, so unlike `sqliteTypeToCpp` it has no `bool` for a name holding `BOOL`: `BOOLEAN`
+     *  is no affinity SQLite knows and falls through to NUMERIC, and sqlite3 3.51 answers
+     *  `CAST(7 AS BOOLEAN)` with 7 and `CAST(1.5 AS BOOLEAN)` with 1.5, where `cast<bool>` read the
+     *  first back as 1. Such a name takes the `double` every other NUMERIC one does, and a name
+     *  holding `INT` as well stays INTEGER, the rule reading `INT` first.
+     */
+    std::string castTypeToCpp(std::string_view typeName);
     std::string defaultInitializer(std::string_view cppType);
     std::string toStructName(std::string_view sqlName);
 

@@ -1908,8 +1908,13 @@ TEST_CASE("codegen: CAST - BLOB") {
     REQUIRE(generate("CAST(a AS BLOB)") == "cast<std::vector<char>>(&User::a)");
 }
 
+// BOOLEAN is no affinity SQLite knows, so a CAST to it converts to NUMERIC, and a name holding
+// `INT` is INTEGER whatever else it holds: sqlite3 3.51 answers `CAST(7 AS BOOLEAN)` with 7 and
+// `CAST(1.5 AS BOOLINT)` with 1. A `bool` field is still what a BOOLEAN column maps to.
 TEST_CASE("codegen: CAST - BOOLEAN") {
-    REQUIRE(generate("CAST(a AS BOOLEAN)") == "cast<bool>(&User::a)");
+    REQUIRE(generate("CAST(a AS BOOLEAN)") == "cast<double>(&User::a)");
+    REQUIRE(generate("CAST(a AS BOOL)") == "cast<double>(&User::a)");
+    REQUIRE(generate("CAST(a AS BOOLINT)") == "cast<int64_t>(&User::a)");
 }
 
 TEST_CASE("codegen: CAST - NUMERIC") {

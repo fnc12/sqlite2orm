@@ -2298,3 +2298,18 @@ TEST_CASE("runtime: a scalar subquery on the left of an operator returns the row
         });
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "", "1,1,1", "1,1,1", "1,1,1", "1,2"});
 }
+
+// A CAST to BOOLEAN converts by the NUMERIC affinity BOOLEAN falls through to and never down to 0
+// or 1: sqlite3 3.51 and 3.45.1 answer the first statement with 7 over a = 7, and the second with
+// 1.5 over a = 1.5. Read through the `cast<bool>` a BOOLEAN column's field type used to name, the
+// first came back as 1 (card 1869499233078347299).
+TEST_CASE("runtime: a CAST to BOOLEAN reads back the number SQLite answers") {
+    const std::vector<std::string> statements{
+        generate("SELECT CAST(a AS BOOLEAN);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(cast<double>(&User::a)));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"7"});
+    REQUIRE(selectedValues(statements, "double", "1.5") == std::vector<std::string>{"1.5"});
+}

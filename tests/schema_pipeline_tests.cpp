@@ -1400,7 +1400,8 @@ TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C+
                         "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
                         "computes for `-expr` — same value and same typeof for every operand kind.",
                         SourceLocation{1, 43},
-                        19}}};
+                        19}},
+        {{125, 117, 0, SourceLocation{1, 1}, 98}, {386, 263, 0, SourceLocation{1, 1}, 98}}};
 
     REQUIRE(header == expected);
 

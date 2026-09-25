@@ -446,7 +446,7 @@ namespace sqlite2orm {
         if (!isFromTableItemStartOrParen())
             return items;
 
-        auto parseOneUnit = [&](JoinKind leadingJoin, bool expectConstraint) {
+        auto parseOneUnit = [&](JoinKind leadingJoin, bool expectConstraint, bool writtenAsComma = false) {
             if (check(TokenType::leftParen) && !isFromTableItemStart()) {
                 advanceToken();
                 // A parenthesized join group nests the way a subquery does and is walked the same
@@ -462,6 +462,7 @@ namespace sqlite2orm {
                 match(TokenType::rightParen);
                 if (!innerItems.empty()) {
                     innerItems[0].leadingJoin = leadingJoin;
+                    innerItems[0].leadingJoinWrittenAsComma = writtenAsComma;
                     if (expectConstraint) {
                         parseJoinConstraint(innerItems[0]);
                     }
@@ -472,6 +473,7 @@ namespace sqlite2orm {
             } else {
                 FromClauseItem item;
                 item.leadingJoin = leadingJoin;
+                item.leadingJoinWrittenAsComma = writtenAsComma;
                 item.table = parseFromTableItem();
                 if (expectConstraint) {
                     parseJoinConstraint(item);
@@ -486,7 +488,10 @@ namespace sqlite2orm {
             if (match(TokenType::comma)) {
                 if (!isFromTableItemStartOrParen())
                     break;
-                parseOneUnit(JoinKind::crossJoin, false);
+                // A comma is a join operator like any other, so SQLite reads an ON or a USING
+                // after it the way it reads one after JOIN. It joins like `CROSS JOIN` but without
+                // the barrier the keyword raises, which the item records for codegen to read.
+                parseOneUnit(JoinKind::crossJoin, true, true);
                 continue;
             }
             JoinKind joinKind = JoinKind::none;
@@ -572,7 +577,10 @@ namespace sqlite2orm {
 
     void SelectParser::parseJoinConstraint(FromClauseItem& item) {
         switch (item.leadingJoin) {
-            case JoinKind::crossJoin:
+            // A NATURAL join names its columns by itself, and SQLite refuses a constraint after
+            // one: "a NATURAL join may not have an ON or USING clause". Left unread here, the
+            // keyword is the token the statement ends on, which is the refusal. Every other join
+            // operator — CROSS JOIN and a comma included — takes a constraint.
             case JoinKind::naturalInnerJoin:
             case JoinKind::naturalLeftJoin:
                 return;

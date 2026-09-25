@@ -212,7 +212,7 @@ Statuses:
 - [x] table-name
 - [x] schema-name.table-name (FROM; codegen warning for schema)
 - [x] table-name AS alias / table-name alias (alias map for `qual.col` codegen)
-- [x] Comma-separated table-refs (parsed as implicit `CROSS JOIN`; codegen emits join chain)
+- [x] Comma-separated table-refs (parsed as implicit `CROSS JOIN`; codegen emits join chain). SQLite reads an ON or a USING after a comma the way it reads one after JOIN, and so does the parser: `FROM users, posts ON users.id = posts.user_id` answers the rows the constraint keeps. A constrained comma is generated as `join<T>(...)` with no warning: a comma raises no reordering barrier where the `CROSS JOIN` keyword does — measured on sqlite3 3.51.0 with EXPLAIN QUERY PLAN — so the generated join is an exact translation of it
 - [!] (select-stmt) AS alias — subselect in FROM (not in sqlite_orm)
 - [!] table-function-name(args) (parsed; validator error — not in sqlite_orm codegen)
 - [x] (join-clause) — parenthesized join (parsed and flattened into plain join sequence)
@@ -222,7 +222,7 @@ Statuses:
 - [x] INNER JOIN
 - [x] LEFT JOIN
 - [x] LEFT OUTER JOIN
-- [x] CROSS JOIN
+- [x] CROSS JOIN. One written with the keyword and carrying an ON or a USING is generated as `join<T>(...)` and warns: `cross_join_t` takes no constraint at all, and a CROSS JOIN answers the rows of an inner join — it differs from a JOIN only in that SQLite will not reorder the tables, which is what the warning is about
 - [x] NATURAL JOIN
 - [x] NATURAL LEFT JOIN
 - [x] NATURAL LEFT OUTER JOIN

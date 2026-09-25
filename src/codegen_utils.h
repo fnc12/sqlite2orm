@@ -81,6 +81,12 @@ namespace sqlite2orm {
     std::string generateCpp20ColumnAliasPreamble(const std::vector<SelectColumn>& columns);
     std::string wrapWithColumnAlias(const std::string& expressionCode, const std::string& rawAlias, bool cpp20Style);
     bool hasAnyColumnAlias(const std::vector<SelectColumn>& columns);
+    /**
+     *  The span of the alias of the first result column written with one, and an empty span when no
+     *  column carries one the parse recorded: a hint about the style every alias of a select is
+     *  generated in underlines the first alias it is read on.
+     */
+    SourceSpan firstColumnAliasSpan(const std::vector<SelectColumn>& columns);
 
     /**
      *  Whether generated code for a column DEFAULT may stand inside a `[[= default_value(…)]]`
@@ -190,9 +196,14 @@ namespace sqlite2orm {
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 
-    void appendUniqueStrings(std::vector<std::string>& destination, const std::vector<std::string>& source);
     void appendUniqueWarnings(std::vector<CodegenWarning>& destination, const std::vector<CodegenWarning>& source);
-    void appendUniqueString(std::vector<std::string>& destination, const std::string& value);
+    /**
+     *  Appends the comments of `source` that `destination` has none of yet, compared by message
+     *  alone as warnings are compared: a form met twice is reported once, with the anchor of the
+     *  first of them, so a hint stands for the same thing wherever it is read from.
+     */
+    void appendUniqueComments(std::vector<CodegenComment>& destination, const std::vector<CodegenComment>& source);
+    void appendUniqueComment(std::vector<CodegenComment>& destination, const CodegenComment& comment);
 
     std::string_view binaryOperatorString(BinaryOperator binaryOperator);
     std::string_view binaryFunctionalName(BinaryOperator binaryOperator);
@@ -569,6 +580,10 @@ namespace sqlite2orm {
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
     /** The same for a span kept on its own, away from the node it was parsed into. */
     CodegenWarning sourceSpanWarning(std::string message, const SourceSpan& sourceSpan);
+    /** A hint anchored the way `sourceSpanWarning` anchors a warning, at the span of `astNode`. */
+    CodegenComment sourceSpanComment(std::string message, const AstNode& astNode);
+    /** The same for a span kept on its own — the alias of a result column, a statement's opening keywords. */
+    CodegenComment sourceSpanComment(std::string message, const SourceSpan& sourceSpan);
     /**
      *  The code generated in place of a construct sqlite_orm has no form for: a `/*` … `*\/`
      *  placeholder named by `label`, and `message` anchored at the construct appended to the

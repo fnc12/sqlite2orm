@@ -19,7 +19,7 @@ namespace sqlite2orm {
 
         AstNodePointer parseCreate();
         AstNodePointer parseCreateViewTail(SourceLocation location, std::string_view headerText);
-        AstNodePointer parseCreateTableTail(SourceLocation location);
+        AstNodePointer parseCreateTableTail(SourceLocation location, std::string_view headerText);
         AstNodePointer parseCreateTriggerAfterKeyword(SourceLocation location, bool temporary);
         AstNodePointer parseCreateIndexAfterKeyword(SourceLocation location, bool unique);
         AstNodePointer parseCreateVirtualTableTail(SourceLocation location, bool temporary);

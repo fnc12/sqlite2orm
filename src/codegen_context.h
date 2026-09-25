@@ -174,7 +174,9 @@ namespace sqlite2orm {
          *  The comments explaining the generated forms met since the last reset, in the order they
          *  were recorded and a form met twice recorded twice — the readers (`takeCommentsSince`
          *  and `commentsRecordedSince`) are what deduplicate, so that each of them answers with
-         *  the distinct comments of its own stretch of the generation.
+         *  the distinct comments of its own stretch of the generation. A comment anchored at the
+         *  SQL it explains is recorded with that anchor, and the readers dedupe by message, so the
+         *  one a stretch reports underlines the first place the form was met there.
          *  A comment belongs to the statement whose body the expression was generated in, and
          *  an expression is generated from every clause there is — a CHECK, a column DEFAULT, a
          *  view body, a trigger WHEN, a subquery, a CTE — so the clause generators would each have
@@ -183,7 +185,7 @@ namespace sqlite2orm {
          *  `createTableParts`, `createViewParts`) take what was recorded since they started into
          *  their result.
          */
-        std::vector<std::string> comments;
+        std::vector<CodegenComment> comments;
         /**
          *  The placeholders generation has produced since the last reset, in the order they were
          *  produced, each saying where it stands. A statement whose whole code is a placeholder
@@ -409,8 +411,12 @@ namespace sqlite2orm {
         /** Records a form whose sqlite_orm type has no default constructor, once per spelling. */
         void recordFormWithoutDefaultConstructor(std::string form);
 
-        /** Records a comment explaining a generated form. */
-        void recordComment(std::string_view comment);
+        /**
+         *  Records a comment explaining a generated form. A comment about something an AST node
+         *  stands for is anchored at that node (`sourceSpanComment`) so a consumer underlines the
+         *  SQL the hint explains; one about no single piece of the SQL is recorded plain.
+         */
+        void recordComment(CodegenComment comment);
 
         /** The count `commentsRecordedSince` measures from: how many comments stand recorded now. */
         size_t commentMark() const;
@@ -423,7 +429,7 @@ namespace sqlite2orm {
          *  recorded. This is how an entry point reports the comments of the node it was handed
          *  without taking the ones its statement had already recorded around it.
          */
-        std::vector<std::string> commentsRecordedSince(size_t mark) const;
+        std::vector<CodegenComment> commentsRecordedSince(size_t mark) const;
 
         /**
          *  Moves out the distinct comments recorded past `mark`, leaving what was recorded before it
@@ -432,7 +438,7 @@ namespace sqlite2orm {
          *  before them, so no mark taken further out ever names a stretch that has been emptied
          *  under it.
          */
-        std::vector<std::string> takeCommentsSince(size_t mark);
+        std::vector<CodegenComment> takeCommentsSince(size_t mark);
 
         /**
          *  Drops the comments recorded past `mark`, leaving the earlier ones in place. A generator

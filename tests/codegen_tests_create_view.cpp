@@ -88,12 +88,16 @@ TEST_CASE("codegen: CREATE VIEW - HAVING and no GROUP BY in the body leaves the 
 
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
+    // Anchored at the statement's opening keywords, as the warning about the same mapping is.
     REQUIRE(result.comments ==
-            std::vector<std::string>{
-                "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
-                "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
-                "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
-                "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
+            std::vector<CodegenComment>{
+                CodegenComment{"SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields "
+                               "and the `[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection "
+                               "(P2996/P3394). sqlite_orm detects support automatically "
+                               "(SQLITE_ORM_REFLECTION_SUPPORTED enables SQLITE_ORM_WITH_VIEW); on older compilers "
+                               "this code does not compile.",
+                               SourceLocation{1, 1},
+                               11}});
 }
 
 // The view body is generated through the subquery form of the SELECT generator, which is where the
@@ -108,17 +112,25 @@ TEST_CASE("codegen: CREATE VIEW - a comment from the view body is attached too")
                            "\n"
                            "auto storage = make_storage(\"\",\n"
                            "    make_view<V>(select(c(1) - cast<int64_t>(like(&T::b, \"x\")))));");
+    // The body's hint underlines the predicate the CAST went around, on the line the view is
+    // written on; the view's own underlines the keywords that open the statement.
     REQUIRE(result.comments ==
-            std::vector<std::string>{
-                "A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
-                "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses, and "
-                "SQLite binds them looser than the operator around them, so `1 - (a IS NULL)` would be read "
-                "back as `(1 - a) IS NULL`. The CAST delimits the predicate and leaves what it stands for "
-                "alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, typeof included.",
-                "SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields and the "
-                "`[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection (P2996/P3394). "
-                "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
-                "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile."});
+            std::vector<CodegenComment>{
+                CodegenComment{"A predicate under an operator is generated as `cast<int64_t>(predicate)`: sqlite_orm "
+                               "serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without "
+                               "parentheses, and SQLite binds them looser than the operator around them, so "
+                               "`1 - (a IS NULL)` would be read back as `(1 - a) IS NULL`. The CAST delimits the "
+                               "predicate and leaves what it stands for alone — a predicate is 0, 1 or NULL, and a "
+                               "CAST to INTEGER keeps all three, typeof included.",
+                               SourceLocation{2, 29},
+                               12},
+                CodegenComment{"SQL views map to sqlite_orm's reflection-based `make_view<T>()`: the struct's fields "
+                               "and the `[[= \"…\"_orm_name]]` annotation require a C++26 compiler with reflection "
+                               "(P2996/P3394). sqlite_orm detects support automatically "
+                               "(SQLITE_ORM_REFLECTION_SUPPORTED enables SQLITE_ORM_WITH_VIEW); on older compilers "
+                               "this code does not compile.",
+                               SourceLocation{2, 1},
+                               11}});
 }
 
 TEST_CASE("codegen: CREATE VIEW - field types from CREATE TABLE in same batch") {

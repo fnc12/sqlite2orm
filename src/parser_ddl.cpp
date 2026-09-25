@@ -323,9 +323,11 @@ namespace sqlite2orm {
                     return nullptr;
                 return parseCreateVirtualTableTail(location, true);
             }
-            if (!match(TokenType::kwTable))
+            if (!check(TokenType::kwTable))
                 return nullptr;
-            return parseCreateTableTail(location);
+            const std::string_view headerText = sourceSpan(createToken, current());
+            advanceToken();
+            return parseCreateTableTail(location, headerText);
         }
         if (match(TokenType::kwTemporary)) {
             if (check(TokenType::kwTrigger)) {
@@ -342,9 +344,11 @@ namespace sqlite2orm {
                     return nullptr;
                 return parseCreateVirtualTableTail(location, true);
             }
-            if (!match(TokenType::kwTable))
+            if (!check(TokenType::kwTable))
                 return nullptr;
-            return parseCreateTableTail(location);
+            const std::string_view headerText = sourceSpan(createToken, current());
+            advanceToken();
+            return parseCreateTableTail(location, headerText);
         }
 
         if (check(TokenType::kwTrigger)) {
@@ -370,9 +374,11 @@ namespace sqlite2orm {
             advanceToken();
             return parseCreateViewTail(location, headerText);
         }
-        if (!match(TokenType::kwTable))
+        if (!check(TokenType::kwTable))
             return nullptr;
-        return parseCreateTableTail(location);
+        const std::string_view headerText = sourceSpan(createToken, current());
+        advanceToken();
+        return parseCreateTableTail(location, headerText);
     }
 
     AstNodePointer DdlParser::parseCreateViewTail(SourceLocation location, std::string_view headerText) {
@@ -447,7 +453,7 @@ namespace sqlite2orm {
         return true;
     }
 
-    AstNodePointer DdlParser::parseCreateTableTail(SourceLocation location) {
+    AstNodePointer DdlParser::parseCreateTableTail(SourceLocation location, std::string_view headerText) {
         bool ifNotExists = false;
         if (check(TokenType::kwIf)) {
             advanceToken();
@@ -567,6 +573,7 @@ namespace sqlite2orm {
                                                       std::move(foreignKeys),
                                                       ifNotExists,
                                                       location);
+        node->headerText = std::string(headerText);
         node->primaryKeys = std::move(primaryKeys);
         node->uniques = std::move(uniques);
         node->checks = std::move(checks);

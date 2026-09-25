@@ -142,6 +142,15 @@ namespace sqlite2orm {
         bool ifNotExists = false;
         bool withoutRowid = false;
         bool strict = false;
+        /**
+         *  The statement's opening keywords as written, from `CREATE` through `TABLE`, which a
+         *  hint about the table as a whole underlines. They are not always the 12 characters of
+         *  `CREATE TABLE` — `CREATE TEMP TABLE` names three, and any amount of whitespace, a
+         *  newline included, may sit between them — so the span is copied out of the source, not
+         *  assumed. Empty for a node built by hand rather than parsed; the hint then goes
+         *  unanchored. It takes no part in equality, exactly as `AstNode::sourceSpan` does not.
+         */
+        std::string headerText;
 
         CreateTableNode(std::string tableName,
                         std::vector<ColumnDef> columns,

@@ -355,6 +355,14 @@ namespace sqlite2orm {
         return false;
     }
 
+    SourceSpan firstColumnAliasSpan(const std::vector<SelectColumn>& columns) {
+        for (const auto& column: columns) {
+            if (!column.aliasSpan.text.empty())
+                return column.aliasSpan;
+        }
+        return SourceSpan{};
+    }
+
     bool sqliteScalarFirstArgTextContext(std::string_view functionLower) {
         return functionLower == "instr" || functionLower == "substr" || functionLower == "substring" ||
                functionLower == "lower" || functionLower == "upper" || functionLower == "ltrim" ||
@@ -695,21 +703,6 @@ namespace sqlite2orm {
         "sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED enables "
         "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile.";
 
-    void appendUniqueStrings(std::vector<std::string>& destination, const std::vector<std::string>& source) {
-        for (const auto& value: source) {
-            bool dupe = false;
-            for (const auto& existing: destination) {
-                if (existing == value) {
-                    dupe = true;
-                    break;
-                }
-            }
-            if (!dupe) {
-                destination.push_back(value);
-            }
-        }
-    }
-
     void appendUniqueWarnings(std::vector<CodegenWarning>& destination, const std::vector<CodegenWarning>& source) {
         for (const auto& warning: source) {
             bool dupe = false;
@@ -725,12 +718,18 @@ namespace sqlite2orm {
         }
     }
 
-    void appendUniqueString(std::vector<std::string>& destination, const std::string& value) {
+    void appendUniqueComments(std::vector<CodegenComment>& destination, const std::vector<CodegenComment>& source) {
+        for (const auto& comment: source) {
+            appendUniqueComment(destination, comment);
+        }
+    }
+
+    void appendUniqueComment(std::vector<CodegenComment>& destination, const CodegenComment& comment) {
         for (const auto& existing: destination) {
-            if (existing == value)
+            if (existing.message == comment.message)
                 return;
         }
-        destination.push_back(value);
+        destination.push_back(comment);
     }
 
     std::string_view binaryOperatorString(BinaryOperator binaryOperator) {
@@ -1431,6 +1430,17 @@ namespace sqlite2orm {
 
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode) {
         return sourceSpanWarning(std::move(message), astNode.sourceSpan);
+    }
+
+    CodegenComment sourceSpanComment(std::string message, const SourceSpan& sourceSpan) {
+        if (sourceSpan.text.empty()) {
+            return CodegenComment{std::move(message)};
+        }
+        return CodegenComment{std::move(message), sourceSpan.location, underlineLengthOf(sourceSpan.text)};
+    }
+
+    CodegenComment sourceSpanComment(std::string message, const AstNode& astNode) {
+        return sourceSpanComment(std::move(message), astNode.sourceSpan);
     }
 
     namespace {

@@ -98,6 +98,15 @@ namespace {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    // The hint attached to every bitwise result column; asserted with its anchor in
+    // "codegen: a hint is anchored at the SQL it explains".
+    const std::string kBitwiseResultCastComment =
+        "A bitwise result column is generated as `cast<int64_t>(expr)`: sqlite_orm types `&`, `|`, "
+        "`<<`, `>>` and `~` as `int`, so a result outside the int32 range comes back truncated "
+        "(`9223372036854775807 & -1` reads back as -1). SQLite answers a bitwise operator with an "
+        "INTEGER or a NULL whatever its operands hold, and a CAST to INTEGER keeps both, typeof "
+        "included, so the CAST widens the C++ type and leaves the value alone.";
+
     // The hint attached to every generated view; asserted on its own in
     // "codegen: CREATE VIEW - reflection comment attached".
     const std::string kViewReflectionComment =
@@ -443,7 +452,7 @@ TEST_CASE("codegen: unary minus") {
                               },
                               {},
                               {},
-                              {kZeroMinusComment}});
+                              {CodegenComment{kZeroMinusComment, SourceLocation{1, 1}, 2}}});
     }
 }
 
@@ -585,7 +594,7 @@ TEST_CASE("codegen: logical OR") {
                               },
                               {},
                               {},
-                              {kOrTokenCallSpellingComment}});
+                              {CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 1}, 6}}});
     }
     SECTION("compound operands: a = 1 OR b = 2") {
         auto result = generateFull("a = 1 OR b = 2");
@@ -664,8 +673,10 @@ TEST_CASE("codegen: an operator the C++ `||` token misreads is spelled as a call
 }
 
 TEST_CASE("codegen: an operator spelled as a call carries its comment") {
-    REQUIRE(generateFull("1 OR 0").comments == std::vector<std::string>{kOrTokenCallSpellingComment});
-    REQUIRE(generateFull("(a = 1) || 'x'").comments == std::vector<std::string>{kOrTokenCallSpellingComment});
+    REQUIRE(generateFull("1 OR 0").comments ==
+            std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 1}, 6}});
+    REQUIRE(generateFull("(a = 1) || 'x'").comments ==
+            std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 1}, 14}});
     REQUIRE(generateFull("a = 1 OR b").comments.empty());
     REQUIRE(generateFull("a || b").comments.empty());
 }
@@ -688,7 +699,7 @@ TEST_CASE("codegen: logical NOT") {
                     },
                     {},
                     {},
-                    {kNotColumnPointerComment}});
+                    {CodegenComment{kNotColumnPointerComment, SourceLocation{1, 5}, 1}}});
     }
     SECTION("value operand") {
         auto result = generateFull("NOT 1");
@@ -706,7 +717,7 @@ TEST_CASE("codegen: logical NOT") {
                               },
                               {},
                               {},
-                              {kNotValueAddedToZeroComment}});
+                              {CodegenComment{kNotValueAddedToZeroComment, SourceLocation{1, 5}, 1}}});
     }
     SECTION("compound operand: NOT -a") {
         auto result = generateFull("NOT -a");
@@ -732,7 +743,7 @@ TEST_CASE("codegen: logical NOT") {
                     },
                     {},
                     {},
-                    {kZeroMinusComment}});
+                    {CodegenComment{kZeroMinusComment, SourceLocation{1, 5}, 2}}});
     }
 }
 
@@ -773,7 +784,8 @@ TEST_CASE("codegen: a column under a NOT is generated as a column pointer") {
 
 TEST_CASE("codegen: a column under a NOT carries its comment") {
     auto result = generateFull("SELECT NOT a FROM users;");
-    REQUIRE(result.comments == std::vector<std::string>{kNotColumnPointerComment});
+    REQUIRE(result.comments ==
+            std::vector<CodegenComment>{CodegenComment{kNotColumnPointerComment, SourceLocation{1, 12}, 1}});
 }
 
 // A column that names a SELECT alias is generated as `get<Alias>()` whatever a NOT over it asks
@@ -790,7 +802,7 @@ TEST_CASE("codegen: a SELECT alias under a NOT keeps the form it had") {
                            "    }\n"
                            "};\n"
                            "auto rows = storage.select(as<AlAlias>(&Users::a), where(not c(get<AlAlias>())));");
-    REQUIRE(result.comments == std::vector<std::string>{});
+    REQUIRE(result.comments == std::vector<CodegenComment>{});
 }
 
 // The same wrapper hides a value from the walk that binds one: the literal of `select(not c(0))`
@@ -812,7 +824,8 @@ TEST_CASE("codegen: a value under a NOT is added to zero") {
 
 TEST_CASE("codegen: a value under a NOT carries its comment") {
     auto result = generateFull("SELECT NOT 0;");
-    REQUIRE(result.comments == std::vector<std::string>{kNotValueAddedToZeroComment});
+    REQUIRE(result.comments ==
+            std::vector<CodegenComment>{CodegenComment{kNotValueAddedToZeroComment, SourceLocation{1, 12}, 1}});
 }
 
 // sqlite_orm classifies `negated_condition_t` — what a NOT and the `!predicate` spelling of a
@@ -845,7 +858,9 @@ TEST_CASE("codegen: a NOT over a NOT is delimited by a CAST") {
 
 TEST_CASE("codegen: a NOT over a NOT carries its comment") {
     auto result = generateFull("SELECT NOT NOT a FROM users;");
-    REQUIRE(result.comments == std::vector<std::string>{kNotColumnPointerComment, kNegatedConditionCastComment});
+    REQUIRE(result.comments ==
+            std::vector<CodegenComment>{CodegenComment{kNotColumnPointerComment, SourceLocation{1, 16}, 1},
+                                        CodegenComment{kNegatedConditionCastComment, SourceLocation{1, 12}, 5}});
 }
 
 // A concatenation carries the same CAST as a NOT does: sqlite_orm's `conc_t` is
@@ -892,7 +907,8 @@ TEST_CASE("codegen: a NOT over a collated concatenation is delimited as well") {
 
 TEST_CASE("codegen: a NOT over a concatenation carries its comment") {
     auto result = generateFull("SELECT NOT ('a' || 'b');");
-    REQUIRE(result.comments == std::vector<std::string>{kConcatenationCastComment});
+    REQUIRE(result.comments ==
+            std::vector<CodegenComment>{CodegenComment{kConcatenationCastComment, SourceLocation{1, 12}, 12}});
 }
 
 // An OR needs nothing: sqlite_orm spells `or` and the concatenation with the same `operator||`, and
@@ -933,7 +949,7 @@ TEST_CASE("codegen: double unary minus parenthesized") {
                           },
                           {},
                           {},
-                          {kZeroMinusComment}});
+                          {CodegenComment{kZeroMinusComment, SourceLocation{1, 3}, 2}}});
 }
 
 // sqlite_orm has no working unary minus, so a negation of anything but a numeric constant is
@@ -960,7 +976,7 @@ TEST_CASE("codegen: unary minus over a general operand becomes a subtraction fro
 
 TEST_CASE("codegen: unary minus carries the zero-subtraction comment") {
     auto result = generateFull("SELECT -a FROM users;");
-    REQUIRE(result.comments == std::vector<std::string>{kZeroMinusComment});
+    REQUIRE(result.comments == std::vector<CodegenComment>{CodegenComment{kZeroMinusComment, SourceLocation{1, 8}, 2}});
 }
 
 TEST_CASE("codegen: unary minus under the functional expression style") {
@@ -1079,7 +1095,8 @@ TEST_CASE("codegen: the predicate cast survives the functional expression style"
 }
 
 TEST_CASE("codegen: a predicate cast under an operator carries its comment") {
-    REQUIRE(generateFull("SELECT 1 - (a IS NULL);").comments == std::vector<std::string>{kPredicateCastComment});
+    REQUIRE(generateFull("SELECT 1 - (a IS NULL);").comments ==
+            std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, 12}, 11}});
     REQUIRE(generateFull("SELECT (a IS NULL) AND 1;").comments.empty());
 }
 
@@ -1126,9 +1143,10 @@ TEST_CASE("codegen: an AND or an OR in a predicate argument is cast to stay one 
 
 TEST_CASE("codegen: an AND or an OR cast in a predicate argument carries its comment") {
     REQUIRE(generateFull("SELECT (1 OR 0) IS NULL;").comments ==
-            std::vector<std::string>{kOrTokenCallSpellingComment, kAndOrPredicateArgumentCastComment});
+            std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 8}, 8},
+                                        CodegenComment{kAndOrPredicateArgumentCastComment, SourceLocation{1, 8}, 8}});
     REQUIRE(generateFull("SELECT (1 AND 0) IS NULL;").comments ==
-            std::vector<std::string>{kAndOrPredicateArgumentCastComment});
+            std::vector<CodegenComment>{CodegenComment{kAndOrPredicateArgumentCastComment, SourceLocation{1, 8}, 9}});
     REQUIRE(generateFull("SELECT (a = 1) IS NULL;").comments.empty());
 }
 
@@ -1200,8 +1218,10 @@ TEST_CASE("codegen: an AND or an OR quotes an operand sqlite_orm does not recogn
 
 TEST_CASE("codegen: an AND or an OR with a quoted operand carries its comment") {
     REQUIRE(generateFull("SELECT a MATCH 'x' OR b MATCH 'y';").comments ==
-            std::vector<std::string>{kOrTokenCallSpellingComment, kAndOrQuotedOperandComment});
-    REQUIRE(generateFull("SELECT a + 1 AND a + 2;").comments == std::vector<std::string>{kAndOrQuotedOperandComment});
+            std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 8}, 26},
+                                        CodegenComment{kAndOrQuotedOperandComment, SourceLocation{1, 8}, 11}});
+    REQUIRE(generateFull("SELECT a + 1 AND a + 2;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kAndOrQuotedOperandComment, SourceLocation{1, 8}, 5}});
     // The quote a wrapping variant puts on a leaf operand is the spelling of every AND and OR over
     // one, so it speaks for itself; only an operand whose own form forces the quote carries the
     // hint.
@@ -1486,8 +1506,10 @@ TEST_CASE("codegen: an IN list of bool values is widened to one a statement can 
     REQUIRE(generate("a IN ('x', 'y')") == "in(&User::a, {\"x\", \"y\"})");
     REQUIRE(generateFull("a IN ('x', 'y')").comments.empty());
     REQUIRE(generateFull("a IN (b, c)").comments.empty());
-    REQUIRE(generateFull("a IN (TRUE, ?)").comments == std::vector<std::string>{valuesWidenedComment});
-    REQUIRE(generateFull("a IN (TRUE, FALSE)").comments == std::vector<std::string>{valuesWidenedComment});
+    REQUIRE(generateFull("a IN (TRUE, ?)").comments ==
+            std::vector<CodegenComment>{CodegenComment{valuesWidenedComment, SourceLocation{1, 1}, 14}});
+    REQUIRE(generateFull("a IN (TRUE, FALSE)").comments ==
+            std::vector<CodegenComment>{CodegenComment{valuesWidenedComment, SourceLocation{1, 1}, 18}});
 }
 
 // Values with no C++ type to widen to have no working form at all: the initializer list takes one
@@ -2632,21 +2654,27 @@ TEST_CASE("codegen: an expression at the depth limit still generates") {
 // comment recorded while generating a CHECK, a column DEFAULT, a generated column, an index, a
 // trigger's WHEN or any DML clause belongs to that statement just the same.
 TEST_CASE("codegen: an expression's comment reaches the statement whose body generated it") {
-    const std::vector<std::string> predicateCastOnly{kPredicateCastComment};
+    // Each clause anchors the hint at the predicate the CAST went around, so the one list is the
+    // message with the span of that clause's own SQL.
+    const auto predicateCastAt = [](size_t column, size_t length) {
+        return std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, column}, length}};
+    };
 
-    REQUIRE(generateFull("CREATE TABLE q (a INTEGER, b TEXT, CHECK(1 - (b LIKE 'x')));").comments == predicateCastOnly);
-    REQUIRE(generateFull("CREATE TABLE q (a INTEGER DEFAULT (1 - (0 LIKE 'x')));").comments == predicateCastOnly);
-    REQUIRE(generateFull("CREATE TABLE q (a INTEGER, b AS (1 - (a LIKE 'x')));").comments == predicateCastOnly);
-    REQUIRE(generateFull("CREATE INDEX i ON t (1 - (b LIKE 'x'));").comments == predicateCastOnly);
+    REQUIRE(generateFull("CREATE TABLE q (a INTEGER, b TEXT, CHECK(1 - (b LIKE 'x')));").comments ==
+            predicateCastAt(46, 12));
+    REQUIRE(generateFull("CREATE TABLE q (a INTEGER DEFAULT (1 - (0 LIKE 'x')));").comments == predicateCastAt(40, 12));
+    REQUIRE(generateFull("CREATE TABLE q (a INTEGER, b AS (1 - (a LIKE 'x')));").comments == predicateCastAt(38, 12));
+    REQUIRE(generateFull("CREATE INDEX i ON t (1 - (b LIKE 'x'));").comments == predicateCastAt(26, 12));
     REQUIRE(
         generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN 1 - (new.b LIKE 'x') BEGIN SELECT 1; END;").comments ==
-        predicateCastOnly);
-    REQUIRE(generateFull("INSERT INTO t (a) VALUES (1 - (0 LIKE 'x'));").comments == predicateCastOnly);
-    REQUIRE(generateFull("UPDATE t SET a = 1 - (b LIKE 'x');").comments == predicateCastOnly);
-    REQUIRE(generateFull("DELETE FROM t WHERE 1 - (b LIKE 'x');").comments == predicateCastOnly);
+        predicateCastAt(46, 16));
+    REQUIRE(generateFull("INSERT INTO t (a) VALUES (1 - (0 LIKE 'x'));").comments == predicateCastAt(31, 12));
+    REQUIRE(generateFull("UPDATE t SET a = 1 - (b LIKE 'x');").comments == predicateCastAt(22, 12));
+    REQUIRE(generateFull("DELETE FROM t WHERE 1 - (b LIKE 'x');").comments == predicateCastAt(25, 12));
     REQUIRE(generateFull("WITH c AS (SELECT 1 - (b LIKE 'x') AS z FROM t) SELECT z FROM c;").comments ==
-            predicateCastOnly);
-    REQUIRE(generateFull("SELECT * FROM t WHERE a IN (SELECT 1 - (b LIKE 'x') FROM t);").comments == predicateCastOnly);
+            predicateCastAt(23, 12));
+    REQUIRE(generateFull("SELECT * FROM t WHERE a IN (SELECT 1 - (b LIKE 'x') FROM t);").comments ==
+            predicateCastAt(40, 12));
 }
 
 // The comments belong to a statement, but an embedder does not only ask for statements: the
@@ -2665,16 +2693,18 @@ TEST_CASE("codegen: an entry point reports the comments of the node it was hande
 
     CodeGenerator codeGenerator;
     REQUIRE(codeGenerator.generateNode(predicateUnderOperator).comments ==
-            std::vector<std::string>{kPredicateCastComment});
+            std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, 12}, 12}});
     // The same generator, a second node: the first node's comment stays recorded for the statement
     // the two belong to, and what comes back here is this node's own.
-    REQUIRE(codeGenerator.generateNode(negation).comments == std::vector<std::string>{kZeroMinusComment});
+    REQUIRE(codeGenerator.generateNode(negation).comments ==
+            std::vector<CodegenComment>{CodegenComment{kZeroMinusComment, SourceLocation{1, 26}, 2}});
     REQUIRE(codeGenerator.generateStoredExpression(predicateUnderOperator).comments ==
-            std::vector<std::string>{kPredicateCastComment});
+            std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, 12}, 12}});
     // The SELECT the two stand in is generated through the subexpression entry point a view body
     // and a trigger step go through, and it answers with the comments of the whole body.
     REQUIRE(codeGenerator.tryCodegenSqliteSelectSubexpression(*selectNode).comments ==
-            std::vector<std::string>{kPredicateCastComment, kZeroMinusComment});
+            std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, 12}, 12},
+                                        CodegenComment{kZeroMinusComment, SourceLocation{1, 26}, 2}});
 
     // The three entry points left: a compound SELECT, the subquery form a scalar `(SELECT …)` goes
     // through, and a trigger step. Each of them answers with the comments of the body it generated.
@@ -2684,17 +2714,18 @@ TEST_CASE("codegen: an entry point reports the comments of the node it was hande
     const auto* compoundSelectNode = dynamic_cast<const CompoundSelectNode*>(compoundParseResult.astNodePointer.get());
     REQUIRE(compoundSelectNode != nullptr);
     REQUIRE(codeGenerator.tryCodegenCompoundSelectSubexpression(*compoundSelectNode).comments ==
-            std::vector<std::string>{kPredicateCastComment, kZeroMinusComment});
+            std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, 12}, 12},
+                                        CodegenComment{kZeroMinusComment, SourceLocation{1, 45}, 2}});
 
     auto subqueryParseResult = parser.parse(tokenizer.tokenize("SELECT -a FROM t;"));
     REQUIRE(subqueryParseResult);
     REQUIRE(codeGenerator.tryCodegenSelectLikeSubquery(*subqueryParseResult.astNodePointer).comments ==
-            std::vector<std::string>{kZeroMinusComment});
+            std::vector<CodegenComment>{CodegenComment{kZeroMinusComment, SourceLocation{1, 8}, 2}});
 
     auto triggerStepParseResult = parser.parse(tokenizer.tokenize("UPDATE t SET a = -a;"));
     REQUIRE(triggerStepParseResult);
     REQUIRE(codeGenerator.generateTriggerStep(*triggerStepParseResult.astNodePointer, "T").comments ==
-            std::vector<std::string>{kZeroMinusComment});
+            std::vector<CodegenComment>{CodegenComment{kZeroMinusComment, SourceLocation{1, 18}, 2}});
 }
 
 // A whole statement takes its comments out of the context, and an embedder holding one generator
@@ -2720,8 +2751,9 @@ TEST_CASE("codegen: a statement entry point takes only the comments its own body
     const auto* createTableNode = dynamic_cast<const CreateTableNode*>(tableParseResult.astNodePointer.get());
     REQUIRE(createTableNode != nullptr);
 
-    const std::vector<std::string> viewComments{kZeroMinusComment, kViewReflectionComment};
-    const std::vector<std::string> tableComments{kZeroMinusComment};
+    const std::vector<CodegenComment> viewComments{CodegenComment{kZeroMinusComment, SourceLocation{1, 25}, 2},
+                                                   CodegenComment{kViewReflectionComment, SourceLocation{1, 1}, 11}};
+    const std::vector<CodegenComment> tableComments{CodegenComment{kZeroMinusComment, SourceLocation{1, 42}, 2}};
 
     CodeGenerator freshGenerator;
     REQUIRE(freshGenerator.createViewParts(*createViewNode).comments == viewComments);
@@ -2732,7 +2764,7 @@ TEST_CASE("codegen: a statement entry point takes only the comments its own body
     // belongs to the statement that expression came from, and neither statement reports it.
     CodeGenerator reusedGenerator;
     REQUIRE(reusedGenerator.generateNode(predicateUnderOperator).comments ==
-            std::vector<std::string>{kPredicateCastComment});
+            std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, 12}, 12}});
     REQUIRE(reusedGenerator.createViewParts(*createViewNode).comments == viewComments);
     REQUIRE(reusedGenerator.createTableParts(*createTableNode).comments == tableComments);
 }
@@ -2747,27 +2779,27 @@ TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") 
     // expression and then leaves the whole statement out: nothing the comment explains is emitted.
     const CodeGenResult uniqueIndex = generateFull("CREATE UNIQUE INDEX i ON t (-a);");
     REQUIRE(uniqueIndex.code.empty());
-    REQUIRE(uniqueIndex.comments == std::vector<std::string>{});
+    REQUIRE(uniqueIndex.comments == std::vector<CodegenComment>{});
 
     // The first arm of a compound SELECT is generated before the second one turns out not to be
     // mapped, and the placeholder that stands for the compound stands for that arm as well.
     const CodeGenResult compound = generateFull("SELECT -a FROM t UNION SELECT -a FROM t GROUP BY a;");
     REQUIRE(compound.code == "/* compound SELECT */");
-    REQUIRE(compound.comments == std::vector<std::string>{});
+    REQUIRE(compound.comments == std::vector<CodegenComment>{});
 
     // The operand of an IN is generated before its subquery turns out not to be mapped, and the
     // placeholder replaces the whole predicate, the operand included. The placeholder stands in an
     // expression slot, so the statement goes with it and the comment has nothing left to explain.
     const CodeGenResult inOperand = generateFull("SELECT b FROM t WHERE -a IN (SELECT b FROM t GROUP BY b);");
     REQUIRE(inOperand.code.empty());
-    REQUIRE(inOperand.comments == std::vector<std::string>{});
+    REQUIRE(inOperand.comments == std::vector<CodegenComment>{});
 
     // The statement around such a placeholder goes the same way, comments and all — what the
     // generators hand each other still carries them, which is the channel the entry point below is.
     const CodeGenResult aroundPlaceholder =
         generateFull("SELECT 1 - (b LIKE 'x') FROM t WHERE a IN (SELECT -a FROM t UNION SELECT -a FROM t GROUP BY a);");
     REQUIRE(aroundPlaceholder.code.empty());
-    REQUIRE(aroundPlaceholder.comments == std::vector<std::string>{});
+    REQUIRE(aroundPlaceholder.comments == std::vector<CodegenComment>{});
 
     Tokenizer tokenizer;
     Parser parser;
@@ -2779,7 +2811,8 @@ TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") 
     const CodeGenResult node = nodeGenerator.generateNode(*parseResult.astNodePointer);
     REQUIRE(node.code == "auto rows = storage.select(as_optional(c(1) - cast<int64_t>(like(&T::b, \"x\"))), "
                          "where(/* IN (SELECT ...) */));");
-    REQUIRE(node.comments == std::vector<std::string>{kPredicateCastComment});
+    REQUIRE(node.comments ==
+            std::vector<CodegenComment>{CodegenComment{kPredicateCastComment, SourceLocation{1, 12}, 12}});
 
     // The same comment on both sides of the line: the negation of the trigger's WHEN clause is
     // generated and keeps it, and the negation of the step that is replaced by a placeholder does
@@ -2788,7 +2821,7 @@ TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") 
     const CodeGenResult triggerWhen = generateFull(
         "CREATE TRIGGER tr AFTER INSERT ON t WHEN -a BEGIN SELECT -a FROM t UNION SELECT a FROM t GROUP BY a; END;");
     REQUIRE(triggerWhen.code.empty());
-    REQUIRE(triggerWhen.comments == std::vector<std::string>{});
+    REQUIRE(triggerWhen.comments == std::vector<CodegenComment>{});
 
     // The two DDL statements reach their placeholder by another road: the clauses around the one
     // that gives the statement up generate and record as usual, and the parts producer then hands
@@ -2798,7 +2831,7 @@ TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") 
         generateLastOfBatch("CREATE TABLE t (a INTEGER, b TEXT);\n"
                             "CREATE TABLE q (a INTEGER CHECK(NOT a), g AS (0x1FFFFFFFFFFFFFFFFF) STORED);");
     REQUIRE(ungeneratableTable.code == "/* CREATE TABLE q — not supported for sqlite_orm */");
-    REQUIRE(ungeneratableTable.comments == std::vector<std::string>{});
+    REQUIRE(ungeneratableTable.comments == std::vector<CodegenComment>{});
 
     // The same for a view: SQLite stores a body holding that literal and refuses every query
     // against it, so the view is not generated although its SELECT list generated the negation.
@@ -2806,5 +2839,34 @@ TEST_CASE("codegen: a fragment that is thrown away takes its comments with it") 
         generateLastOfBatch("CREATE TABLE t (a INTEGER, b TEXT);\n"
                             "CREATE VIEW v AS SELECT -a, 0x1FFFFFFFFFFFFFFFFF FROM t;");
     REQUIRE(ungeneratableView.code == "/* CREATE VIEW v — not supported for sqlite_orm */");
-    REQUIRE(ungeneratableView.comments == std::vector<std::string>{});
+    REQUIRE(ungeneratableView.comments == std::vector<CodegenComment>{});
+}
+
+// A hint carries the same anchor a warning does — the playground and SQLite ORM Studio underline
+// both with the machinery they already have — so it has to mean here what a warning's means: the
+// SQL the hint is about, measured in characters, and never past the end of the line it starts on.
+TEST_CASE("codegen: a hint is anchored at the SQL it explains") {
+    // The result column the CAST widens is what the hint is about, not the select around it.
+    REQUIRE(generateFull("SELECT a & 1 FROM t;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBitwiseResultCastComment, SourceLocation{1, 8}, 5}});
+    // Two columns generated the same way report the form once, anchored at the first of them, as a
+    // warning met twice is.
+    REQUIRE(generateFull("SELECT a & 1, b & 1 FROM t;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBitwiseResultCastComment, SourceLocation{1, 8}, 5}});
+    // A non-ASCII name before the hint moves its column by characters and not by the bytes UTF-8
+    // writes them in: `"üü"` is four characters and six bytes, so a column counted in bytes would
+    // point two characters past the negation.
+    REQUIRE(generateFull("SELECT \"üü\", -a FROM t;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kZeroMinusComment, SourceLocation{1, 14}, 2}});
+    // The negation runs onto the next line, and the span stops at the end of the first — `-(a` —
+    // so a consumer drawing `length` characters from `location` stays inside the line.
+    REQUIRE(generateFull("SELECT -(a\n+ 1) FROM t;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kZeroMinusComment, SourceLocation{1, 8}, 3}});
+    // A node no parse built carries no span, and the hint about it goes out plain: no location and
+    // a length of 0, exactly as an unanchored warning does.
+    const UnaryOperatorNode negation{UnaryOperator::minus,
+                                     std::make_unique<ColumnRefNode>("a", SourceLocation{1, 1}),
+                                     SourceLocation{1, 1}};
+    CodeGenerator codeGenerator;
+    REQUIRE(codeGenerator.generateNode(negation).comments == std::vector<CodegenComment>{kZeroMinusComment});
 }

@@ -323,24 +323,31 @@ namespace sqlite2orm {
     }
 
     CodeGenResult CodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
-                                                                     const std::vector<bool>& widenedResultColumns) {
+                                                                     const std::vector<bool>& widenedResultColumns,
+                                                                     bool cteBodySelect) {
         const GenerationMarks marks = this->generatorContext->mark();
         return this->withRecordedSince(
-            this->selectCodeGenerator->tryCodegenSqliteSelectSubexpression(selectNode, widenedResultColumns),
+            this->selectCodeGenerator->tryCodegenSqliteSelectSubexpression(selectNode,
+                                                                           widenedResultColumns,
+                                                                           cteBodySelect),
             marks);
     }
 
     CodeGenResult CodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
-                                                                       const std::vector<bool>& widenedResultColumns) {
+                                                                       const std::vector<bool>& widenedResultColumns,
+                                                                       bool cteBodySelect) {
         const GenerationMarks marks = this->generatorContext->mark();
         return this->withRecordedSince(
-            this->selectCodeGenerator->tryCodegenCompoundSelectSubexpression(compoundNode, widenedResultColumns),
+            this->selectCodeGenerator->tryCodegenCompoundSelectSubexpression(compoundNode,
+                                                                             widenedResultColumns,
+                                                                             cteBodySelect),
             marks);
     }
 
-    CodeGenResult CodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node) {
+    CodeGenResult CodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node, bool cteBodySelect) {
         const GenerationMarks marks = this->generatorContext->mark();
-        return this->withRecordedSince(this->selectCodeGenerator->tryCodegenSelectLikeSubquery(node), marks);
+        return this->withRecordedSince(this->selectCodeGenerator->tryCodegenSelectLikeSubquery(node, cteBodySelect),
+                                       marks);
     }
 
     CodeGenResult CodeGenerator::generateTriggerStep(const AstNode& statement, const std::string& subjectTableStruct) {

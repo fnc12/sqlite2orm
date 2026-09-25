@@ -540,6 +540,30 @@ TEST_CASE("corpus: Chinook", "[.corpus]") {
             {.sql = "WITH long_tracks AS (SELECT TrackId FROM Track WHERE Milliseconds > 300000) SELECT COUNT(*) FROM "
                     "long_tracks;",
              .rows = {"3"}},
+            // A subquery inside a statement whose own FROM is a CTE: it reads its own FROM, and
+            // `Artist` is the table its column belongs to. Written as `column<>("ArtistId")` — a
+            // form with no overload at all — the header did not build.
+            {.sql = "WITH long_tracks AS (SELECT TrackId FROM Track WHERE Milliseconds > 300000) SELECT TrackId FROM "
+                    "long_tracks WHERE TrackId > (SELECT MIN(ArtistId) FROM Artist) ORDER BY TrackId;",
+             .rows = {"2", "5"}},
+            // A select over a CTE that names no recordset of its own: with nothing for sqlite_orm
+            // to infer a FROM from, it came out with none at all and answered one row.
+            {.sql = "WITH long_tracks AS (SELECT TrackId FROM Track WHERE Milliseconds > 300000) SELECT 1 FROM "
+                    "long_tracks;",
+             .rows = {"1", "1", "1"}},
+            // The two positions sqlite_orm parenthesizes a compound subquery in, which is why it is
+            // generated there and left out everywhere else: the whole condition of a `where(...)`,
+            // and the right-hand side of `in(...)`.
+            {.sql = "SELECT Name FROM Genre WHERE (SELECT MAX(AlbumId) FROM Album UNION SELECT MAX(AlbumId) FROM "
+                    "Album) ORDER BY GenreId;",
+             .rows = {"Rock", "Jazz", "Metal"}},
+            {.sql = "SELECT Title FROM Album WHERE ArtistId IN (SELECT ArtistId FROM Artist UNION SELECT ArtistId "
+                    "FROM Album) ORDER BY AlbumId;",
+             .rows = {"For Those About To Rock We Salute You",
+                      "Balls to the Wall",
+                      "Restless and Wild",
+                      "Let There Be Rock",
+                      "Big Ones"}},
             {.sql = "SELECT Name FROM Artist UNION SELECT Name FROM Genre ORDER BY Name;",
              .rows = {"NULL", "AC/DC", "Accept", "Aerosmith", "Alanis Morissette", "Jazz", "Metal", "Rock"}},
             {.sql = "SELECT Title FROM Album WHERE ArtistId IN (SELECT ArtistId FROM Artist WHERE Name = 'AC/DC') "

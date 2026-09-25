@@ -930,3 +930,28 @@ TEST_CASE("codegen: WITH … SELECT * FROM cte cpp20_monikers also wraps") {
                            "&Employee::id, &Employee::name, &Employee::salary), "
                            "where(c(&Employee::salary) > 60000.0))), select(asterisk<e_cte>()));");
 }
+
+// A subquery inside a statement whose FROM is a CTE reads its own FROM, and that is the table its
+// columns belong to. The implicit-CTE marks the enclosing select left on the context were taken out
+// of it with `std::move`, which leaves an `std::optional` engaged over an emptied string, so the
+// subquery read that leftover as an implicit CTE source of its own and spelled `u`'s column
+// `column<>("b")` — a form sqlite_orm declares no overload for, handed out at exit 0. The
+// `from<cte_0>()` beside it is what keeps the table the subquery names out of the FROM sqlite_orm
+// infers for this level, the way an ordinary select's is spelled out for the same reason.
+TEST_CASE("codegen: a subquery under a CTE-sourced select names its own table") {
+    const std::string prologue = "using namespace sqlite_orm::literals;\n"
+                                 "using cte_0 = decltype(1_ctealias);\n";
+
+    REQUIRE(generate("WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE (SELECT b FROM u);") ==
+            prologue + "auto rows = storage.with(cte<cte_0>().as(select(&T::a)), select(column<cte_0>(&T::a), "
+                       "from<cte_0>(), where(select(&U::b))));");
+    REQUIRE(generate("WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE a > (SELECT b FROM u);") ==
+            prologue + "auto rows = storage.with(cte<cte_0>().as(select(&T::a)), select(column<cte_0>(&T::a), "
+                       "from<cte_0>(), where(column<cte_0>(&T::a) > select(&U::b))));");
+    REQUIRE(generate("WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE a IN (SELECT b FROM u);") ==
+            prologue + "auto rows = storage.with(cte<cte_0>().as(select(&T::a)), select(column<cte_0>(&T::a), "
+                       "from<cte_0>(), where(in(column<cte_0>(&T::a), select(&U::b)))));");
+    REQUIRE(generate("WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE EXISTS (SELECT b FROM u);") ==
+            prologue + "auto rows = storage.with(cte<cte_0>().as(select(&T::a)), select(column<cte_0>(&T::a), "
+                       "from<cte_0>(), where(exists(select(&U::b)))));");
+}

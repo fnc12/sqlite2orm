@@ -2138,16 +2138,17 @@ TEST_CASE("codegen: an aliased source with a subquery names its alias in the FRO
             "where(in(alias_column<alias_a<Users>>(&Users::id), select(&Orders::uid))));");
 }
 
-// A select reading a CTE is left as it was, subquery or not: `from<cte_0>()` would name that
-// source too, but pinning those selects down is a change of its own. So this one still answers the
-// four rows of the product where SQLite answers two.
-TEST_CASE("codegen: a select over a CTE keeps its FROM implicit") {
+// A select reading a CTE answers for its sources the same way: `from<cte_0>()` names one, and left
+// implicit the FROM took the table of the subquery in as a second source — four rows of a product
+// where SQLite answers two, checked by running both.
+TEST_CASE("codegen: a select over a CTE with a subquery names the CTE in its FROM") {
     REQUIRE(generate("WITH recent AS (SELECT id, name FROM users) "
                      "SELECT name FROM recent WHERE id IN (SELECT orders.uid FROM orders);") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
             "auto rows = storage.with(cte<cte_0>().as(select(columns(&Users::id, &Users::name))), "
-            "select(column<cte_0>(&Users::name), where(in(column<cte_0>(&Users::id), select(&Orders::uid)))));");
+            "select(column<cte_0>(&Users::name), from<cte_0>(), where(in(column<cte_0>(&Users::id), "
+            "select(&Orders::uid)))));");
 }
 
 // A column the SQL leaves unqualified belongs to the FROM source all the same, and an aliased
@@ -2557,15 +2558,13 @@ TEST_CASE("codegen: a select leaning on a mention its subquery made carries its 
             "auto rows = storage.select(1, from<Users>(), order_by(select(&Users::a, limit(1))));");
 }
 
-// A select reading a CTE keeps the form it had, the same reservation the widening case makes: a
-// `from<cte_0>()` does answer correctly, but pinning those selects down reaches the `WITH`
-// generator and is a change of its own. So this one still answers one row where SQLite answers
-// three.
-TEST_CASE("codegen: a select over a CTE naming no recordset keeps its FROM implicit") {
+// The same for a select over a CTE that names no recordset of its own: with nothing for sqlite_orm
+// to infer a FROM from it came out with none at all and answered one row where SQLite answers three.
+TEST_CASE("codegen: a select over a CTE naming no recordset carries its FROM") {
     REQUIRE(generate("WITH recent AS (SELECT id FROM users) SELECT 1 FROM recent;") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
-            "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), select(1));");
+            "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), select(1, from<cte_0>()));");
 }
 
 // A compound SELECT hands its rows to the caller the way a plain one does, so its result columns
@@ -2649,8 +2648,11 @@ TEST_CASE("codegen: a compound SELECT standing as a subquery is not widened") {
             "\n"
             "auto storage = make_storage(\"\",\n"
             "    make_view<V>(union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2))));");
+    // The raw insert is the one of them that has no form for a compound at all: sqlite_orm's
+    // `insert(into<T>(), …)` trips `static_assert(… "Raw insert has invalid arguments")` on one, so
+    // the statement stands as a placeholder of its own instead of as code that does not build.
     REQUIRE(generate("INSERT INTO orders SELECT a + 1 FROM users UNION SELECT a * 2 FROM users;") ==
-            "storage.insert(into<Orders>(), union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2)));");
+            "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */");
     REQUIRE(generate("SELECT id FROM users WHERE a IN (SELECT a + 1 FROM users UNION SELECT a * 2 FROM users);") ==
             "auto rows = storage.select(&Users::id, where(in(&Users::a, union_(select(c(&Users::a) + 1), "
             "select(c(&Users::a) * 2)))));");

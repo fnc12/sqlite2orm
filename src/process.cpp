@@ -316,7 +316,11 @@ namespace sqlite2orm {
          *
          *  This is where several statements end up in one block of code, so it is also where the
          *  block is assembled span by span: the statements it wraps keep their own, indented along
-         *  with the text they cover, and the SAVEPOINT owns the lambda it opens and closes.
+         *  with the text they cover, the SAVEPOINT owns the line opening the lambda and the RELEASE
+         *  the lines closing it.
+         *
+         *  `statements`, `statementNodes` and `statementOrigins` are filled in step by the caller,
+         *  one entry per statement, so an index into one is an index into all three.
          */
         std::vector<CodeSpanBuilder> foldFunctionalSavepoints(std::vector<std::string> statements,
                                                               const std::vector<const AstNode*>& statementNodes,
@@ -339,7 +343,7 @@ namespace sqlite2orm {
             };
 
             for (size_t index = 0; index < statements.size(); ++index) {
-                const AstNode* node = index < statementNodes.size() ? statementNodes[index] : nullptr;
+                const AstNode* node = statementNodes[index];
                 const GeneratedFrom& origin = statementOrigins[index];
                 std::string& code = statements[index];
                 if (const auto* savepointNode = dynamic_cast<const SavepointNode*>(node);
@@ -358,13 +362,19 @@ namespace sqlite2orm {
                         block.append("\n");
                         block.appendBuilt(inner.indented());
                     }
+                    // The RELEASE is what closes the block, so the lines closing the lambda are its
+                    // own: a consumer highlighting it lands on them rather than on nothing.
                     block.append("\n    ");
-                    block.appendFragment("return true;\n});", wrap.origin);
+                    block.appendFragment("return true;\n});", origin);
                     appendStatement(std::move(block));
                     continue;
                 }
+                // A statement whose code ends in a line break of its own (a CREATE VIRTUAL TABLE)
+                // keeps it, but as separation rather than as part of what the statement covers.
+                const size_t codeEnd = code.find_last_not_of('\n') + 1;
                 CodeSpanBuilder statement;
-                statement.appendFragment(code, origin);
+                statement.appendFragment(std::string_view(code).substr(0, codeEnd), origin);
+                statement.append(std::string_view(code).substr(codeEnd));
                 appendStatement(std::move(statement));
             }
 
@@ -478,7 +488,7 @@ namespace sqlite2orm {
                 out.append("\n");
             }
         }
-        return JoinedGeneratedCode{out.code(), out.takeSpans()};
+        return JoinedGeneratedCode{out.takeCode(), out.takeSpans()};
     }
 
 }  // namespace sqlite2orm

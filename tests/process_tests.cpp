@@ -323,6 +323,21 @@ TEST_CASE("joinGeneratedCodeWithSpans: offsets are counted in characters") {
                                                            {175, 52, 1, SourceLocation{2, 1}, 25}});
 }
 
+// A CREATE VIRTUAL TABLE generates code ending in a line break of its own; the break separates it
+// from what follows and is not part of its span, which ends at its last character like any other.
+TEST_CASE("joinGeneratedCodeWithSpans: a span ends where the statement's code does") {
+    const auto results = processMultiSql("CREATE VIRTUAL TABLE f USING fts5(a); SELECT 1;");
+    const JoinedGeneratedCode joined = joinGeneratedCodeWithSpans(results);
+    REQUIRE(joined.code == "struct F {\n"
+                           "    std::string a;\n"
+                           "};\n"
+                           "\n"
+                           "auto vtab = make_virtual_table<F>(\"f\", using_fts5(make_column(\"a\", &F::a)));\n"
+                           "auto rows = storage.select(1);\n");
+    REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 110, 0, SourceLocation{1, 1}, 36},
+                                                           {111, 30, 1, SourceLocation{1, 39}, 8}});
+}
+
 TEST_CASE("processMultiSql: validation error does not block other statements") {
     std::vector<ProcessSqlResult> expected;
     expected.push_back(processSql("INSERT INTO t VALUES (1);"));
@@ -535,7 +550,7 @@ TEST_CASE("joinGeneratedCode: functional savepoints nest") {
 
 // Folding is where several statements end up inside one block of code, and the map follows them
 // in: every statement wrapped by a savepoint keeps its own place, indented along with its text,
-// and the SAVEPOINT holds both the line that opens the lambda and the one that closes it.
+// the SAVEPOINT holds the line that opens the lambda and the RELEASE the lines that close it.
 TEST_CASE("joinGeneratedCodeWithSpans: a folded savepoint maps the statements inside it") {
     CodeGenPolicy policy;
     policy.chosenAlternativeValueByCategory["savepoint_style"] = "functional";
@@ -556,8 +571,25 @@ TEST_CASE("joinGeneratedCodeWithSpans: a folded savepoint maps the statements in
                                                            {40, 24, 1, SourceLocation{1, 21}, 13},
                                                            {69, 35, 2, SourceLocation{1, 36}, 18},
                                                            {113, 24, 3, SourceLocation{1, 56}, 13},
-                                                           {146, 20, 2, SourceLocation{1, 36}, 18},
-                                                           {171, 16, 0, SourceLocation{1, 1}, 18}});
+                                                           {146, 20, 4, SourceLocation{1, 71}, 16},
+                                                           {171, 16, 5, SourceLocation{1, 89}, 16}});
+}
+
+// A matched RELEASE generates no call of its own in the functional style — the block it ends is
+// its code — and it is on the map by that block's closing lines, so no statement that generated
+// code is left off it.
+TEST_CASE("joinGeneratedCodeWithSpans: a RELEASE closing a functional savepoint is on the map") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "functional";
+    const auto results = processMultiSql("SAVEPOINT a; DELETE FROM t; RELEASE a;", &policy);
+    const JoinedGeneratedCode joined = joinGeneratedCodeWithSpans(results);
+    REQUIRE(joined.code == "storage.savepoint(\"a\", [&] {\n"
+                           "    storage.remove_all<T>();\n"
+                           "    return true;\n"
+                           "});\n");
+    REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 28, 0, SourceLocation{1, 1}, 11},
+                                                           {33, 24, 1, SourceLocation{1, 14}, 13},
+                                                           {62, 16, 2, SourceLocation{1, 29}, 9}});
 }
 
 TEST_CASE("joinGeneratedCode: functional savepoint without RELEASE degrades to the manual call") {

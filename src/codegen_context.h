@@ -341,6 +341,9 @@ namespace sqlite2orm {
          *  statement to sqlite_orm, not an expression: its serializer writes no parentheses of its
          *  own, so it only reads back as a subquery where the enclosing form supplies them. The
          *  scalar-subquery branch asks this back and leaves the statement unmapped otherwise.
+         *  Nothing clears it after a read, and a CTE body is generated without clearing it either,
+         *  so it can stay set past the form that set it: `selectLikeSubqueryForm()` resets it
+         *  before the one read it makes, and a new reader has to do the same.
          */
         bool emittedCompoundSelectForm = false;
         /**
@@ -348,7 +351,9 @@ namespace sqlite2orm {
          *  compound one — set by the scalar-subquery branch as it hands that code back. A consumer
          *  whose slot has no form for a subquery compares the node it asked for against this one:
          *  the same subquery one level down, under a call or an operator, leaves a different node
-         *  here and goes on standing where it stands.
+         *  here and goes on standing where it stands. Nothing resets it: it is only ever compared
+         *  against, never dereferenced, and `processMultiSql()` keeps every statement's AST alive to
+         *  the end of the batch, so a stale value cannot equal a node of another statement.
          */
         const AstNode* emittedSubqueryFormNode = nullptr;
         /**

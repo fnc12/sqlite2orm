@@ -838,6 +838,20 @@ TEST_CASE("codegen: a subquery as a whole column of a CTE leaves the statement o
             {},
             {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 34}, withRequirements, kStatementNotGenerated}});
 
+    // The same subquery inside the column, under a call or a CAST, is generated and builds.
+    REQUIRE(generate("WITH c AS (SELECT abs((SELECT b FROM u)) AS y FROM t) SELECT * FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(abs(select(&U::b)), from<T>())), "
+            "select(asterisk<cte_0>()));");
+    REQUIRE(generate("WITH c AS (SELECT CAST((SELECT b FROM u) AS TEXT) AS y FROM t) SELECT * FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(cast<std::string>(select(&U::b)), from<T>())), "
+            "select(asterisk<cte_0>()));");
+    // Under an operator it is generated too, and does NOT build: a subquery as the left operand of
+    // an operator is written bare, which is not this rule's slot and not the CTE's — the plain
+    // `SELECT (SELECT b FROM u) + 1 FROM t` comes out the same way (see COVERAGE.md).
     REQUIRE(generate("WITH c AS (SELECT (SELECT b FROM u) + 1 AS y FROM t) SELECT y FROM c") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"

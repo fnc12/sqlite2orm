@@ -2917,6 +2917,11 @@ TEST_CASE("processMultiSql: a subquery in a slot sqlite_orm has no form for comp
         // A subquery standing as a whole column of a CTE.
         "WITH c AS (SELECT (SELECT u.b FROM u NATURAL JOIN w) AS y) SELECT a FROM t;",
         "WITH c AS (SELECT (SELECT b FROM u) AS y FROM t) SELECT y FROM c;",
+        // The same subquery INSIDE a column of a CTE, or in its own WHERE, is generated. The outer
+        // select reads `*` so that nothing but the CTE's body decides whether this builds.
+        "WITH c AS (SELECT abs((SELECT b FROM u)) AS y FROM t) SELECT * FROM c;",
+        "WITH c AS (SELECT CAST((SELECT b FROM u) AS TEXT) AS y FROM t) SELECT * FROM c;",
+        "WITH c AS (SELECT a FROM t WHERE a > (SELECT b FROM u)) SELECT * FROM c;",
         // A compound SELECT a raw insert reads from.
         "WITH c AS (SELECT a FROM t) INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w;",
         // The two positions that do bring the parentheses a compound needs, and a subquery inside a

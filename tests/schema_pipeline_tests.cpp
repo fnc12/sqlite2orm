@@ -170,6 +170,68 @@ int main(int argc, char** argv) {
         return output.str();
     }
 
+    /**
+     *  What each of `tables` answers when a row is inserted without naming the key column `a`:
+     *  `table=<value>` with what SQLite put in the column, or `table=refused` where the INSERT was
+     *  not taken at all. `kInsertWithoutKeyColumnProbe` prints the very same text for a database
+     *  built from a generated header, so the schema SQLite stores and the schema the header builds
+     *  are compared as one string each.
+     */
+    [[nodiscard]] std::string insertWithoutKeyColumnOutput(const std::filesystem::path& dbPath,
+                                                           const std::vector<std::string>& tables) {
+        sqlite3* db = nullptr;
+        REQUIRE(sqlite3_open(dbPath.string().c_str(), &db) == SQLITE_OK);
+        std::string output;
+        for (const std::string& table: tables) {
+            char* errMsg = nullptr;
+            const std::string insert = "INSERT INTO " + table + "(b) VALUES (7)";
+            const int rc = sqlite3_exec(db, insert.c_str(), nullptr, nullptr, &errMsg);
+            sqlite3_free(errMsg);
+            if (rc != SQLITE_OK) {
+                output += table + "=refused\n";
+                continue;
+            }
+            sqlite3_stmt* statement = nullptr;
+            const std::string select = "SELECT quote(a) FROM " + table;
+            REQUIRE(sqlite3_prepare_v2(db, select.c_str(), -1, &statement, nullptr) == SQLITE_OK);
+            REQUIRE(sqlite3_step(statement) == SQLITE_ROW);
+            output += table + "=" + reinterpret_cast<const char*>(sqlite3_column_text(statement, 0)) + "\n";
+            sqlite3_finalize(statement);
+        }
+        sqlite3_close(db);
+        return output;
+    }
+
+    /**
+     *  Spliced into the probe after the sync: the INSERT and read-back `insertWithoutKeyColumnOutput`
+     *  runs, against the database `sync_schema()` has just built from the generated header. The
+     *  table names are written out because the probe is a program of its own — it sees the header,
+     *  not the test's variables.
+     */
+    constexpr std::string_view kInsertWithoutKeyColumnProbe = R"probe(    sqlite3* db = nullptr;
+    if (sqlite3_open(argv[1], &db) != SQLITE_OK) {
+        return 1;
+    }
+    for (const std::string& table: {std::string("dup_int"),
+                                    std::string("dup_int_notnull"),
+                                    std::string("dup_text"),
+                                    std::string("dup_two")}) {
+        char* errMsg = nullptr;
+        const int rc = sqlite3_exec(db, ("INSERT INTO " + table + "(b) VALUES (7)").c_str(), nullptr, nullptr, &errMsg);
+        sqlite3_free(errMsg);
+        if (rc != SQLITE_OK) {
+            std::cout << table << "=refused\n";
+            continue;
+        }
+        sqlite3_stmt* statement = nullptr;
+        sqlite3_prepare_v2(db, ("SELECT quote(a) FROM " + table).c_str(), -1, &statement, nullptr);
+        sqlite3_step(statement);
+        std::cout << table << "=" << sqlite3_column_text(statement, 0) << "\n";
+        sqlite3_finalize(statement);
+    }
+    sqlite3_close(db);
+)probe";
+
     /** Text of the first column of the first row `sql` answers with. */
     [[nodiscard]] std::string queryText(const std::filesystem::path& dbPath, std::string_view sql) {
         sqlite3* db = nullptr;
@@ -2380,6 +2442,146 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over the database the heade
                       "(SELECT count(*) FROM rowid_pk) || ',' || (SELECT count(*) FROM table_pk) || ',' || (SELECT "
                       "count(*) FROM text_pk) || ',' || (SELECT count(*) FROM wr_pk) || ',' || (SELECT count(*) FROM "
                       "wr_table_pk);") == "3,2,2,2,2,2,2");
+}
+
+// A table-level PRIMARY KEY may name the same column twice, and SQLite reads that as one key
+// column: it gives the column a single position in the key, and `PRAGMA table_info` — all
+// sqlite_orm has to compare a mapped table against — answers `pk = 1` for the `a` of
+// `PRIMARY KEY(a, a)` and has no second place to report. sqlite_orm ranks a key column by the last
+// place its name takes in `primary_key(...)`, so naming the repeat made it rank the column second,
+// see a key that changed and drop the table to rebuild it — every row in it gone. Every spelling
+// of a repeat is probed here on a live database with rows in it, because that is what the user
+// loses. Checked against sqlite3 3.51.0 and libsqlite3 3.45.1.
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a key that repeats a column keeps the rows") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE dup_pk (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_pk_desc (a INTEGER, b INTEGER, PRIMARY KEY(a, a DESC));"
+            "CREATE TABLE dup_pk_mixed (a INTEGER, b INTEGER, PRIMARY KEY(b, a, b));"
+            "CREATE TABLE dup_pk_spelled (a INTEGER, b INTEGER, PRIMARY KEY(A, \"a\", [a]));"
+            "CREATE TABLE dup_pk_strict (a INTEGER, b INTEGER, PRIMARY KEY(a, a)) STRICT;"
+            "CREATE TABLE dup_pk_text (a TEXT, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_pk_wr (a TEXT, b TEXT, PRIMARY KEY(a, b, a)) WITHOUT ROWID;");
+    execSql(file.path,
+            "INSERT INTO dup_pk VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO dup_pk_desc VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_mixed VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_spelled VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_strict VALUES (1, 1), (2, 2);"
+            "INSERT INTO dup_pk_text VALUES ('a', 1), ('b', 2);"
+            "INSERT INTO dup_pk_wr VALUES ('a', 'x'), ('b', 'y');");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, "") == "dup_pk=already_in_sync\n"
+                                                                 "dup_pk_desc=already_in_sync\n"
+                                                                 "dup_pk_mixed=already_in_sync\n"
+                                                                 "dup_pk_spelled=already_in_sync\n"
+                                                                 "dup_pk_strict=already_in_sync\n"
+                                                                 "dup_pk_text=already_in_sync\n"
+                                                                 "dup_pk_wr=already_in_sync\n");
+
+    REQUIRE(queryText(file.path,
+                      "SELECT (SELECT count(*) FROM dup_pk) || ',' || (SELECT count(*) FROM dup_pk_desc) || ',' || "
+                      "(SELECT count(*) FROM dup_pk_mixed) || ',' || (SELECT count(*) FROM dup_pk_spelled) || ',' || "
+                      "(SELECT count(*) FROM dup_pk_strict) || ',' || (SELECT count(*) FROM dup_pk_text) || ',' || "
+                      "(SELECT count(*) FROM dup_pk_wr);") == "2,2,2,2,2,2,2");
+}
+
+// What naming a repeated key column once costs, on the one shape where it costs anything. SQLite
+// aliases the rowid onto a key column when the key is over a SINGLE term of declared type INTEGER,
+// so `PRIMARY KEY(a, a)` — two terms — is no alias, while the `primary_key(&T::a)` the generator
+// now writes is one, and sqlite_orm has no table-level key of two terms over one column to write
+// instead. The database the header was generated from does not move (the case above pins that), but
+// a database built from the generated code answers an INSERT that leaves the key column out
+// differently: with the next rowid rather than with NULL, and by taking an INSERT that the stored
+// schema refuses outright. That is the price of the fix, and it is pinned here rather than left for
+// the reader to meet. The report the generator hands out for it is pinned in
+// tests/codegen_tests_create_table.cpp. Measured against sqlite3 3.51.0 and the pinned sqlite_orm.
+TEST_CASE("generateSqliteSchemaHeader: a key repeating its only column is a rowid alias in a new database") {
+    TempDbFile source{makeTempDbPath()};
+    execSql(source.path,
+            "CREATE TABLE dup_int (a INTEGER, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_int_notnull (a INTEGER NOT NULL, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_text (a TEXT, b INTEGER, PRIMARY KEY(a, a));"
+            "CREATE TABLE dup_two (a INTEGER, b INTEGER, PRIMARY KEY(b, a, b));");
+
+    SqliteSchemaReader reader(source.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    // What the schema SQLite itself stores answers: the two-term key leaves the column alone, so a
+    // row inserted without it holds NULL — and where the column is NOT NULL, there is no row.
+    REQUIRE(insertWithoutKeyColumnOutput(source.path, {"dup_int", "dup_int_notnull", "dup_text", "dup_two"}) ==
+            "dup_int=NULL\n"
+            "dup_int_notnull=refused\n"
+            "dup_text=NULL\n"
+            "dup_two=NULL\n");
+
+    // What a database built from the generated header answers instead. The TEXT key and the key
+    // left with two columns are no aliases either way and stay as they were — the divergence is the
+    // alias and nothing besides it.
+    TempDbFile built{makeTempDbPath()};
+    REQUIRE(syncSchemaProbeOutput(header.code, built.path, kInsertWithoutKeyColumnProbe) ==
+            "dup_int=new_table_created\n"
+            "dup_int_notnull=new_table_created\n"
+            "dup_text=new_table_created\n"
+            "dup_two=new_table_created\n"
+            "dup_int=1\n"
+            "dup_int_notnull=1\n"
+            "dup_text=NULL\n"
+            "dup_two=NULL\n");
+}
+
+// The shape naming a repeated column once cannot carry over, and what it costs on a live database
+// with rows in it. SQLite ranks a key column of a rowid table by the term its name is first spelled
+// at and leaves the rank a repeat sits at unused, so a repeat standing before a column the key has
+// not named yet takes that column's rank away: sqlite3 3.51.0 ranks the `b` of
+// `PRIMARY KEY(a, a, b)` third, with nothing at 2. The collapsed key ranks `b` second and the key
+// written as spelled ranks `a` second — sqlite_orm takes the last place a repeated name holds — so
+// neither is the stored key, and `sync_schema()` answers a key that changed by dropping the table
+// and rebuilding it empty. That is pinned here as the known price rather than left to be met in a
+// user's database; the report the generator hands out for it is pinned in
+// tests/codegen_tests_create_table.cpp. Beside it stand the shapes that are carried over: the same
+// key under WITHOUT ROWID, where SQLite drops the repeat out of the key itself and closes the gap,
+// and a repeat standing behind every column the key names first.
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a key whose repeat takes a rank rebuilds it") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE gap_pk (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a, b));"
+            "CREATE TABLE gap_pk_middle (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, b, b, c));"
+            "CREATE TABLE gap_pk_spelled (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(A, \"a\", [a], b));"
+            "CREATE TABLE gap_pk_twice (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a, a, b));"
+            "CREATE TABLE gap_pk_wr (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, a, b)) WITHOUT ROWID;"
+            "CREATE TABLE tail_pk (a INTEGER, b INTEGER, c TEXT, PRIMARY KEY(a, b, a));");
+    execSql(file.path,
+            "INSERT INTO gap_pk VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_middle VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_spelled VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_twice VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO gap_pk_wr VALUES (1, 1, 'keep'), (2, 2, 'me');"
+            "INSERT INTO tail_pk VALUES (1, 1, 'keep'), (2, 2, 'me');");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, "") == "gap_pk=dropped_and_recreated\n"
+                                                                 "gap_pk_middle=dropped_and_recreated\n"
+                                                                 "gap_pk_spelled=dropped_and_recreated\n"
+                                                                 "gap_pk_twice=dropped_and_recreated\n"
+                                                                 "gap_pk_wr=already_in_sync\n"
+                                                                 "tail_pk=already_in_sync\n");
+
+    REQUIRE(queryText(file.path,
+                      "SELECT (SELECT count(*) FROM gap_pk) || ',' || (SELECT count(*) FROM gap_pk_middle) || ',' || "
+                      "(SELECT count(*) FROM gap_pk_spelled) || ',' || (SELECT count(*) FROM gap_pk_twice) || ',' || "
+                      "(SELECT count(*) FROM gap_pk_wr) || ',' || (SELECT count(*) FROM tail_pk);") == "0,0,0,0,2,2");
 }
 
 // The other table option SQLite makes a key implicitly NOT NULL for is STRICT — with one exception

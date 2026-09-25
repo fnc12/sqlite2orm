@@ -1463,7 +1463,30 @@ namespace sqlite2orm {
                 const std::string key = normalizeSqlIdentifier(stripIdentifierQuotes(col->columnName));
                 for (const auto& [fromName, mappedStructName]: this->context.fromTableAliasToStructName) {
                     if (normalizeSqlIdentifier(stripIdentifierQuotes(fromName)) == key) {
-                        lhsCode = "c<" + mappedStructName + ">()->*&fts5::hidden::any";
+                        const std::string hiddenColumn = "c<" + mappedStructName + ">()->*&fts5::hidden::any";
+                        const auto aliasIt = this->context.activeTableAliases.find(fromName);
+                        const bool aliased = aliasIt != this->context.activeTableAliases.end();
+                        if (aliased && normalizeSqlIdentifier(stripIdentifierQuotes(aliasIt->second.tableName)) != key) {
+                            // The name is the alias: the hidden column is named after the table
+                            // only, so SQLite finds no such column and neither is one written here.
+                            break;
+                        }
+                        // A bare `SELECT *` reads its row as the plain struct and names no alias,
+                        // so its hidden column names the plain table too: an `"a"."docs"` beside
+                        // the `FROM "docs"` of a `get_all<Docs>()` names a source it does not have.
+                        if (aliased && !this->context.rowReadsPlainStruct) {
+                            const auto& info = aliasIt->second;
+                            // The table of an aliased source is read through its alias alone, so
+                            // its hidden column is the alias's column: `"a"."docs"`, not a
+                            // `"docs"."docs"` naming a source the FROM does not have.
+                            MatchFieldScope matchField{&this->context};
+                            this->context.recordEmittedTableType(info.ormAliasType);
+                            lhsCode = this->context.useCpp20TableAliasStyle()
+                                          ? info.ormAliasType + "->*(" + hiddenColumn + ")"
+                                          : "alias_column<" + info.ormAliasType + ">(" + hiddenColumn + ")";
+                        } else {
+                            lhsCode = hiddenColumn;
+                        }
                         warnings.push_back("MATCH against table \"" + std::string(col->columnName) +
                                            "\" maps to the hidden FTS5 'any' column; requires an FTS5 "
                                            "virtual table mapped as " +

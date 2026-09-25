@@ -16,6 +16,12 @@ namespace sqlite2orm {
     struct TableAliasInfo {
         std::string ormAliasType;
         std::string baseStructName;
+        /**
+         *  The table the aliased source reads, as the FROM wrote it. An FTS5 table's hidden column
+         *  is named after the table, not after the alias, so `docs MATCH …` over `FROM docs d`
+         *  is that column of `d`, while `d MATCH …` names no column at all.
+         */
+        std::string tableName;
     };
 
     /**
@@ -329,6 +335,13 @@ namespace sqlite2orm {
          *  to name an alias asks first whether the FROM is going to be written out for it.
          */
         bool canNameInferredFromSources = false;
+        /**
+         *  Set by the select generator while a bare `SELECT *` is generated. Its row is read as
+         *  the plain struct — `get_all<T>()` or `asterisk<T>()` — which names no alias, so a
+         *  reference that would otherwise name an aliased source (the hidden FTS5 column a
+         *  `docs MATCH …` stands for) has to name the plain table the row is read from.
+         */
+        bool rowReadsPlainStruct = false;
         /**
          *  Set by the `count(*)` branch when it took `canNameInferredFromSources` up and named an
          *  aliased source, which leaves the inferred FROM with nothing standing for that source.

@@ -209,7 +209,7 @@ namespace sqlite2orm {
                     this->context.pendingAnchorCteBindings.push_back(std::move(varName));
                 }
             }
-            auto part = this->coordinator.tryCodegenSelectLikeSubquery(*cte.query);
+            auto part = this->coordinator.tryCodegenSelectLikeSubquery(*cte.query, /*cteBodySelect=*/true);
             this->context.pendingAnchorCteBindings.clear();
             allDecisionPoints.insert(allDecisionPoints.end(),
                                      std::make_move_iterator(part.decisionPoints.begin()),

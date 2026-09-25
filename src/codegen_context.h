@@ -336,6 +336,35 @@ namespace sqlite2orm {
          */
         bool countedAliasedSource = false;
         /**
+         *  Set by the compound-select emitter when the form it handed back is a compound one —
+         *  `union_(...)`, `union_all(...)`, `intersect(...)`, `except(...)`. A compound is a
+         *  statement to sqlite_orm, not an expression: its serializer writes no parentheses of its
+         *  own, so it only reads back as a subquery where the enclosing form supplies them. The
+         *  scalar-subquery branch asks this back and leaves the statement unmapped otherwise.
+         *  Nothing clears it after a read, and a CTE body is generated without clearing it either,
+         *  so it can stay set past the form that set it: `selectLikeSubqueryForm()` resets it
+         *  before the one read it makes, and a new reader has to do the same.
+         */
+        bool emittedCompoundSelectForm = false;
+        /**
+         *  The node whose whole generated code is a sqlite_orm subquery form — a `select(...)` or a
+         *  compound one — set by the scalar-subquery branch as it hands that code back. A consumer
+         *  whose slot has no form for a subquery compares the node it asked for against this one:
+         *  the same subquery one level down, under a call or an operator, leaves a different node
+         *  here and goes on standing where it stands. Nothing resets it: it is only ever compared
+         *  against, never dereferenced, and `processMultiSql()` keeps every statement's AST alive to
+         *  the end of the batch, so a stale value cannot equal a node of another statement.
+         */
+        const AstNode* emittedSubqueryFormNode = nullptr;
+        /**
+         *  The node the enclosing form wraps in parentheses of its own, which is `where(...)` and
+         *  nothing else: `where_t` serializes as `WHERE (…)`, while `having(...)`, `on(...)`,
+         *  `order_by(...)` and every value slot write their argument bare. A compound subquery
+         *  standing here is the one place it comes out as the SQL it was read from, so the
+         *  scalar-subquery branch compares the node it was asked for against this one.
+         */
+        const AstNode* parenthesizedConditionNode = nullptr;
+        /**
          *  The sqlite_orm recordsets the emitter has named while the select at hand was generated —
          *  `&T::x`, `alias_column<alias_a<T>>(&T::x)`, `asterisk<T>()`, `count<T>()` and the rest.
          *  A select that carries no `from<...>()` gets its FROM from sqlite_orm, built out of every

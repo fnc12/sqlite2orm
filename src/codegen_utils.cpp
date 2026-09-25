@@ -3,6 +3,7 @@
 #include "codegen_forms.h"
 #include "select_scope_columns.h"
 
+#include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 #include <sqlite2orm/validator.h>
 
@@ -16,6 +17,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <utility>
 
 namespace sqlite2orm {
 
@@ -1472,6 +1474,26 @@ namespace sqlite2orm {
         carried.code = placeholderCode(label);
         carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
         return carried;
+    }
+
+    CodeGenResult selectLikeSubqueryForm(CodeGenerator& coordinator,
+                                         CodeGeneratorContext& context,
+                                         const AstNode& node,
+                                         bool& compound) {
+        const bool wasCompound = std::exchange(context.emittedCompoundSelectForm, false);
+        CodeGenResult result = coordinator.tryCodegenSelectLikeSubquery(node);
+        compound = context.emittedCompoundSelectForm;
+        context.emittedCompoundSelectForm = wasCompound;
+        return result;
+    }
+
+    ParenthesizedConditionScope::ParenthesizedConditionScope(CodeGeneratorContext& context, const AstNode& condition) :
+        context(context), enclosing(context.parenthesizedConditionNode) {
+        this->context.parenthesizedConditionNode = &condition;
+    }
+
+    ParenthesizedConditionScope::~ParenthesizedConditionScope() {
+        this->context.parenthesizedConditionNode = this->enclosing;
     }
 
     std::string numericLiteralSqlText(const AstNode& value) {

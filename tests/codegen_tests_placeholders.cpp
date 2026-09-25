@@ -701,6 +701,23 @@ TEST_CASE("codegen: no statement hands out a line holding a placeholder beside o
         {"SELECT a FROM t UNION SELECT a FROM t GROUP BY a", "/* compound SELECT */"},
         {"WITH c AS (SELECT a FROM t) SELECT a FROM t UNION SELECT a FROM t GROUP BY a", "/* compound SELECT */"},
         {"CREATE TRIGGER tr AFTER DELETE ON t BEGIN INSERT INTO u SELECT a FROM t GROUP BY a; END", {}},
+        // The mirror class, where the form was found and the slot has none for it: a compound
+        // SELECT standing as a scalar subquery, and a subquery standing as a whole column of a CTE.
+        // These stay shapes rather than expressions crossed with the contexts above, because
+        // whether they are placeheld depends on the slot — `where(union_(…))` brings the parentheses
+        // a compound needs and keeps generating.
+        {"SELECT (SELECT b FROM u UNION SELECT b FROM w) FROM t", {}},
+        {"INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"WITH c AS (SELECT a FROM t) INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        // A chain of one operator is one variadic call and reaches the same compound check; a chain
+        // that mixes operators has no form at all.
+        {"INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w UNION SELECT b FROM u",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w UNION ALL SELECT b FROM u",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"WITH c AS (SELECT (SELECT b FROM u) AS y FROM t) SELECT y FROM c", {}},
     };
 
     size_t checked = 0;
@@ -721,5 +738,134 @@ TEST_CASE("codegen: no statement hands out a line holding a placeholder beside o
         REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
         ++checked;
     }
-    REQUIRE(checked == 82);
+    REQUIRE(checked == 88);
+}
+
+namespace {
+
+    const std::string kCompoundSubqueryMessage =
+        "a compound SELECT as a scalar subquery is not mapped to sqlite_orm codegen: its "
+        "union_()/intersect()/except() form is a statement, which sqlite_orm serializes without the parentheses "
+        "this position needs";
+
+}  // namespace
+
+// The mirror of the placeholder above: a subquery codegen DID find a form for, standing in a slot
+// sqlite_orm has none for. A compound SELECT is a statement to sqlite_orm — `union_(select(…),
+// select(…))` — and `statement_serializer` writes it without parentheses of its own, so outside the
+// one clause that brings them the generated code either does not build (`storage.select(union_(…),
+// from<T>())` trips `static_assert(… "Cannot use args with a compound operator")`) or serializes
+// SQL sqlite3 3.51 refuses with `SQL logic error`: `COALESCE(SELECT … UNION SELECT …, 1)`,
+// `"t"."a" > SELECT …`, `EXISTS SELECT …`, `ORDER BY SELECT …`. All of it was handed out at exit 0.
+TEST_CASE("codegen: a compound SELECT as a scalar subquery leaves the statement out") {
+    REQUIRE(
+        generateFull("SELECT coalesce((SELECT b FROM u UNION SELECT b FROM w), 1) FROM t") ==
+        CodeGenResult{{},
+                      {},
+                      {CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 17}, 39}, kStatementNotGenerated}});
+    REQUIRE(
+        generateFull("SELECT (SELECT b FROM u UNION SELECT b FROM w) FROM t") ==
+        CodeGenResult{{},
+                      {},
+                      {CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 8}, 39}, kStatementNotGenerated}});
+    REQUIRE(
+        generateFull("SELECT a FROM t WHERE a > (SELECT b FROM u UNION SELECT b FROM w)") ==
+        CodeGenResult{{},
+                      {},
+                      {CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 27}, 39}, kStatementNotGenerated}});
+    // One level down from the clause that parenthesizes is already a value slot: `and_` writes its
+    // operands bare, and `WHERE (SELECT … UNION SELECT … AND "t"."a" > 1)` is not the SQL read.
+    REQUIRE(
+        generateFull("SELECT a FROM t WHERE a > 1 AND (SELECT b FROM u UNION SELECT b FROM w)") ==
+        CodeGenResult{{},
+                      {},
+                      {CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 33}, 39}, kStatementNotGenerated}});
+    // `exists()` writes its argument bare as well, and sqlite_orm's own `in(x, union_(…))` is the
+    // one form that does parenthesize a compound — the case below keeps it generating.
+    REQUIRE(generateFull("SELECT a FROM t WHERE EXISTS (SELECT b FROM u UNION SELECT b FROM w)") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{"EXISTS over a compound SELECT is not mapped to sqlite_orm codegen: its "
+                                          "union_()/intersect()/except() form is a statement, which sqlite_orm "
+                                          "serializes without the parentheses EXISTS needs",
+                                          SourceLocation{1, 23},
+                                          46},
+                           kStatementNotGenerated}});
+    // A trigger's WHEN clause used to answer with the compound's own diagnostic, which said the
+    // trigger does not compile while handing it out; the statement now goes instead.
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN (SELECT b FROM u UNION SELECT b FROM w) "
+                         "BEGIN DELETE FROM t; END") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 42}, 39},
+                           "CREATE TRIGGER tr uses a compound SELECT in its WHEN clause, a form sqlite_orm gives "
+                           "no default constructor: make_trigger() keeps a trigger's WHEN expression in an "
+                           "optional_container, which default-constructs the expression before assigning it, so "
+                           "the generated trigger does not compile",
+                           kStatementNotGenerated}});
+
+    // `where_t` serializes as `WHERE (…)`, so the whole condition of a WHERE is the one position a
+    // compound subquery reads back as the SQL it was written as. sqlite3 3.51 answers the same rows
+    // for the generated statement as for the input, checked by running both.
+    REQUIRE(generate("SELECT a FROM t WHERE (SELECT b FROM u UNION SELECT b FROM w)") ==
+            "auto rows = storage.select(&T::a, from<T>(), where(union_(select(&U::b), select(&W::b))));");
+    REQUIRE(generate("DELETE FROM t WHERE (SELECT b FROM u UNION SELECT b FROM w)") ==
+            "storage.remove_all<T>(where(union_(select(&U::b), select(&W::b))));");
+    REQUIRE(generate("UPDATE t SET a = 1 WHERE (SELECT b FROM u UNION SELECT b FROM w)") ==
+            "storage.update_all(set(c(&T::a) = 1), where(union_(select(&U::b), select(&W::b))));");
+    REQUIRE(generate("SELECT a FROM t WHERE a IN (SELECT b FROM u UNION SELECT b FROM w)") ==
+            "auto rows = storage.select(&T::a, from<T>(), where(in(&T::a, union_(select(&U::b), select(&W::b)))));");
+}
+
+// The other slot with a form for no subquery at all: sqlite_orm reads the columns of a CTE through
+// `extract_colref_expressions`, whose overload for a `select_t` is deleted, so a subquery standing
+// as a WHOLE column of a CTE does not build — `cte<cte_0>().as(select(select(&U::b)))`. It is that
+// slot alone: the same subquery in the CTE's own WHERE, or under an operator or a call inside the
+// column, compiles and is left as it is.
+TEST_CASE("codegen: a subquery as a whole column of a CTE leaves the statement out") {
+    const std::string cteColumnMessage =
+        "a subquery as a whole column of a CTE is not mapped to sqlite_orm codegen: sqlite_orm reads the columns "
+        "of a CTE with extract_colref_expressions(), which declares no overload for a select(...)";
+    const std::string withRequirements =
+        "WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+        "sqlite_orm::literals` scope for `_ctealias`";
+
+    REQUIRE(
+        generateFull("WITH c AS (SELECT (SELECT b FROM u) AS y FROM t) SELECT y FROM c") ==
+        CodeGenResult{
+            {},
+            {},
+            {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 17}, withRequirements, kStatementNotGenerated}});
+    // The card's own input, where the subquery carries a NATURAL JOIN of its own.
+    REQUIRE(
+        generateFull("WITH c AS (SELECT (SELECT u.b FROM u NATURAL JOIN w) AS y) SELECT a FROM t") ==
+        CodeGenResult{
+            {},
+            {},
+            {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 34}, withRequirements, kStatementNotGenerated}});
+
+    // The same subquery inside the column, under a call or a CAST, is generated and builds.
+    REQUIRE(generate("WITH c AS (SELECT abs((SELECT b FROM u)) AS y FROM t) SELECT * FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(abs(select(&U::b)), from<T>())), "
+            "select(asterisk<cte_0>()));");
+    REQUIRE(generate("WITH c AS (SELECT CAST((SELECT b FROM u) AS TEXT) AS y FROM t) SELECT * FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(cast<std::string>(select(&U::b)), from<T>())), "
+            "select(asterisk<cte_0>()));");
+    // Under an operator it is generated too, and does NOT build: a subquery as the left operand of
+    // an operator is written bare, which is not this rule's slot and not the CTE's — the plain
+    // `SELECT (SELECT b FROM u) + 1 FROM t` comes out the same way (see COVERAGE.md).
+    REQUIRE(generate("WITH c AS (SELECT (SELECT b FROM u) + 1 AS y FROM t) SELECT y FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(select(&U::b) + 1, from<T>())), "
+            "select(column<cte_0>(&T::y)));");
+    REQUIRE(generate("WITH c AS (SELECT a FROM t WHERE a > (SELECT b FROM u)) SELECT a FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(&T::a, from<T>(), where(c(&T::a) > select(&U::b)))), "
+            "select(column<cte_0>(&T::a)));");
 }

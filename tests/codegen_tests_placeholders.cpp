@@ -767,6 +767,13 @@ TEST_CASE("codegen: a compound SELECT as a scalar subquery leaves the statement 
         CodeGenResult{{},
                       {},
                       {CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 27}, 39}, kStatementNotGenerated}});
+    // On the left of an operator as well: `c(union_(…)) > 1` would build, and serialize as
+    // `(SELECT … UNION SELECT … > 1)`, the comparison moved into the last arm.
+    REQUIRE(
+        generateFull("SELECT a FROM t WHERE (SELECT b FROM u UNION SELECT b FROM w) > 1") ==
+        CodeGenResult{{},
+                      {},
+                      {CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 23}, 39}, kStatementNotGenerated}});
     // One level down from the clause that parenthesizes is already a value slot: `and_` writes its
     // operands bare, and `WHERE (SELECT … UNION SELECT … AND "t"."a" > 1)` is not the SQL read.
     REQUIRE(
@@ -849,13 +856,11 @@ TEST_CASE("codegen: a subquery as a whole column of a CTE leaves the statement o
             "using cte_0 = decltype(1_ctealias);\n"
             "auto rows = storage.with(cte<cte_0>().as(select(cast<std::string>(select(&U::b)), from<T>())), "
             "select(asterisk<cte_0>()));");
-    // Under an operator it is generated too, and does NOT build: a subquery as the left operand of
-    // an operator is written bare, which is not this rule's slot and not the CTE's — the plain
-    // `SELECT (SELECT b FROM u) + 1 FROM t` comes out the same way (see COVERAGE.md).
+    // Under an operator it is generated too, quoted with `c()` as the left operand of an operator is.
     REQUIRE(generate("WITH c AS (SELECT (SELECT b FROM u) + 1 AS y FROM t) SELECT y FROM c") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
-            "auto rows = storage.with(cte<cte_0>().as(select(select(&U::b) + 1, from<T>())), "
+            "auto rows = storage.with(cte<cte_0>().as(select(c(select(&U::b)) + 1, from<T>())), "
             "select(column<cte_0>(&T::y)));");
     REQUIRE(generate("WITH c AS (SELECT a FROM t WHERE a > (SELECT b FROM u)) SELECT a FROM c") ==
             "using namespace sqlite_orm::literals;\n"

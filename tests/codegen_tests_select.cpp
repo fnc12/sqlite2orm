@@ -500,11 +500,6 @@ TEST_CASE("codegen: scalar subquery as the left operand of a binary operator") {
         REQUIRE(generateWithPolicy("SELECT 1 FROM t WHERE (SELECT MAX(x) FROM t) > 0;", policy).code ==
                 "auto rows = storage.select(1, from<T>(), where(c(select(max(&T::x))) > c(0)));");
     }
-    SECTION("a compound subquery is left bare") {
-        // `union_t` serializes without parentheses of its own, so `c(union_(...)) > 1` compiles
-        // into `(SELECT x FROM t UNION SELECT 2 > 1)`: the comparison moves into the last arm.
-        REQUIRE(generate("(SELECT x FROM t UNION SELECT 2) > 1") == "union_(select(&T::x), select(2)) > 1");
-    }
 }
 
 TEST_CASE("codegen: UNION two literal SELECTs") {

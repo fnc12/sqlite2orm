@@ -2012,25 +2012,20 @@ TEST_CASE("runtime: a select naming its table inside a MATCH alone returns the r
 // answers a row. The column went out as `c<Docs>()->*&fts5::hidden::any`, serialized as
 // `"docs"."docs"` beside a FROM naming `"docs" "a"`, and threw `SQL logic error`
 // (card 1869569574559549019). Expected rows checked against sqlite3 3.51 over `docs(body)` as an
-// FTS5 table holding 'hello world' and 'bye'.
+// FTS5 table holding 'hello world' and 'bye'. The C++20 alias style (`d->*(...)`) is pinned by the
+// select tests only: Apple clang lacks `__cpp_consteval`, so sqlite_orm has no C++20 aliases there.
 TEST_CASE("runtime: MATCH against the table name of an aliased FTS5 source returns the rows SQLite returns") {
-    CodeGenPolicy cpp20Aliases;
-    cpp20Aliases.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
     const std::vector<std::string> statements{
         generate("SELECT 1 FROM docs d WHERE docs MATCH 'hello';"),
         generate("SELECT d.body FROM docs AS d WHERE docs MATCH 'hello';"),
-        generateWithPolicy("SELECT 1 FROM docs d WHERE docs MATCH 'hello';", cpp20Aliases).code,
     };
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select(1, from<alias_a<Docs>>(), "
                               "where(match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\")));",
                               "auto rows = storage.select(alias_column<alias_a<Docs>>(&Docs::body), "
                               "where(match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\")));",
-                              "constexpr orm_table_alias auto d = \"d\"_alias.for_<Docs>();\n"
-                              "auto rows = storage.select(1, from<d>(), "
-                              "where(match(d->*(c<Docs>()->*&fts5::hidden::any), \"hello\")));",
                           });
-    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "hello world", "1"});
+    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "hello world"});
 }
 
 // The same table named under the MATCH and by a subquery: the mention under the MATCH is the

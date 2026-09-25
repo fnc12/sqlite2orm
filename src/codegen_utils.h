@@ -68,8 +68,15 @@ namespace sqlite2orm {
      *  the reverse of the creation order: the indexes and the triggers first, the tables and the
      *  views they are made for after them.
      */
-    std::vector<std::string> storageArgumentOrder(std::vector<std::string> tablesAndViews,
-                                                  std::vector<std::string> indexesAndTriggers);
+    template<class Argument>
+    std::vector<Argument> storageArgumentOrder(std::vector<Argument> tablesAndViews,
+                                               std::vector<Argument> indexesAndTriggers) {
+        std::vector<Argument> ordered = std::move(indexesAndTriggers);
+        ordered.insert(ordered.end(),
+                       std::make_move_iterator(tablesAndViews.begin()),
+                       std::make_move_iterator(tablesAndViews.end()));
+        return ordered;
+    }
 
     std::string stripColumnAliasQuotes(std::string_view alias);
     bool isBuiltinColalias(std::string_view stripped);

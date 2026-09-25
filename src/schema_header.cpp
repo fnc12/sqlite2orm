@@ -4,6 +4,7 @@
 #include <sqlite2orm/token_stream.h>
 #include <sqlite2orm/tokenizer.h>
 
+#include "code_span_builder.h"
 #include "codegen_context.h"
 #include "codegen_utils.h"
 
@@ -13,7 +14,6 @@
 #include <optional>
 #include <queue>
 #include <set>
-#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -323,16 +323,36 @@ namespace sqlite2orm {
                 return isReservedSqliteName(meta.name) || shadowTables.count(normalizeSchemaObjectName(meta.name)) != 0;
             };
 
+            // A span names the row a fragment was generated from, and a table is generated in
+            // dependency order rather than in the order the schema holds it, so which row a node
+            // came from is remembered here, while the two still stand together. Every parsed
+            // statement is in the map, whatever the pass then makes of it, so that a fragment can
+            // always be asked where it came from.
             std::vector<const CreateTableNode*> tableNodes;
-            for (const SchemaStatementResult& statementResult: schema.statements) {
+            std::unordered_map<const AstNode*, size_t> statementIndexByNode;
+            for (size_t index = 0; index < schema.statements.size(); ++index) {
+                const SchemaStatementResult& statementResult = schema.statements[index];
+                const AstNode* root = statementResult.pipeline.parseResult.astNodePointer.get();
+                if (root) {
+                    statementIndexByNode[root] = index;
+                }
                 if (!statementResult.pipeline.ok() || sqliteOwnsStatement(statementResult.meta)) {
                     continue;
                 }
-                if (const auto* createTable = dynamic_cast<const CreateTableNode*>(
-                        statementResult.pipeline.parseResult.astNodePointer.get())) {
+                if (const auto* createTable = dynamic_cast<const CreateTableNode*>(root)) {
                     tableNodes.push_back(createTable);
                 }
             }
+            // A node that is not a statement of this schema has no row to name, and gets no span
+            // rather than one borrowing the first row's.
+            const auto originOfStatement =
+                [&statementIndexByNode](const AstNode& node) -> std::optional<GeneratedFrom> {
+                const auto found = statementIndexByNode.find(&node);
+                if (found == statementIndexByNode.end()) {
+                    return std::nullopt;
+                }
+                return generatedFromStatement(found->second, node);
+            };
 
             const std::vector<const CreateTableNode*> sortedTables = topoSortTables(tableNodes);
 
@@ -340,18 +360,18 @@ namespace sqlite2orm {
             // is among them is only known once it is all generated: a literal past the range of a
             // double is spelled `std::numeric_limits<double>::infinity()`. So the body is built
             // first and the prologue is put in front of it at the end.
-            std::ostringstream oss;
+            CodeSpanBuilder body;
 
             // The struct declarations are collected apart from the rest of the header because what
             // has to stand in front of them is only known once they are all generated: a reflected
             // struct carries sqlite_orm annotations, and the names inside an annotation are looked
             // up where the struct is written — at namespace scope, which the using-directive inside
             // make_sqlite_schema_storage() below does not reach.
-            std::ostringstream declarations;
+            CodeSpanBuilder declarations;
             bool declarationsCarryAnnotations = false;
 
-            std::vector<std::string> storageArgs;
-            std::vector<std::string> dependentStorageArgs;
+            std::vector<PlacedFragment> storageArgs;
+            std::vector<PlacedFragment> dependentStorageArgs;
             std::vector<DecisionPoint> allDecisionPoints;
             std::vector<CodegenWarning> allWarnings;
             std::vector<CodegenComment> allComments;
@@ -434,9 +454,11 @@ namespace sqlite2orm {
                                           "` is not merged into make_storage()");
                     continue;
                 }
-                declarations << parts.structDeclaration << "\n";
+                const std::optional<GeneratedFrom> origin = originOfStatement(*sortedTables[tableIndex]);
+                declarations.appendFragment(parts.structDeclaration, origin);
+                declarations.append("\n");
                 declarationsCarryAnnotations = declarationsCarryAnnotations || parts.structIsReflected;
-                storageArgs.push_back(parts.makeTableExpression);
+                storageArgs.push_back(PlacedFragment{parts.makeTableExpression, origin});
             }
 
             // A view that is left out is a name sqlite_orm has no type for, exactly as an
@@ -504,9 +526,11 @@ namespace sqlite2orm {
                     }
                     // A view has no classical form at all: sqlite_orm maps every one of them by
                     // reflection, so its struct always carries the `[[= "…"_orm_name]]` annotation.
-                    declarations << viewParts.structDeclaration << "\n";
+                    const std::optional<GeneratedFrom> origin = originOfStatement(*createView);
+                    declarations.appendFragment(viewParts.structDeclaration, origin);
+                    declarations.append("\n");
                     declarationsCarryAnnotations = true;
-                    storageArgs.push_back(viewParts.makeViewExpression);
+                    storageArgs.push_back(PlacedFragment{viewParts.makeViewExpression, origin});
                     continue;
                 }
 
@@ -529,7 +553,7 @@ namespace sqlite2orm {
                                               " `" + statementResult.meta.name + "` is not merged into make_storage()");
                         continue;
                     }
-                    dependentStorageArgs.push_back(storageArgLine);
+                    dependentStorageArgs.push_back(PlacedFragment{std::move(storageArgLine), originOfStatement(*root)});
                 }
             }
 
@@ -540,19 +564,20 @@ namespace sqlite2orm {
                 // (`"users"_orm_name`) gets nothing else at all — not even ADL. This is how
                 // sqlite_orm's own reflection tests spell it, above the annotated struct. A header
                 // holding no annotated struct is left byte for byte as it was.
-                oss << "using namespace sqlite_orm;\n\n";
+                body.append("using namespace sqlite_orm;\n\n");
             }
-            oss << declarations.str();
+            body.appendBuilt(declarations);
 
-            oss << "\ninline auto make_sqlite_schema_storage(const std::string& db_path) {\n";
-            oss << "    using namespace sqlite_orm;\n";
-            oss << "    return make_storage(db_path";
-            for (const std::string& storageArgument: storageArgs) {
-                oss << ",\n        " << storageArgument;
+            body.append("\ninline auto make_sqlite_schema_storage(const std::string& db_path) {\n");
+            body.append("    using namespace sqlite_orm;\n");
+            body.append("    return make_storage(db_path");
+            for (const PlacedFragment& storageArgument: storageArgs) {
+                body.append(",\n        ");
+                body.appendFragment(storageArgument.text, storageArgument.origin);
             }
-            oss << ");\n}\n";
+            body.append(");\n}\n");
 
-            std::vector<std::string> dmlStatements;
+            std::vector<PlacedFragment> dmlStatements;
             for (const SchemaStatementResult& statementResult: schema.statements) {
                 if (!statementResult.pipeline.ok()) {
                     continue;
@@ -582,13 +607,14 @@ namespace sqlite2orm {
                                          fragment.decisionPoints.begin(),
                                          fragment.decisionPoints.end());
                 if (!fragment.code.empty()) {
-                    dmlStatements.push_back(fragment.code);
+                    dmlStatements.push_back(PlacedFragment{std::move(fragment.code), originOfStatement(*root)});
                 }
             }
             if (!dmlStatements.empty()) {
-                oss << "\n";
-                for (const std::string& dml: dmlStatements) {
-                    oss << dml << "\n";
+                body.append("\n");
+                for (const PlacedFragment& dml: dmlStatements) {
+                    body.appendFragment(dml.text, dml.origin);
+                    body.append("\n");
                 }
             }
 
@@ -602,13 +628,16 @@ namespace sqlite2orm {
                         "#include <string>\n"
                         "#include <vector>\n\n";
 
+            body.prepend(prologue);
+
             ungeneratableTables = gen.context().ungeneratableTables;
             ungeneratableViews = gen.context().ungeneratableViews;
-            return CodeGenResult{prologue + oss.str(),
+            return CodeGenResult{body.takeCode(),
                                  std::move(allDecisionPoints),
                                  std::move(allWarnings),
                                  {},
-                                 std::move(allComments)};
+                                 std::move(allComments),
+                                 body.takeSpans()};
         }
 
     }  // namespace

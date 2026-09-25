@@ -1663,6 +1663,67 @@ TEST_CASE("codegen: a CASE result column that cannot be NULL keeps the type sqli
         "auto rows = storage.select(length(case_<std::string>().when(&Users::a, then(\"x\")).else_(\"y\").end()));");
 }
 
+// A branch naming a schema column is read back as the field of that column, and `case_<R>` has to
+// hold it: taken for the default `int` a reference answers with when nothing is known, a TEXT
+// column came out `case_<int>`, which compiles and reads every TEXT value back as 0, and no
+// warning said so. The column is folded in wherever it stands — a WHEN branch or the ELSE —
+// and a NULL beside it adds nothing but the `as_optional`. Every select below was compiled and run
+// against sqlite3 3.51 over the schema written here: a column past the int32 range, a REAL, and
+// the text an INTEGER beside a REAL is read through all come back as sqlite3 prints them.
+TEST_CASE("codegen: a CASE branch naming a column is read through the column's type") {
+    const std::string_view schema = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, "
+                                    "age INTEGER, score REAL, data BLOB);\n";
+    const auto generateOverSchema = [&schema](std::string_view select) {
+        return generateLastOfBatch(std::string(schema) + std::string(select)).code;
+    };
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN name ELSE 'x' END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::name)).else_(\"x\").end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN email ELSE NULL END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::email)).else_(nullptr).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN 'a' ELSE name END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(\"a\")).else_(&Users::name).end()));");
+    // No branch spells a type out as a literal, so only the columns can say what `R` is.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN name ELSE age END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::name)).else_(&Users::age).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN NULL ELSE email END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(nullptr)).else_(&Users::email).end()));");
+    // An INTEGER column is an `int64_t` field, so a branch naming one is not read through an `int`
+    // that would cut every value past 2^31.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN age ELSE 0 END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<int64_t>().when(c(&Users::age) > 1, "
+            "then(&Users::age)).else_(0).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN 0 ELSE users.age END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<int64_t>().when(c(&Users::age) > 1, "
+            "then(0)).else_(&Users::age).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN score ELSE 0 END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<double>().when(c(&Users::age) > 1, "
+            "then(&Users::score)).else_(0).end()));");
+    // An INTEGER column beside a REAL one is the pair with no number over it, the same as a
+    // literal of each.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN age ELSE score END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::age)).else_(&Users::score).end()));");
+    // A BLOB column beside anything else is read through the `std::vector<char>` that keeps every
+    // byte of it; an `std::string` would stop at the first NUL.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN data ELSE name END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::vector<char>>().when(c(&Users::age) > 1, "
+            "then(&Users::data)).else_(&Users::name).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN x'00' ELSE name END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::vector<char>>().when(c(&Users::age) > 1, "
+            "then(std::vector<char>{'\\x00'})).else_(&Users::name).end()));");
+    // A CASE nested in a branch answers with the columns of its own branches too.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN CASE WHEN age > 2 THEN name END ELSE NULL END "
+                               "FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(case_<std::string>().when(c(&Users::age) > 2, then(&Users::name)).end())).else_(nullptr)"
+            ".end()));");
+}
+
 // A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the
 // result column of a select is widened.
 TEST_CASE("codegen: as_optional is confined to the result columns of a select") {

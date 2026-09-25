@@ -258,9 +258,8 @@ TEST_CASE("codegen: CREATE VIEW - a CASE column is typed over every branch and t
 
 // The column type the FROM tables know is what a branch naming one contributes, and an INTEGER
 // column holds values a `double` drops, so a column beside a REAL branch reaches the text that
-// keeps both. The `case_<double>` of the same column is the expression side reading a bare column
-// reference through the default `int` — the gap the CASE widening cannot close on its own — and
-// the field stays the wider of the two answers, which is the side that loses nothing.
+// keeps both. The `case_<R>` of the same column reads the branch through the schema type as well,
+// so the two answers agree.
 TEST_CASE("codegen: CREATE VIEW - a CASE branch naming a column is as wide as the column") {
     auto result = generateLastOfBatch("CREATE TABLE t (a INTEGER);\n"
                                       "CREATE VIEW v AS SELECT CASE WHEN a < 0 THEN a ELSE 1.5 END AS x FROM t;");
@@ -269,7 +268,7 @@ TEST_CASE("codegen: CREATE VIEW - a CASE branch naming a column is as wide as th
                            "};\n"
                            "\n"
                            "auto storage = make_storage(\"\",\n"
-                           "    make_view<V>(select(case_<double>().when(c(&T::a) < 0, then(&T::a)).else_(1.5)"
+                           "    make_view<V>(select(case_<std::string>().when(c(&T::a) < 0, then(&T::a)).else_(1.5)"
                            ".end())));");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
 }
@@ -289,29 +288,26 @@ TEST_CASE("codegen: CREATE VIEW - a CASE that can answer NULL is an optional fie
                            "};\n"
                            "\n"
                            "auto storage = make_storage(\"\",\n"
-                           "    make_view<V>(select(columns(case_<int>().when(c(&T::a) < 0, then(&T::a)).end(), "
-                           "case_<int>().when(c(&T::a) < 0, then(nullptr)).else_(&T::a).end(), "
-                           "case_<int>().when(c(&T::a) < 0, then(&T::a)).else_(0).end()))));");
+                           "    make_view<V>(select(columns(case_<int64_t>().when(c(&T::a) < 0, then(&T::a)).end(), "
+                           "case_<int64_t>().when(c(&T::a) < 0, then(nullptr)).else_(&T::a).end(), "
+                           "case_<int64_t>().when(c(&T::a) < 0, then(&T::a)).else_(0).end()))));");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
 }
 
-// A BLOB branch beside a non-BLOB one has no field type that keeps both: an `std::string` stops at
-// the first NUL byte a blob holds, and the `std::vector<char>` that does read every storage class
-// whole is a type the expression side cannot name for the same column. The column is left
-// uninferred — warned about and defaulted — rather than typed by the order the branches are
-// written in.
-TEST_CASE("codegen: CREATE VIEW - a CASE over a BLOB and a non-BLOB branch is left uninferred") {
+// A BLOB branch beside a non-BLOB one is read through the `std::vector<char>` that reads every
+// storage class whole — an `std::string` stops at the first NUL byte a blob holds — and the
+// `case_<R>` of the same column names that type too, rather than the two sides parting over it.
+TEST_CASE("codegen: CREATE VIEW - a CASE over a BLOB and a non-BLOB branch is read as a BLOB") {
     auto result = generateLastOfBatch("CREATE TABLE t (a INTEGER, b BLOB);\n"
                                       "CREATE VIEW v AS SELECT CASE WHEN a < 0 THEN b ELSE 1 END AS x FROM t;");
     REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
-                           "    int x = 0;\n"
+                           "    std::optional<std::vector<char>> x;\n"
                            "};\n"
                            "\n"
                            "auto storage = make_storage(\"\",\n"
-                           "    make_view<V>(select(case_<int>().when(c(&T::a) < 0, then(&T::b)).else_(1).end())));");
-    REQUIRE(result.warnings ==
-            std::vector<CodegenWarning>{"view v: type of column `x` could not be inferred; defaulting to int",
-                                        cpp26ViewWarning("v", 2)});
+                           "    make_view<V>(select(case_<std::vector<char>>().when(c(&T::a) < 0, then(&T::b)).else_(1)"
+                           ".end())));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
 }
 
 TEST_CASE("codegen: view column-type warning carries a source location to underline") {

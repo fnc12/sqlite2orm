@@ -782,26 +782,15 @@ namespace sqlite2orm {
 
         /**
          *  The one field type two inferred view-column types are both read through, over the
-         *  vocabulary this file infers with: the widening order of `widerInferredCppType` plus the
-         *  `std::vector<char>` a BLOB comes out as. A field holds a NULL as soon as either side
-         *  can be one.
+         *  vocabulary this file infers with — the widening order of `widerInferredCppType`, the
+         *  one the `case_<R>` of the same column is typed by, with the `std::vector<char>` a BLOB
+         *  comes out as over every other type. A field holds a NULL as soon as either side can
+         *  be one.
          */
-        std::optional<InferredFieldType> widerViewFieldType(const InferredFieldType& left,
-                                                            const InferredFieldType& right) {
+        InferredFieldType widerViewFieldType(const InferredFieldType& left, const InferredFieldType& right) {
             const bool nullable = left.nullable || right.nullable;
             if (left.cppType == right.cppType) {
                 return InferredFieldType{left.cppType, nullable};
-            }
-            if (left.cppType == "std::vector<char>" || right.cppType == "std::vector<char>") {
-                // A BLOB against a non-BLOB has no type that keeps both here. An `std::string`
-                // stops at the first NUL byte a blob holds, and the `std::vector<char>` that does
-                // read every storage class whole is a type the expression side cannot name for the
-                // same column — `inferTypeFromNode` answers `int` for a blob literal and for a
-                // CAST alike — so naming it would make the field and the `case_<R>` of one
-                // `make_view` disagree about the storage class rather than the width. Left
-                // uninferred instead: the column carries the warning the caller raises for one,
-                // rather than a type picked silently by the order the branches are written in.
-                return std::nullopt;
             }
             return InferredFieldType{widerInferredCppType(left.cppType, right.cppType), nullable};
         }
@@ -1035,10 +1024,7 @@ namespace sqlite2orm {
                             // compare widths with.
                             inferred->cppType = this->context.inferTypeFromNode(*result);
                         }
-                        widest = widest ? widerViewFieldType(*widest, *inferred) : inferred;
-                        if (!widest) {
-                            return std::nullopt;
-                        }
+                        widest = widest ? widerViewFieldType(*widest, *inferred) : *inferred;
                     }
                     if (!widest) {
                         // Every branch spells a NULL out, so there is no value to name a type

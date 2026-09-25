@@ -16,6 +16,7 @@
 
 namespace sqlite2orm {
 
+    class CodeGenerator;
     class CodeGeneratorContext;
     struct SourceTableColumn;
 
@@ -68,8 +69,15 @@ namespace sqlite2orm {
      *  the reverse of the creation order: the indexes and the triggers first, the tables and the
      *  views they are made for after them.
      */
-    std::vector<std::string> storageArgumentOrder(std::vector<std::string> tablesAndViews,
-                                                  std::vector<std::string> indexesAndTriggers);
+    template<class Argument>
+    std::vector<Argument> storageArgumentOrder(std::vector<Argument> tablesAndViews,
+                                               std::vector<Argument> indexesAndTriggers) {
+        std::vector<Argument> ordered = std::move(indexesAndTriggers);
+        ordered.insert(ordered.end(),
+                       std::make_move_iterator(tablesAndViews.begin()),
+                       std::make_move_iterator(tablesAndViews.end()));
+        return ordered;
+    }
 
     std::string stripColumnAliasQuotes(std::string_view alias);
     bool isBuiltinColalias(std::string_view stripped);
@@ -627,6 +635,39 @@ namespace sqlite2orm {
                                                   std::string message,
                                                   const AstNode& astNode,
                                                   CodeGenResult carried = {});
+    /**
+     *  Generates the SELECT-like `node` through `coordinator` and sets `compound` to whether the
+     *  form the emitter handed back is a compound one — `union_(...)` and its kin. The answer comes
+     *  from the emitter rather than from the shape of the node: a `WITH` in front of a compound
+     *  arrives as a `WithQueryNode`, and a compound whose arms are not mapped hands back no code to
+     *  place at all. A compound is a statement to sqlite_orm, so the slots that have a form only for
+     *  an expression ask this before they embed what came back.
+     */
+    CodeGenResult selectLikeSubqueryForm(CodeGenerator& coordinator,
+                                         CodeGeneratorContext& context,
+                                         const AstNode& node,
+                                         bool& compound);
+    /**
+     *  Marks `condition` as the node a `where(...)` is about to be built around while it is
+     *  generated. `where_t` is the one clause that serializes its argument inside parentheses, so a
+     *  compound subquery standing there — and only there — comes out as the SQL it was read from.
+     *  The mark is the node itself and not a flag: `where(a > (SELECT … UNION …))` generates the
+     *  same subquery one level down, where the parentheses are not written, and pointer identity is
+     *  what tells the two apart. The previous mark is restored rather than cleared, so the mark
+     *  never outlives the clause it was taken for.
+     */
+    class ParenthesizedConditionScope {
+      public:
+        ParenthesizedConditionScope(CodeGeneratorContext& context, const AstNode& condition);
+        ~ParenthesizedConditionScope();
+
+        ParenthesizedConditionScope(const ParenthesizedConditionScope&) = delete;
+        ParenthesizedConditionScope& operator=(const ParenthesizedConditionScope&) = delete;
+
+      private:
+        CodeGeneratorContext& context;
+        const AstNode* enclosing;
+    };
     /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.

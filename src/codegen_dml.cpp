@@ -204,22 +204,30 @@ namespace sqlite2orm {
             vals += ")";
             middle = cols + ", " + vals;
         } else {
-            auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*insertNode.selectStatement);
+            bool compoundSource = false;
+            auto sub =
+                selectLikeSubqueryForm(this->coordinator, this->context, *insertNode.selectStatement, compoundSource);
             warnings.insert(warnings.end(),
                             std::make_move_iterator(sub.warnings.begin()),
                             std::make_move_iterator(sub.warnings.end()));
             dps.insert(dps.end(),
                        std::make_move_iterator(sub.decisionPoints.begin()),
                        std::make_move_iterator(sub.decisionPoints.end()));
-            if (sub.code.empty()) {
+            if (sub.code.empty() || compoundSource) {
                 this->context.structName = savedStruct;
                 CodeGenResult carried;
                 carried.decisionPoints = std::move(dps);
                 carried.warnings = std::move(warnings);
+                // sqlite_orm's raw insert takes a `select(...)` and nothing else — a compound form
+                // trips its `static_assert(… "Raw insert has invalid arguments")` — so the statement
+                // stands as a placeholder of its own rather than as a header that does not build.
                 return unsupportedStatementPlaceholder(
                     this->context,
                     "INSERT ... SELECT: inner SELECT not mapped to sqlite_orm",
-                    "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
+                    compoundSource
+                        ? "the compound SELECT an INSERT reads from is not mapped to sqlite_orm codegen: a raw "
+                          "insert takes a select(...), and its union_()/intersect()/except() form is not one"
+                        : "the SELECT an INSERT reads from is not mapped to sqlite_orm codegen",
                     *insertNode.selectStatement,
                     std::move(carried));
             }
@@ -285,6 +293,7 @@ namespace sqlite2orm {
                 }
                 upsertSuffix = ", " + onTarget + ".do_update(set(" + setArgs + ")";
                 if (insertNode.upsertUpdateWhere) {
+                    const ParenthesizedConditionScope conditionScope{this->context, *insertNode.upsertUpdateWhere};
                     auto whereResult = this->coordinator.generateNode(*insertNode.upsertUpdateWhere);
                     dps.insert(dps.end(),
                                std::make_move_iterator(whereResult.decisionPoints.begin()),
@@ -351,6 +360,7 @@ namespace sqlite2orm {
         }
         std::string code = "storage.update_all(set(" + setArgs + ")";
         if (updateNode.whereClause) {
+            const ParenthesizedConditionScope conditionScope{this->context, *updateNode.whereClause};
             auto whereResult = this->coordinator.generateNode(*updateNode.whereClause);
             dps.insert(dps.end(),
                        std::make_move_iterator(whereResult.decisionPoints.begin()),
@@ -376,6 +386,7 @@ namespace sqlite2orm {
         std::vector<DecisionPoint> dps;
         std::string code = "storage.remove_all<" + tableStruct + ">()";
         if (deleteNode.whereClause) {
+            const ParenthesizedConditionScope conditionScope{this->context, *deleteNode.whereClause};
             auto whereResult = this->coordinator.generateNode(*deleteNode.whereClause);
             dps.insert(dps.end(),
                        std::make_move_iterator(whereResult.decisionPoints.begin()),

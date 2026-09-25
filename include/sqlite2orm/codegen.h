@@ -58,12 +58,14 @@ namespace sqlite2orm {
          */
         CodeGenResult generateStoredExpression(const AstNode& astNode);
 
-        /** See `SelectCodeGenerator` for what `widenedResultColumns` names. */
+        /** See `SelectCodeGenerator` for what `widenedResultColumns` and `cteBodySelect` name. */
         CodeGenResult tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
-                                                          const std::vector<bool>& widenedResultColumns = {});
+                                                          const std::vector<bool>& widenedResultColumns = {},
+                                                          bool cteBodySelect = false);
         CodeGenResult tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
-                                                            const std::vector<bool>& widenedResultColumns = {});
-        CodeGenResult tryCodegenSelectLikeSubquery(const AstNode& node);
+                                                            const std::vector<bool>& widenedResultColumns = {},
+                                                            bool cteBodySelect = false);
+        CodeGenResult tryCodegenSelectLikeSubquery(const AstNode& node, bool cteBodySelect = false);
 
         CodeGenResult generateTriggerStep(const AstNode& statement, const std::string& subjectTableStruct);
 

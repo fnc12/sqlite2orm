@@ -49,6 +49,7 @@ add_library(sqlite2orm_lib
     src/validator.cpp
     src/codegen.cpp
     src/codegen_utils.cpp
+    src/code_span_builder.cpp
     src/codegen_forms.cpp
     src/select_scope_columns.cpp
     src/codegen_context.cpp
@@ -182,6 +183,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/corpus_tests.cpp
         tests/validator_tests.cpp
         tests/process_tests.cpp
+        tests/code_span_builder_tests.cpp
         tests/ast_lifetime_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp

@@ -314,9 +314,70 @@ TEST_CASE("generateSqliteSchemaHeader: merged storage") {
                                              "        foreign_key(&B::aid).references(&A::id)));\n"
                                              "}\n"),
                                  {},
-                                 {}};
+                                 {},
+                                 {},
+                                 {},
+                                 // Two spans per table, one for its struct and one for its
+                                 // make_table() argument, and the SQL each of them names is the
+                                 // CREATE TABLE `sqlite_master` holds for that row.
+                                 {{125, 45, 0, SourceLocation{1, 1}, 39},
+                                  {171, 77, 1, SourceLocation{1, 1}, 69},
+                                  {392, 65, 0, SourceLocation{1, 1}, 39},
+                                  {467, 151, 1, SourceLocation{1, 1}, 69}}};
 
     REQUIRE(header == expected);
+}
+
+// The map of a generated header is what a two-pane consumer highlights from, and a schema read
+// from a database holds a text per row, so every span names the row it came from as well as the
+// place in its SQL. A view is on the map exactly as a table is — its reflected struct and its
+// make_view() argument — and an index, written before the table it is made for, keeps its place.
+TEST_CASE("generateSqliteSchemaHeader: every statement is mapped onto the code it generated") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);"
+            "CREATE VIEW v AS SELECT name FROM t;"
+            "CREATE INDEX i_name ON t(name);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == std::string("#pragma once\n"
+                                       "\n"
+                                       "#include <sqlite_orm/sqlite_orm.h>\n"
+                                       "#include <cstdint>\n"
+                                       "#include <optional>\n"
+                                       "#include <string>\n"
+                                       "#include <vector>\n"
+                                       "\n"
+                                       "using namespace sqlite_orm;\n"
+                                       "\n"
+                                       "struct T {\n"
+                                       "    std::optional<int64_t> id;\n"
+                                       "    std::optional<std::string> name;\n"
+                                       "};\n"
+                                       "\n"
+                                       "struct [[= \"v\"_orm_name]] V {\n"
+                                       "    std::optional<std::string> name;\n"
+                                       "};\n"
+                                       "\n"
+                                       "\n"
+                                       "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                                       "    using namespace sqlite_orm;\n"
+                                       "    return make_storage(db_path,\n"
+                                       "        make_index(\"i_name\", indexed_column(&T::name)),\n"
+                                       "        make_table(\"t\",\n"
+                                       "        make_column(\"id\", &T::id, primary_key()),\n"
+                                       "        make_column(\"name\", &T::name)),\n"
+                                       "        make_view<V>(select(&T::name)));\n"
+                                       "}\n"));
+    REQUIRE(header.spans == std::vector<GeneratedCodeSpan>{{154, 82, 0, SourceLocation{1, 1}, 50},
+                                                           {237, 70, 1, SourceLocation{1, 1}, 35},
+                                                           {451, 46, 2, SourceLocation{1, 1}, 30},
+                                                           {507, 104, 0, SourceLocation{1, 1}, 50},
+                                                           {621, 30, 1, SourceLocation{1, 1}, 35}});
 }
 
 // One column whose DEFAULT holds a hex literal no int64 can hold used to fail the statement and
@@ -366,7 +427,14 @@ TEST_CASE("generateSqliteSchemaHeader: a DEFAULT SQLite stores but cannot compil
         {CodegenWarning{"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite "
                         "stores it but refuses every use of the default, and C++ has no literal for it, so the "
                         "generated column has no default_value()"}},
-        {}};
+        {},
+        {},
+        {{125, 46, 0, SourceLocation{1, 1}, 28},
+         {172, 50, 1, SourceLocation{1, 1}, 25},
+         {223, 48, 2, SourceLocation{1, 1}, 58},
+         {415, 52, 0, SourceLocation{1, 1}, 28},
+         {477, 52, 1, SourceLocation{1, 1}, 25},
+         {539, 56, 2, SourceLocation{1, 1}, 58}}};
 
     REQUIRE(header == expected);
 }
@@ -987,6 +1055,11 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 
 storage.insert(into<T>(), columns(&T::id, &T::name), values(std::make_tuple(1, "Alice")));
 )",
+        // Here the two statements were parsed from one text, so their locations are comparable:
+        // the INSERT starts at column 52 of the same line the CREATE TABLE does.
+        .spans = {{125, 82, 0, SourceLocation{1, 1}, 50},
+                  {351, 104, 0, SourceLocation{1, 1}, 50},
+                  {461, 90, 1, SourceLocation{1, 52}, 44}},
     };
     REQUIRE(header == expected);
 }
@@ -1327,7 +1400,8 @@ TEST_CASE("generateSqliteSchemaHeader: the sign of INT64_MIN stays out of the C+
                         "type, so it hands the caller 0 (and throws over a column), while `0 - expr` is what SQLite "
                         "computes for `-expr` — same value and same typeof for every operand kind.",
                         SourceLocation{1, 43},
-                        19}}};
+                        19}},
+        {{125, 117, 0, SourceLocation{1, 1}, 98}, {386, 263, 0, SourceLocation{1, 1}, 98}}};
 
     REQUIRE(header == expected);
 
@@ -1424,7 +1498,16 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
                         "number, so sync_schema() throws instead of creating table inf_t (\"no such "
                         "column: inf\")",
                         SourceLocation{1, 84},
-                        5}}};
+                        5}},
+        {},
+        {},
+        // The trigger is a storage argument of its own and stands before the tables it rests on,
+        // which is where its span is; the table it fires on keeps the two spans every table has.
+        {{143, 104, 0, SourceLocation{1, 1}, 90},
+         {248, 52, 1, SourceLocation{1, 1}, 28},
+         {444, 132, 2, SourceLocation{1, 1}, 92},
+         {586, 265, 0, SourceLocation{1, 1}, 90},
+         {861, 57, 1, SourceLocation{1, 1}, 28}}};
 
     REQUIRE(header == expected);
 
@@ -2883,4 +2966,63 @@ TEST_CASE("generateSqliteSchemaHeader: a CHECK over a double-quoted row id is le
         queryText(empty.path, "SELECT group_concat(sql, ' | ') FROM (SELECT sql FROM sqlite_master ORDER BY name);") ==
         "CREATE TABLE \"t\" (\"a\" INTEGER NULL) | "
         "CREATE TABLE \"w\" (\"a\" INTEGER PRIMARY KEY NOT NULL, CHECK ('rowid' = 1)) WITHOUT ROWID");
+}
+
+// A subquery whose form codegen DID find, standing in a slot sqlite_orm has no form for. sqlite3
+// 3.51 prepares and runs every statement below; what came out for each of them was a header offered
+// at exit 0 that g++ answers with a wall of template errors, and only a compiler ever saw it:
+// `storage.select(union_(…), from<T>())` trips `static_assert(… "Cannot use args with a compound
+// operator")`, `.when(union_(…))` the deleted `optional_container<union_t<…>>::optional_container()`,
+// `cte<cte_0>().as(select(select(…)))` the deleted `extract_colref_expressions()`,
+// `insert(into<U>(), columns(…), union_(…))` `static_assert(… "Raw insert has invalid arguments")`,
+// and a subquery under a CTE-sourced select came out as `column<>("b")`, which has no overload at
+// all. A literal test says what came out for each; only a compiler says the header can be built.
+TEST_CASE("processMultiSql: a subquery in a slot sqlite_orm has no form for compiles") {
+    const std::string prologue = "#include <sqlite_orm/sqlite_orm.h>\n"
+                                 "#include <cstdint>\n"
+                                 "#include <optional>\n"
+                                 "#include <string>\n"
+                                 "#include <vector>\n"
+                                 "using namespace sqlite_orm;\n";
+    const std::string schema = "CREATE TABLE t(a INTEGER, b TEXT);"
+                               "CREATE TABLE u(b INTEGER, c TEXT);"
+                               "CREATE TABLE w(b INTEGER);";
+
+    const std::vector<std::string> statements{
+        // A compound SELECT in a value slot, which sqlite_orm serializes without parentheses.
+        "SELECT coalesce((SELECT b FROM u UNION SELECT b FROM w), 1) FROM t;",
+        "SELECT (SELECT b FROM u UNION SELECT b FROM w) FROM t;",
+        "SELECT a FROM t WHERE a > (SELECT b FROM u UNION SELECT b FROM w);",
+        "SELECT a FROM t WHERE EXISTS (SELECT b FROM u UNION SELECT b FROM w);",
+        "SELECT a FROM t ORDER BY (SELECT b FROM u EXCEPT SELECT b FROM w);",
+        "CREATE TRIGGER tr AFTER INSERT ON t WHEN (SELECT b FROM u UNION SELECT b FROM w) "
+        "BEGIN DELETE FROM t; END;",
+        // A subquery standing as a whole column of a CTE.
+        "WITH c AS (SELECT (SELECT u.b FROM u NATURAL JOIN w) AS y) SELECT a FROM t;",
+        "WITH c AS (SELECT (SELECT b FROM u) AS y FROM t) SELECT y FROM c;",
+        // The same subquery INSIDE a column of a CTE, or in its own WHERE, is generated. The outer
+        // select reads `*` so that nothing but the CTE's body decides whether this builds.
+        "WITH c AS (SELECT abs((SELECT b FROM u)) AS y FROM t) SELECT * FROM c;",
+        "WITH c AS (SELECT CAST((SELECT b FROM u) AS TEXT) AS y FROM t) SELECT * FROM c;",
+        "WITH c AS (SELECT a FROM t WHERE a > (SELECT b FROM u)) SELECT * FROM c;",
+        // A compound SELECT a raw insert reads from.
+        "WITH c AS (SELECT a FROM t) INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w;",
+        // The two positions that do bring the parentheses a compound needs, and a subquery inside a
+        // statement whose own FROM is a CTE: these are generated, and have to build as well.
+        "SELECT a FROM t WHERE (SELECT b FROM u UNION SELECT b FROM w);",
+        "SELECT a FROM t WHERE a IN (SELECT b FROM u INTERSECT SELECT b FROM w);",
+        "WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE (SELECT b FROM u);",
+        "WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE a > (SELECT b FROM u);",
+        "WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE EXISTS (SELECT b FROM u);",
+        "WITH c AS (SELECT a FROM t) SELECT a FROM c WHERE (SELECT b FROM u UNION SELECT b FROM w);",
+    };
+
+    for (const std::string& statement: statements) {
+        INFO(statement);
+        const auto results = processMultiSql(schema + statement);
+        for (const auto& result: results) {
+            REQUIRE(result.ok());
+        }
+        requireCompiles(prologue + joinGeneratedCode(results));
+    }
 }

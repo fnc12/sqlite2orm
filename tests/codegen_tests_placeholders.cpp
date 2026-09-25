@@ -711,6 +711,12 @@ TEST_CASE("codegen: no statement hands out a line holding a placeholder beside o
          "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
         {"WITH c AS (SELECT a FROM t) INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w",
          "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        // A chain of one operator is one variadic call and reaches the same compound check; a chain
+        // that mixes operators has no form at all.
+        {"INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w UNION SELECT b FROM u",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w UNION ALL SELECT b FROM u",
+         "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
         {"WITH c AS (SELECT (SELECT b FROM u) AS y FROM t) SELECT y FROM c", {}},
     };
 
@@ -732,7 +738,7 @@ TEST_CASE("codegen: no statement hands out a line holding a placeholder beside o
         REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
         ++checked;
     }
-    REQUIRE(checked == 86);
+    REQUIRE(checked == 88);
 }
 
 namespace {

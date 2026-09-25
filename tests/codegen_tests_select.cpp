@@ -518,6 +518,49 @@ TEST_CASE("codegen: EXCEPT") {
     REQUIRE(generate("SELECT 1 EXCEPT SELECT 2") == "auto rows = storage.select(except(select(1), select(2)));");
 }
 
+// sqlite_orm has no nested compound: each arm of `union_(...)` must be a `select_t`, so
+// `union_(union_(a, b), c)` does not compile. A chain of one operator is one variadic call.
+TEST_CASE("codegen: a compound of three or more arms of one operator is one variadic call") {
+    REQUIRE(generate("SELECT 1 UNION SELECT 2 UNION SELECT 3") ==
+            "auto rows = storage.select(union_(select(1), select(2), select(3)));");
+    REQUIRE(generate("SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4") ==
+            "auto rows = storage.select(union_all(select(1), select(2), select(3), select(4)));");
+    REQUIRE(generate("SELECT 1 INTERSECT SELECT 2 INTERSECT SELECT 3") ==
+            "auto rows = storage.select(intersect(select(1), select(2), select(3)));");
+    REQUIRE(generate("SELECT 1 EXCEPT SELECT 2 EXCEPT SELECT 3") ==
+            "auto rows = storage.select(except(select(1), select(2), select(3)));");
+}
+
+// SQLite groups a mixed chain from the left, `(a UNION b) UNION ALL c`, and only a nested call
+// would say that — which sqlite_orm does not compile. So the statement is not generated.
+TEST_CASE("codegen: a compound that mixes operators is not generated") {
+    REQUIRE(generateFull("SELECT 1 UNION SELECT 2 UNION ALL SELECT 3") ==
+            CodeGenResult{"/* compound SELECT */",
+                          {},
+                          {CodegenWarning{"compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
+                                          "codegen",
+                                          SourceLocation{1, 1},
+                                          42},
+                           CodegenWarning{"compound SELECT that mixes UNION / UNION ALL / INTERSECT / EXCEPT is not "
+                                          "mapped to sqlite_orm codegen: sqlite_orm takes one operator per call and "
+                                          "does not nest a compound as an arm of another",
+                                          SourceLocation{1, 35},
+                                          8}}});
+    // The underline goes to the arm the first differing operator joins, however late it comes.
+    REQUIRE(generateFull("SELECT 1 UNION SELECT 2 UNION SELECT 3 INTERSECT SELECT 2") ==
+            CodeGenResult{"/* compound SELECT */",
+                          {},
+                          {CodegenWarning{"compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
+                                          "codegen",
+                                          SourceLocation{1, 1},
+                                          57},
+                           CodegenWarning{"compound SELECT that mixes UNION / UNION ALL / INTERSECT / EXCEPT is not "
+                                          "mapped to sqlite_orm codegen: sqlite_orm takes one operator per call and "
+                                          "does not nest a compound as an arm of another",
+                                          SourceLocation{1, 50},
+                                          8}}});
+}
+
 TEST_CASE("codegen: derived FROM emits stub and warning") {
     REQUIRE(
         generateFull("SELECT n FROM (SELECT 1 AS n) t") ==
@@ -2622,8 +2665,8 @@ TEST_CASE("codegen: a compound SELECT widens the result column in every arm") {
             "select(as_optional(c(&User::a) * 2))));");
     // Three arms, and then the other result types the rule names: a comparison, a `||`, a CAST.
     REQUIRE(generate("SELECT a + 1 UNION SELECT a * 2 UNION SELECT a - 3;") ==
-            "auto rows = storage.select(union_(union_(select(as_optional(c(&User::a) + 1)), "
-            "select(as_optional(c(&User::a) * 2))), select(as_optional(c(&User::a) - 3))));");
+            "auto rows = storage.select(union_(select(as_optional(c(&User::a) + 1)), "
+            "select(as_optional(c(&User::a) * 2)), select(as_optional(c(&User::a) - 3))));");
     REQUIRE(generate("SELECT a > 0 UNION SELECT a < 0;") ==
             "auto rows = storage.select(union_(select(as_optional(c(&User::a) > 0)), "
             "select(as_optional(c(&User::a) < 0))));");

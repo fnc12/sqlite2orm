@@ -2089,6 +2089,31 @@ TEST_CASE("runtime: a compound SELECT reads a NULL result column back") {
             std::vector<std::string>{"8", "8", "8", "8", "0", "7x"});
 }
 
+// sqlite_orm takes every arm of a compound as an argument of the one call and has no nested form:
+// `union_(union_(a, b), c)` fails to compile over `highest_level`, a member only `select_t` has.
+// Three arms and more of one operator came out nested on master and did not build (card
+// 1869498926172735005). Expected first rows checked against sqlite3 3.51 over `users(a INTEGER)`
+// holding one row with a = 7: 4 of {4, 8, 14}, 7 of {7, 8, 9}, 8, 7.
+TEST_CASE("runtime: a compound of three arms of one operator builds and reads back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 1 UNION SELECT a * 2 UNION SELECT a - 3;"),
+        generate("SELECT a UNION ALL SELECT a + 1 UNION ALL SELECT a + 2;"),
+        generate("SELECT a + 1 INTERSECT SELECT 8 INTERSECT SELECT a + 1;"),
+        generate("SELECT a EXCEPT SELECT a + 1 EXCEPT SELECT a + 2;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) * 2)), select(as_optional(c(&User::a) - 3))));",
+                              "auto rows = storage.select(union_all(select(&User::a), select(c(&User::a) + 1), "
+                              "select(c(&User::a) + 2)));",
+                              "auto rows = storage.select(intersect(select(c(&User::a) + 1), select(8), "
+                              "select(c(&User::a) + 1)));",
+                              "auto rows = storage.select(except(select(&User::a), select(c(&User::a) + 1), "
+                              "select(c(&User::a) + 2)));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"4", "7", "8", "7"});
+}
+
 // The arms left alone still compile, which is the whole reason they are left alone: an
 // `std::optional<double>` beside the `std::optional<int>` a nullable column carries has no common
 // type, and one beside the `std::optional<int>` an `&` comes out as has none either. What the first

@@ -373,7 +373,26 @@ namespace sqlite2orm {
             if (!node) {
                 continue;
             }
-            const std::string nodeType = this->inferTypeFromNode(*node);
+            const AstNode& valueNode = generatedOperandNode(*node);
+            if (dynamic_cast<const NullLiteralNode*>(&valueNode)) {
+                // A NULL has no storage class to widen by; the `as_optional` around the column
+                // is what reads it back.
+                continue;
+            }
+            std::string nodeType;
+            if (const SourceTableColumn* column = this->findReferencedColumn(*node)) {
+                // A reference to a column of the schema is read back as the field the generated
+                // form names, which the schema types; `inferTypeFromNode` sees no more than a name
+                // there and answers `int`. Over `CASE WHEN age > 1 THEN name ELSE NULL END` that
+                // `int` was all `R` was folded from, and `case_<int>` over a TEXT column does not
+                // compile.
+                nodeType = column->cppType;
+            } else if (dynamic_cast<const BlobLiteralNode*>(&valueNode)) {
+                // A blob literal is generated as the `std::vector<char>` a BLOB column is read as.
+                nodeType = "std::vector<char>";
+            } else {
+                nodeType = this->inferTypeFromNode(*node);
+            }
             widest = widest.empty() ? nodeType : widerInferredCppType(widest, nodeType);
         }
         return widest.empty() ? "int" : widest;

@@ -2383,15 +2383,18 @@ namespace {
 
     /**
      *  The one option a table that has no reflected form is left with, carrying `reason` anchored at
-     *  the whole statement — `statementLength` characters of it, from the first — as every hint about
-     *  a table's mapping is.
+     *  the name of the column that reason is about — `columnLocation`, `columnLength` characters —
+     *  since every reason a table's reflected form is blocked for names one column.
      */
-    Option classicalOnlyOption(std::string code, const std::string& reason, size_t statementLength) {
+    Option classicalOnlyOption(std::string code,
+                               const std::string& reason,
+                               SourceLocation columnLocation,
+                               size_t columnLength) {
         Option option{"make_table", std::move(code), kClassicalOptionDescription};
         option.comments.push_back(
             CodegenComment{"the C++26 reflection alternative is not offered for this table: " + reason,
-                           SourceLocation{1, 1},
-                           statementLength});
+                           columnLocation,
+                           columnLength});
         return option;
     }
 
@@ -2447,7 +2450,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
                                       "\n"
                                       "make_table<Users>()";
     Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
-    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 130});
+    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12});
     reflectedOption.minCppStandard = 26;
     REQUIRE(result == CodeGenResult{"struct [[= \"users\"_orm_name]] Users {\n"
                                     "    [[= primary_key().autoincrement()]] std::optional<int64_t> id;\n"
@@ -2466,7 +2469,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
                                                     reflectedOption}}},
                                     {},
                                     {},
-                                    {CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 130}}});
+                                    {CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12}}});
 }
 
 // No released compiler implements P2996 yet, so a consumer targeting C++26 has to be able to ask
@@ -2489,7 +2492,7 @@ TEST_CASE("codegen: CREATE TABLE - an explicit make_table policy keeps the class
                                       "\n"
                                       "make_table<T>()";
     Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
-    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 38});
+    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12});
     reflectedOption.minCppStandard = 26;
     REQUIRE(result == CodeGenResult{"struct T {\n"
                                     "    std::optional<int64_t> a;\n"
@@ -2544,7 +2547,8 @@ TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy cannot revive a
                               {classicalOnlyOption(classicalCode,
                                                    "CHECK on column `a` names members of the struct being declared, "
                                                    "which an annotation cannot",
-                                                   39)}}});
+                                                   SourceLocation{1, 17},
+                                                   1)}}});
 }
 
 // A table-level constraint is no annotation: it stays a call argument, of `make_table<T>(…)` this
@@ -2626,7 +2630,8 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is no C++ identifier keeps
                                                                         "column `first name` is not a C++ identifier, "
                                                                         "and a reflected column is named after the "
                                                                         "member it reflects",
-                                                                        58)}}},
+                                                                        SourceLocation{1, 17},
+                                                                        12)}}},
                                     {CodegenWarning{"table t: column `first name` is not a C++ identifier; the member "
                                                     "holding it is named `first_name`",
                                                     SourceLocation{1, 17},
@@ -2654,7 +2659,8 @@ TEST_CASE("codegen: CREATE TABLE - a text DEFAULT keeps the classical mapping un
                               {classicalOnlyOption(classicalCode,
                                                    "the DEFAULT of column `b` is generated as `\"x\"`, which is not a "
                                                    "constant expression an annotation can carry",
-                                                   46)}}});
+                                                   SourceLocation{1, 28},
+                                                   1)}}});
 }
 
 // `unique_t` is one of sqlite_orm's column constraints (`is_column_constraint`), and a member
@@ -2698,7 +2704,8 @@ TEST_CASE("codegen: CREATE TABLE - a column CHECK keeps the classical mapping un
                               {classicalOnlyOption(classicalCode,
                                                    "CHECK on column `a` names members of the struct being declared, "
                                                    "which an annotation cannot",
-                                                   39)}}});
+                                                   SourceLocation{1, 17},
+                                                   1)}}});
 }
 
 TEST_CASE("codegen: CREATE TABLE - a generated column keeps the classical mapping under C++26") {
@@ -2720,7 +2727,51 @@ TEST_CASE("codegen: CREATE TABLE - a generated column keeps the classical mappin
                               {classicalOnlyOption(classicalCode,
                                                    "generated column `b` names members of the struct being declared, "
                                                    "which an annotation cannot",
-                                                   48)}}});
+                                                   SourceLocation{1, 28},
+                                                   1)}}});
+}
+
+// Both hints a table's mapping produces are underlined by the consumers that read them, so each
+// has to point at what it names: the reason a reflected form is blocked is about one column of the
+// table, and the hint that the reflected form was taken is about the statement, which is its
+// opening keywords — the span a warning about the statement as a whole already uses.
+TEST_CASE("codegen: CREATE TABLE - a mapping hint is anchored at what it names") {
+    // The blocked-reflection hint names a column, and the column is where it points: written
+    // across lines, the table leaves `age` on the third one, far from the CREATE the statement
+    // starts with.
+    const auto blocked = generateTargetingCpp26("CREATE TABLE users (\n"
+                                                "  id INTEGER PRIMARY KEY,\n"
+                                                "  age INTEGER CHECK (age > 0),\n"
+                                                "  name TEXT\n"
+                                                ");");
+    REQUIRE(blocked.decisionPoints.at(0).options.at(0).comments ==
+            std::vector<CodegenComment>{
+                CodegenComment{"the C++26 reflection alternative is not offered for this table: CHECK on column "
+                               "`age` names members of the struct being declared, which an annotation cannot",
+                               SourceLocation{3, 3},
+                               3}});
+    // The hint that the reflected form was taken is about the whole table, and what it underlines
+    // is the keywords that open the statement: the same table written on one line and across three
+    // is underlined the same way, where underlining the statement itself would cover as much of it
+    // as happens to fit on the first line.
+    const std::vector<CodegenComment> createTableHint{
+        CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12}};
+    REQUIRE(generateTargetingCpp26("CREATE TABLE t (a INTEGER);").comments == createTableHint);
+    REQUIRE(generateTargetingCpp26("CREATE TABLE t (\n  a INTEGER\n);").comments == createTableHint);
+    // Those keywords are not always the 12 characters of `CREATE TABLE` — TEMP names three of them
+    // — and SQLite takes a newline between them, which ends the span as it ends every span drawn
+    // inside one line.
+    REQUIRE(generateTargetingCpp26("CREATE TEMP TABLE t (a INTEGER);").comments ==
+            std::vector<CodegenComment>{CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 17}});
+    REQUIRE(generateTargetingCpp26("CREATE\nTABLE t (a INTEGER);").comments ==
+            std::vector<CodegenComment>{CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 6}});
+    // A table no parse built has no keywords to point at, and the hint about it goes out plain.
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    CodeGenerator codeGenerator;
+    codeGenerator.codeGenPolicy = &policy;
+    const CreateTableNode table{"t", {ColumnDef{"a", "INTEGER"}}, false, SourceLocation{1, 1}};
+    REQUIRE(codeGenerator.createTableParts(table).comments == std::vector<CodegenComment>{kTableReflectionComment});
 }
 
 // What a consumer reading `--json` gets: the decision point carries both variants, each with the

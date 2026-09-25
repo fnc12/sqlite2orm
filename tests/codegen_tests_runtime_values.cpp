@@ -1933,6 +1933,33 @@ TEST_CASE("runtime: a select naming no recordset returns the rows SQLite returns
     REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "1,2,3", "x,x,x", "1,1"});
 }
 
+// A select statement's result is declared `auto rows = ...`, and a declared name is in scope in its
+// own initializer, so a ROWS frame spelled `rows(...)` inside it named the variable and the whole
+// statement failed with "use of 'rows' before deduction of 'auto'" (card 1869526477943342646).
+// RANGE and GROUPS never met the name. Expected rows checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding 1, 2 and 3.
+TEST_CASE("runtime: a ROWS window frame compiles beside the result it is declared in") {
+    const std::vector<std::string> statements{
+        generate("SELECT row_number() OVER (ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM users;"),
+        generate("SELECT count(*) OVER (ORDER BY a ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM users;"),
+        generate("SELECT count(*) OVER (ORDER BY a ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM users;"),
+        generate("SELECT count(*) OVER (ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW "
+                 "EXCLUDE CURRENT ROW) FROM users;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(row_number().over(sqlite_orm::rows(preceding(1), current_row())), "
+                "from<Users>());",
+                "auto rows = storage.select(count<Users>().over(order_by(&Users::a), sqlite_orm::rows(preceding(1), "
+                "current_row())));",
+                "auto rows = storage.select(count<Users>().over(order_by(&Users::a), sqlite_orm::rows(preceding(1), "
+                "following(1))));",
+                "auto rows = storage.select(count<Users>().over(order_by(&Users::a), "
+                "sqlite_orm::rows(unbounded_preceding(), current_row()).exclude_current_row()));",
+            });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,2,3", "1,2,2", "2,3,2", "0,1,2"});
+}
+
 // An aliased source names its columns through the alias, while a subquery over the same table
 // names it plainly: two recordsets to sqlite_orm, and a FROM left implicit takes both in and
 // multiplies the rows — three of each where SQLite answers with one (card 1868205961584313865).

@@ -1729,7 +1729,10 @@ namespace sqlite2orm {
         std::string_view frameApi;
         switch (frame.unit) {
             case WindowFrameUnit::rows:
-                frameApi = "rows";
+                // Qualified because a select statement's result is declared `auto rows = ...`, and
+                // that name is in scope in its own initializer: a bare `rows(...)` inside it names
+                // the variable, not the frame, and fails with "use of 'rows' before deduction".
+                frameApi = "sqlite_orm::rows";
                 break;
             case WindowFrameUnit::range:
                 frameApi = "range";

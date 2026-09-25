@@ -1123,6 +1123,7 @@ namespace sqlite2orm {
                                             std::make_move_iterator(sub.warnings.end()));
                 return placeholder;
             }
+            this->context.emittedSubqueryFormNode = &astNode;
             return CodeGenResult{sub.code, std::move(sub.decisionPoints), std::move(sub.warnings)};
         } else if (auto* existsNode = dynamic_cast<const ExistsNode*>(&astNode)) {
             bool compoundSubquery = false;

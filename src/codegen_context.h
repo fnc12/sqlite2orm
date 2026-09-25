@@ -342,6 +342,14 @@ namespace sqlite2orm {
          */
         bool emittedCompoundSelectForm = false;
         /**
+         *  The node whose whole generated code is a sqlite_orm subquery form — a `select(...)` or a
+         *  compound one — set by the scalar-subquery branch as it hands that code back. A consumer
+         *  whose slot has no form for a subquery compares the node it asked for against this one:
+         *  the same subquery one level down, under a call or an operator, leaves a different node
+         *  here and goes on standing where it stands.
+         */
+        const AstNode* emittedSubqueryFormNode = nullptr;
+        /**
          *  The node the enclosing form wraps in parentheses of its own, which is `where(...)` and
          *  nothing else: `where_t` serializes as `WHERE (…)`, while `having(...)`, `on(...)`,
          *  `order_by(...)` and every value slot write their argument bare. A compound subquery

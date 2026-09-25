@@ -702,14 +702,16 @@ TEST_CASE("codegen: no statement hands out a line holding a placeholder beside o
         {"WITH c AS (SELECT a FROM t) SELECT a FROM t UNION SELECT a FROM t GROUP BY a", "/* compound SELECT */"},
         {"CREATE TRIGGER tr AFTER DELETE ON t BEGIN INSERT INTO u SELECT a FROM t GROUP BY a; END", {}},
         // The mirror class, where the form was found and the slot has none for it: a compound
-        // SELECT standing as a scalar subquery. It stays a shape rather than an expression crossed
-        // with the contexts above, because whether it is placeheld depends on the slot —
-        // `where(union_(…))` brings the parentheses a compound needs and keeps generating.
+        // SELECT standing as a scalar subquery, and a subquery standing as a whole column of a CTE.
+        // These stay shapes rather than expressions crossed with the contexts above, because
+        // whether they are placeheld depends on the slot — `where(union_(…))` brings the parentheses
+        // a compound needs and keeps generating.
         {"SELECT (SELECT b FROM u UNION SELECT b FROM w) FROM t", {}},
         {"INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w",
          "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
         {"WITH c AS (SELECT a FROM t) INSERT INTO u(b) SELECT b FROM u UNION SELECT b FROM w",
          "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */"},
+        {"WITH c AS (SELECT (SELECT b FROM u) AS y FROM t) SELECT y FROM c", {}},
     };
 
     size_t checked = 0;
@@ -730,7 +732,7 @@ TEST_CASE("codegen: no statement hands out a line holding a placeholder beside o
         REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
         ++checked;
     }
-    REQUIRE(checked == 85);
+    REQUIRE(checked == 86);
 }
 
 namespace {
@@ -807,4 +809,43 @@ TEST_CASE("codegen: a compound SELECT as a scalar subquery leaves the statement 
             "storage.update_all(set(c(&T::a) = 1), where(union_(select(&U::b), select(&W::b))));");
     REQUIRE(generate("SELECT a FROM t WHERE a IN (SELECT b FROM u UNION SELECT b FROM w)") ==
             "auto rows = storage.select(&T::a, from<T>(), where(in(&T::a, union_(select(&U::b), select(&W::b)))));");
+}
+
+// The other slot with a form for no subquery at all: sqlite_orm reads the columns of a CTE through
+// `extract_colref_expressions`, whose overload for a `select_t` is deleted, so a subquery standing
+// as a WHOLE column of a CTE does not build — `cte<cte_0>().as(select(select(&U::b)))`. It is that
+// slot alone: the same subquery in the CTE's own WHERE, or under an operator or a call inside the
+// column, compiles and is left as it is.
+TEST_CASE("codegen: a subquery as a whole column of a CTE leaves the statement out") {
+    const std::string cteColumnMessage =
+        "a subquery as a whole column of a CTE is not mapped to sqlite_orm codegen: sqlite_orm reads the columns "
+        "of a CTE with extract_colref_expressions(), which declares no overload for a select(...)";
+    const std::string withRequirements =
+        "WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+        "sqlite_orm::literals` scope for `_ctealias`";
+
+    REQUIRE(
+        generateFull("WITH c AS (SELECT (SELECT b FROM u) AS y FROM t) SELECT y FROM c") ==
+        CodeGenResult{
+            {},
+            {},
+            {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 17}, withRequirements, kStatementNotGenerated}});
+    // The card's own input, where the subquery carries a NATURAL JOIN of its own.
+    REQUIRE(
+        generateFull("WITH c AS (SELECT (SELECT u.b FROM u NATURAL JOIN w) AS y) SELECT a FROM t") ==
+        CodeGenResult{
+            {},
+            {},
+            {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 34}, withRequirements, kStatementNotGenerated}});
+
+    REQUIRE(generate("WITH c AS (SELECT (SELECT b FROM u) + 1 AS y FROM t) SELECT y FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(select(&U::b) + 1, from<T>())), "
+            "select(column<cte_0>(&T::y)));");
+    REQUIRE(generate("WITH c AS (SELECT a FROM t WHERE a > (SELECT b FROM u)) SELECT a FROM c") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(&T::a, from<T>(), where(c(&T::a) > select(&U::b)))), "
+            "select(column<cte_0>(&T::a)));");
 }

@@ -1050,7 +1050,8 @@ namespace sqlite2orm {
 
     CodeGenResult
     SelectCodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
-                                                             const std::vector<bool>& widenedResultColumns) {
+                                                             const std::vector<bool>& widenedResultColumns,
+                                                             bool cteBodySelect) {
         struct SubselectAliasRestore {
             CodeGeneratorContext* ctx;
             std::map<std::string, std::string> savedAliases;
@@ -1242,10 +1243,34 @@ namespace sqlite2orm {
             }
             return expr;
         };
+        // A CTE column is read back through sqlite_orm's `extract_colref_expressions`, which is
+        // deleted for a `select_t`, so a subquery standing as a WHOLE column of a CTE has no form
+        // there. It is that slot alone: the same subquery in the CTE's WHERE, or under a call or an
+        // operator, compiles, and the emitter's answer about which node its code came out for is
+        // what tells the two apart. The placeholder stands in an expression slot, so the statement
+        // carrying it is left out whole rather than handed out as a header that does not build.
+        auto cteColumnOrPlaceholder = [&](const AstNode& columnExpression, std::string code) -> std::string {
+            if (!cteBodySelect || code.empty() || this->context.emittedSubqueryFormNode != &columnExpression) {
+                return code;
+            }
+            CodeGenResult placeholder =
+                unsupportedPlaceholder(this->context,
+                                       "(SELECT ...)",
+                                       "a subquery as a whole column of a CTE is not mapped to sqlite_orm codegen: "
+                                       "sqlite_orm reads the columns of a CTE with extract_colref_expressions(), "
+                                       "which declares no overload for a select(...)",
+                                       columnExpression);
+            subWarnings.insert(subWarnings.end(),
+                               std::make_move_iterator(placeholder.warnings.begin()),
+                               std::make_move_iterator(placeholder.warnings.end()));
+            return placeholder.code;
+        };
         auto resultColumnCode = [&](size_t colIndex) -> std::string {
+            const AstNode& columnExpression = *selectNode.columns.at(colIndex).expression;
             return colExprWithBinding(
                 colIndex,
-                colExprAsResultColumn(colIndex, expressionCode(*selectNode.columns.at(colIndex).expression)));
+                colExprAsResultColumn(colIndex,
+                                      cteColumnOrPlaceholder(columnExpression, expressionCode(columnExpression))));
         };
 
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
@@ -1538,7 +1563,8 @@ namespace sqlite2orm {
 
     CodeGenResult
     SelectCodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
-                                                               const std::vector<bool>& widenedResultColumns) {
+                                                               const std::vector<bool>& widenedResultColumns,
+                                                               bool cteBodySelect) {
         if (compoundNode.selects.size() != compoundNode.operators.size() + 1) {
             return CodeGenResult{{}, {}, {"internal: compound SELECT operand count mismatch"}};
         }
@@ -1547,7 +1573,7 @@ namespace sqlite2orm {
             return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
         }
         CodeGenResult accumulated =
-            this->coordinator.tryCodegenSqliteSelectSubexpression(*firstSelect, widenedResultColumns);
+            this->coordinator.tryCodegenSqliteSelectSubexpression(*firstSelect, widenedResultColumns, cteBodySelect);
         if (accumulated.code.empty()) {
             return accumulated;
         }
@@ -1557,7 +1583,7 @@ namespace sqlite2orm {
                 return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
             }
             CodeGenResult nextArm =
-                this->coordinator.tryCodegenSqliteSelectSubexpression(*nextSelect, widenedResultColumns);
+                this->coordinator.tryCodegenSqliteSelectSubexpression(*nextSelect, widenedResultColumns, cteBodySelect);
             accumulated.decisionPoints.insert(accumulated.decisionPoints.end(),
                                               std::make_move_iterator(nextArm.decisionPoints.begin()),
                                               std::make_move_iterator(nextArm.decisionPoints.end()));
@@ -1575,15 +1601,15 @@ namespace sqlite2orm {
         return accumulated;
     }
 
-    CodeGenResult SelectCodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node) {
+    CodeGenResult SelectCodeGenerator::tryCodegenSelectLikeSubquery(const AstNode& node, bool cteBodySelect) {
         if (auto* selectNode = dynamic_cast<const SelectNode*>(&node)) {
-            return this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode);
+            return this->coordinator.tryCodegenSqliteSelectSubexpression(*selectNode, {}, cteBodySelect);
         }
         if (auto* compoundNode = dynamic_cast<const CompoundSelectNode*>(&node)) {
-            return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundNode);
+            return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundNode, {}, cteBodySelect);
         }
         if (auto* withQueryNode = dynamic_cast<const WithQueryNode*>(&node)) {
-            auto inner = this->coordinator.tryCodegenSelectLikeSubquery(*withQueryNode->statement);
+            auto inner = this->coordinator.tryCodegenSelectLikeSubquery(*withQueryNode->statement, cteBodySelect);
             std::vector<CodegenWarning> subWarnings = std::move(inner.warnings);
             subWarnings.insert(subWarnings.begin(),
                                "nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs; generated code "

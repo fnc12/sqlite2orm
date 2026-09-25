@@ -99,9 +99,14 @@ namespace sqlite2orm {
         }
     };
 
+    /**
+     *  `GROUP BY expr, ...` on its own: SQLite reads the HAVING condition as a clause of the
+     *  select core rather than as a part of this one (`groupby_opt having_opt` in its grammar), and
+     *  takes it with no GROUP BY in front of it — `SELECT count(*) FROM t HAVING count(*) > 1` runs
+     *  on 3.51.0 — so `SelectNode::having` is where the condition is kept.
+     */
     struct GroupByClause {
         std::vector<std::shared_ptr<AstNode>> expressions;
-        std::shared_ptr<AstNode> having;
 
         bool operator==(const GroupByClause& other) const {
             if (this->expressions.size() != other.expressions.size())
@@ -114,11 +119,7 @@ namespace sqlite2orm {
                 if (*this->expressions.at(i) != *other.expressions.at(i))
                     return false;
             }
-            if (!this->having && !other.having)
-                return true;
-            if (!this->having || !other.having)
-                return false;
-            return *this->having == *other.having;
+            return true;
         }
     };
 
@@ -187,6 +188,7 @@ namespace sqlite2orm {
         std::shared_ptr<AstNode> whereClause;
         std::vector<OrderByTerm> orderBy;
         std::optional<GroupByClause> groupBy;
+        std::shared_ptr<AstNode> having;
         std::vector<NamedWindowDefinition> namedWindows;
         AstNodePointer limitValue;
         AstNodePointer offsetValue;
@@ -204,6 +206,10 @@ namespace sqlite2orm {
             if (!astNodesEqual(this->limitValue, o->limitValue))
                 return false;
             if (!astNodesEqual(this->offsetValue, o->offsetValue))
+                return false;
+            if (!this->having != !o->having)
+                return false;
+            if (this->having && *this->having != *o->having)
                 return false;
             if (!this->whereClause && !o->whereClause)
                 return true;

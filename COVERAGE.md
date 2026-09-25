@@ -191,7 +191,7 @@ Statuses:
 - [x] FROM join-clause (INNER/LEFT/CROSS/NATURAL…, ON / USING)
 - [x] WHERE expr → `where(condition)`
 - [x] GROUP BY expr-list → `group_by(...)`
-- [x] HAVING expr → `group_by(...).having(condition)`
+- [~] HAVING expr → `group_by(...).having(condition)`; parsed with no GROUP BY in front of it, the form SQLite also takes, but sqlite_orm has no spelling for that one (`group_by()` with no term is not SQL, and grouping by a constant is a different query over an empty table), so such a statement is not generated and warns instead
 - [x] WINDOW name AS (window-defn) → trailing `window("name", ...)` args to `select(...)` (sqlite_orm)
 - [x] ORDER BY ordering-term → `order_by(&T::col).asc()` / `.desc()`
 - [x] LIMIT expr → `limit(n)`

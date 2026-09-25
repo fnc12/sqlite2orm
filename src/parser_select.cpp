@@ -75,12 +75,18 @@ namespace sqlite2orm {
                     return nullptr;
                 groupByClause.expressions.push_back(std::move(nextGroupByTerm));
             }
-            if (match(TokenType::kwHaving)) {
-                groupByClause.having = this->parser.parseExpression();
-                if (!groupByClause.having)
-                    return nullptr;
-            }
             node->groupBy = std::move(groupByClause);
+        }
+
+        // HAVING is a clause of the select core of its own, the way SQLite reads it
+        // (`groupby_opt having_opt`): it takes one with no GROUP BY in front of it and answers with
+        // the aggregate over the whole table, `SELECT count(*) FROM t HAVING count(*) > 1` on
+        // 3.51.0. Reading it only as a tail of GROUP BY left the clause in the token stream, and
+        // the code generated for what was parsed answered rows the SQL does not.
+        if (match(TokenType::kwHaving)) {
+            node->having = this->parser.parseExpression();
+            if (!node->having)
+                return nullptr;
         }
 
         if (match(TokenType::kwWindow)) {

@@ -416,6 +416,34 @@ TEST_CASE("codegen: SELECT with GROUP BY HAVING") {
                       "group_by(&Users::name).having(count<Users>() > 1));");
 }
 
+// SQLite takes a HAVING with no GROUP BY in front of it and answers the aggregate over the whole
+// table only where the condition holds — over a table of one row `SELECT count(*) FROM users
+// HAVING count(*) > 1` answers no row on 3.51.0, while the same select without the condition
+// answers one. sqlite_orm spells a HAVING condition only as a tail of `group_by(...)`, and there is
+// no stand-in for the form: `group_by()` with no term is not SQL, and grouping by a constant is a
+// different query (over an empty table `... GROUP BY NULL HAVING count(*) >= 0` answers no row
+// where the HAVING form answers one). So the statement is not generated and the warning underlines
+// the condition, rather than the select being handed out without it.
+TEST_CASE("codegen: SELECT with HAVING and no GROUP BY is not generated") {
+    REQUIRE(generateFull("SELECT count(*) FROM users HAVING count(*) > 1") ==
+            CodeGenResult{"/* SELECT with HAVING and no GROUP BY */",
+                          {},
+                          {CodegenWarning{"HAVING without GROUP BY is not mapped to sqlite_orm codegen; sqlite_orm "
+                                          "spells a HAVING condition only as group_by(...).having(...)",
+                                          SourceLocation{1, 35},
+                                          12}}});
+}
+
+TEST_CASE("codegen: HAVING and no GROUP BY in a subquery leaves the statement out") {
+    REQUIRE(
+        generateFull("SELECT * FROM users WHERE id IN (SELECT count(*) FROM users HAVING count(*) > 1)") ==
+        CodeGenResult{{},
+                      {},
+                      {"HAVING without GROUP BY in subquery is not mapped to sqlite_orm select(...)",
+                       CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 27}, 54},
+                       kStatementNotGenerated}});
+}
+
 TEST_CASE("codegen: SELECT with WHERE + ORDER BY + LIMIT") {
     auto result = generate("SELECT * FROM users WHERE age > 18 ORDER BY name LIMIT 10");
     REQUIRE(result ==

@@ -771,6 +771,7 @@ namespace sqlite2orm {
         }
 
         if (selectNode.whereClause) {
+            const ParenthesizedConditionScope conditionScope{this->context, *selectNode.whereClause};
             appendClause("where(" + expressionCode(*selectNode.whereClause) + ")");
         }
 
@@ -1440,6 +1441,7 @@ namespace sqlite2orm {
 
         if (selectNode.whereClause) {
             this->context.recordFormWithoutDefaultConstructor("WHERE");
+            const ParenthesizedConditionScope conditionScope{this->context, *selectNode.whereClause};
             tailParts.push_back("where(" + expressionCode(*selectNode.whereClause) + ")");
         }
 
@@ -1566,6 +1568,7 @@ namespace sqlite2orm {
                 return CodeGenResult{{}, std::move(accumulated.decisionPoints), std::move(accumulated.warnings)};
             }
             this->context.recordFormWithoutDefaultConstructor("a compound SELECT");
+            this->context.emittedCompoundSelectForm = true;
             accumulated.code = std::string(compoundSelectApi(compoundNode.operators.at(operatorIndex))) + "(" +
                                accumulated.code + ", " + nextArm.code + ")";
         }

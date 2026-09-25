@@ -334,6 +334,22 @@ namespace sqlite2orm {
          */
         bool countedAliasedSource = false;
         /**
+         *  Set by the compound-select emitter when the form it handed back is a compound one —
+         *  `union_(...)`, `union_all(...)`, `intersect(...)`, `except(...)`. A compound is a
+         *  statement to sqlite_orm, not an expression: its serializer writes no parentheses of its
+         *  own, so it only reads back as a subquery where the enclosing form supplies them. The
+         *  scalar-subquery branch asks this back and leaves the statement unmapped otherwise.
+         */
+        bool emittedCompoundSelectForm = false;
+        /**
+         *  The node the enclosing form wraps in parentheses of its own, which is `where(...)` and
+         *  nothing else: `where_t` serializes as `WHERE (…)`, while `having(...)`, `on(...)`,
+         *  `order_by(...)` and every value slot write their argument bare. A compound subquery
+         *  standing here is the one place it comes out as the SQL it was read from, so the
+         *  scalar-subquery branch compares the node it was asked for against this one.
+         */
+        const AstNode* parenthesizedConditionNode = nullptr;
+        /**
          *  The sqlite_orm recordsets the emitter has named while the select at hand was generated —
          *  `&T::x`, `alias_column<alias_a<T>>(&T::x)`, `asterisk<T>()`, `count<T>()` and the rest.
          *  A select that carries no `from<...>()` gets its FROM from sqlite_orm, built out of every

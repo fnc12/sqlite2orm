@@ -2647,8 +2647,11 @@ TEST_CASE("codegen: a compound SELECT standing as a subquery is not widened") {
             "\n"
             "auto storage = make_storage(\"\",\n"
             "    make_view<V>(union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2))));");
+    // The raw insert is the one of them that has no form for a compound at all: sqlite_orm's
+    // `insert(into<T>(), …)` trips `static_assert(… "Raw insert has invalid arguments")` on one, so
+    // the statement stands as a placeholder of its own instead of as code that does not build.
     REQUIRE(generate("INSERT INTO orders SELECT a + 1 FROM users UNION SELECT a * 2 FROM users;") ==
-            "storage.insert(into<Orders>(), union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2)));");
+            "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */");
     REQUIRE(generate("SELECT id FROM users WHERE a IN (SELECT a + 1 FROM users UNION SELECT a * 2 FROM users);") ==
             "auto rows = storage.select(&Users::id, where(in(&Users::a, union_(select(c(&Users::a) + 1), "
             "select(c(&Users::a) * 2)))));");

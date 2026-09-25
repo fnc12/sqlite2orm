@@ -242,6 +242,87 @@ TEST_CASE("joinGeneratedCode: DML-only batch keeps statements, uniques the resul
                                           "auto rows2 = storage.select(2);\n");
 }
 
+// The map of a joined batch is what a two-pane consumer highlights from: each fragment of the code
+// names the statement it was generated from and the text of that statement in the SQL. A CREATE
+// TABLE is written in two places — the struct and the make_table() argument — so it is on the map
+// twice, and the index generated before the table it is made for carries its own place with it.
+TEST_CASE("joinGeneratedCodeWithSpans: every statement is mapped onto the code it generated") {
+    const auto results = processMultiSql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);\n"
+                                         "CREATE INDEX idx_name ON users(name);\n"
+                                         "INSERT INTO users VALUES (1, 'Bob');\n"
+                                         "SELECT name FROM users WHERE id > 1;\n");
+    const JoinedGeneratedCode joined = joinGeneratedCodeWithSpans(results);
+    REQUIRE(joined.code == "struct Users {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::string> name;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_index(\"idx_name\", indexed_column(&Users::name)),\n"
+                           "    make_table(\"users\",\n"
+                           "        make_column(\"id\", &Users::id, primary_key()),\n"
+                           "        make_column(\"name\", &Users::name)));\n"
+                           "\n"
+                           "storage.insert(Users{1, \"Bob\"});\n"
+                           "auto rows = storage.select(&Users::name, where(c(&Users::id) > 1));\n");
+    REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 85, 0, SourceLocation{1, 1}, 54},
+                                                           {123, 52, 1, SourceLocation{2, 1}, 36},
+                                                           {181, 116, 0, SourceLocation{1, 1}, 54},
+                                                           {301, 32, 2, SourceLocation{3, 1}, 35},
+                                                           {334, 67, 3, SourceLocation{4, 1}, 35}});
+    REQUIRE(joinGeneratedCode(results) == joined.code);
+}
+
+// A statement codegen threw away is on the map by nothing at all, the way it reports no hints
+// either: `SELECT * FROM gen` reads a table that is not generated and is left out whole. The table
+// it reads is a different matter — it is left out of the storage but still generated as a comment
+// naming it, and that comment is code of its own, which the map says as much about as any other.
+TEST_CASE("joinGeneratedCodeWithSpans: a statement that generated nothing is on no span") {
+    const auto results =
+        processMultiSql("CREATE TABLE ok(a INTEGER PRIMARY KEY);\n"
+                        "CREATE TABLE gen(x INTEGER PRIMARY KEY, y AS (x + 0x10000000000000000) STORED);\n"
+                        "SELECT * FROM gen;\n"
+                        "SELECT a FROM ok;");
+    const JoinedGeneratedCode joined = joinGeneratedCodeWithSpans(results);
+    REQUIRE(joined.code == "struct Ok {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"ok\",\n"
+                           "        make_column(\"a\", &Ok::a, primary_key())));\n"
+                           "\n"
+                           "/* CREATE TABLE gen — not supported for sqlite_orm */\n"
+                           "auto rows = storage.select(&Ok::a);\n");
+    REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 44, 0, SourceLocation{1, 1}, 38},
+                                                           {82, 65, 0, SourceLocation{1, 1}, 38},
+                                                           {151, 53, 1, SourceLocation{2, 1}, 78},
+                                                           {205, 35, 3, SourceLocation{4, 1}, 16}});
+}
+
+// Offsets are characters, not bytes, on both sides of the map: a quoted name holding `ï` and `🙂`
+// is 8 characters of SQL and reaches the generated code inside a string literal, where it moves
+// what follows it by the 7 characters it is written with and not by the 11 bytes they take. The
+// last span starts at 175 rather than at 179 for exactly that reason.
+TEST_CASE("joinGeneratedCodeWithSpans: offsets are counted in characters") {
+    const auto results = processMultiSql("CREATE TABLE \"naïve🙂\" (id INTEGER);\n"
+                                         "SELECT id\n"
+                                         "  FROM \"naïve🙂\";\n");
+    const JoinedGeneratedCode joined = joinGeneratedCodeWithSpans(results);
+    REQUIRE(joined.code == "struct Nau00efveu0001f642 {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"naïve🙂\",\n"
+                           "        make_column(\"id\", &Nau00efveu0001f642::id)));\n"
+                           "\n"
+                           "auto rows = storage.select(&Nau00efveu0001f642::id);\n");
+    REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 61, 0, SourceLocation{1, 1}, 34},
+                                                           {99, 72, 0, SourceLocation{1, 1}, 34},
+                                                           {175, 52, 1, SourceLocation{2, 1}, 25}});
+}
+
 TEST_CASE("processMultiSql: validation error does not block other statements") {
     std::vector<ProcessSqlResult> expected;
     expected.push_back(processSql("INSERT INTO t VALUES (1);"));
@@ -450,6 +531,33 @@ TEST_CASE("joinGeneratedCode: functional savepoints nest") {
                                           "    });\n"
                                           "    return true;\n"
                                           "});\n");
+}
+
+// Folding is where several statements end up inside one block of code, and the map follows them
+// in: every statement wrapped by a savepoint keeps its own place, indented along with its text,
+// and the SAVEPOINT holds both the line that opens the lambda and the one that closes it.
+TEST_CASE("joinGeneratedCodeWithSpans: a folded savepoint maps the statements inside it") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["savepoint_style"] = "functional";
+    const auto results =
+        processMultiSql("SAVEPOINT outer_sp; DELETE FROM t; SAVEPOINT inner_sp; DELETE FROM u; RELEASE inner_sp; "
+                        "RELEASE outer_sp;",
+                        &policy);
+    const JoinedGeneratedCode joined = joinGeneratedCodeWithSpans(results);
+    REQUIRE(joined.code == "storage.savepoint(\"outer_sp\", [&] {\n"
+                           "    storage.remove_all<T>();\n"
+                           "    storage.savepoint(\"inner_sp\", [&] {\n"
+                           "        storage.remove_all<U>();\n"
+                           "        return true;\n"
+                           "    });\n"
+                           "    return true;\n"
+                           "});\n");
+    REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 35, 0, SourceLocation{1, 1}, 18},
+                                                           {40, 24, 1, SourceLocation{1, 21}, 13},
+                                                           {69, 35, 2, SourceLocation{1, 36}, 18},
+                                                           {113, 24, 3, SourceLocation{1, 56}, 13},
+                                                           {146, 20, 2, SourceLocation{1, 36}, 18},
+                                                           {171, 16, 0, SourceLocation{1, 1}, 18}});
 }
 
 TEST_CASE("joinGeneratedCode: functional savepoint without RELEASE degrades to the manual call") {

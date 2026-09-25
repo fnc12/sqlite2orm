@@ -43,4 +43,27 @@ namespace sqlite2orm {
     /** Join `codegen.code` from successful results into a single string, separating DDL and DML groups with a blank line. */
     std::string joinGeneratedCode(const std::vector<ProcessSqlResult>& results);
 
+    /** The joined code of a batch together with the map of which statement each stretch of it came from. */
+    struct JoinedGeneratedCode {
+        std::string code;
+        /**
+         *  Statement-level map of `code`, in the order the code is written in: a span per fragment
+         *  a statement generated, naming it by its index in the `results` the code was joined from
+         *  and by the SQL text it was parsed from. Every statement the batch generated code for is
+         *  named — a CREATE TABLE twice, once for its struct and once for its `make_table(...)`
+         *  argument — and a statement that generated nothing is named by no span at all.
+         */
+        std::vector<GeneratedCodeSpan> spans;
+
+        bool operator==(const JoinedGeneratedCode&) const = default;
+    };
+
+    /**
+     *  Same as `joinGeneratedCode(results)`, with the map of the joined text next to it: a
+     *  consumer showing SQL and generated code side by side highlights the one from the other
+     *  without parsing either. The joining slices and reorders what the statements generated, so
+     *  this is the only place that can tell where a statement ended up.
+     */
+    JoinedGeneratedCode joinGeneratedCodeWithSpans(const std::vector<ProcessSqlResult>& results);
+
 }  // namespace sqlite2orm

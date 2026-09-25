@@ -324,7 +324,7 @@ TEST_CASE("codegen: CREATE TRIGGER - a WHEN clause sqlite_orm can default-constr
             generateFull("CREATE TRIGGER tr AFTER INSERT ON t WHEN NEW.x = (SELECT count(*) OVER (PARTITION BY y "
                          "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t) BEGIN DELETE FROM t; END");
         REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<T>().when(c(new_(&T::x)) == "
-                               "select(count<T>().over(partition_by(&T::y), rows(unbounded_preceding(), "
+                               "select(count<T>().over(partition_by(&T::y), sqlite_orm::rows(unbounded_preceding(), "
                                "current_row())))).begin(remove_all<T>()));");
         REQUIRE(result.warnings.empty());
     }

@@ -79,6 +79,9 @@ TEST_CASE("parser: FROM schema.table") {
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
+// A comma parses as `crossJoin`, and the item records that the operator was the comma: the two
+// spellings answer the same rows, but only the written `CROSS JOIN` keeps SQLite from reordering
+// the tables, and codegen reads the difference. The `true` below is the whole of that record.
 TEST_CASE("parser: FROM two tables comma") {
     auto parseResult = parse("SELECT * FROM users, posts");
     REQUIRE(parseResult);
@@ -89,7 +92,8 @@ TEST_CASE("parser: FROM two tables comma") {
         FromClauseItem{JoinKind::crossJoin,
                        FromTableClause{std::nullopt, std::string("posts"), std::nullopt},
                        nullptr,
-                       {}},
+                       {},
+                       true},
     };
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
@@ -114,6 +118,70 @@ TEST_CASE("parser: LEFT OUTER JOIN USING") {
     REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::leftOuterJoin);
     REQUIRE(sel.fromClause.at(1).usingColumnNames == std::vector<std::string>{"user_id"});
     REQUIRE(sel.fromClause.at(1).onExpression == nullptr);
+}
+
+// sqlite3 reads a constraint after CROSS JOIN the way it reads one after any other join
+// operator: `SELECT a.name FROM users a CROSS JOIN orders b ON a.id = b.uid` answers the rows the
+// ON keeps, not the whole cartesian product.
+TEST_CASE("parser: CROSS JOIN ON") {
+    auto parseResult = parse("SELECT * FROM users CROSS JOIN posts ON users.id = posts.user_id");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE_FALSE(sel.fromClause.at(1).leadingJoinWrittenAsComma);
+    REQUIRE(sel.fromClause.at(1).table.tableName == "posts");
+    REQUIRE(sel.fromClause.at(1).onExpression != nullptr);
+    REQUIRE(sel.fromClause.at(1).usingColumnNames.empty());
+}
+
+TEST_CASE("parser: CROSS JOIN USING") {
+    auto parseResult = parse("SELECT * FROM users CROSS JOIN posts USING (user_id)");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).usingColumnNames == std::vector<std::string>{"user_id"});
+    REQUIRE(sel.fromClause.at(1).onExpression == nullptr);
+}
+
+// A comma is a join operator of its own, and sqlite3 takes a constraint after it too. It parses
+// as `crossJoin` like the keyword does, and is told apart from it by the record of the spelling.
+TEST_CASE("parser: comma join ON") {
+    auto parseResult = parse("SELECT * FROM users, posts ON users.id = posts.user_id");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).leadingJoinWrittenAsComma);
+    REQUIRE(sel.fromClause.at(1).onExpression != nullptr);
+}
+
+// sqlite3 takes a USING after a comma as well: `SELECT * FROM t1, t2 USING (a)` over rows
+// (1,2),(3,4) and (1,9),(5,6) answers the one row 1|2|9.
+TEST_CASE("parser: comma join USING") {
+    auto parseResult = parse("SELECT * FROM t1, t2 USING (a)");
+    REQUIRE(parseResult);
+    const auto& sel = requireNode<SelectNode>(parseResult);
+    REQUIRE(sel.fromClause.size() == 2);
+    REQUIRE(sel.fromClause.at(1).leadingJoin == JoinKind::crossJoin);
+    REQUIRE(sel.fromClause.at(1).leadingJoinWrittenAsComma);
+    REQUIRE(sel.fromClause.at(1).usingColumnNames == std::vector<std::string>{"a"});
+    REQUIRE(sel.fromClause.at(1).onExpression == nullptr);
+}
+
+// The one join operator that takes no constraint: sqlite3 answers "a NATURAL join may not have an
+// ON or USING clause". The keyword is left unread, so the statement ends on a token of its own.
+TEST_CASE("parser: error on NATURAL JOIN with ON") {
+    auto parseResult = parse("SELECT * FROM users NATURAL JOIN posts ON users.id = posts.user_id");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on NATURAL JOIN with USING") {
+    auto parseResult = parse("SELECT * FROM users NATURAL JOIN posts USING (user_id)");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
 }
 
 TEST_CASE("parser: comma then INNER JOIN") {
@@ -431,6 +499,52 @@ TEST_CASE("parser: error on HAVING without an expression") {
     REQUIRE(parseResult.errors.size() == 1);
 }
 
+// HAVING is a clause of the select core of its own: SQLite takes one with no GROUP BY in front of
+// it and answers the aggregate over the whole table, `SELECT count(*) FROM users HAVING count(*) >
+// 1` on 3.51.0. Read as a tail of GROUP BY alone, the clause was left in the token stream and the
+// SELECT parsed as the query without it.
+TEST_CASE("parser: SELECT with HAVING and no GROUP BY") {
+    auto parseResult = parse("SELECT count(*) FROM users HAVING count(*) > 1");
+    REQUIRE(parseResult);
+    SelectNode expected({});
+    expected.columns = {SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""}};
+    expected.fromClause = fromOne("users");
+    expected.having = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                         makeFunc("count", false, true),
+                                                         makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<SelectNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: error on HAVING without an expression and no GROUP BY") {
+    auto parseResult = parse("SELECT count(*) FROM users HAVING");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+// The clause stands where SQLite reads it, after GROUP BY and before WINDOW, ORDER BY and LIMIT:
+// `SELECT count(*) FROM users ORDER BY 1 HAVING count(*) > 1` and the LIMIT form of it are both
+// `near "HAVING": syntax error` on 3.51.0.
+TEST_CASE("parser: SELECT with HAVING before ORDER BY and LIMIT") {
+    auto parseResult = parse("SELECT count(*) FROM users HAVING count(*) > 1 ORDER BY 1 LIMIT 2");
+    REQUIRE(parseResult);
+    const auto& selectNode = requireNode<SelectNode>(parseResult);
+    REQUIRE(selectNode.having != nullptr);
+    REQUIRE(selectNode.orderBy.size() == 1);
+    REQUIRE(*selectNode.limitValue == *makeNode<IntegerLiteralNode>("2"));
+}
+
+TEST_CASE("parser: error on HAVING after ORDER BY") {
+    auto parseResult = parse("SELECT count(*) FROM users ORDER BY 1 HAVING count(*) > 1");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
+TEST_CASE("parser: error on HAVING after LIMIT") {
+    auto parseResult = parse("SELECT count(*) FROM users LIMIT 1 HAVING count(*) > 1");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+}
+
 // --- GROUP BY ---
 
 TEST_CASE("parser: SELECT with GROUP BY") {
@@ -442,7 +556,7 @@ TEST_CASE("parser: SELECT with GROUP BY") {
         SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""},
     };
     expected.fromClause = fromOne("users");
-    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}, nullptr};
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}};
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -455,10 +569,10 @@ TEST_CASE("parser: SELECT with GROUP BY HAVING") {
         SelectColumn{std::shared_ptr<AstNode>(makeFunc("count", false, true)), ""},
     };
     expected.fromClause = fromOne("users");
-    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")},
-                                     makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                        makeFunc("count", false, true),
-                                                                        makeNode<IntegerLiteralNode>("1"))};
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}};
+    expected.having = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                         makeFunc("count", false, true),
+                                                         makeNode<IntegerLiteralNode>("1"));
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -472,7 +586,7 @@ TEST_CASE("parser: SELECT with GROUP BY multiple columns") {
     };
     expected.fromClause = fromOne("users");
     expected.groupBy =
-        GroupByClause{{makeSharedNode<ColumnRefNode>("department"), makeSharedNode<ColumnRefNode>("role")}, nullptr};
+        GroupByClause{{makeSharedNode<ColumnRefNode>("department"), makeSharedNode<ColumnRefNode>("role")}};
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
 
@@ -505,7 +619,7 @@ TEST_CASE("parser: SELECT with all clauses") {
     expected.whereClause = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
                                                               makeNode<ColumnRefNode>("age"),
                                                               makeNode<IntegerLiteralNode>("18"));
-    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}, nullptr};
+    expected.groupBy = GroupByClause{{makeSharedNode<ColumnRefNode>("name")}};
     expected.orderBy = {OrderByTerm{makeSharedNode<ColumnRefNode>("name"), SortDirection::asc}};
     expected.limitValue = makeNode<IntegerLiteralNode>("10");
     expected.offsetValue = makeNode<IntegerLiteralNode>("5");

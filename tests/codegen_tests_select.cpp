@@ -162,6 +162,102 @@ TEST_CASE("codegen: LEFT OUTER JOIN CROSS JOIN NATURAL JOIN") {
             "auto rows = storage.get_all<Users>(natural_join<Posts>());");
 }
 
+// SQLite reads a constraint after CROSS JOIN the way it reads one after JOIN, and answers the
+// rows the constraint keeps; `cross_join_t` carries no constraint at all, so the ON is generated
+// as the plain join whose form takes one. The rows are the same — a CROSS JOIN differs from a
+// JOIN only in that SQLite will not reorder the tables — and that difference is what the warning
+// is about.
+TEST_CASE("codegen: CROSS JOIN ON generates the constraint") {
+    auto result = generateFull("SELECT * FROM users CROSS JOIN posts ON users.id = posts.user_id");
+    REQUIRE(result.code == "auto rows = storage.get_all<Users>(join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"CROSS JOIN carrying a constraint has no sqlite_orm form; generated join<Posts>(...) "
+                               "answers the same rows, but leaves SQLite free to reorder the join",
+                               SourceLocation{1, 41},
+                               24}});
+}
+
+// The query the card was written from: sqlite3 answers the three rows the ON keeps, where the
+// cartesian product of the two tables is nine.
+TEST_CASE("codegen: CROSS JOIN ON over aliased sources generates the constraint") {
+    auto result = generateFull("SELECT a.name FROM users a CROSS JOIN orders b ON a.id = b.uid ORDER BY a.id");
+    REQUIRE(result.code == "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+                           "join<alias_b<Orders>>(on(alias_column<alias_a<Users>>(&Users::id) == "
+                           "alias_column<alias_b<Orders>>(&Orders::uid))), "
+                           "order_by(alias_column<alias_a<Users>>(&Users::id)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"CROSS JOIN carrying a constraint has no sqlite_orm form; generated "
+                               "join<alias_b<Orders>>(...) answers the same rows, but leaves SQLite free to reorder "
+                               "the join",
+                               SourceLocation{1, 51},
+                               12}});
+}
+
+// A comma is a join operator of its own, and SQLite takes a constraint after it too. It is the
+// one spelling of `crossJoin` that `join<T>(...)` translates exactly: a comma raises no
+// reordering barrier — measured on sqlite3 3.51.0 with EXPLAIN QUERY PLAN, `FROM big, small ON
+// big.x = small.y` searches the indexed table just as `JOIN` does, where `CROSS JOIN` scans both
+// tables in the order written — so there is nothing to warn about, and the empty list below is
+// what says we do not tell the caller his query became worse than he wrote it.
+TEST_CASE("codegen: comma join ON generates the constraint") {
+    auto result = generateFull("SELECT * FROM users, posts ON users.id = posts.user_id");
+    REQUIRE(result.code == "auto rows = storage.get_all<Users>(join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+// The same for a USING after a comma, which sqlite3 takes as well: `SELECT * FROM t1, t2 USING
+// (a)` over rows (1,2),(3,4) and (1,9),(5,6) answers the one row 1|2|9.
+TEST_CASE("codegen: comma join USING generates the constraint") {
+    auto result = generateFull("SELECT * FROM t1, t2 USING (a)");
+    REQUIRE(result.code == "auto rows = storage.get_all<T1>(join<T2>(using_(&T2::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+}
+
+// A USING names its columns with no node of its own to anchor at, so this one warns unanchored.
+TEST_CASE("codegen: CROSS JOIN USING generates the constraint") {
+    auto result = generateFull("SELECT * FROM users CROSS JOIN posts USING (user_id)");
+    REQUIRE(result.code == "auto rows = storage.get_all<Users>(join<Posts>(using_(&Posts::user_id)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"CROSS JOIN carrying a constraint has no sqlite_orm form; generated join<Posts>(...) "
+                               "answers the same rows, but leaves SQLite free to reorder the join"}});
+}
+
+TEST_CASE("codegen: CROSS JOIN USING multiple columns generates the constraint") {
+    auto result = generateFull("SELECT * FROM t1 CROSS JOIN t2 USING (a, b)");
+    REQUIRE(result.code ==
+            "auto rows = storage.get_all<T1>(join<T2>(on(c(&T1::a) == c(&T2::a) and c(&T1::b) == c(&T2::b))));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{CodegenWarning{
+                                   "CROSS JOIN carrying a constraint has no sqlite_orm form; generated join<T2>(...) "
+                                   "answers the same rows, but leaves SQLite free to reorder the join"}});
+}
+
+// A subquery generates its joins through a loop of its own, which reads the constraint the same way.
+TEST_CASE("codegen: CROSS JOIN ON inside a subquery generates the constraint") {
+    auto result =
+        generateFull("SELECT name FROM users WHERE id IN (SELECT user_id FROM posts CROSS JOIN comments ON posts.id = "
+                     "comments.post_id)");
+    REQUIRE(result.code == "auto rows = storage.select(&Users::name, from<Users>(), where(in(&Users::id, "
+                           "select(&Posts::user_id, join<Comments>(on(c(&Posts::id) == &Comments::post_id))))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"CROSS JOIN carrying a constraint has no sqlite_orm form; generated join<Comments>(...) "
+                               "answers the same rows, but leaves SQLite free to reorder the join",
+                               SourceLocation{1, 86},
+                               27}});
+}
+
+// A CROSS JOIN with nothing after it is still the form sqlite_orm has: the constraint is what the
+// generated join is picked by, not the keyword.
+TEST_CASE("codegen: CROSS JOIN without a constraint keeps cross_join") {
+    REQUIRE(generateFull("SELECT * FROM users CROSS JOIN posts") ==
+            CodeGenResult{"auto rows = storage.get_all<Users>(cross_join<Posts>());",
+                          {apiLevelStarSelectDp(1, "Users", "cross_join<Posts>()")},
+                          {}});
+}
+
 TEST_CASE("codegen: INNER JOIN USING one column") {
     REQUIRE(generate("SELECT * FROM users INNER JOIN posts USING (user_id)") ==
             "auto rows = storage.get_all<Users>(inner_join<Posts>(using_(&Posts::user_id)));");
@@ -318,6 +414,34 @@ TEST_CASE("codegen: SELECT with GROUP BY HAVING") {
     auto result = generate("SELECT name, count(*) FROM users GROUP BY name HAVING count(*) > 1");
     REQUIRE(result == "auto rows = storage.select(columns(&Users::name, count<Users>()), "
                       "group_by(&Users::name).having(count<Users>() > 1));");
+}
+
+// SQLite takes a HAVING with no GROUP BY in front of it and answers the aggregate over the whole
+// table only where the condition holds — over a table of one row `SELECT count(*) FROM users
+// HAVING count(*) > 1` answers no row on 3.51.0, while the same select without the condition
+// answers one. sqlite_orm spells a HAVING condition only as a tail of `group_by(...)`, and there is
+// no stand-in for the form: `group_by()` with no term is not SQL, and grouping by a constant is a
+// different query (over an empty table `... GROUP BY NULL HAVING count(*) >= 0` answers no row
+// where the HAVING form answers one). So the statement is not generated and the warning underlines
+// the condition, rather than the select being handed out without it.
+TEST_CASE("codegen: SELECT with HAVING and no GROUP BY is not generated") {
+    REQUIRE(generateFull("SELECT count(*) FROM users HAVING count(*) > 1") ==
+            CodeGenResult{"/* SELECT with HAVING and no GROUP BY */",
+                          {},
+                          {CodegenWarning{"HAVING without GROUP BY is not mapped to sqlite_orm codegen; sqlite_orm "
+                                          "spells a HAVING condition only as group_by(...).having(...)",
+                                          SourceLocation{1, 35},
+                                          12}}});
+}
+
+TEST_CASE("codegen: HAVING and no GROUP BY in a subquery leaves the statement out") {
+    REQUIRE(
+        generateFull("SELECT * FROM users WHERE id IN (SELECT count(*) FROM users HAVING count(*) > 1)") ==
+        CodeGenResult{{},
+                      {},
+                      {"HAVING without GROUP BY in subquery is not mapped to sqlite_orm select(...)",
+                       CodegenWarning{"IN (SELECT ...) is not mapped to sqlite_orm codegen", SourceLocation{1, 27}, 54},
+                       kStatementNotGenerated}});
 }
 
 TEST_CASE("codegen: SELECT with WHERE + ORDER BY + LIMIT") {

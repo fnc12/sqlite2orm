@@ -191,7 +191,7 @@ Statuses:
 - [x] FROM join-clause (INNER/LEFT/CROSS/NATURAL…, ON / USING)
 - [x] WHERE expr → `where(condition)`
 - [x] GROUP BY expr-list → `group_by(...)`
-- [x] HAVING expr → `group_by(...).having(condition)`
+- [~] HAVING expr → `group_by(...).having(condition)`; parsed with no GROUP BY in front of it, the form SQLite also takes, but sqlite_orm has no spelling for that one (`group_by()` with no term is not SQL, and grouping by a constant is a different query over an empty table), so such a statement is not generated and warns instead
 - [x] WINDOW name AS (window-defn) → trailing `window("name", ...)` args to `select(...)` (sqlite_orm)
 - [x] ORDER BY ordering-term → `order_by(&T::col).asc()` / `.desc()`
 - [x] LIMIT expr → `limit(n)`
@@ -212,7 +212,7 @@ Statuses:
 - [x] table-name
 - [x] schema-name.table-name (FROM; codegen warning for schema)
 - [x] table-name AS alias / table-name alias (alias map for `qual.col` codegen)
-- [x] Comma-separated table-refs (parsed as implicit `CROSS JOIN`; codegen emits join chain)
+- [x] Comma-separated table-refs (parsed as implicit `CROSS JOIN`; codegen emits join chain). SQLite reads an ON or a USING after a comma the way it reads one after JOIN, and so does the parser: `FROM users, posts ON users.id = posts.user_id` answers the rows the constraint keeps. A constrained comma is generated as `join<T>(...)` with no warning: a comma raises no reordering barrier where the `CROSS JOIN` keyword does — measured on sqlite3 3.51.0 with EXPLAIN QUERY PLAN — so the generated join is an exact translation of it
 - [!] (select-stmt) AS alias — subselect in FROM (not in sqlite_orm)
 - [!] table-function-name(args) (parsed; validator error — not in sqlite_orm codegen)
 - [x] (join-clause) — parenthesized join (parsed and flattened into plain join sequence)
@@ -222,7 +222,7 @@ Statuses:
 - [x] INNER JOIN
 - [x] LEFT JOIN
 - [x] LEFT OUTER JOIN
-- [x] CROSS JOIN
+- [x] CROSS JOIN. One written with the keyword and carrying an ON or a USING is generated as `join<T>(...)` and warns: `cross_join_t` takes no constraint at all, and a CROSS JOIN answers the rows of an inner join — it differs from a JOIN only in that SQLite will not reorder the tables, which is what the warning is about
 - [x] NATURAL JOIN
 - [x] NATURAL LEFT JOIN
 - [x] NATURAL LEFT OUTER JOIN
@@ -367,6 +367,18 @@ a compound of bitwise branches is still read back through `int`.
 - [!] COLLATE / DESC on a key column (parsed; codegen warning — a table-level key of sqlite_orm
   takes bare member pointers, and `primary_key(...).desc()` writes the keyword before the list,
   which SQLite refuses)
+- [x] A column a table-level PRIMARY KEY names more than once is named once in `primary_key(...)`,
+  at the place it is first spelled at: that is the single place SQLite gives it in the key, and
+  `PRAGMA table_info` — what `sync_schema()` compares a mapped table against — reports no second
+  one. Where the collapse leaves a lone INTEGER column of a rowid table, it also turns the key into
+  a rowid alias, which the multi-term key it came from is not; that is reported as a codegen
+  warning, because sqlite_orm has no table-level key of two terms over one column to write instead.
+- [!] A repeat standing before a column the key has not named yet (`PRIMARY KEY(a, a, b)`) is a key
+  no `primary_key(...)` is read back as: a rowid table ranks a key column by the term its name is
+  first spelled at and leaves the rank the repeat sits at unused, so SQLite ranks `b` third while
+  the generated key ranks it second and the key written as spelled ranks `a` second. Codegen
+  warning — `sync_schema()` rebuilds such a table and the rows in it are lost. A WITHOUT ROWID
+  table drops the repeat out of the key itself and leaves no gap, so it is carried over as stored.
 - [x] CHECK(expr) → `check(expr)`
 - [x] FOREIGN KEY (column) REFERENCES table(column) + ON DELETE/UPDATE actions
 - [x] CONSTRAINT name prefix (parsed and skipped)

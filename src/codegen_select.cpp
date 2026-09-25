@@ -93,6 +93,50 @@ namespace sqlite2orm {
         };
 
         /**
+         *  The join to generate for a FROM item. SQLite reads an ON or a USING after CROSS JOIN —
+         *  and after a comma — the way it reads one after JOIN, and answers the rows of an inner
+         *  join; `cross_join_t` takes no constraint at all, so a constrained CROSS JOIN is
+         *  generated as the plain join whose form carries one. Everything that reads an item as a
+         *  source the implicit FROM stands for asks here too: an item carrying a constraint is a
+         *  join clause of its own, not one more source of a comma list.
+         */
+        JoinKind generatedJoinKind(const FromClauseItem& item) {
+            if (item.leadingJoin == JoinKind::crossJoin && (item.onExpression || !item.usingColumnNames.empty())) {
+                return JoinKind::joinPlain;
+            }
+            return item.leadingJoin;
+        }
+
+        /**
+         *  Whether the join generated for `item` gives up the reordering barrier the SQL asked
+         *  for. A comma and a written `CROSS JOIN` both parse as `crossJoin` and answer the same
+         *  rows, but only the keyword keeps SQLite from reordering the tables: measured on 3.51.0
+         *  with EXPLAIN QUERY PLAN, `FROM big, small ON big.x = small.y` searches the indexed
+         *  table exactly as `JOIN` does, while `CROSS JOIN` scans both in the order written. So
+         *  `join<T>(...)` is an exact translation of the comma form and there is nothing to warn
+         *  about, while the keyword form loses the barrier along the way.
+         */
+        bool generatedJoinLosesCrossJoinBarrier(const FromClauseItem& item) {
+            return item.leadingJoin == JoinKind::crossJoin && !item.leadingJoinWrittenAsComma &&
+                   generatedJoinKind(item) != JoinKind::crossJoin;
+        }
+
+        /**
+         *  The warning a written CROSS JOIN carrying a constraint leaves behind, anchored on the
+         *  condition the ON was written with. A USING names its columns with no node of its own,
+         *  so there is no span to underline and the warning goes out with no anchor at all.
+         */
+        CodegenWarning constrainedCrossJoinWarning(const FromClauseItem& item, std::string_view generatedType) {
+            std::string message = "CROSS JOIN carrying a constraint has no sqlite_orm form; generated join<" +
+                                  std::string(generatedType) +
+                                  ">(...) answers the same rows, but leaves SQLite free to reorder the join";
+            if (item.onExpression) {
+                return sourceSpanWarning(std::move(message), *item.onExpression);
+            }
+            return CodegenWarning{std::move(message)};
+        }
+
+        /**
          *  The FROM sources of `fromClause` as the select generators spell them: the same alias,
          *  CTE and struct resolution their clause loops use, and the same rule for which items
          *  become a `join<T>(...)` clause and which are left for sqlite_orm to infer.
@@ -126,7 +170,7 @@ namespace sqlite2orm {
             bool inLeadingRun = true;
             for (size_t index = 0; index < fromClause.size(); ++index) {
                 const auto& item = fromClause.at(index);
-                if (index > 0 && item.leadingJoin != JoinKind::crossJoin) {
+                if (index > 0 && generatedJoinKind(item) != JoinKind::crossJoin) {
                     inLeadingRun = false;
                 }
                 if (inLeadingRun) {
@@ -153,11 +197,12 @@ namespace sqlite2orm {
             bool emittedNonCteJoin = false;
             for (size_t joinIndex = 1; joinIndex < fromClause.size(); ++joinIndex) {
                 const auto& joinItem = fromClause.at(joinIndex);
-                if (isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
+                const JoinKind joinKind = generatedJoinKind(joinItem);
+                if (isCteSource(joinItem.table.tableName) && joinKind == JoinKind::crossJoin) {
                     addImplicitSource(joinItem.table);
                     continue;
                 }
-                if (firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
+                if (firstFromIsCte && !emittedNonCteJoin && joinKind == JoinKind::crossJoin) {
                     emittedNonCteJoin = true;
                     addImplicitSource(joinItem.table);
                     continue;
@@ -346,6 +391,25 @@ namespace sqlite2orm {
                                                        *fromItem.table.derivedSelect,
                                                        std::move(carried));
             }
+        }
+        // sqlite_orm spells a HAVING condition only as a tail of the GROUP BY clause
+        // (`group_by(...).having(...)`), and there is no faithful stand-in for the form SQLite also
+        // takes, HAVING with no GROUP BY: `group_by()` with no term is not SQL, and grouping by a
+        // constant is a different query — over an empty table `SELECT count(*) FROM t HAVING
+        // count(*) >= 0` answers one row on 3.51.0 where `... GROUP BY NULL HAVING ...` answers
+        // none. So the statement is not generated, rather than generated as the query without the
+        // condition, which would answer rows the SQL does not.
+        if (selectNode.having && !selectNode.groupBy) {
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(selectDecisionPoints);
+            carried.warnings = std::move(selectWarnings);
+            return unsupportedStatementPlaceholder(this->context,
+                                                   "SELECT with HAVING and no GROUP BY",
+                                                   "HAVING without GROUP BY is not mapped to sqlite_orm codegen; "
+                                                   "sqlite_orm spells a HAVING condition only as "
+                                                   "group_by(...).having(...)",
+                                                   *selectNode.having,
+                                                   std::move(carried));
         }
         this->context.fromTableAliasToStructName.clear();
         this->context.activeTableAliases.clear();
@@ -641,14 +705,15 @@ namespace sqlite2orm {
         bool emittedNonCteJoin = false;
         for (size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
+            const JoinKind joinKind = generatedJoinKind(joinItem);
             if (joinIndex < sourcesNamedByFromClause) {
                 // The `from<...>()` written below stands for this item, aliases and all.
                 continue;
             }
-            if (isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (isCteSource(joinItem.table.tableName) && joinKind == JoinKind::crossJoin) {
                 continue;
             }
-            if (firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (firstFromIsCte && !emittedNonCteJoin && joinKind == JoinKind::crossJoin) {
                 emittedNonCteJoin = true;
                 continue;
             }
@@ -658,10 +723,10 @@ namespace sqlite2orm {
             std::string rightStruct = structForFromTable(joinItem.table.tableName);
             std::string leftStruct = structForFromTable(leftTable.tableName);
             std::string joinCode;
-            switch (joinItem.leadingJoin) {
+            switch (joinKind) {
                 case JoinKind::crossJoin:
                 case JoinKind::naturalInnerJoin:
-                    joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightType + ">()";
+                    joinCode = std::string(joinSqliteOrmApiName(joinKind)) + "<" + rightType + ">()";
                     break;
                 case JoinKind::naturalLeftJoin:
                     selectWarnings.push_back(
@@ -670,7 +735,10 @@ namespace sqlite2orm {
                     joinCode = "natural_join<" + rightType + ">()";
                     break;
                 default: {
-                    std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
+                    std::string api(joinSqliteOrmApiName(joinKind));
+                    if (generatedJoinLosesCrossJoinBarrier(joinItem)) {
+                        selectWarnings.push_back(constrainedCrossJoinWarning(joinItem, rightType));
+                    }
                     if (!joinItem.usingColumnNames.empty()) {
                         bool rightIsCte = isCteSource(joinItem.table.tableName);
                         if (joinItem.usingColumnNames.size() == 1) {
@@ -716,8 +784,8 @@ namespace sqlite2orm {
                 groupCode += expressionCode(*selectNode.groupBy->expressions.at(i));
             }
             groupCode += ")";
-            if (selectNode.groupBy->having) {
-                groupCode += ".having(" + expressionCode(*selectNode.groupBy->having) + ")";
+            if (selectNode.having) {
+                groupCode += ".having(" + expressionCode(*selectNode.having) + ")";
             }
             appendClause(groupCode);
         }
@@ -1037,6 +1105,10 @@ namespace sqlite2orm {
             subWarnings.push_back("GROUP BY in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
         }
+        if (selectNode.having) {
+            subWarnings.push_back("HAVING without GROUP BY in subquery is not mapped to sqlite_orm select(...)");
+            return CodeGenResult{{}, {}, std::move(subWarnings)};
+        }
         if (selectNode.offsetValue && !selectNode.limitValue) {
             subWarnings.push_back("OFFSET without LIMIT in subquery is not yet mapped to sqlite_orm select(...)");
             return CodeGenResult{{}, {}, std::move(subWarnings)};
@@ -1296,14 +1368,15 @@ namespace sqlite2orm {
                 : 0u;
         for (size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
+            const JoinKind joinKind = generatedJoinKind(joinItem);
             if (joinIndex < sourcesNamedByFromClause) {
                 // The `from<...>()` written below stands for this item, aliases and all.
                 continue;
             }
-            if (isCteSource(joinItem.table.tableName) && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (isCteSource(joinItem.table.tableName) && joinKind == JoinKind::crossJoin) {
                 continue;
             }
-            if (firstFromIsCte && !emittedNonCteJoin && joinItem.leadingJoin == JoinKind::crossJoin) {
+            if (firstFromIsCte && !emittedNonCteJoin && joinKind == JoinKind::crossJoin) {
                 emittedNonCteJoin = true;
                 continue;
             }
@@ -1313,10 +1386,10 @@ namespace sqlite2orm {
             std::string rightStruct = structForFromTable(joinItem.table.tableName);
             std::string leftStruct = structForFromTable(leftTable.tableName);
             std::string joinCode;
-            switch (joinItem.leadingJoin) {
+            switch (joinKind) {
                 case JoinKind::crossJoin:
                 case JoinKind::naturalInnerJoin:
-                    joinCode = std::string(joinSqliteOrmApiName(joinItem.leadingJoin)) + "<" + rightType + ">()";
+                    joinCode = std::string(joinSqliteOrmApiName(joinKind)) + "<" + rightType + ">()";
                     break;
                 case JoinKind::naturalLeftJoin:
                     subWarnings.push_back(
@@ -1325,7 +1398,10 @@ namespace sqlite2orm {
                     joinCode = "natural_join<" + rightType + ">()";
                     break;
                 default: {
-                    std::string api(joinSqliteOrmApiName(joinItem.leadingJoin));
+                    std::string api(joinSqliteOrmApiName(joinKind));
+                    if (generatedJoinLosesCrossJoinBarrier(joinItem)) {
+                        subWarnings.push_back(constrainedCrossJoinWarning(joinItem, rightType));
+                    }
                     if (!joinItem.usingColumnNames.empty()) {
                         bool rightIsCte = isCteSource(joinItem.table.tableName);
                         if (joinItem.usingColumnNames.size() == 1) {
@@ -1356,8 +1432,8 @@ namespace sqlite2orm {
                     break;
                 }
             }
-            if (joinItem.leadingJoin != JoinKind::crossJoin && joinItem.leadingJoin != JoinKind::naturalInnerJoin &&
-                joinItem.leadingJoin != JoinKind::naturalLeftJoin) {
+            if (joinKind != JoinKind::crossJoin && joinKind != JoinKind::naturalInnerJoin &&
+                joinKind != JoinKind::naturalLeftJoin) {
                 this->context.recordFormWithoutDefaultConstructor("JOIN");
             }
             tailParts.push_back(std::move(joinCode));

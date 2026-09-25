@@ -369,10 +369,10 @@ namespace sqlite2orm {
                     auto gErrors = validate(*expr);
                     errors.insert(errors.end(), gErrors.begin(), gErrors.end());
                 }
-                if (selectNode->groupBy->having) {
-                    auto hErrors = validate(*selectNode->groupBy->having);
-                    errors.insert(errors.end(), hErrors.begin(), hErrors.end());
-                }
+            }
+            if (selectNode->having) {
+                auto hErrors = validate(*selectNode->having);
+                errors.insert(errors.end(), hErrors.begin(), hErrors.end());
             }
             for (const auto& namedWindow: selectNode->namedWindows) {
                 if (!namedWindow.definition) {

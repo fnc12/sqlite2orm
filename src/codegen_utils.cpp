@@ -460,27 +460,29 @@ namespace sqlite2orm {
          *  spelled on the column takes the alias away while an ASC, or a DESC spelled in the
          *  table-level `PRIMARY KEY(x DESC)` form, leaves it. A WITHOUT ROWID table has no rowid
          *  to alias at all. Checked against sqlite3 3.51.0 through `PRAGMA table_info`.
+         *
+         *  The table-level half of the rule is `columnAloneInTableKeyIsRowidAlias`, which codegen
+         *  asks about a key it is about to write with one column rather than about the written
+         *  one; here it is asked about the key the table really spells, so a key of two terms —
+         *  `PRIMARY KEY(a, a)` included — is no alias.
          */
         bool columnIsRowidAlias(const CreateTableNode& createTable, const ColumnDef& column) {
-            if (createTable.withoutRowid) {
-                return false;
-            }
-            if (normalizeSqlName(column.typeName) != "integer") {
-                return false;
-            }
-            size_t columnKeyCount = 0;
-            for (const ColumnDef& other: createTable.columns) {
-                if (other.primaryKey) {
-                    ++columnKeyCount;
-                }
-            }
             if (column.primaryKey) {
+                if (createTable.withoutRowid || normalizeSqlName(column.typeName) != "integer") {
+                    return false;
+                }
+                size_t columnKeyCount = 0;
+                for (const ColumnDef& other: createTable.columns) {
+                    if (other.primaryKey) {
+                        ++columnKeyCount;
+                    }
+                }
                 // A table spelling a second key, on another column or on the table, is one SQLite
                 // refuses outright — no column of it is the rowid.
                 return columnKeyCount == 1 && createTable.primaryKeys.empty() &&
                        column.primaryKeySortDirection != SortDirection::desc;
             }
-            if (columnKeyCount != 0 || createTable.primaryKeys.size() != 1) {
+            if (!columnAloneInTableKeyIsRowidAlias(createTable, column)) {
                 return false;
             }
             const TablePrimaryKey& primaryKey = createTable.primaryKeys.front();
@@ -499,6 +501,21 @@ namespace sqlite2orm {
         }
 
     }  // namespace
+
+    bool columnAloneInTableKeyIsRowidAlias(const CreateTableNode& createTable, const ColumnDef& column) {
+        if (createTable.withoutRowid) {
+            return false;
+        }
+        if (normalizeSqlName(column.typeName) != "integer") {
+            return false;
+        }
+        for (const ColumnDef& other: createTable.columns) {
+            if (other.primaryKey) {
+                return false;
+            }
+        }
+        return createTable.primaryKeys.size() == 1;
+    }
 
     std::string sqliteColumnTypeToCpp(const CreateTableNode& createTable, const ColumnDef& column) {
         if (createTable.strict && columnTypeIsAny(column)) {

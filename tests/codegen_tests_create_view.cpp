@@ -72,6 +72,20 @@ TEST_CASE("codegen: CREATE VIEW - an infinity in a view that is not generated is
     REQUIRE(result.errors.empty());
 }
 
+// The body of a view goes through the same select-subexpression generator a subquery does, so a
+// HAVING with no GROUP BY in it leaves the view ungenerated instead of the view being declared over
+// the query without the condition. SQLite stores such a view and answers rows from it (checked on
+// sqlite3 3.51.0).
+TEST_CASE("codegen: CREATE VIEW - HAVING and no GROUP BY in the body leaves the view ungenerated") {
+    auto result = generateLastOfBatch("CREATE TABLE users (id INTEGER, name TEXT);\n"
+                                      "CREATE VIEW v AS SELECT count(*) FROM users HAVING count(*) > 1;");
+    REQUIRE(result.code == "/* CREATE VIEW v \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"HAVING without GROUP BY in subquery is not mapped to sqlite_orm select(...)"},
+                                        {"CREATE VIEW v: SELECT is not supported for sqlite_orm code generation"}});
+    REQUIRE(result.errors.empty());
+}
+
 TEST_CASE("codegen: CREATE VIEW - reflection comment attached") {
     auto result = generateFull("CREATE VIEW v AS SELECT id FROM users;");
     // Anchored at the statement's opening keywords, as the warning about the same mapping is.

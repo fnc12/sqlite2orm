@@ -73,10 +73,23 @@ namespace sqlite2orm {
         FromTableClause table;
         std::shared_ptr<AstNode> onExpression;
         std::vector<std::string> usingColumnNames;
+        /**
+         *  Whether the `crossJoin` above was written as a comma rather than as `CROSS JOIN`. The
+         *  two answer the same rows, and SQLite reads a constraint after either, but only the
+         *  written `CROSS JOIN` keeps SQLite from reordering the tables: measured on 3.51.0 with
+         *  EXPLAIN QUERY PLAN, `FROM big, small ON big.x = small.y` searches the indexed table
+         *  exactly as `JOIN` does, while `CROSS JOIN` scans both in the order they are written.
+         *  Codegen asks this to tell the join it translates exactly from the one it translates at
+         *  the cost of that barrier. It is compared below: the two spellings are different
+         *  statements, and a generator now acts on the difference, so a parse test that pins one
+         *  must not pass for the other.
+         */
+        bool leadingJoinWrittenAsComma = false;
 
         bool operator==(const FromClauseItem& other) const {
             if (this->leadingJoin != other.leadingJoin || this->table != other.table ||
-                this->usingColumnNames != other.usingColumnNames)
+                this->usingColumnNames != other.usingColumnNames ||
+                this->leadingJoinWrittenAsComma != other.leadingJoinWrittenAsComma)
                 return false;
             if (!this->onExpression && !other.onExpression)
                 return true;
@@ -86,9 +99,14 @@ namespace sqlite2orm {
         }
     };
 
+    /**
+     *  `GROUP BY expr, ...` on its own: SQLite reads the HAVING condition as a clause of the
+     *  select core rather than as a part of this one (`groupby_opt having_opt` in its grammar), and
+     *  takes it with no GROUP BY in front of it — `SELECT count(*) FROM t HAVING count(*) > 1` runs
+     *  on 3.51.0 — so `SelectNode::having` is where the condition is kept.
+     */
     struct GroupByClause {
         std::vector<std::shared_ptr<AstNode>> expressions;
-        std::shared_ptr<AstNode> having;
 
         bool operator==(const GroupByClause& other) const {
             if (this->expressions.size() != other.expressions.size())
@@ -101,11 +119,7 @@ namespace sqlite2orm {
                 if (*this->expressions.at(i) != *other.expressions.at(i))
                     return false;
             }
-            if (!this->having && !other.having)
-                return true;
-            if (!this->having || !other.having)
-                return false;
-            return *this->having == *other.having;
+            return true;
         }
     };
 
@@ -174,6 +188,7 @@ namespace sqlite2orm {
         std::shared_ptr<AstNode> whereClause;
         std::vector<OrderByTerm> orderBy;
         std::optional<GroupByClause> groupBy;
+        std::shared_ptr<AstNode> having;
         std::vector<NamedWindowDefinition> namedWindows;
         AstNodePointer limitValue;
         AstNodePointer offsetValue;
@@ -191,6 +206,10 @@ namespace sqlite2orm {
             if (!astNodesEqual(this->limitValue, o->limitValue))
                 return false;
             if (!astNodesEqual(this->offsetValue, o->offsetValue))
+                return false;
+            if (!this->having != !o->having)
+                return false;
+            if (this->having && *this->having != *o->having)
                 return false;
             if (!this->whereClause && !o->whereClause)
                 return true;

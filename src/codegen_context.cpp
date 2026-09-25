@@ -384,8 +384,8 @@ namespace sqlite2orm {
                 // A reference to a column of the schema is read back as the field the generated
                 // form names, which the schema types; `inferTypeFromNode` sees no more than a name
                 // there and answers `int`. Over `CASE WHEN age > 1 THEN name ELSE NULL END` that
-                // `int` was all `R` was folded from, and `case_<int>` over a TEXT column does not
-                // compile.
+                // `int` was all `R` was folded from, and `case_<int>` over a TEXT column reads every
+                // TEXT value back as 0, with no error at compile time or run time.
                 nodeType = column->cppType;
             } else if (dynamic_cast<const BlobLiteralNode*>(&valueNode)) {
                 // A blob literal is generated as the `std::vector<char>` a BLOB column is read as.

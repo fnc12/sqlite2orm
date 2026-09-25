@@ -1587,8 +1587,8 @@ TEST_CASE("codegen: a CASE result column that cannot be NULL keeps the type sqli
 
 // A branch naming a schema column is read back as the field of that column, and `case_<R>` has to
 // hold it: taken for the default `int` a reference answers with when nothing is known, a TEXT
-// column came out `case_<int>`, which does not compile against the `std::string` it is read into,
-// and no warning said so. The column is folded in wherever it stands — a WHEN branch or the ELSE —
+// column came out `case_<int>`, which compiles and reads every TEXT value back as 0, and no
+// warning said so. The column is folded in wherever it stands — a WHEN branch or the ELSE —
 // and a NULL beside it adds nothing but the `as_optional`. Every select below was compiled and run
 // against sqlite3 3.51 over the schema written here: a column past the int32 range, a REAL, and
 // the text an INTEGER beside a REAL is read through all come back as sqlite3 prints them.

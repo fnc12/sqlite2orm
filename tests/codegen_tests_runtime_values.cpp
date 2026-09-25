@@ -2029,7 +2029,7 @@ TEST_CASE("runtime: a CASE reads back the widest branch it can answer with") {
 }
 
 // A CASE branch naming a column is read through the field of that column: the `case_<R>` over a
-// TEXT column used to be `case_<int>`, which does not compile against the `std::string` field, and
+// TEXT column used to be `case_<int>`, which compiles and reads every TEXT value back as 0, and
 // over an INTEGER one it cut every value past 2^31. Each select is generated over the schema that
 // declares `a` and run over a row holding the value the comment names; expected values checked
 // against sqlite3 3.51 over `user(a <type>)` holding that one row.

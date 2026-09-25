@@ -202,7 +202,7 @@ namespace sqlite2orm {
         // clean for the next statement of the batch. `createTableParts` and `createViewParts` take
         // theirs when they run, so a CREATE TABLE and a CREATE VIEW carry them in the result and
         // leave none here either.
-        appendUniqueStrings(result.comments, this->generatorContext->takeCommentsSince(marks.comments));
+        appendUniqueComments(result.comments, this->generatorContext->takeCommentsSince(marks.comments));
         this->injectCustomFunctions(result);
         return result;
     }
@@ -360,7 +360,7 @@ namespace sqlite2orm {
             this->generatorContext->discardPlaceholdersSince(marks.placeholders);
             return result;
         }
-        appendUniqueStrings(result.comments, this->generatorContext->commentsRecordedSince(marks.comments));
+        appendUniqueComments(result.comments, this->generatorContext->commentsRecordedSince(marks.comments));
         return result;
     }
 

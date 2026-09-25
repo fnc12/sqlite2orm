@@ -624,20 +624,21 @@ TEST_CASE("codegen: column_alias_style decision point offers C++20 alternative")
         CodeGenResult{
             chosenCode,
             {columnRefStyleDp(1, "&Users::name"),
-             DecisionPoint{2,
-                           "column_alias_style",
-                           "alias_tag",
-                           chosenCode,
-                           {Option{"alias_tag",
-                                   chosenCode,
-                                   "alias_tag / colalias_* / generated struct (default; wider compiler "
-                                   "support)"},
-                            Option{"cpp20_literal",
-                                   cpp20AltCode,
-                                   "C++20 literal aliases (`orm_column_alias`, `_col`)",
-                                   false,
-                                   {std::string(kExpectedCpp20ColumnAliasComment)},
-                                   20}}}},
+             DecisionPoint{
+                 2,
+                 "column_alias_style",
+                 "alias_tag",
+                 chosenCode,
+                 {Option{"alias_tag",
+                         chosenCode,
+                         "alias_tag / colalias_* / generated struct (default; wider compiler "
+                         "support)"},
+                  Option{"cpp20_literal",
+                         cpp20AltCode,
+                         "C++20 literal aliases (`orm_column_alias`, `_col`)",
+                         false,
+                         {CodegenComment{std::string(kExpectedCpp20ColumnAliasComment), SourceLocation{1, 16}, 1}},
+                         20}}}},
             {"SELECT column alias uses sqlite_orm built-in colalias_* types; requires `using namespace sqlite_orm`"},
             {},
             {}});
@@ -687,7 +688,7 @@ TEST_CASE("codegen: column_alias_style cpp20_literal policy") {
                                                  20}}}},
                           {},
                           {},
-                          {std::string(kExpectedCpp20ColumnAliasComment)}});
+                          {CodegenComment{std::string(kExpectedCpp20ColumnAliasComment), SourceLocation{1, 36}, 1}}});
 }
 
 TEST_CASE("codegen: SELECT with window function OVER(), bind params in WHERE and LIMIT") {
@@ -2265,9 +2266,9 @@ TEST_CASE("codegen: a subquery over aliased sources names its own sources") {
 // The named FROM is a form the SQL did not write, so the generated code explains itself.
 TEST_CASE("codegen: naming the sources of an aliased select carries its comment") {
     REQUIRE(generateFull("SELECT COUNT(*) FROM users u;").comments ==
-            std::vector<std::string>{kAliasedFromSourcesComment});
+            std::vector<CodegenComment>{CodegenComment{kAliasedFromSourcesComment, SourceLocation{1, 1}, 28}});
     REQUIRE(generateFull("SELECT a.name FROM users a, users b").comments ==
-            std::vector<std::string>{kAliasedFromSourcesComment});
+            std::vector<CodegenComment>{CodegenComment{kAliasedFromSourcesComment, SourceLocation{1, 1}, 35}});
     REQUIRE(generateFull("SELECT u.name FROM users u").comments.empty());
 }
 
@@ -2318,7 +2319,7 @@ TEST_CASE("codegen: COUNT(*) over an aliased source next to a constrained join")
 
 TEST_CASE("codegen: naming the sources for a COUNT(*) in HAVING carries its comment") {
     REQUIRE(generateFull("SELECT 1 FROM users u GROUP BY 1 HAVING COUNT(*) > 1;").comments ==
-            std::vector<std::string>{kAliasedFromSourcesComment});
+            std::vector<CodegenComment>{CodegenComment{kAliasedFromSourcesComment, SourceLocation{1, 1}, 52}});
 }
 
 // A bare `*` reads its row from the plain struct — `get_all<T>()` and `asterisk<T>()` name no

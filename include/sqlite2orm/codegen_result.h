@@ -99,13 +99,43 @@ namespace sqlite2orm {
         bool operator==(const GeneratedCodeSpan&) const = default;
     };
 
+    /**
+     *  A codegen hint — what form a piece of the snippet was generated as and why — optionally
+     *  anchored to a span of the source SQL the way a `CodegenWarning` is, so a consumer underlines
+     *  the SQL a hint explains with the machinery it already underlines warnings with. Anchor and
+     *  length mean exactly what they do there, units included: see `CodegenWarning::location` and
+     *  `CodegenWarning::length`.
+     *  Implicitly constructible from a string, so a site that records a hint about something no AST
+     *  node stands for keeps reading as it did; only sites with a node set an anchor.
+     *  Equality covers the span as well as the message, so a test that pins a hint pins what it
+     *  underlines: anchoring a hint that was plain updates every expectation of it.
+     */
+    struct CodegenComment {
+        std::string message;
+        /** Start of the SQL the hint explains; `length` characters from here are underlined. */
+        std::optional<SourceLocation> location;
+        /** Characters to underline from `location` (0 when unknown), counted as `CodegenWarning::length` counts them. */
+        size_t length = 0;
+
+        CodegenComment() = default;
+        CodegenComment(std::string message) : message(std::move(message)) {}
+        CodegenComment(const char* message) : message(message) {}
+        CodegenComment(std::string message, SourceLocation location, size_t length) :
+            message(std::move(message)), location(location), length(length) {}
+
+        bool operator==(const CodegenComment&) const = default;
+    };
+
     struct Option {
         std::string value;
         std::string code;
         std::string description;
         bool hidden = false;
-        /** Optional notes when this alternative is shown or chosen (e.g. build requirements); any consumer may show them. */
-        std::vector<std::string> comments;
+        /**
+         *  Optional notes when this alternative is shown or chosen (e.g. build requirements); any
+         *  consumer may show them, and underline the SQL of the ones that carry an anchor.
+         */
+        std::vector<CodegenComment> comments;
         /**
          *  Minimum C++ standard this variant compiles against (14 by default; 20 for options that
          *  rely on C++20 sqlite_orm features). Options requiring more than `CodeGenPolicy::targetCppStandard`
@@ -132,14 +162,15 @@ namespace sqlite2orm {
         std::vector<CodegenWarning> warnings;
         std::vector<std::string> errors;
         /**
-         *  Optional hints explaining the forms the snippet was generated as, deduplicated by text.
+         *  Optional hints explaining the forms the snippet was generated as, deduplicated by message
+         *  the way warnings are — a form met twice is reported once, anchored at the first of them.
          *  Every entry point that generates from an AST node reports the ones recorded while it ran,
          *  so a whole statement carries the comments of every clause of its body and a single node
          *  carries its own. A hint explains generated code, so a fragment that is thrown away — a
          *  subquery replaced by a placeholder, a statement that ends up with no `code` at all —
          *  reports none of the ones its generation recorded.
          */
-        std::vector<std::string> comments;
+        std::vector<CodegenComment> comments;
         /**
          *  Which statement each stretch of `code` was generated from, in the order the code is
          *  written in. Filled by whoever assembles code from more than one statement — the schema
@@ -169,7 +200,7 @@ namespace sqlite2orm {
          *  expressions. Empty when `makeTableExpression` is: a table that is not merged into the
          *  storage is code the consumer never gets, so nothing is left for a hint to explain.
          */
-        std::vector<std::string> comments;
+        std::vector<CodegenComment> comments;
         /**
          *  Whether `structDeclaration` is the reflected form, i.e. whether it carries sqlite_orm
          *  annotations. Whoever places the declaration has to know: the names inside an annotation
@@ -189,7 +220,7 @@ namespace sqlite2orm {
          *  `makeViewExpression` is, for the same reason as the table's: a view that is not merged
          *  into the storage leaves no generated form for a hint to be about.
          */
-        std::vector<std::string> comments;
+        std::vector<CodegenComment> comments;
     };
 
 }  // namespace sqlite2orm

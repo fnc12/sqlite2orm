@@ -421,8 +421,8 @@ namespace sqlite2orm {
         this->formsWithoutDefaultConstructor.push_back(std::move(form));
     }
 
-    void CodeGeneratorContext::recordComment(std::string_view comment) {
-        this->comments.emplace_back(comment);
+    void CodeGeneratorContext::recordComment(CodegenComment comment) {
+        this->comments.push_back(std::move(comment));
     }
 
     void CodeGeneratorContext::recordEmittedTableType(std::string typeName) {
@@ -449,18 +449,18 @@ namespace sqlite2orm {
         return GenerationMarks{this->commentMark(), this->placeholderMark()};
     }
 
-    std::vector<std::string> CodeGeneratorContext::commentsRecordedSince(size_t mark) const {
+    std::vector<CodegenComment> CodeGeneratorContext::commentsRecordedSince(size_t mark) const {
         // A take in between leaves fewer than `mark` behind: the statement the comments belong to
         // has carried them off already, so there is nothing left for this node to report.
-        std::vector<std::string> recorded;
+        std::vector<CodegenComment> recorded;
         for (size_t index = mark; index < this->comments.size(); ++index) {
-            appendUniqueString(recorded, this->comments[index]);
+            appendUniqueComment(recorded, this->comments[index]);
         }
         return recorded;
     }
 
-    std::vector<std::string> CodeGeneratorContext::takeCommentsSince(size_t mark) {
-        std::vector<std::string> taken = this->commentsRecordedSince(mark);
+    std::vector<CodegenComment> CodeGeneratorContext::takeCommentsSince(size_t mark) {
+        std::vector<CodegenComment> taken = this->commentsRecordedSince(mark);
         this->discardCommentsSince(mark);
         return taken;
     }

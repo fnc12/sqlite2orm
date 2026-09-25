@@ -1325,7 +1325,10 @@ namespace sqlite2orm {
 
         parts.structDeclaration = std::move(structDeclaration);
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
-        this->context.recordComment(kCommentViewReflection);
+        // The hint is about the view as a whole, so it underlines the statement's opening keywords
+        // as the source spells them — where the warning about the same mapping stands below.
+        this->context.recordComment(
+            sourceSpanComment(kCommentViewReflection, SourceSpan{node.location, node.headerText}));
         // SQLite stores a view body without compiling it, so the CREATE VIEW carrying an `inf`
         // goes through and every query against the view is the one refused — checked on sqlite3
         // 3.51.0 and on the libsqlite3 3.45.1 the tests link. The `inf` itself comes out of the one
@@ -1457,10 +1460,16 @@ namespace sqlite2orm {
         // table name comes from a class-scope `[[= "…"_orm_name]]` annotation. `reflectionBlocker`
         // names the first construct of this table that has no annotation form; while it is empty
         // the reflected form is offered, and targeting C++26 it is the one chosen.
+        // Every reason handed to `blockReflection` names one column of this table, so the span of
+        // that column's name travels with it: the hint the blocker ends up in is about that column
+        // and has to underline it rather than the statement the column stands in.
         std::string reflectionBlocker;
-        const auto blockReflection = [&reflectionBlocker](std::string reason) {
+        SourceSpan reflectionBlockerSpan;
+        const auto blockReflection = [&reflectionBlocker, &reflectionBlockerSpan](std::string reason,
+                                                                                  const SourceSpan& blockerSpan) {
             if (reflectionBlocker.empty()) {
                 reflectionBlocker = std::move(reason);
+                reflectionBlockerSpan = blockerSpan;
             }
         };
         std::vector<std::string> memberDeclarations;
@@ -1493,8 +1502,9 @@ namespace sqlite2orm {
             // or one this generator had to rewrite, has no reflected form at all.
             if (stripIdentifierQuotes(column.name) != cppName) {
                 blockReflection("column `" + stripIdentifierQuotes(column.name) +
-                                "` is not a C++ identifier, and a reflected column is named after the member it "
-                                "reflects");
+                                    "` is not a C++ identifier, and a reflected column is named after the member "
+                                    "it reflects",
+                                column.nameSpan);
             }
         }
         structDeclaration += "};\n";
@@ -1637,9 +1647,10 @@ namespace sqlite2orm {
                         annotate("default_value(" + defaultCode + ")");
                     } else {
                         blockReflection("the DEFAULT of column `" + rawColumnName + "` is generated as `" +
-                                        defaultCode +
-                                        "`, which is not a constant expression an annotation can "
-                                        "carry");
+                                            defaultCode +
+                                            "`, which is not a constant expression an annotation can "
+                                            "carry",
+                                        column.nameSpan);
                     }
                 } else {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
@@ -1685,7 +1696,8 @@ namespace sqlite2orm {
                     // parsed inside the class, where the members it names are not all declared yet
                     // — upstream sqlite_orm states such annotations are not expressible in C++26.
                     blockReflection("CHECK on column `" + rawColumnName +
-                                    "` names members of the struct being declared, which an annotation cannot");
+                                        "` names members of the struct being declared, which an annotation cannot",
+                                    column.nameSpan);
                 } else {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("CHECK on column '" + rawColumnName + "' uses " + literal +
@@ -1763,7 +1775,8 @@ namespace sqlite2orm {
                     }
                     // Same as a column CHECK: the expression names the struct's own members.
                     blockReflection("generated column `" + rawColumnName +
-                                    "` names members of the struct being declared, which an annotation cannot");
+                                        "` names members of the struct being declared, which an annotation cannot",
+                                    column.nameSpan);
                     if (column.generatedStorage == ColumnDef::GeneratedStorage::stored) {
                         makeExpression += ".stored()";
                     } else if (column.generatedStorage == ColumnDef::GeneratedStorage::virtual_) {
@@ -2255,8 +2268,9 @@ namespace sqlite2orm {
                                    "make_table(\"name\", make_column(…)) over a plain struct (wider compiler "
                                    "support)"};
             if (!reflectionOffered) {
-                classicalOption.comments.push_back("the C++26 reflection alternative is not offered for this table: " +
-                                                   reflectionBlocker);
+                classicalOption.comments.push_back(sourceSpanComment(
+                    "the C++26 reflection alternative is not offered for this table: " + reflectionBlocker,
+                    reflectionBlockerSpan));
             }
             std::vector<Option> options{std::move(classicalOption)};
             if (reflectionOffered) {
@@ -2264,7 +2278,9 @@ namespace sqlite2orm {
                                        reflectedCode,
                                        "C++26 reflection: annotated struct + make_table<T>()"};
                 reflectedOption.minCppStandard = 26;
-                reflectedOption.comments.push_back(kCommentTableReflection);
+                reflectedOption.comments.push_back(
+                    sourceSpanComment(kCommentTableReflection,
+                                      SourceSpan{createTable.location, createTable.headerText}));
                 options.push_back(std::move(reflectedOption));
             }
             parts.decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
@@ -2275,7 +2291,8 @@ namespace sqlite2orm {
             if (reflected) {
                 structDeclaration = std::move(reflectedStructDeclaration);
                 makeExpression = std::move(reflectedMakeExpression);
-                parts.comments.push_back(kCommentTableReflection);
+                parts.comments.push_back(sourceSpanComment(kCommentTableReflection,
+                                                           SourceSpan{createTable.location, createTable.headerText}));
                 parts.structIsReflected = true;
             }
         }

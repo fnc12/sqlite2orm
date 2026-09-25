@@ -467,6 +467,41 @@ TEST_CASE("codegen: comparison to scalar MAX subquery") {
     REQUIRE(result.code == "c(&User::id) > select(max(&T::x))");
 }
 
+// A scalar subquery generates a `select_t`, which no sqlite_orm operator takes on its own: as the
+// left operand it came out bare — `select(count<T>()) > 0` — and found no `operator>`. The wrapping
+// variants now quote it on their side the way they quote a literal.
+TEST_CASE("codegen: scalar subquery as the left operand of a binary operator") {
+    SECTION("comparisons") {
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) > 0") == "c(select(count<T>())) > 0");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) = 1") == "c(select(count<T>())) == 1");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) < 9") == "c(select(count<T>())) < 9");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) != 9") == "c(select(count<T>())) != 9");
+        REQUIRE(generate("(SELECT x FROM t LIMIT 1) > 0") == "c(select(&T::x, limit(1))) > 0");
+    }
+    SECTION("arithmetic and concatenation") {
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) + 1") == "c(select(count<T>())) + 1");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) * 2") == "c(select(count<T>())) * 2");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) || 'x'") == R"(c(select(count<T>())) || "x")");
+    }
+    SECTION("beside a column, another subquery and a nested operator") {
+        REQUIRE(generate("(SELECT MAX(x) FROM t) > id") == "c(select(max(&T::x))) > &User::id");
+        REQUIRE(generate("(SELECT MAX(x) FROM t) > (SELECT MIN(x) FROM t)") ==
+                "c(select(max(&T::x))) > select(min(&T::x))");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) + 1 > 2") == "c(select(count<T>())) + 1 > 2");
+    }
+    SECTION("the wrapping variants quote the subquery on their own side") {
+        CodeGenPolicy policy;
+        policy.chosenAlternativeValueByCategory["expr_style"] = "operator_wrap_right";
+        REQUIRE(
+            generateWithPolicy("SELECT 1 FROM t WHERE (SELECT MAX(x) FROM t) > (SELECT MIN(x) FROM t);", policy).code ==
+            "auto rows = storage.select(1, from<T>(), where(select(max(&T::x)) > "
+            "c(select(min(&T::x)))));");
+        policy.chosenAlternativeValueByCategory["expr_style"] = "operator_wrap_both";
+        REQUIRE(generateWithPolicy("SELECT 1 FROM t WHERE (SELECT MAX(x) FROM t) > 0;", policy).code ==
+                "auto rows = storage.select(1, from<T>(), where(c(select(max(&T::x))) > c(0)));");
+    }
+}
+
 TEST_CASE("codegen: UNION two literal SELECTs") {
     REQUIRE(generate("SELECT 1 UNION SELECT 2") == "auto rows = storage.select(union_(select(1), select(2)));");
 }
@@ -481,6 +516,49 @@ TEST_CASE("codegen: INTERSECT") {
 
 TEST_CASE("codegen: EXCEPT") {
     REQUIRE(generate("SELECT 1 EXCEPT SELECT 2") == "auto rows = storage.select(except(select(1), select(2)));");
+}
+
+// sqlite_orm has no nested compound: each arm of `union_(...)` must be a `select_t`, so
+// `union_(union_(a, b), c)` does not compile. A chain of one operator is one variadic call.
+TEST_CASE("codegen: a compound of three or more arms of one operator is one variadic call") {
+    REQUIRE(generate("SELECT 1 UNION SELECT 2 UNION SELECT 3") ==
+            "auto rows = storage.select(union_(select(1), select(2), select(3)));");
+    REQUIRE(generate("SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4") ==
+            "auto rows = storage.select(union_all(select(1), select(2), select(3), select(4)));");
+    REQUIRE(generate("SELECT 1 INTERSECT SELECT 2 INTERSECT SELECT 3") ==
+            "auto rows = storage.select(intersect(select(1), select(2), select(3)));");
+    REQUIRE(generate("SELECT 1 EXCEPT SELECT 2 EXCEPT SELECT 3") ==
+            "auto rows = storage.select(except(select(1), select(2), select(3)));");
+}
+
+// SQLite groups a mixed chain from the left, `(a UNION b) UNION ALL c`, and only a nested call
+// would say that — which sqlite_orm does not compile. So the statement is not generated.
+TEST_CASE("codegen: a compound that mixes operators is not generated") {
+    REQUIRE(generateFull("SELECT 1 UNION SELECT 2 UNION ALL SELECT 3") ==
+            CodeGenResult{"/* compound SELECT */",
+                          {},
+                          {CodegenWarning{"compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
+                                          "codegen",
+                                          SourceLocation{1, 1},
+                                          42},
+                           CodegenWarning{"compound SELECT that mixes UNION / UNION ALL / INTERSECT / EXCEPT is not "
+                                          "mapped to sqlite_orm codegen: sqlite_orm takes one operator per call and "
+                                          "does not nest a compound as an arm of another",
+                                          SourceLocation{1, 35},
+                                          8}}});
+    // The underline goes to the arm the first differing operator joins, however late it comes.
+    REQUIRE(generateFull("SELECT 1 UNION SELECT 2 UNION SELECT 3 INTERSECT SELECT 2") ==
+            CodeGenResult{"/* compound SELECT */",
+                          {},
+                          {CodegenWarning{"compound SELECT (UNION / INTERSECT / EXCEPT) is not mapped to sqlite_orm "
+                                          "codegen",
+                                          SourceLocation{1, 1},
+                                          57},
+                           CodegenWarning{"compound SELECT that mixes UNION / UNION ALL / INTERSECT / EXCEPT is not "
+                                          "mapped to sqlite_orm codegen: sqlite_orm takes one operator per call and "
+                                          "does not nest a compound as an arm of another",
+                                          SourceLocation{1, 50},
+                                          8}}});
 }
 
 TEST_CASE("codegen: derived FROM emits stub and warning") {
@@ -1620,6 +1698,67 @@ TEST_CASE("codegen: a CASE result column that cannot be NULL keeps the type sqli
         "auto rows = storage.select(length(case_<std::string>().when(&Users::a, then(\"x\")).else_(\"y\").end()));");
 }
 
+// A branch naming a schema column is read back as the field of that column, and `case_<R>` has to
+// hold it: taken for the default `int` a reference answers with when nothing is known, a TEXT
+// column came out `case_<int>`, which compiles and reads every TEXT value back as 0, and no
+// warning said so. The column is folded in wherever it stands — a WHEN branch or the ELSE —
+// and a NULL beside it adds nothing but the `as_optional`. Every select below was compiled and run
+// against sqlite3 3.51 over the schema written here: a column past the int32 range, a REAL, and
+// the text an INTEGER beside a REAL is read through all come back as sqlite3 prints them.
+TEST_CASE("codegen: a CASE branch naming a column is read through the column's type") {
+    const std::string_view schema = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, "
+                                    "age INTEGER, score REAL, data BLOB);\n";
+    const auto generateOverSchema = [&schema](std::string_view select) {
+        return generateLastOfBatch(std::string(schema) + std::string(select)).code;
+    };
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN name ELSE 'x' END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::name)).else_(\"x\").end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN email ELSE NULL END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::email)).else_(nullptr).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN 'a' ELSE name END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(\"a\")).else_(&Users::name).end()));");
+    // No branch spells a type out as a literal, so only the columns can say what `R` is.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN name ELSE age END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::name)).else_(&Users::age).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN NULL ELSE email END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(nullptr)).else_(&Users::email).end()));");
+    // An INTEGER column is an `int64_t` field, so a branch naming one is not read through an `int`
+    // that would cut every value past 2^31.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN age ELSE 0 END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<int64_t>().when(c(&Users::age) > 1, "
+            "then(&Users::age)).else_(0).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN 0 ELSE users.age END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<int64_t>().when(c(&Users::age) > 1, "
+            "then(0)).else_(&Users::age).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN score ELSE 0 END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<double>().when(c(&Users::age) > 1, "
+            "then(&Users::score)).else_(0).end()));");
+    // An INTEGER column beside a REAL one is the pair with no number over it, the same as a
+    // literal of each.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN age ELSE score END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(&Users::age)).else_(&Users::score).end()));");
+    // A BLOB column beside anything else is read through the `std::vector<char>` that keeps every
+    // byte of it; an `std::string` would stop at the first NUL.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN data ELSE name END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::vector<char>>().when(c(&Users::age) > 1, "
+            "then(&Users::data)).else_(&Users::name).end()));");
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN x'00' ELSE name END FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::vector<char>>().when(c(&Users::age) > 1, "
+            "then(std::vector<char>{'\\x00'})).else_(&Users::name).end()));");
+    // A CASE nested in a branch answers with the columns of its own branches too.
+    REQUIRE(generateOverSchema("SELECT CASE WHEN age > 1 THEN CASE WHEN age > 2 THEN name END ELSE NULL END "
+                               "FROM users;") ==
+            "auto rows = storage.select(as_optional(case_<std::string>().when(c(&Users::age) > 1, "
+            "then(case_<std::string>().when(c(&Users::age) > 2, then(&Users::name)).end())).else_(nullptr)"
+            ".end()));");
+}
+
 // A WHERE or an ORDER BY is not read back, so the expression generator stays as it was: only the
 // result column of a select is widened.
 TEST_CASE("codegen: as_optional is confined to the result columns of a select") {
@@ -2622,8 +2761,8 @@ TEST_CASE("codegen: a compound SELECT widens the result column in every arm") {
             "select(as_optional(c(&User::a) * 2))));");
     // Three arms, and then the other result types the rule names: a comparison, a `||`, a CAST.
     REQUIRE(generate("SELECT a + 1 UNION SELECT a * 2 UNION SELECT a - 3;") ==
-            "auto rows = storage.select(union_(union_(select(as_optional(c(&User::a) + 1)), "
-            "select(as_optional(c(&User::a) * 2))), select(as_optional(c(&User::a) - 3))));");
+            "auto rows = storage.select(union_(select(as_optional(c(&User::a) + 1)), "
+            "select(as_optional(c(&User::a) * 2)), select(as_optional(c(&User::a) - 3))));");
     REQUIRE(generate("SELECT a > 0 UNION SELECT a < 0;") ==
             "auto rows = storage.select(union_(select(as_optional(c(&User::a) > 0)), "
             "select(as_optional(c(&User::a) < 0))));");

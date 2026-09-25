@@ -611,10 +611,12 @@ namespace sqlite2orm {
         std::string syntheticColumnCppType(std::string_view cppIdentifier) const;
         std::string inferTypeFromNode(const AstNode& node) const;
         /**
-         *  The one type every node in `nodes` is read through: the widest of what
-         *  `inferTypeFromNode` says about each of them. A CASE has no type of its own in SQLite —
-         *  it answers with the value of whichever branch matched — so the `R` of the generated
-         *  `case_<R>` has to hold every branch result and the ELSE, not just the first branch.
+         *  The one type every node in `nodes` is read through: the widest of what each of them is
+         *  read back as — the schema type of a column a node references, what `inferTypeFromNode`
+         *  says about any other node, and nothing for a NULL. A CASE has no type of its own in
+         *  SQLite — it answers with the value of whichever branch matched — so the `R` of the
+         *  generated `case_<R>` has to hold every branch result and the ELSE, not just the first
+         *  branch.
          */
         std::string inferWidestTypeFromNodes(const std::vector<const AstNode*>& nodes) const;
         std::string generatePrefix() const;

@@ -5,6 +5,7 @@
 #include <sqlite2orm/utils.h>
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 
 namespace sqlite2orm {
@@ -1580,13 +1581,33 @@ namespace sqlite2orm {
         if (!firstSelect) {
             return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
         }
+        // sqlite_orm takes a chain of one operator as the arms of a single variadic call —
+        // `union_(a, b, c)` serializes `a UNION b UNION c`. It has no nested form: every arm must be
+        // a `select_t` (a compound operator marks each arm `highest_level`, a member only
+        // `select_t` has), so `union_(union_(a, b), c)` does not compile. A chain that mixes
+        // operators needs exactly that nesting, since SQLite groups it from the left, and so it is
+        // not generated.
+        const auto& operators = compoundNode.operators;
+        if (auto mismatch = std::adjacent_find(operators.begin(), operators.end(), std::not_equal_to<>{});
+            mismatch != operators.end()) {
+            // The underline goes to the arm the first differing operator joins.
+            const auto& joinedArm = *compoundNode.selects.at(std::distance(operators.begin(), mismatch) + 2);
+            return CodeGenResult{{},
+                                 {},
+                                 {sourceSpanWarning("compound SELECT that mixes UNION / UNION ALL / INTERSECT / "
+                                                    "EXCEPT is not mapped to sqlite_orm codegen: sqlite_orm takes "
+                                                    "one operator per call and does not nest a compound as an arm "
+                                                    "of another",
+                                                    joinedArm)}};
+        }
         CodeGenResult accumulated =
             this->coordinator.tryCodegenSqliteSelectSubexpression(*firstSelect, widenedResultColumns, cteBodySelect);
         if (accumulated.code.empty()) {
             return accumulated;
         }
-        for (size_t operatorIndex = 0; operatorIndex < compoundNode.operators.size(); ++operatorIndex) {
-            auto* nextSelect = dynamic_cast<const SelectNode*>(compoundNode.selects.at(operatorIndex + 1).get());
+        std::string armsCode = std::move(accumulated.code);
+        for (size_t armIndex = 1; armIndex < compoundNode.selects.size(); ++armIndex) {
+            auto* nextSelect = dynamic_cast<const SelectNode*>(compoundNode.selects.at(armIndex).get());
             if (!nextSelect) {
                 return CodeGenResult{{}, {}, {"compound SELECT arm is not a SelectNode"}};
             }
@@ -1601,11 +1622,11 @@ namespace sqlite2orm {
             if (nextArm.code.empty()) {
                 return CodeGenResult{{}, std::move(accumulated.decisionPoints), std::move(accumulated.warnings)};
             }
-            this->context.recordFormWithoutDefaultConstructor("a compound SELECT");
-            this->context.emittedCompoundSelectForm = true;
-            accumulated.code = std::string(compoundSelectApi(compoundNode.operators.at(operatorIndex))) + "(" +
-                               accumulated.code + ", " + nextArm.code + ")";
+            armsCode += ", " + nextArm.code;
         }
+        this->context.recordFormWithoutDefaultConstructor("a compound SELECT");
+        this->context.emittedCompoundSelectForm = true;
+        accumulated.code = std::string(compoundSelectApi(operators.front())) + "(" + armsCode + ")";
         return accumulated;
     }
 

@@ -2076,6 +2076,53 @@ TEST_CASE("runtime: a CASE reads back the widest branch it can answer with") {
             std::vector<std::string>{"9223372036854775807", "9223372036854775807", "1.5", "1", "x"});
 }
 
+// A CASE branch naming a column is read through the field of that column: the `case_<R>` over a
+// TEXT column used to be `case_<int>`, which compiles and reads every TEXT value back as 0, and
+// over an INTEGER one it cut every value past 2^31. Each select is generated over the schema that
+// declares `a` and run over a row holding the value the comment names; expected values checked
+// against sqlite3 3.51 over `user(a <type>)` holding that one row.
+TEST_CASE("runtime: a CASE branch naming a column reads back the column's value") {
+    const auto generateOver = [](std::string_view columnType, std::string_view select) {
+        return generateLastOfBatch("CREATE TABLE user (a " + std::string(columnType) + ");\n" + std::string(select))
+            .code;
+    };
+    // a = 'text'
+    const std::vector<std::string> textStatements{
+        generateOver("TEXT NOT NULL", "SELECT CASE WHEN a > '' THEN a ELSE 'x' END FROM user;"),
+        generateOver("TEXT NOT NULL", "SELECT CASE WHEN a > '' THEN a ELSE NULL END FROM user;"),
+        generateOver("TEXT NOT NULL", "SELECT CASE WHEN a = '' THEN NULL ELSE a END FROM user;"),
+    };
+    REQUIRE(textStatements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(case_<std::string>().when(c(&User::a) > \"\", "
+                "then(&User::a)).else_(\"x\").end()));",
+                "auto rows = storage.select(as_optional(case_<std::string>().when(c(&User::a) > \"\", "
+                "then(&User::a)).else_(nullptr).end()));",
+                "auto rows = storage.select(as_optional(case_<std::string>().when(c(&User::a) == \"\", "
+                "then(nullptr)).else_(&User::a).end()));",
+            });
+    REQUIRE(selectedValues(textStatements, "std::string", "\"text\"") ==
+            std::vector<std::string>{"text", "text", "text"});
+    // a = 5000000000
+    const std::vector<std::string> integerStatements{
+        generateOver("INTEGER NOT NULL", "SELECT CASE WHEN a > 0 THEN a ELSE 0 END FROM user;"),
+    };
+    REQUIRE(integerStatements == std::vector<std::string>{
+                                     "auto rows = storage.select(as_optional(case_<int64_t>().when(c(&User::a) > 0, "
+                                     "then(&User::a)).else_(0).end()));",
+                                 });
+    REQUIRE(selectedValues(integerStatements, "int64_t", "5000000000") == std::vector<std::string>{"5000000000"});
+    // a = 2.5
+    const std::vector<std::string> realStatements{
+        generateOver("REAL NOT NULL", "SELECT CASE WHEN a > 0 THEN a ELSE 0 END FROM user;"),
+    };
+    REQUIRE(realStatements == std::vector<std::string>{
+                                  "auto rows = storage.select(as_optional(case_<double>().when(c(&User::a) > 0, "
+                                  "then(&User::a)).else_(0).end()));",
+                              });
+    REQUIRE(selectedValues(realStatements, "double", "2.5") == std::vector<std::string>{"2.5"});
+}
+
 // A compound SELECT is read back through `std::common_type` of the types its arms come out as, so
 // arms sqlite_orm types `double`, `bool` or `std::string` handed a NULL row back as 0 / false / ""
 // on master, exactly as an unwidened plain SELECT did. Widening every arm at once keeps that common
@@ -2108,6 +2155,31 @@ TEST_CASE("runtime: a compound SELECT reads a NULL result column back") {
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
             std::vector<std::string>{"8", "8", "8", "8", "0", "7x"});
+}
+
+// sqlite_orm takes every arm of a compound as an argument of the one call and has no nested form:
+// `union_(union_(a, b), c)` fails to compile over `highest_level`, a member only `select_t` has.
+// Three arms and more of one operator came out nested on master and did not build (card
+// 1869498926172735005). Expected first rows checked against sqlite3 3.51 over `users(a INTEGER)`
+// holding one row with a = 7: 4 of {4, 8, 14}, 7 of {7, 8, 9}, 8, 7.
+TEST_CASE("runtime: a compound of three arms of one operator builds and reads back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a + 1 UNION SELECT a * 2 UNION SELECT a - 3;"),
+        generate("SELECT a UNION ALL SELECT a + 1 UNION ALL SELECT a + 2;"),
+        generate("SELECT a + 1 INTERSECT SELECT 8 INTERSECT SELECT a + 1;"),
+        generate("SELECT a EXCEPT SELECT a + 1 EXCEPT SELECT a + 2;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(union_(select(as_optional(c(&User::a) + 1)), "
+                              "select(as_optional(c(&User::a) * 2)), select(as_optional(c(&User::a) - 3))));",
+                              "auto rows = storage.select(union_all(select(&User::a), select(c(&User::a) + 1), "
+                              "select(c(&User::a) + 2)));",
+                              "auto rows = storage.select(intersect(select(c(&User::a) + 1), select(8), "
+                              "select(c(&User::a) + 1)));",
+                              "auto rows = storage.select(except(select(&User::a), select(c(&User::a) + 1), "
+                              "select(c(&User::a) + 2)));",
+                          });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"4", "7", "8", "7"});
 }
 
 // The arms left alone still compile, which is the whole reason they are left alone: an
@@ -2219,4 +2291,31 @@ TEST_CASE("runtime: a CASE branch typed by its operation is still read through a
                               "then(c(&User::a) || \"x\")).else_(1).end()));",
                           });
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"7"});
+}
+
+// A scalar subquery as the left operand of an operator used to come out bare — `select(...) > 0` —
+// and find no sqlite_orm operator at all (card 1869173227855545793). Quoted with `c()` it compiles
+// and serializes the subquery as written. Expected rows checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding 1, 2 and 3.
+TEST_CASE("runtime: a scalar subquery on the left of an operator returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) > 0;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) = 1;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) + 1 = 4;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) * 2 < 7;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) || 'x' LIKE '3x';"),
+        generate("SELECT a FROM users WHERE (SELECT a FROM users ORDER BY a DESC LIMIT 1) > a;"),
+    };
+    REQUIRE(
+        statements ==
+        std::vector<std::string>{
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) > 0));",
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) == 1));",
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) + 1 == 4));",
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) * 2 < 7));",
+            "auto rows = storage.select(1, from<Users>(), where(like(c(select(count<Users>())) || \"x\", \"3x\")));",
+            "auto rows = storage.select(&Users::a, where(c(select(&Users::a, order_by(&Users::a).desc(), limit(1))) > "
+            "&Users::a));",
+        });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "", "1,1,1", "1,1,1", "1,1,1", "1,2"});
 }

@@ -384,12 +384,16 @@ namespace sqlite2orm {
         // integer 1, and `std::string` sits above everything: sqlite3_column_text renders an
         // INTEGER and a REAL as the text SQLite prints for them, while a number read out of a TEXT
         // value is 0.
-        static constexpr std::array<std::string_view, 5> kWideningOrder{{
+        // `std::vector<char>` — the field of a BLOB column — sits above that: it reads every
+        // storage class as the bytes of it, while an `std::string` stops at the first NUL byte a
+        // blob holds.
+        static constexpr std::array<std::string_view, 6> kWideningOrder{{
             "bool",
             "int",
             "int64_t",
             "double",
             "std::string",
+            "std::vector<char>",
         }};
         // `int64_t` and `double` hold values the other one does not, so neither widens into the
         // other: a `double` loses every integer past 2^53 — `9007199254740993` read through one
@@ -411,11 +415,10 @@ namespace sqlite2orm {
         const std::optional<std::size_t> leftRank = rank(left);
         const std::optional<std::size_t> rightRank = rank(right);
         if (!leftRank || !rightRank) {
-            // Neither caller hands over a type the order above does not name: the five are every
-            // type `CodeGeneratorContext::inferTypeFromNode` answers with, and the view field
-            // inferrer, whose own vocabulary holds `std::vector<char>` as well, settles a BLOB
-            // against a non-BLOB before it asks. This keeps the fold total rather than describing
-            // a widening of its own: what the caller accumulated so far comes back unchanged.
+            // Neither caller hands over a type the order above does not name: the order holds
+            // every type `CodeGeneratorContext::inferTypeFromNode` answers with and every field a
+            // schema column is read into. This keeps the fold total rather than describing a
+            // widening of its own: what the caller accumulated so far comes back unchanged.
             return std::string(left);
         }
         return std::string(kWideningOrder.at(std::max(*leftRank, *rightRank)));

@@ -130,6 +130,7 @@ namespace sqlite2orm {
     extern const std::string kCommentConcatenationCast;
     extern const std::string kCommentBitwiseResultCast;
     extern const std::string kCommentOrTokenCallSpelling;
+    extern const std::string kCommentOrMatchLiteralKept;
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
@@ -775,6 +776,15 @@ namespace sqlite2orm {
      *  is still not the `int64_t` a hex literal is already cast to.
      */
     std::optional<GeneratedValueCppType> generatedValueCppType(const AstNode& astNode);
+    /**
+     *  `c(internal::literal_holder<T>{code})` for an integer literal an `int` holds and for a
+     *  boolean literal, written as they are with nothing around them, where `code` is what the
+     *  literal was generated as; `std::nullopt` for every other node. sqlite_orm serializes a
+     *  `literal_holder` into the SQL instead of binding it, which is what lets SQLite fold the
+     *  constant the way it folds the one written. These are the only constants SQLite folds as
+     *  truth values: `1`, `0x1` and `TRUE` are, `+1`, `-1`, `1.0` and `2147483648` are not.
+     */
+    std::optional<std::string> unboundLiteralCode(const AstNode& astNode, const std::string& code);
     /**
      *  How a group of expressions sqlite_orm deduces ONE C++ type from has to be spelled. Both
      *  bounds of a `between(A, T, T)` and every value of the `in(A, {…})` initializer list are

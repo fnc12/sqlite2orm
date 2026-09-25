@@ -822,13 +822,24 @@ TEST_CASE("codegen: MATCH against the table name of an aliased FTS5 source C++20
                            "where(match(d->*(c<Docs>()->*&fts5::hidden::any), \"hello\")));");
 }
 
+// A bare `*` reads the row as the plain struct, and `get_all<Docs>()` writes `FROM "docs"` with no
+// alias, so the hidden column names the plain table as well: an `alias_column<alias_a<Docs>>` here
+// serializes as `"a"."docs"`, names a source the FROM does not have and throws `SQL logic error`.
+TEST_CASE("codegen: MATCH against the table name of an aliased FTS5 source under a bare star") {
+    auto result = generateFull("SELECT * FROM docs d WHERE docs MATCH 'hello'");
+    REQUIRE(result.code ==
+            "auto rows = storage.get_all<Docs>(where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"MATCH against table \"docs\" maps to the hidden FTS5 'any' column; "
+                                        "requires an FTS5 virtual table mapped as Docs"});
+}
+
 // The alias is no column of the source: SQLite answers `no such column: d`, so the name is not
 // taken for the hidden column and goes out as any other column the table does not declare.
 TEST_CASE("codegen: MATCH against the alias of an FTS5 source is not the hidden column") {
     auto result = generateFull("SELECT 1 FROM docs d WHERE d MATCH 'hello'");
     REQUIRE(result.code == "auto rows = storage.select(1, from<alias_a<Docs>>(), "
                            "where(match(alias_column<alias_a<Docs>>(&Docs::d), \"hello\")));");
-    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
     REQUIRE(result.warnings == std::vector<CodegenWarning>{});
 }
 

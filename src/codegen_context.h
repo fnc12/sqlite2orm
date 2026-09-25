@@ -336,6 +336,13 @@ namespace sqlite2orm {
          */
         bool canNameInferredFromSources = false;
         /**
+         *  Set by the select generator while a bare `SELECT *` is generated. Its row is read as
+         *  the plain struct — `get_all<T>()` or `asterisk<T>()` — which names no alias, so a
+         *  reference that would otherwise name an aliased source (the hidden FTS5 column a
+         *  `docs MATCH …` stands for) has to name the plain table the row is read from.
+         */
+        bool rowReadsPlainStruct = false;
+        /**
          *  Set by the `count(*)` branch when it took `canNameInferredFromSources` up and named an
          *  aliased source, which leaves the inferred FROM with nothing standing for that source.
          *  The select generator reads it back: a `from<...>()` is what puts the source there.

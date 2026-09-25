@@ -433,6 +433,10 @@ namespace {
                    "    std::string body;\n"
                    "};\n"
                    "\n"
+                   "std::ostream& operator<<(std::ostream& stream, const Docs& docs) {\n"
+                   "    return stream << docs.body;\n"
+                   "}\n"
+                   "\n"
                    "int main() {\n"
                    "    using namespace sqlite_orm;\n"
                    "    auto storage = make_storage(\"\", make_virtual_table<Docs>(\"docs\", "
@@ -2026,6 +2030,24 @@ TEST_CASE("runtime: MATCH against the table name of an aliased FTS5 source retur
                               "where(match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\")));",
                           });
     REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "hello world"});
+}
+
+// A bare `*` over the aliased source reads its row as the plain struct: `get_all<Docs>()` writes
+// `FROM "docs"` with no alias, so the hidden column has to name the plain table as well. Naming
+// the alias there (`"a"."docs"`) threw `SQL logic error` on prepare. Expected rows checked against
+// sqlite3 3.51 over `docs(body)` as an FTS5 table holding 'hello world' and 'bye'.
+TEST_CASE("runtime: MATCH against the table name of an aliased FTS5 source under a bare star returns the rows SQLite "
+          "returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT * FROM docs d WHERE docs MATCH 'hello';"),
+        generate("SELECT * FROM docs AS d WHERE docs MATCH 'bye';"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.get_all<Docs>(where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));",
+                "auto rows = storage.get_all<Docs>(where(match(c<Docs>()->*&fts5::hidden::any, \"bye\")));",
+            });
+    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"hello world", "bye"});
 }
 
 // The same table named under the MATCH and by a subquery: the mention under the MATCH is the

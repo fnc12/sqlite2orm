@@ -1504,7 +1504,7 @@ namespace sqlite2orm {
             return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
         } else if (auto* castNode = dynamic_cast<const CastNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*castNode->operand);
-            std::string cppType = sqliteTypeToCpp(castNode->typeName);
+            std::string cppType = castTypeToCpp(castNode->typeName);
             return CodeGenResult{"cast<" + cppType + ">(" + operandResult.code + ")",
                                  std::move(operandResult.decisionPoints)};
         } else if (auto* caseNode = dynamic_cast<const CaseNode*>(&astNode)) {

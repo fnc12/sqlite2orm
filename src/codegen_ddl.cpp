@@ -914,7 +914,7 @@ namespace sqlite2orm {
                     return InferredFieldType{"std::string"};
                 }
                 if (auto* cast = dynamic_cast<const CastNode*>(&node)) {
-                    return InferredFieldType{sqliteTypeToCpp(cast->typeName)};
+                    return InferredFieldType{castTypeToCpp(cast->typeName)};
                 }
                 if (auto* collate = dynamic_cast<const CollateNode*>(&node)) {
                     if (collate->operand) {

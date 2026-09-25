@@ -20,7 +20,7 @@ namespace sqlite2orm {
             if (!predicateArgumentNeedsGroupingCast(argumentNode)) {
                 return code;
             }
-            context.recordComment(kCommentAndOrPredicateArgumentCast);
+            context.recordComment(sourceSpanComment(kCommentAndOrPredicateArgumentCast, argumentNode));
             return "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
         }
 
@@ -555,7 +555,9 @@ namespace sqlite2orm {
             const bool operandsBecomeCallArguments = binaryOp->binaryOperator == BinaryOperator::jsonArrow ||
                                                      binaryOp->binaryOperator == BinaryOperator::jsonArrow2;
             const int sqlPrecedence = sqlOperatorPrecedence(binaryOp->binaryOperator);
-            bool castsPredicateOperand = false;
+            // The operand the CAST went around, for the hint below to underline: with both of them
+            // cast the hint is one and stands at the first, as a warning met twice does.
+            const AstNode* castPredicateOperand = nullptr;
             auto castPredicate = [&](std::string& code, const AstNode& operandNode, bool rightOperand) {
                 if (operandsBecomeCallArguments)
                     return;
@@ -567,7 +569,9 @@ namespace sqlite2orm {
                 if (!regroups)
                     return;
                 code = "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
-                castsPredicateOperand = true;
+                if (!castPredicateOperand) {
+                    castPredicateOperand = &operandNode;
+                }
             };
             castPredicate(leftResult.code, *binaryOp->lhs, false);
             castPredicate(rightResult.code, *binaryOp->rhs, true);
@@ -751,34 +755,41 @@ namespace sqlite2orm {
                 this->context.recordFormWithoutDefaultConstructor(std::string(formWithoutDefaultConstructor));
             }
 
-            if (castsPredicateOperand) {
-                this->context.recordComment(kCommentPredicateGroupingCast);
+            if (castPredicateOperand) {
+                this->context.recordComment(sourceSpanComment(kCommentPredicateGroupingCast, *castPredicateOperand));
             }
             if (needsCallSpelling) {
-                this->context.recordComment(kCommentOrTokenCallSpelling);
+                // The spelling is the whole expression's, operator and operands together.
+                this->context.recordComment(sourceSpanComment(kCommentOrTokenCallSpelling, *binaryOp));
             }
             // Only the spelling that is emitted carries a quoted operand into the code; the
             // variants that are merely offered speak for themselves. A leaf operand — a literal or
             // a column reference — is spelled `c(…)` by the wrapping variants whatever the operator
             // is, so what the comment marks is the quoting an operand's own form forces on top of
-            // that.
-            auto quotesUnrecognizedOperand = [&](std::string_view exprStyle) {
+            // that. The operand it answers with is the one the comment underlines, and where a
+            // spelling wraps both it is the left one: the comment is a single one, and it stands at
+            // the first operand it is true of.
+            auto quotedUnrecognizedOperand = [&](std::string_view exprStyle) -> const AstNode* {
                 if (exprStyle == "functional") {
-                    return quoteLeftCallArgument || quoteRightCallArgument;
+                    if (quoteLeftCallArgument)
+                        return &leftNode;
+                    return quoteRightCallArgument ? &rightNode : nullptr;
                 }
                 if (!operatorSpellingQuotesOperand) {
-                    return false;
+                    return nullptr;
                 }
                 if (exprStyle == "operator_wrap_right") {
-                    return !rightLeaf;
+                    return rightLeaf ? nullptr : &rightNode;
                 }
                 if (exprStyle == "operator_wrap_both") {
-                    return !leftLeaf || !rightLeaf;
+                    if (!leftLeaf)
+                        return &leftNode;
+                    return rightLeaf ? nullptr : &rightNode;
                 }
-                return !leftLeaf;
+                return leftLeaf ? nullptr : &leftNode;
             };
-            if (quotesUnrecognizedOperand(chosenExprVal)) {
-                this->context.recordComment(kCommentAndOrQuotedOperand);
+            if (const AstNode* quotedOperand = quotedUnrecognizedOperand(chosenExprVal)) {
+                this->context.recordComment(sourceSpanComment(kCommentAndOrQuotedOperand, *quotedOperand));
             }
             return CodeGenResult{std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings)};
         } else if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {
@@ -869,7 +880,7 @@ namespace sqlite2orm {
                 unaryOp->unaryOperator == UnaryOperator::logicalNot && generatesNegatedCondition(*unaryOp->operand);
             if (castsNegatedOperand) {
                 operandResult.code = "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + operandResult.code + ")";
-                this->context.recordComment(kCommentNegatedConditionCast);
+                this->context.recordComment(sourceSpanComment(kCommentNegatedConditionCast, *unaryOp->operand));
             }
 
             // A concatenation needs the same CAST for the same reason — a `conc_t` is
@@ -883,7 +894,7 @@ namespace sqlite2orm {
                 unaryOp->unaryOperator == UnaryOperator::logicalNot && generatesConcatenation(*unaryOp->operand);
             if (castsConcatenatedOperand) {
                 operandResult.code = "cast<" + sqliteTypeToCpp("REAL") + ">(" + operandResult.code + ")";
-                this->context.recordComment(kCommentConcatenationCast);
+                this->context.recordComment(sourceSpanComment(kCommentConcatenationCast, *unaryOp->operand));
             }
 
             // A column reference under a NOT is generated as a column pointer rather than wrapped in
@@ -891,7 +902,9 @@ namespace sqlite2orm {
             const bool wrapsOperandInC = operandLeaf && !operandNoWrap && !nodeGeneratesColumnPointer(&operandNode);
             const bool operandIsColumnPointerUnderNot = wrapsOperandInC && operandGeneratedColumnPointerUnderNot;
             if (operandIsColumnPointerUnderNot) {
-                this->context.recordComment(kCommentNotColumnPointer);
+                // The column is what takes the other form, so the column is what the hint
+                // underlines — the operand as it stands under the NOT, a COLLATE stepped through.
+                this->context.recordComment(sourceSpanComment(kCommentNotColumnPointer, operandNode));
             }
 
             // The same wrapper hides a value from the walk that binds one: the literal of
@@ -903,7 +916,7 @@ namespace sqlite2orm {
             const bool operandIsAddedToZeroUnderNot =
                 notKeepsOperandQuoted && wrapsOperandInC && generatesBoundValue(operandNode);
             if (operandIsAddedToZeroUnderNot) {
-                this->context.recordComment(kCommentNotValueAddedToZero);
+                this->context.recordComment(sourceSpanComment(kCommentNotValueAddedToZero, operandNode));
             }
 
             std::string operandStr;
@@ -930,7 +943,8 @@ namespace sqlite2orm {
             if (unaryOp->unaryOperator == UnaryOperator::minus) {
                 if (negationForm == NegationForm::zeroMinusSubtraction) {
                     negationAsSubtraction = true;
-                    this->context.recordComment(kCommentNegationAsZeroMinus);
+                    // The negation as a whole is what `0 - expr` is generated for, sign included.
+                    this->context.recordComment(sourceSpanComment(kCommentNegationAsZeroMinus, *unaryOp));
                 } else {
                     operandResult.warnings.push_back(CodegenWarning{
                         "unary minus over a predicate (" + std::string(sqlPredicateLooserThanMinus(operandNode)) +
@@ -1072,7 +1086,7 @@ namespace sqlite2orm {
                 case OneDeducedTypeForm::widenedToInt64:
                     lowCode = widenToInt64(*betweenNode->low, std::move(lowCode));
                     highCode = widenToInt64(*betweenNode->high, std::move(highCode));
-                    this->context.recordComment(kCommentBetweenBoundsWidened);
+                    this->context.recordComment(sourceSpanComment(kCommentBetweenBoundsWidened, *betweenNode));
                     break;
                 case OneDeducedTypeForm::noCommonType:
                     warnings.push_back(sourceSpanWarning(
@@ -1283,7 +1297,7 @@ namespace sqlite2orm {
                 case OneDeducedTypeForm::asWritten:
                     break;
                 case OneDeducedTypeForm::widenedToInt64:
-                    this->context.recordComment(kCommentInValuesWidened);
+                    this->context.recordComment(sourceSpanComment(kCommentInValuesWidened, *inNode));
                     break;
                 case OneDeducedTypeForm::noCommonType: {
                     // The warning names the pair of values that proves the list has no one type,

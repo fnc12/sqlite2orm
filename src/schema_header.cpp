@@ -354,7 +354,7 @@ namespace sqlite2orm {
             std::vector<std::string> dependentStorageArgs;
             std::vector<DecisionPoint> allDecisionPoints;
             std::vector<CodegenWarning> allWarnings;
-            std::vector<std::string> allComments;
+            std::vector<CodegenComment> allComments;
 
             const auto markNameOfStatement = [&gen](const SchemaStatementMeta& meta) {
                 if (meta.type == "view") {
@@ -424,7 +424,7 @@ namespace sqlite2orm {
             for (size_t tableIndex = 0; tableIndex < sortedTables.size(); ++tableIndex) {
                 const CreateTableParts& parts = tableParts[tableIndex];
                 allWarnings.insert(allWarnings.end(), parts.warnings.begin(), parts.warnings.end());
-                appendUniqueStrings(allComments, parts.comments);
+                appendUniqueComments(allComments, parts.comments);
                 allDecisionPoints.insert(allDecisionPoints.end(),
                                          parts.decisionPoints.begin(),
                                          parts.decisionPoints.end());
@@ -492,7 +492,7 @@ namespace sqlite2orm {
                         continue;
                     }
                     allWarnings.insert(allWarnings.end(), viewParts.warnings.begin(), viewParts.warnings.end());
-                    appendUniqueStrings(allComments, viewParts.comments);
+                    appendUniqueComments(allComments, viewParts.comments);
                     allDecisionPoints.insert(allDecisionPoints.end(),
                                              viewParts.decisionPoints.begin(),
                                              viewParts.decisionPoints.end());
@@ -516,7 +516,7 @@ namespace sqlite2orm {
                         continue;
                     }
                     allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());
-                    appendUniqueStrings(allComments, fragment.comments);
+                    appendUniqueComments(allComments, fragment.comments);
                     allDecisionPoints.insert(allDecisionPoints.end(),
                                              fragment.decisionPoints.begin(),
                                              fragment.decisionPoints.end());
@@ -577,7 +577,7 @@ namespace sqlite2orm {
                     continue;
                 }
                 allWarnings.insert(allWarnings.end(), fragment.warnings.begin(), fragment.warnings.end());
-                appendUniqueStrings(allComments, fragment.comments);
+                appendUniqueComments(allComments, fragment.comments);
                 allDecisionPoints.insert(allDecisionPoints.end(),
                                          fragment.decisionPoints.begin(),
                                          fragment.decisionPoints.end());

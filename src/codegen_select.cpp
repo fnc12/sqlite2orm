@@ -268,6 +268,7 @@ namespace sqlite2orm {
          *  the clause the select would go out with no FROM whatsoever.
          */
         std::string selectExplicitFrom(CodeGeneratorContext& context,
+                                       const SelectNode& selectNode,
                                        const SelectFromSources& sources,
                                        size_t sourcesNamedByFromClause,
                                        std::string_view starRowType) {
@@ -280,7 +281,9 @@ namespace sqlite2orm {
             if (inferredFromWouldLoseAlias) {
                 explicitFrom =
                     explicitFromClause(sourcesNamedByFromClause > 0u ? sources.leadingTypes : sources.implicitTypes);
-                context.recordComment(kCommentAliasedFromSources);
+                // The clause is what the whole select is generated with, so the select is what the
+                // hint underlines: no one source of it is the reason the FROM is spelled out.
+                context.recordComment(sourceSpanComment(kCommentAliasedFromSources, selectNode));
             } else if (!sources.hasCteSource && !sources.implicitTypes.empty() &&
                        clausesNameEveryMention(sources, context.ownEmittedTableTypes) &&
                        implicitFromDiffers(sources, context.emittedTableTypes, context.ownVisibleEmittedTableTypes)) {
@@ -525,7 +528,7 @@ namespace sqlite2orm {
                 auto colCode = expressionCode(*column.expression);
                 if (selectResultNeedsIntegerCast(*column.expression)) {
                     colCode = "cast<int64_t>(" + colCode + ")";
-                    this->context.recordComment(kCommentBitwiseResultCast);
+                    this->context.recordComment(sourceSpanComment(kCommentBitwiseResultCast, *column.expression));
                 }
                 if (selectResultNeedsAsOptional(*column.expression, this->context)) {
                     colCode = "as_optional(" + colCode + ")";
@@ -786,6 +789,7 @@ namespace sqlite2orm {
                                              : this->context.structName;
         const std::string explicitFrom =
             selectExplicitFrom(this->context,
+                               selectNode,
                                fromSources,
                                sourcesNamedByFromClause,
                                isStar ? std::string_view(starRowType) : std::string_view());
@@ -860,7 +864,10 @@ namespace sqlite2orm {
                 if (!aliasPreamble.empty()) {
                     code = aliasPreamble + code;
                 }
-                this->context.recordComment(kCommentCpp20ColumnAliases);
+                // Every alias of the select is generated in this style, and the first of them is
+                // where a reader meets it, so that alias is what the hint underlines.
+                this->context.recordComment(
+                    sourceSpanComment(kCommentCpp20ColumnAliases, firstColumnAliasSpan(selectNode.columns)));
             } else {
                 bool hasBuiltin = false;
                 bool hasCustom = false;
@@ -1432,6 +1439,7 @@ namespace sqlite2orm {
                                                 : this->context.structName;
         const std::string explicitFrom =
             selectExplicitFrom(this->context,
+                               selectNode,
                                fromSources,
                                sourcesNamedByFromClause,
                                isStar ? std::string_view(subStarRowType) : std::string_view());

@@ -2086,10 +2086,17 @@ namespace {
         "make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)";
     const std::string kReflectionOptionDescription = "C++26 reflection: annotated struct + make_table<T>()";
 
-    /** The one option a table that has no reflected form is left with, carrying `reason`. */
-    Option classicalOnlyOption(std::string code, const std::string& reason) {
+    /**
+     *  The one option a table that has no reflected form is left with, carrying `reason` anchored at
+     *  the whole statement — `statementLength` characters of it, from the first — as every hint about
+     *  a table's mapping is.
+     */
+    Option classicalOnlyOption(std::string code, const std::string& reason, size_t statementLength) {
         Option option{"make_table", std::move(code), kClassicalOptionDescription};
-        option.comments.push_back("the C++26 reflection alternative is not offered for this table: " + reason);
+        option.comments.push_back(
+            CodegenComment{"the C++26 reflection alternative is not offered for this table: " + reason,
+                           SourceLocation{1, 1},
+                           statementLength});
         return option;
     }
 
@@ -2145,7 +2152,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
                                       "\n"
                                       "make_table<Users>()";
     Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
-    reflectedOption.comments.push_back(kTableReflectionComment);
+    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 130});
     reflectedOption.minCppStandard = 26;
     REQUIRE(result == CodeGenResult{"struct [[= \"users\"_orm_name]] Users {\n"
                                     "    [[= primary_key().autoincrement()]] std::optional<int64_t> id;\n"
@@ -2164,7 +2171,7 @@ TEST_CASE("codegen: CREATE TABLE - targeting C++26 chooses the reflected mapping
                                                     reflectedOption}}},
                                     {},
                                     {},
-                                    {kTableReflectionComment}});
+                                    {CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 130}}});
 }
 
 // No released compiler implements P2996 yet, so a consumer targeting C++26 has to be able to ask
@@ -2187,7 +2194,7 @@ TEST_CASE("codegen: CREATE TABLE - an explicit make_table policy keeps the class
                                       "\n"
                                       "make_table<T>()";
     Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
-    reflectedOption.comments.push_back(kTableReflectionComment);
+    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 38});
     reflectedOption.minCppStandard = 26;
     REQUIRE(result == CodeGenResult{"struct T {\n"
                                     "    std::optional<int64_t> a;\n"
@@ -2241,7 +2248,8 @@ TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy cannot revive a
                               classicalCode,
                               {classicalOnlyOption(classicalCode,
                                                    "CHECK on column `a` names members of the struct being declared, "
-                                                   "which an annotation cannot")}}});
+                                                   "which an annotation cannot",
+                                                   39)}}});
 }
 
 // A table-level constraint is no annotation: it stays a call argument, of `make_table<T>(…)` this
@@ -2322,7 +2330,8 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is no C++ identifier keeps
                                                    {classicalOnlyOption(classicalCode,
                                                                         "column `first name` is not a C++ identifier, "
                                                                         "and a reflected column is named after the "
-                                                                        "member it reflects")}}},
+                                                                        "member it reflects",
+                                                                        58)}}},
                                     {CodegenWarning{"table t: column `first name` is not a C++ identifier; the member "
                                                     "holding it is named `first_name`",
                                                     SourceLocation{1, 17},
@@ -2349,7 +2358,8 @@ TEST_CASE("codegen: CREATE TABLE - a text DEFAULT keeps the classical mapping un
                               classicalCode,
                               {classicalOnlyOption(classicalCode,
                                                    "the DEFAULT of column `b` is generated as `\"x\"`, which is not a "
-                                                   "constant expression an annotation can carry")}}});
+                                                   "constant expression an annotation can carry",
+                                                   46)}}});
 }
 
 // `unique_t` is one of sqlite_orm's column constraints (`is_column_constraint`), and a member
@@ -2392,7 +2402,8 @@ TEST_CASE("codegen: CREATE TABLE - a column CHECK keeps the classical mapping un
                               classicalCode,
                               {classicalOnlyOption(classicalCode,
                                                    "CHECK on column `a` names members of the struct being declared, "
-                                                   "which an annotation cannot")}}});
+                                                   "which an annotation cannot",
+                                                   39)}}});
 }
 
 TEST_CASE("codegen: CREATE TABLE - a generated column keeps the classical mapping under C++26") {
@@ -2413,7 +2424,8 @@ TEST_CASE("codegen: CREATE TABLE - a generated column keeps the classical mappin
                               classicalCode,
                               {classicalOnlyOption(classicalCode,
                                                    "generated column `b` names members of the struct being declared, "
-                                                   "which an annotation cannot")}}});
+                                                   "which an annotation cannot",
+                                                   48)}}});
 }
 
 // What a consumer reading `--json` gets: the decision point carries both variants, each with the

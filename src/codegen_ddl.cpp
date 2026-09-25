@@ -1324,7 +1324,10 @@ namespace sqlite2orm {
 
         parts.structDeclaration = std::move(structDeclaration);
         parts.makeViewExpression = "make_view<" + structName + ">(" + selectExpression.code + ")";
-        this->context.recordComment(kCommentViewReflection);
+        // The hint is about the view as a whole, so it underlines the statement's opening keywords
+        // as the source spells them — where the warning about the same mapping stands below.
+        this->context.recordComment(
+            sourceSpanComment(kCommentViewReflection, SourceSpan{node.location, node.headerText}));
         // SQLite stores a view body without compiling it, so the CREATE VIEW carrying an `inf`
         // goes through and every query against the view is the one refused — checked on sqlite3
         // 3.51.0 and on the libsqlite3 3.45.1 the tests link. The `inf` itself comes out of the one
@@ -2148,8 +2151,9 @@ namespace sqlite2orm {
                                    "make_table(\"name\", make_column(…)) over a plain struct (wider compiler "
                                    "support)"};
             if (!reflectionOffered) {
-                classicalOption.comments.push_back("the C++26 reflection alternative is not offered for this table: " +
-                                                   reflectionBlocker);
+                classicalOption.comments.push_back(sourceSpanComment(
+                    "the C++26 reflection alternative is not offered for this table: " + reflectionBlocker,
+                    createTable));
             }
             std::vector<Option> options{std::move(classicalOption)};
             if (reflectionOffered) {
@@ -2157,7 +2161,7 @@ namespace sqlite2orm {
                                        reflectedCode,
                                        "C++26 reflection: annotated struct + make_table<T>()"};
                 reflectedOption.minCppStandard = 26;
-                reflectedOption.comments.push_back(kCommentTableReflection);
+                reflectedOption.comments.push_back(sourceSpanComment(kCommentTableReflection, createTable));
                 options.push_back(std::move(reflectedOption));
             }
             parts.decisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
@@ -2168,7 +2172,7 @@ namespace sqlite2orm {
             if (reflected) {
                 structDeclaration = std::move(reflectedStructDeclaration);
                 makeExpression = std::move(reflectedMakeExpression);
-                parts.comments.push_back(kCommentTableReflection);
+                parts.comments.push_back(sourceSpanComment(kCommentTableReflection, createTable));
                 parts.structIsReflected = true;
             }
         }

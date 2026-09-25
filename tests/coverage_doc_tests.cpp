@@ -95,6 +95,13 @@ TEST_CASE("COVERAGE.md quotes the code the generator emits for a MATCH beside a 
     REQUIRE(countOccurrences(readCoverage(), R"(`match(&T::a, "x") or c(&T::b) == 1`)") == 1);
 }
 
+// The same for the constant the OR keeps in the SQL beside a MATCH.
+TEST_CASE("COVERAGE.md quotes the code the generator emits for a constant beside a MATCH") {
+    REQUIRE(generate("a MATCH 'x' OR 1") == R"(or_(c(match(&User::a, "x")), c(internal::literal_holder<int>{1})))");
+    REQUIRE(countOccurrences(readCoverage(), R"(`or_(c(match(&T::a, "x")), c(internal::literal_holder<int>{1}))`)") ==
+            1);
+}
+
 // The CASE result-type row quotes the code the generator emits for the one branch pair with no
 // number over it — an `int64_t` branch beside a REAL one — and the row is the reason the pair is
 // read as text rather than through a `double` that drops every integer past 2^53. Both literals

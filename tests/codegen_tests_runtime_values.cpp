@@ -2027,6 +2027,47 @@ TEST_CASE("runtime: a select naming its table under a MATCH and in a subquery re
     REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "1"});
 }
 
+// sqlite_orm binds every literal, and an OR over a MATCH runs only where SQLite folds the other
+// operand away: `body MATCH 'hello' OR 1` answers both rows, while the `body MATCH ? OR ?` it was
+// prepared as threw `unable to use function MATCH in the requested context` (card
+// 1869456672762627547). The constant is kept in the SQL as a `literal_holder`, on either side and
+// under the OR of an AND as well. The fifth statement is the counter-check — an OR of two MATCHes
+// has no constant to keep and is left as it was. The last two are constants SQLite does not fold
+// even when written into the SQL, so they throw there as well, kept in the SQL or not. Expected
+// rows checked against sqlite3 3.45.1 and 3.51 over `docs(body)` as an FTS5 table holding
+// 'hello world' and 'bye'; on master the first, third and fourth read back as `throws`, and the
+// second only runs because its bound 1 short-circuits the OR before the MATCH is reached.
+TEST_CASE("runtime: an OR of a MATCH and a constant returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM docs WHERE (body MATCH 'hello') OR 1;"),
+        generate("SELECT 1 FROM docs WHERE 1 OR body MATCH 'hello';"),
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' OR TRUE;"),
+        generate("SELECT 1 FROM docs WHERE (body MATCH 'hello' AND body = 'x') OR 0x1;"),
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' OR body MATCH 'bye';"),
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' OR 0;"),
+        generate("SELECT 1 FROM docs WHERE body MATCH 'hello' OR 2147483648;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(1, from<Docs>(), where(or_(c(match(&Docs::body, \"hello\")), "
+                "c(internal::literal_holder<int>{1}))));",
+                "auto rows = storage.select(1, from<Docs>(), where(or_(c(internal::literal_holder<int>{1}), "
+                "c(match(&Docs::body, \"hello\")))));",
+                "auto rows = storage.select(1, from<Docs>(), where(or_(c(match(&Docs::body, \"hello\")), "
+                "c(internal::literal_holder<bool>{true}))));",
+                "auto rows = storage.select(1, where(or_(match(&Docs::body, \"hello\") and c(&Docs::body) == \"x\", "
+                "c(internal::literal_holder<int>{0x1}))));",
+                "auto rows = storage.select(1, from<Docs>(), where(or_(c(match(&Docs::body, \"hello\")), "
+                "c(match(&Docs::body, \"bye\")))));",
+                "auto rows = storage.select(1, from<Docs>(), where(or_(c(match(&Docs::body, \"hello\")), "
+                "c(internal::literal_holder<int>{0}))));",
+                "auto rows = storage.select(1, from<Docs>(), where(or_(c(match(&Docs::body, \"hello\")), "
+                "2147483648)));",
+            });
+    REQUIRE(ftsSelectedRowValues(statements) ==
+            std::vector<std::string>{"1,1", "1,1", "1,1", "1,1", "1,1", "throws", "throws"});
+}
+
 // `case_<R>` reads every row of the column through the one `R`, while SQLite answers the CASE with
 // the value of whichever branch matched. `R` taken from the first branch alone truncated every
 // wider branch silently: `CASE WHEN a < 0 THEN 1 ELSE 9223372036854775807 END` came out

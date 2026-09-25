@@ -672,6 +672,15 @@ namespace sqlite2orm {
         "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
         "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
 
+    const std::string kCommentOrMatchLiteralKept =
+        "A constant beside a MATCH under an OR is generated as "
+        "`c(internal::literal_holder<T>{value})`: sqlite_orm binds every other value as a "
+        "parameter, and SQLite folds only a constant written into the statement. `body MATCH 'x' "
+        "OR 1` is always true and never calls MATCH, while `body MATCH ? OR ?` leaves MATCH "
+        "outside the FTS index and fails at run time with `unable to use function MATCH in the "
+        "requested context`. The `literal_holder` is serialized into the SQL as written, and `c()` "
+        "hands it to `or_()`, which is the only spelling that keeps it.";
+
     const std::string kCommentTableReflection =
         "The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and "
         "their constraints are read off the struct's members and `[[= …]]` annotations, and the "
@@ -2073,6 +2082,19 @@ namespace sqlite2orm {
             return GeneratedValueCppType::null;
         }
         return std::nullopt;
+    }
+
+    std::optional<std::string> unboundLiteralCode(const AstNode& astNode, const std::string& code) {
+        std::string_view cppType;
+        if (dynamic_cast<const IntegerLiteralNode*>(&astNode) &&
+            generatedValueCppType(astNode) == GeneratedValueCppType::integer32) {
+            cppType = "int";
+        } else if (dynamic_cast<const BoolLiteralNode*>(&astNode)) {
+            cppType = "bool";
+        } else {
+            return std::nullopt;
+        }
+        return "c(internal::literal_holder<" + std::string(cppType) + ">{" + code + "})";
     }
 
     OneDeducedTypeForm oneDeducedTypeForm(const std::vector<const AstNode*>& nodes) {

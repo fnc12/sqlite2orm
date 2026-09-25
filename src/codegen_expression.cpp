@@ -486,8 +486,37 @@ namespace sqlite2orm {
                                               std::move(message),
                                               *binaryOp);
             }
+            const int matchesBeforeLeft = this->context.generatedMatchCount;
             auto leftResult = this->coordinator.generateNode(*binaryOp->lhs);
+            const int matchesBeforeRight = this->context.generatedMatchCount;
             auto rightResult = this->coordinator.generateNode(*binaryOp->rhs);
+            const bool leftHoldsMatch = matchesBeforeRight != matchesBeforeLeft;
+            const bool rightHoldsMatch = this->context.generatedMatchCount != matchesBeforeRight;
+
+            // sqlite_orm binds every literal into the prepared statement, and an OR over a MATCH
+            // runs only where SQLite folds the other operand away: `body MATCH 'x' OR 1` is always
+            // true and never calls MATCH, while `body MATCH ? OR ?` leaves MATCH standing outside
+            // the FTS index and fails at the first step with `unable to use function MATCH in the
+            // requested context`. A `literal_holder` is serialized into the SQL as written, so the
+            // statement prepared is the one written. It is no operand `or_()` recognizes, and
+            // `c()` hands it right back; the call spelling is the only one that stays an OR.
+            // A constant holds no MATCH, so at most one of the two operands is kept.
+            const AstNode* keptLiteralOperand = nullptr;
+            if (binaryOp->binaryOperator == BinaryOperator::logicalOr) {
+                if (rightHoldsMatch) {
+                    if (auto literal = unboundLiteralCode(*binaryOp->lhs, leftResult.code)) {
+                        leftResult.code = std::move(*literal);
+                        keptLiteralOperand = binaryOp->lhs.get();
+                    }
+                }
+                if (leftHoldsMatch) {
+                    if (auto literal = unboundLiteralCode(*binaryOp->rhs, rightResult.code)) {
+                        rightResult.code = std::move(*literal);
+                        keptLiteralOperand = binaryOp->rhs.get();
+                    }
+                }
+            }
+            const bool orOperandKeptLiteral = keptLiteralOperand != nullptr;
 
             // A COLLATE and a unary plus generate their operand and nothing else, so an operand
             // standing under one is the operand this node really puts into the C++ expression.
@@ -686,8 +715,10 @@ namespace sqlite2orm {
             // spelling would not be the operator that was written.
             const bool needsCallSpelling = binaryOperatorNeedsCallSpelling(*binaryOp);
             // The JSON arrows have no C++ operator spelling at all — they are generated as a
-            // `json_extract()` call — so the call is the only form they offer either.
-            const bool onlyCallSpellingCompiles = needsCallSpelling || operandsBecomeCallArguments;
+            // `json_extract()` call — so the call is the only form they offer either, and neither
+            // does an OR with an operand kept literal.
+            const bool onlyCallSpellingCompiles =
+                needsCallSpelling || operandsBecomeCallArguments || orOperandKeptLiteral;
             if (onlyCallSpellingCompiles) {
                 chosenExprVal = "functional";
                 emittedExpr = functionalCode;
@@ -770,6 +801,9 @@ namespace sqlite2orm {
 
             if (castPredicateOperand) {
                 this->context.recordComment(sourceSpanComment(kCommentPredicateGroupingCast, *castPredicateOperand));
+            }
+            if (keptLiteralOperand) {
+                this->context.recordComment(sourceSpanComment(kCommentOrMatchLiteralKept, *keptLiteralOperand));
             }
             if (needsCallSpelling) {
                 // The spelling is the whole expression's, operator and operands together.
@@ -1454,6 +1488,7 @@ namespace sqlite2orm {
             std::string code = globNode->negated ? "!" + globCode : globCode;
             return CodeGenResult{code, std::move(decisionPoints)};
         } else if (auto* matchNode = dynamic_cast<const MatchNode*>(&astNode)) {
+            ++this->context.generatedMatchCount;
             std::vector<DecisionPoint> decisionPoints;
             std::vector<CodegenWarning> warnings;
 
@@ -1576,6 +1611,10 @@ namespace sqlite2orm {
             return operandResult;
         } else if (auto* funcCall = dynamic_cast<const FunctionCallNode*>(&astNode)) {
             std::string funcName = toLowerAscii(funcCall->name);
+            if (const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(funcName);
+                form != nullptr && form->kind == SqliteOrmFormKind::matchFunction) {
+                ++this->context.generatedMatchCount;
+            }
             std::vector<DecisionPoint> decisionPoints;
             std::vector<CodegenWarning> funcWarnings;
             std::string baseCode;

@@ -72,6 +72,17 @@ namespace {
         "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
         "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
 
+    // The hint attached to the constant an OR keeps in the SQL beside a MATCH; asserted on its own
+    // in "codegen: an OR keeping a constant beside a MATCH carries its comment".
+    const std::string kOrMatchLiteralKeptComment =
+        "A constant beside a MATCH under an OR is generated as "
+        "`c(internal::literal_holder<T>{value})`: sqlite_orm binds every other value as a "
+        "parameter, and SQLite folds only a constant written into the statement. `body MATCH 'x' "
+        "OR 1` is always true and never calls MATCH, while `body MATCH ? OR ?` leaves MATCH "
+        "outside the FTS index and fails at run time with `unable to use function MATCH in the "
+        "requested context`. The `literal_holder` is serialized into the SQL as written, and `c()` "
+        "hands it to `or_()`, which is the only spelling that keeps it.";
+
     // The hint attached to every AND and OR operand the generator hands over `c()`-wrapped;
     // asserted on its own in "codegen: an AND or an OR with a quoted operand carries its comment".
     const std::string kAndOrQuotedOperandComment =
@@ -1227,6 +1238,58 @@ TEST_CASE("codegen: an AND or an OR with a quoted operand carries its comment") 
     // hint.
     REQUIRE(generateFull("SELECT a AND b;").comments.empty());
     REQUIRE(generateFull("SELECT a MATCH 'x' OR b = 1;").comments.empty());
+}
+
+// sqlite_orm binds every literal, and SQLite runs an OR over a MATCH only where it folds the other
+// operand away, which it does for a constant written into the statement and not for a bound one.
+// A constant beside a MATCH is kept in the SQL as a `literal_holder`, and the OR is spelled as the
+// call: `c()` hands the holder to `or_()`, while `operator||` over two operands that are no
+// condition would concatenate them. What the generated code answers is pinned in "runtime: an OR
+// of a MATCH and a constant returns the rows SQLite returns".
+TEST_CASE("codegen: an OR keeps a constant beside a MATCH in the SQL") {
+    SECTION("an integer an `int` holds and a boolean, on either side") {
+        REQUIRE(generate("a MATCH 'x' OR 1") == R"(or_(c(match(&User::a, "x")), c(internal::literal_holder<int>{1})))");
+        REQUIRE(generate("1 OR a MATCH 'x'") == R"(or_(c(internal::literal_holder<int>{1}), c(match(&User::a, "x"))))");
+        REQUIRE(generate("a MATCH 'x' OR 0x1") ==
+                R"(or_(c(match(&User::a, "x")), c(internal::literal_holder<int>{0x1})))");
+        REQUIRE(generate("a MATCH 'x' OR 0") == R"(or_(c(match(&User::a, "x")), c(internal::literal_holder<int>{0})))");
+        REQUIRE(generate("a MATCH 'x' OR TRUE") ==
+                R"(or_(c(match(&User::a, "x")), c(internal::literal_holder<bool>{true})))");
+        REQUIRE(generate("FALSE OR match(a, 'x')") ==
+                R"(or_(c(internal::literal_holder<bool>{false}), c(match(&User::a, "x"))))");
+    }
+    SECTION("a MATCH anywhere under the other operand, and the operator spelling given up for it") {
+        REQUIRE(generate("(a MATCH 'x' AND b = 1) OR 1") ==
+                R"(or_(match(&User::a, "x") and c(&User::b) == 1, c(internal::literal_holder<int>{1})))");
+        REQUIRE(generate("a MATCH 'x' OR b = 1 OR 1") ==
+                R"(or_(match(&User::a, "x") or c(&User::b) == 1, c(internal::literal_holder<int>{1})))");
+        const std::vector<Option> options = generateFull("(a MATCH 'x' AND b = 1) OR 1").decisionPoints.back().options;
+        REQUIRE(options.size() == 1);
+        REQUIRE(options[0].code ==
+                R"(or_(match(&User::a, "x") and c(&User::b) == 1, c(internal::literal_holder<int>{1})))");
+    }
+    SECTION("a constant SQLite does not fold, and an OR with no MATCH, are left as they were") {
+        REQUIRE(generate("a MATCH 'x' OR 2147483648") == R"(or_(c(match(&User::a, "x")), 2147483648))");
+        REQUIRE(generate("a MATCH 'x' OR -1") == R"(or_(c(match(&User::a, "x")), -1))");
+        REQUIRE(generate("a MATCH 'x' OR +1") == R"(or_(c(match(&User::a, "x")), 1))");
+        REQUIRE(generate("a MATCH 'x' OR 1.0") == R"(or_(c(match(&User::a, "x")), 1.0))");
+        REQUIRE(generate("a MATCH 'x' AND 1") == R"(c(match(&User::a, "x")) and 1)");
+        REQUIRE(generate("a = 1 OR 1") == "c(&User::a) == 1 or 1");
+        REQUIRE(generate("a OR 1") == "or_(&User::a, 1)");
+    }
+}
+
+TEST_CASE("codegen: an OR keeping a constant beside a MATCH carries its comment") {
+    REQUIRE(generateFull("SELECT (a MATCH 'x' AND b = 1) OR 1;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kOrMatchLiteralKeptComment, SourceLocation{1, 35}, 1}});
+    // Where the OR needs the call spelling anyway, its own hint stands beside this one.
+    REQUIRE(generateFull("SELECT TRUE OR a MATCH 'x';").comments ==
+            std::vector<CodegenComment>{CodegenComment{kOrMatchLiteralKeptComment, SourceLocation{1, 8}, 4},
+                                        CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 8}, 19},
+                                        CodegenComment{kAndOrQuotedOperandComment, SourceLocation{1, 16}, 11}});
+    REQUIRE(generateFull("SELECT a MATCH 'x' OR 2147483648;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 8}, 25},
+                                        CodegenComment{kAndOrQuotedOperandComment, SourceLocation{1, 8}, 11}});
 }
 
 TEST_CASE("codegen: IS NULL") {

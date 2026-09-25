@@ -467,6 +467,46 @@ TEST_CASE("codegen: comparison to scalar MAX subquery") {
     REQUIRE(result.code == "c(&User::id) > select(max(&T::x))");
 }
 
+// A scalar subquery generates a `select_t`, which no sqlite_orm operator takes on its own: as the
+// left operand it came out bare — `select(count<T>()) > 0` — and found no `operator>`. The wrapping
+// variants now quote it on their side the way they quote a literal.
+TEST_CASE("codegen: scalar subquery as the left operand of a binary operator") {
+    SECTION("comparisons") {
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) > 0") == "c(select(count<T>())) > 0");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) = 1") == "c(select(count<T>())) == 1");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) < 9") == "c(select(count<T>())) < 9");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) != 9") == "c(select(count<T>())) != 9");
+        REQUIRE(generate("(SELECT x FROM t LIMIT 1) > 0") == "c(select(&T::x, limit(1))) > 0");
+    }
+    SECTION("arithmetic and concatenation") {
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) + 1") == "c(select(count<T>())) + 1");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) * 2") == "c(select(count<T>())) * 2");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) || 'x'") == R"(c(select(count<T>())) || "x")");
+    }
+    SECTION("beside a column, another subquery and a nested operator") {
+        REQUIRE(generate("(SELECT MAX(x) FROM t) > id") == "c(select(max(&T::x))) > &User::id");
+        REQUIRE(generate("(SELECT MAX(x) FROM t) > (SELECT MIN(x) FROM t)") ==
+                "c(select(max(&T::x))) > select(min(&T::x))");
+        REQUIRE(generate("(SELECT COUNT(*) FROM t) + 1 > 2") == "c(select(count<T>())) + 1 > 2");
+    }
+    SECTION("the wrapping variants quote the subquery on their own side") {
+        CodeGenPolicy policy;
+        policy.chosenAlternativeValueByCategory["expr_style"] = "operator_wrap_right";
+        REQUIRE(
+            generateWithPolicy("SELECT 1 FROM t WHERE (SELECT MAX(x) FROM t) > (SELECT MIN(x) FROM t);", policy).code ==
+            "auto rows = storage.select(1, from<T>(), where(select(max(&T::x)) > "
+            "c(select(min(&T::x)))));");
+        policy.chosenAlternativeValueByCategory["expr_style"] = "operator_wrap_both";
+        REQUIRE(generateWithPolicy("SELECT 1 FROM t WHERE (SELECT MAX(x) FROM t) > 0;", policy).code ==
+                "auto rows = storage.select(1, from<T>(), where(c(select(max(&T::x))) > c(0)));");
+    }
+    SECTION("a compound subquery is left bare") {
+        // `union_t` serializes without parentheses of its own, so `c(union_(...)) > 1` compiles
+        // into `(SELECT x FROM t UNION SELECT 2 > 1)`: the comparison moves into the last arm.
+        REQUIRE(generate("(SELECT x FROM t UNION SELECT 2) > 1") == "union_(select(&T::x), select(2)) > 1");
+    }
+}
+
 TEST_CASE("codegen: UNION two literal SELECTs") {
     REQUIRE(generate("SELECT 1 UNION SELECT 2") == "auto rows = storage.select(union_(select(1), select(2)));");
 }

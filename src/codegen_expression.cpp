@@ -619,12 +619,25 @@ namespace sqlite2orm {
             std::string leftOperand = asOperand(leftResult.code, leftNode, false);
             std::string rightOperand = asOperand(rightResult.code, rightNode, true);
 
-            std::string wrappedLeft =
-                (operatorSpellingQuotesOperand || (leftLeaf && !leftNoWrap && !nodeGeneratesColumnPointer(&leftNode)))
-                    ? wrap(leftResult.code)
-                    : leftOperand;
+            // A scalar subquery over a single SELECT generates a `select_t`, and sqlite_orm's
+            // operators recognize it no more than a bare value: `select(count<User>()) > 0` finds no
+            // `operator>`. The wrapping variants spell it `c(…)` on their side just as they do a
+            // leaf — `c()` hands the `select_t` right back to the operator, and the subquery is
+            // serialized parenthesized as written. A compound one stays as it is: its `union_t`
+            // comes out without parentheses of its own, so `c(union_(…)) > 1` would compile into
+            // `(SELECT … UNION SELECT 2 > 1)` — the comparison moved into the last arm.
+            auto generatesSelect = [](const AstNode& operandNode) {
+                auto* subquery = dynamic_cast<const SubqueryNode*>(&operandNode);
+                return subquery && dynamic_cast<const SelectNode*>(subquery->select.get()) != nullptr;
+            };
+            const bool leftWrapped = leftLeaf || generatesSelect(leftNode);
+            const bool rightWrapped = rightLeaf || generatesSelect(rightNode);
+            std::string wrappedLeft = (operatorSpellingQuotesOperand ||
+                                       (leftWrapped && !leftNoWrap && !nodeGeneratesColumnPointer(&leftNode)))
+                                          ? wrap(leftResult.code)
+                                          : leftOperand;
             std::string wrappedRight = (operatorSpellingQuotesOperand ||
-                                        (rightLeaf && !rightNoWrap && !nodeGeneratesColumnPointer(&rightNode)))
+                                        (rightWrapped && !rightNoWrap && !nodeGeneratesColumnPointer(&rightNode)))
                                            ? wrap(rightResult.code)
                                            : rightOperand;
 

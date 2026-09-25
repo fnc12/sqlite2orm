@@ -2172,3 +2172,30 @@ TEST_CASE("runtime: a CASE branch typed by its operation is still read through a
                           });
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"7"});
 }
+
+// A scalar subquery as the left operand of an operator used to come out bare — `select(...) > 0` —
+// and find no sqlite_orm operator at all (card 1869173227855545793). Quoted with `c()` it compiles
+// and serializes the subquery as written. Expected rows checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding 1, 2 and 3.
+TEST_CASE("runtime: a scalar subquery on the left of an operator returns the rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) > 0;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) = 1;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) + 1 = 4;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) * 2 < 7;"),
+        generate("SELECT 1 FROM users WHERE (SELECT count(*) FROM users) || 'x' LIKE '3x';"),
+        generate("SELECT a FROM users WHERE (SELECT a FROM users ORDER BY a DESC LIMIT 1) > a;"),
+    };
+    REQUIRE(
+        statements ==
+        std::vector<std::string>{
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) > 0));",
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) == 1));",
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) + 1 == 4));",
+            "auto rows = storage.select(1, from<Users>(), where(c(select(count<Users>())) * 2 < 7));",
+            "auto rows = storage.select(1, from<Users>(), where(like(c(select(count<Users>())) || \"x\", \"3x\")));",
+            "auto rows = storage.select(&Users::a, where(c(select(&Users::a, order_by(&Users::a).desc(), limit(1))) > "
+            "&Users::a));",
+        });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "", "1,1,1", "1,1,1", "1,1,1", "1,2"});
+}

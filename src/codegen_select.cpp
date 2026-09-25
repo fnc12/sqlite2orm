@@ -449,7 +449,7 @@ namespace sqlite2orm {
                 if (ft.alias && !isCteKey(ft.tableName)) {
                     if (this->context.useCpp20TableAliasStyle()) {
                         std::string varName = toCppIdentifier(*ft.alias);
-                        TableAliasInfo info{varName, mappedStructName};
+                        TableAliasInfo info{varName, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                         this->context.cpp20TableAliasDeclarations.push_back(
@@ -457,7 +457,7 @@ namespace sqlite2orm {
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);
                         std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
-                        TableAliasInfo info{ormAlias, mappedStructName};
+                        TableAliasInfo info{ormAlias, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                     }
@@ -1166,7 +1166,7 @@ namespace sqlite2orm {
                 if (ft.alias && !isCteKey(ft.tableName)) {
                     if (this->context.useCpp20TableAliasStyle()) {
                         std::string varName = toCppIdentifier(*ft.alias);
-                        TableAliasInfo info{varName, mappedStructName};
+                        TableAliasInfo info{varName, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                         this->context.cpp20TableAliasDeclarations.push_back(
@@ -1174,7 +1174,7 @@ namespace sqlite2orm {
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);
                         std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
-                        TableAliasInfo info{ormAlias, mappedStructName};
+                        TableAliasInfo info{ormAlias, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                     }

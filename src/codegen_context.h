@@ -16,6 +16,12 @@ namespace sqlite2orm {
     struct TableAliasInfo {
         std::string ormAliasType;
         std::string baseStructName;
+        /**
+         *  The table the aliased source reads, as the FROM wrote it. An FTS5 table's hidden column
+         *  is named after the table, not after the alias, so `docs MATCH …` over `FROM docs d`
+         *  is that column of `d`, while `d MATCH …` names no column at all.
+         */
+        std::string tableName;
     };
 
     /**

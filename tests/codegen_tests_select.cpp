@@ -713,10 +713,45 @@ TEST_CASE("codegen: MATCH against the FTS5 table name uses the hidden any column
                                         "column; requires an FTS5 virtual table mapped as DocsSearch"});
 }
 
+// The hidden column is named after the table, and an aliased source answers to its alias alone:
+// `docs_search` here is the column `"b"."docs_search"`, while a `"docs_search"."docs_search"`
+// names a source the FROM does not have and SQLite refuses the statement (card 1869569574559549019).
 TEST_CASE("codegen: MATCH against an aliased FTS5 table name") {
     auto result =
         generateFull("SELECT d.* FROM docs d JOIN docs_search s ON d.id = s.rowid WHERE docs_search MATCH 'word'");
-    REQUIRE(result.code.find("match(c<DocsSearch>()->*&fts5::hidden::any, \"word\")") != std::string::npos);
+    REQUIRE(result.code ==
+            "auto rows = storage.select(asterisk<alias_a<Docs>>(), join<alias_b<DocsSearch>>(on("
+            "alias_column<alias_a<Docs>>(&Docs::id) == alias_column<alias_b<DocsSearch>>(&DocsSearch::rowid))), "
+            "where(match(alias_column<alias_b<DocsSearch>>(c<DocsSearch>()->*&fts5::hidden::any), "
+            "\"word\")));");
+}
+
+TEST_CASE("codegen: MATCH against the table name of an aliased FTS5 source names the alias") {
+    auto result = generateFull("SELECT 1 FROM docs d WHERE docs MATCH 'hello'");
+    REQUIRE(result.code == "auto rows = storage.select(1, from<alias_a<Docs>>(), "
+                           "where(match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\")));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"MATCH against table \"docs\" maps to the hidden FTS5 'any' column; "
+                                        "requires an FTS5 virtual table mapped as Docs"});
+}
+
+TEST_CASE("codegen: MATCH against the table name of an aliased FTS5 source C++20 style") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT 1 FROM docs d WHERE docs MATCH 'hello'", pol);
+    REQUIRE(result.code == "constexpr orm_table_alias auto d = \"d\"_alias.for_<Docs>();\n"
+                           "auto rows = storage.select(1, from<d>(), "
+                           "where(match(d->*(c<Docs>()->*&fts5::hidden::any), \"hello\")));");
+}
+
+// The alias is no column of the source: SQLite answers `no such column: d`, so the name is not
+// taken for the hidden column and goes out as any other column the table does not declare.
+TEST_CASE("codegen: MATCH against the alias of an FTS5 source is not the hidden column") {
+    auto result = generateFull("SELECT 1 FROM docs d WHERE d MATCH 'hello'");
+    REQUIRE(result.code == "auto rows = storage.select(1, from<alias_a<Docs>>(), "
+                           "where(match(alias_column<alias_a<Docs>>(&Docs::d), \"hello\")));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{});
 }
 
 namespace {

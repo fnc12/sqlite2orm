@@ -138,6 +138,57 @@ namespace sqlite2orm {
             return CodegenWarning{std::move(message)};
         }
 
+        /** How a join loop writes a FROM item after the first out. */
+        enum class FromItemEmission {
+            /** The `from<...>()` of the select stands for it, aliases and all. */
+            namedByFromClause,
+            /** Left for sqlite_orm to infer from the mentions: a CTE, or the first table after a leading CTE. */
+            inferred,
+            /** A join clause of its own. */
+            joinClause,
+        };
+
+        /**
+         *  How each item of `fromClause` is written out, indexed like it; the first item is the
+         *  select's own source and is marked `inferred` unless the `from<...>()` stands for it.
+         *  `sourcesNamedByFromClause` is how many leading items that clause stands for. The join
+         *  loops of both generators write their clauses from this, and whatever has to know how
+         *  a source reaches sqlite_orm reads it from here too.
+         */
+        std::vector<FromItemEmission> fromItemEmissions(const CodeGeneratorContext& context,
+                                                        const std::vector<FromClauseItem>& fromClause,
+                                                        size_t sourcesNamedByFromClause) {
+            auto isCteSource = [&](std::string_view tableName) -> bool {
+                auto key = normalizeSqlIdentifier(tableName);
+                return context.activeCteTypedefByTableKey.find(key) != context.activeCteTypedefByTableKey.end();
+            };
+            std::vector<FromItemEmission> emissions;
+            emissions.reserve(fromClause.size());
+            if (fromClause.empty()) {
+                return emissions;
+            }
+            emissions.push_back(sourcesNamedByFromClause > 0u ? FromItemEmission::namedByFromClause
+                                                              : FromItemEmission::inferred);
+            const bool firstFromIsCte = isCteSource(fromClause.at(0).table.tableName);
+            bool emittedNonCteJoin = false;
+            for (size_t joinIndex = 1; joinIndex < fromClause.size(); ++joinIndex) {
+                const auto& joinItem = fromClause.at(joinIndex);
+                const JoinKind joinKind = generatedJoinKind(joinItem);
+                if (joinIndex < sourcesNamedByFromClause) {
+                    emissions.push_back(FromItemEmission::namedByFromClause);
+                } else if (isCteSource(joinItem.table.tableName) && joinKind == JoinKind::crossJoin) {
+                    emissions.push_back(FromItemEmission::inferred);
+                } else if (firstFromIsCte && !emittedNonCteJoin && joinKind == JoinKind::crossJoin) {
+                    emittedNonCteJoin = true;
+                    emissions.push_back(FromItemEmission::inferred);
+                } else {
+                    emittedNonCteJoin = true;
+                    emissions.push_back(FromItemEmission::joinClause);
+                }
+            }
+            return emissions;
+        }
+
         /**
          *  The FROM sources of `fromClause` as the select generators spell them: the same alias,
          *  CTE and struct resolution their clause loops use, and the same rule for which items
@@ -195,23 +246,47 @@ namespace sqlite2orm {
                 return sources;
             }
             addImplicitSource(fromClause.at(0).table);
-            const bool firstFromIsCte = isCteSource(fromClause.at(0).table.tableName);
-            bool emittedNonCteJoin = false;
+            const auto emissions = fromItemEmissions(context, fromClause, 0u);
             for (size_t joinIndex = 1; joinIndex < fromClause.size(); ++joinIndex) {
-                const auto& joinItem = fromClause.at(joinIndex);
-                const JoinKind joinKind = generatedJoinKind(joinItem);
-                if (isCteSource(joinItem.table.tableName) && joinKind == JoinKind::crossJoin) {
-                    addImplicitSource(joinItem.table);
-                    continue;
+                if (emissions.at(joinIndex) == FromItemEmission::inferred) {
+                    addImplicitSource(fromClause.at(joinIndex).table);
                 }
-                if (firstFromIsCte && !emittedNonCteJoin && joinKind == JoinKind::crossJoin) {
-                    emittedNonCteJoin = true;
-                    addImplicitSource(joinItem.table);
-                    continue;
-                }
-                emittedNonCteJoin = true;
             }
             return sources;
+        }
+
+        /**
+         *  The recordsets of `fromClause` that reach sqlite_orm with no alias written for them,
+         *  however they are aliased in the SQL. A bare `*` reads its leading source as the plain
+         *  struct — `get_all<T>()` or `asterisk<T>()` — and `cross_join<alias_b<T>>()` and
+         *  `natural_join<alias_b<T>>()` serialize as a plain `CROSS JOIN "t"` / `NATURAL JOIN "t"`
+         *  wherever in the FROM they stand; `from<alias_a<T>>()` and a constrained
+         *  `join<alias_a<T>>(on(…))` write the alias out. Read off the same `emissions` the join
+         *  loop writes the clauses from, so the two cannot drift apart.
+         */
+        std::vector<std::string> sourcesWrittenWithoutAlias(const std::vector<FromClauseItem>& fromClause,
+                                                            const SelectFromSources& sources,
+                                                            const std::vector<FromItemEmission>& emissions,
+                                                            bool isStar) {
+            std::vector<std::string> types;
+            if (isStar && !sources.allTypes.empty()) {
+                types.push_back(sources.allTypes.front());
+            }
+            for (size_t joinIndex = 1; joinIndex < fromClause.size(); ++joinIndex) {
+                if (emissions.at(joinIndex) != FromItemEmission::joinClause) {
+                    continue;
+                }
+                switch (generatedJoinKind(fromClause.at(joinIndex))) {
+                    case JoinKind::crossJoin:
+                    case JoinKind::naturalInnerJoin:
+                    case JoinKind::naturalLeftJoin:
+                        types.push_back(sources.allTypes.at(joinIndex));
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return types;
         }
 
         /** Whether `rowType` is one of the sources the FROM would name. */
@@ -417,6 +492,7 @@ namespace sqlite2orm {
         this->context.activeTableAliases.clear();
         this->context.implicitSourceAlias.reset();
         this->context.canNameInferredFromSources = false;
+        this->context.sourcesWrittenWithoutAlias.clear();
         this->context.countedAliasedSource = false;
         this->context.nextAliasLetter = 0;
         auto isCteKey = [&](std::string_view tableSqlName) -> bool {
@@ -450,7 +526,7 @@ namespace sqlite2orm {
                 if (ft.alias && !isCteKey(ft.tableName)) {
                     if (this->context.useCpp20TableAliasStyle()) {
                         std::string varName = toCppIdentifier(*ft.alias);
-                        TableAliasInfo info{varName, mappedStructName};
+                        TableAliasInfo info{varName, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                         this->context.cpp20TableAliasDeclarations.push_back(
@@ -458,7 +534,7 @@ namespace sqlite2orm {
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);
                         std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
-                        TableAliasInfo info{ormAlias, mappedStructName};
+                        TableAliasInfo info{ormAlias, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                     }
@@ -554,6 +630,17 @@ namespace sqlite2orm {
         }
         this->context.canNameInferredFromSources =
             fromSources.leadingAnyAliased && !fromSources.hasCteSource && !isStar;
+        // How many of the FROM items the `from<...>()` will stand for, which the join loop has to
+        // know while the clause itself is only written once every clause that can name a source has
+        // been generated. A comma or CROSS JOIN run of more than one aliased source is always written
+        // out: it reaches sqlite_orm through `cross_join<alias_b<T>>()`, which drops the alias.
+        const size_t sourcesNamedByFromClause =
+            this->context.canNameInferredFromSources && fromSources.leadingTypes.size() > 1u
+                ? fromSources.leadingTypes.size()
+                : 0u;
+        const auto fromEmissions = fromItemEmissions(this->context, selectNode.fromClause, sourcesNamedByFromClause);
+        this->context.sourcesWrittenWithoutAlias =
+            sourcesWrittenWithoutAlias(selectNode.fromClause, fromSources, fromEmissions, isStar);
         int apiLevelDecisionId = -1;
         // No api_level choice for a WITH outer: it is fixed to the `select(asterisk<T>())` form.
         if (isStar && !selectNode.fromClause.empty() && !forceOuterAsterisk) {
@@ -694,32 +781,13 @@ namespace sqlite2orm {
             }
             return "&" + structForFromTable(tableName) + "::" + toCppIdentifier(colSql);
         };
-        bool firstFromIsCte =
-            !selectNode.fromClause.empty() && isCteSource(selectNode.fromClause.at(0).table.tableName);
-        // How many of the FROM items the `from<...>()` will stand for, which this loop has to know
-        // while the clause itself is only written once every clause that can name a source has been
-        // generated. A comma or CROSS JOIN run of more than one aliased source is always written
-        // out: it reaches sqlite_orm through `cross_join<alias_b<T>>()`, which drops the alias.
-        const size_t sourcesNamedByFromClause =
-            this->context.canNameInferredFromSources && fromSources.leadingTypes.size() > 1u
-                ? fromSources.leadingTypes.size()
-                : 0u;
-        bool emittedNonCteJoin = false;
         for (size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
             const JoinKind joinKind = generatedJoinKind(joinItem);
-            if (joinIndex < sourcesNamedByFromClause) {
-                // The `from<...>()` written below stands for this item, aliases and all.
+            if (fromEmissions.at(joinIndex) != FromItemEmission::joinClause) {
+                // The `from<...>()` written below stands for this item, or sqlite_orm infers it.
                 continue;
             }
-            if (isCteSource(joinItem.table.tableName) && joinKind == JoinKind::crossJoin) {
-                continue;
-            }
-            if (firstFromIsCte && !emittedNonCteJoin && joinKind == JoinKind::crossJoin) {
-                emittedNonCteJoin = true;
-                continue;
-            }
-            emittedNonCteJoin = true;
             const auto& leftTable = selectNode.fromClause.at(joinIndex - 1).table;
             std::string rightType = resolveJoinType(joinItem.table);
             std::string rightStruct = structForFromTable(joinItem.table.tableName);
@@ -1072,6 +1140,7 @@ namespace sqlite2orm {
             std::optional<std::string> savedImplicitCteTableKey;
             std::optional<TableAliasInfo> savedImplicitSourceAlias;
             bool savedCanNameInferredFromSources;
+            std::vector<std::string> savedPlainRowSourceTypes;
             bool savedCountedAliasedSource;
 
             SubselectAliasRestore(CodeGeneratorContext* context) :
@@ -1089,6 +1158,7 @@ namespace sqlite2orm {
                 savedImplicitCteTableKey(std::exchange(context->implicitCteFromTableKeyNorm, std::nullopt)),
                 savedImplicitSourceAlias(std::exchange(context->implicitSourceAlias, std::nullopt)),
                 savedCanNameInferredFromSources(context->canNameInferredFromSources),
+                savedPlainRowSourceTypes(context->sourcesWrittenWithoutAlias),
                 savedCountedAliasedSource(context->countedAliasedSource) {}
 
             ~SubselectAliasRestore() {
@@ -1102,6 +1172,7 @@ namespace sqlite2orm {
                 ctx->implicitCteFromTableKeyNorm = std::move(savedImplicitCteTableKey);
                 ctx->implicitSourceAlias = std::move(savedImplicitSourceAlias);
                 ctx->canNameInferredFromSources = savedCanNameInferredFromSources;
+                ctx->sourcesWrittenWithoutAlias = std::move(savedPlainRowSourceTypes);
                 ctx->countedAliasedSource = savedCountedAliasedSource;
             }
         } restore{&this->context};
@@ -1134,6 +1205,7 @@ namespace sqlite2orm {
         this->context.activeTableAliases.clear();
         this->context.implicitSourceAlias.reset();
         this->context.canNameInferredFromSources = false;
+        this->context.sourcesWrittenWithoutAlias.clear();
         this->context.countedAliasedSource = false;
         this->context.nextAliasLetter = 0;
         auto isCteKey = [&](std::string_view tableSqlName) -> bool {
@@ -1167,7 +1239,7 @@ namespace sqlite2orm {
                 if (ft.alias && !isCteKey(ft.tableName)) {
                     if (this->context.useCpp20TableAliasStyle()) {
                         std::string varName = toCppIdentifier(*ft.alias);
-                        TableAliasInfo info{varName, mappedStructName};
+                        TableAliasInfo info{varName, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                         this->context.cpp20TableAliasDeclarations.push_back(
@@ -1175,7 +1247,7 @@ namespace sqlite2orm {
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);
                         std::string ormAlias = "alias_" + std::string(1, letter) + "<" + mappedStructName + ">";
-                        TableAliasInfo info{ormAlias, mappedStructName};
+                        TableAliasInfo info{ormAlias, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
                     }
@@ -1292,6 +1364,14 @@ namespace sqlite2orm {
         }
         this->context.canNameInferredFromSources =
             fromSources.leadingAnyAliased && !fromSources.hasCteSource && !isStar;
+        // The same count and the same emissions the outer select settles, for the same reason.
+        const size_t sourcesNamedByFromClause =
+            this->context.canNameInferredFromSources && fromSources.leadingTypes.size() > 1u
+                ? fromSources.leadingTypes.size()
+                : 0u;
+        const auto fromEmissions = fromItemEmissions(this->context, selectNode.fromClause, sourcesNamedByFromClause);
+        this->context.sourcesWrittenWithoutAlias =
+            sourcesWrittenWithoutAlias(selectNode.fromClause, fromSources, fromEmissions, isStar);
         std::string columnPart;
         if (isStar) {
             if (selectNode.fromClause.empty()) {
@@ -1390,30 +1470,14 @@ namespace sqlite2orm {
             auto key = normalizeSqlIdentifier(tableName);
             return this->context.activeCteTypedefByTableKey.find(key) != this->context.activeCteTypedefByTableKey.end();
         };
-        bool firstFromIsCte =
-            !selectNode.fromClause.empty() && isCteSource(selectNode.fromClause.at(0).table.tableName);
-        bool emittedNonCteJoin = false;
         std::vector<std::string> tailParts;
-        // The same count the outer select's join loop needs, for the same reason.
-        const size_t sourcesNamedByFromClause =
-            this->context.canNameInferredFromSources && fromSources.leadingTypes.size() > 1u
-                ? fromSources.leadingTypes.size()
-                : 0u;
         for (size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
             const JoinKind joinKind = generatedJoinKind(joinItem);
-            if (joinIndex < sourcesNamedByFromClause) {
-                // The `from<...>()` written below stands for this item, aliases and all.
+            if (fromEmissions.at(joinIndex) != FromItemEmission::joinClause) {
+                // The `from<...>()` written below stands for this item, or sqlite_orm infers it.
                 continue;
             }
-            if (isCteSource(joinItem.table.tableName) && joinKind == JoinKind::crossJoin) {
-                continue;
-            }
-            if (firstFromIsCte && !emittedNonCteJoin && joinKind == JoinKind::crossJoin) {
-                emittedNonCteJoin = true;
-                continue;
-            }
-            emittedNonCteJoin = true;
             const auto& leftTable = selectNode.fromClause.at(joinIndex - 1).table;
             std::string rightType = resolveJoinType(joinItem.table);
             std::string rightStruct = structForFromTable(joinItem.table.tableName);

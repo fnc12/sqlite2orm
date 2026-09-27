@@ -558,10 +558,19 @@ namespace sqlite2orm {
      *  that belongs here.
      */
     size_t underlineLengthOf(std::string_view sourceText);
+    /** What the C++ name `recordMemberName()` is handed declares for the column it holds. */
+    enum class MemberDeclaration {
+        /** A member of the struct a table is mapped to, handed its column name by `make_column()`. */
+        structMember,
+        /** A member of a reflected view's struct, which `make_view<V>()` reads the column name off. */
+        reflectedViewMember,
+        /** The part of a CTE column alias variable (`cte__a_b`) that names the column. */
+        cteColumnAlias,
+    };
     /**
-     *  Records in `membersByName` that the member `memberName` of the struct generated for `owner`
-     *  (`"table t"`, `"view v"`) holds the column `sqlName`, and answers with what that name has
-     *  to be reported as, anchored at `nameSpan` when the parse recorded one.
+     *  Records in `membersByName` that the member `memberName` generated for `owner` (`"table t"`,
+     *  `"view v"`, `"CTE c"`) holds the column `sqlName`, and answers with what that name has to
+     *  be reported as, anchored at `nameSpan` when the parse recorded one.
      *
      *  Two things are worth a warning here. A member whose name is not the column's own tells the
      *  reader which member a column ended up in — SQL takes names C++ has no letters for, so
@@ -569,19 +578,20 @@ namespace sqlite2orm {
      *  member the struct declares twice, which does not compile at all: the generated code looks
      *  fine and only a compiler ever says so, which is why the collision is reported here, where
      *  the struct is being named. The collision is what gets reported when a name does both, as
-     *  it names the member the rewriting would have named anyway.
+     *  it names the member the rewriting would have named anyway. The column aliases of a CTE are
+     *  named the same way — one `constexpr` variable per column — and meet the same way.
      *
-     *  `mappedByMemberName` says that the mapping reads the column's SQL name off the member
-     *  rather than being given it, which is what sqlite_orm's reflected `make_view<V>()` does: a
-     *  rewritten member there renames the column in the mapping as well, so the warning says so.
-     *  A classical `make_column("…", &T::x)` is handed the name and leaves it alone.
+     *  A `reflectedViewMember` is one sqlite_orm's reflected `make_view<V>()` reads the column's
+     *  SQL name off rather than being given it: a rewritten member there renames the column in the
+     *  mapping as well, so the warning says so. A classical `make_column("…", &T::x)` is handed the
+     *  name and leaves it alone.
      */
     std::optional<CodegenWarning> recordMemberName(std::string_view owner,
                                                    std::string_view sqlName,
                                                    std::string_view memberName,
                                                    const SourceSpan& nameSpan,
                                                    std::map<std::string, std::string>& membersByName,
-                                                   bool mappedByMemberName = false);
+                                                   MemberDeclaration declaration = MemberDeclaration::structMember);
     /**
      *  `message` anchored at the source span `astNode` was parsed from, so that a consumer
      *  underlines the very SQL the message is about. Unanchored for a node carrying no span, which

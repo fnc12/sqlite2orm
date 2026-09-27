@@ -80,3 +80,49 @@ TEST_CASE("codegen: unknown virtual table module") {
                         47}}};
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS z USING noop") == expected);
 }
+
+// The members of an fts5 or rtree struct are named from the module's column arguments the way a
+// table's are from its columns, so two names C++ has one spelling for are a member declared twice
+// here as well; SQLite takes both tables. The collision is reported anchored at the second name.
+TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 - two column names mapped to one member are reported") {
+    const auto result = generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS t USING fts5(\"a-b\", \"a b\")");
+    REQUIRE(result.code == "struct T {\n    std::string a_b;\n    std::string a_b;\n};\n\nauto vtab = "
+                           "make_virtual_table<T>(\"t\", using_fts5(make_column(\"a-b\", &T::a_b), "
+                           "make_column(\"a b\", &T::a_b)));\n");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"virtual table t: column `a-b` is not a C++ identifier; the member holding it is named `a_b`",
+                 SourceLocation{1, 49},
+                 5},
+                {"virtual table t: columns `a-b` and `a b` are both named `a_b` in C++; the generated struct "
+                 "declares that member twice and does not compile",
+                 SourceLocation{1, 56},
+                 5}});
+}
+
+TEST_CASE("codegen: CREATE VIRTUAL TABLE rtree - two column names mapped to one member are reported") {
+    const auto result = generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS r USING rtree(\"a-b\", \"a b\", c)");
+    REQUIRE(result.code == "struct R {\n    int64_t a_b = 0;\n    float a_b = 0.0;\n    float c = 0.0;\n};\n\nauto "
+                           "vtab = make_virtual_table<R>(\"r\", using_rtree(make_column(\"a-b\", &R::a_b), "
+                           "make_column(\"a b\", &R::a_b), make_column(\"c\", &R::c)));\n");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"virtual table r: column `a-b` is not a C++ identifier; the member holding it is named `a_b`",
+                 SourceLocation{1, 50},
+                 5},
+                {"virtual table r: columns `a-b` and `a b` are both named `a_b` in C++; the generated struct "
+                 "declares that member twice and does not compile",
+                 SourceLocation{1, 57},
+                 5}});
+}
+
+// A name that already is a C++ identifier is not rewritten, and still meets the one another name is
+// rewritten to: only the collision is reported.
+TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 - a column name meeting a rewritten one is reported") {
+    const auto result = generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS t USING fts5(a_b, \"a b\")");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"virtual table t: columns `a_b` and `a b` are both named `a_b` in C++; the "
+                                         "generated struct declares that member twice and does not compile",
+                                         SourceLocation{1, 54},
+                                         5}});
+}

@@ -955,3 +955,79 @@ TEST_CASE("codegen: a subquery under a CTE-sourced select names its own table") 
             prologue + "auto rows = storage.with(cte<cte_0>().as(select(&T::a)), select(column<cte_0>(&T::a), "
                        "from<cte_0>(), where(exists(select(&U::b)))));");
 }
+
+// Each column of a CTE's column list is declared as a `constexpr` alias variable named after the
+// CTE and the column, so two column names C++ has one spelling for declare that variable twice —
+// SQLite takes the CTE — and it is reported, anchored at the second name, in every style.
+TEST_CASE("codegen: WITH - two CTE column names mapped to one alias variable are reported") {
+    const auto result = generateFull("WITH cte(\"a-b\", \"a b\") AS (SELECT 1, 2) SELECT * FROM cte;");
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte_0 = decltype(1_ctealias);\n"
+                           "constexpr auto cte__a_b = colalias_a{};\n"
+                           "constexpr auto cte__a_b = colalias_b{};\n"
+                           "auto rows = storage.with(cte<cte_0>(\"a-b\", \"a b\").as(select(columns(1 >>= cte__a_b, "
+                           "2 >>= cte__a_b))), select(asterisk<cte_0>()));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"CTE cte: column `a-b` is not a C++ identifier; the column alias declared for it is named after "
+                 "`a_b`",
+                 SourceLocation{1, 10},
+                 5},
+                {"CTE cte: columns `a-b` and `a b` are both named `a_b` in C++; the generated code declares their "
+                 "column alias twice and does not compile",
+                 SourceLocation{1, 17},
+                 5},
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+                 "sqlite_orm::literals` scope for `_ctealias`"}});
+}
+
+TEST_CASE("codegen: WITH legacy_colalias - two CTE column names mapped to one alias variable are reported") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["with_cte_style"] = "legacy_colalias";
+    const auto result =
+        generateWithPolicySuppressWithCteDp("WITH cte(\"a-b\", \"a b\") AS (SELECT 1, 2) SELECT * FROM cte;", policy);
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte = decltype(1_ctealias);\n"
+                           "constexpr auto cte_a_b = colalias_a{};\n"
+                           "constexpr auto cte_a_b = colalias_b{};\n"
+                           "auto rows = storage.with(cte<cte>(\"a-b\", \"a b\").as(select(columns(1 >>= cte_a_b, "
+                           "2 >>= cte_a_b))), select(asterisk<cte>()));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"CTE cte: column `a-b` is not a C++ identifier; the column alias declared for it is named after "
+                 "`a_b`",
+                 SourceLocation{1, 10},
+                 5},
+                {"CTE cte: columns `a-b` and `a b` are both named `a_b` in C++; the generated code declares their "
+                 "column alias twice and does not compile",
+                 SourceLocation{1, 17},
+                 5},
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+                 "sqlite_orm::literals` scope for `_ctealias`"}});
+}
+
+TEST_CASE("codegen: WITH cpp20_monikers - two CTE column names mapped to one alias variable are reported") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+    const auto result =
+        generateWithPolicySuppressWithCteDp("WITH cte(\"a-b\", \"a b\") AS (SELECT 1, 2) SELECT * FROM cte;", policy);
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "constexpr orm_cte_moniker auto cte_cte = \"cte\"_cte;\n"
+                           "constexpr orm_column_alias auto cte__a_b = \"a-b\"_col;\n"
+                           "constexpr orm_column_alias auto cte__a_b = \"a b\"_col;\n"
+                           "auto rows = storage.with(cte_cte(cte__a_b, cte__a_b).as(select(columns(1, 2))), "
+                           "select(asterisk<cte_cte>()));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"CTE cte: column `a-b` is not a C++ identifier; the column alias declared for it is named after "
+                 "`a_b`",
+                 SourceLocation{1, 10},
+                 5},
+                {"CTE cte: columns `a-b` and `a b` are both named `a_b` in C++; the generated code declares their "
+                 "column alias twice and does not compile",
+                 SourceLocation{1, 17},
+                 5},
+                {"WITH: cpp20_monikers requires C++20, SQLITE_ORM_WITH_CPP20_ALIASES, and matching sqlite_orm"},
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+                 "sqlite_orm::literals` scope for `_ctealias`"}});
+}

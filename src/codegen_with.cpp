@@ -4,6 +4,8 @@
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
+#include <map>
+
 namespace sqlite2orm {
 
     WithCodeGenerator::WithCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -232,6 +234,27 @@ namespace sqlite2orm {
                 return CodeGenResult{inner.code, std::move(allDecisionPoints), std::move(warnings)};
             }
             innerCodes.push_back(std::move(part.code));
+        }
+
+        // Every style declares one `constexpr` variable per column of a CTE's column list, named
+        // after the CTE and the column, so two columns rewritten to the same C++ name declare it
+        // twice.
+        for (const auto& cte: ctes) {
+            const std::string owner = "CTE " + stripIdentifierQuotes(cte.cteName);
+            std::map<std::string, std::string> aliasesByName;
+            for (size_t columnNameIndex = 0; columnNameIndex < cte.columnNames.size(); ++columnNameIndex) {
+                const SourceSpan nameSpan = columnNameIndex < cte.columnNameSpans.size()
+                                                ? cte.columnNameSpans.at(columnNameIndex)
+                                                : SourceSpan{};
+                if (auto warning = recordMemberName(owner,
+                                                    stripIdentifierQuotes(cte.columnNames[columnNameIndex]),
+                                                    toCppIdentifier(cte.columnNames[columnNameIndex]),
+                                                    nameSpan,
+                                                    aliasesByName,
+                                                    MemberDeclaration::cteColumnAlias)) {
+                    warnings.push_back(std::move(*warning));
+                }
+            }
         }
 
         std::string prelude;

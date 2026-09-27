@@ -580,6 +580,8 @@ namespace sqlite2orm {
         std::string moduleLower = toLowerAscii(node.moduleName);
         std::string nameLiteral = identifierToCppStringLiteral(node.tableName);
         std::string structName = toStructName(node.tableName);
+        // What a warning about one of the members the struct gets names the struct after.
+        const std::string memberOwner = "virtual table " + stripIdentifierQuotes(node.tableName);
 
         // The first module argument sqlite_orm's using_*() forms have no place for, i.e. the one a
         // warning about unmapped arguments points at; null when every argument is a plain column.
@@ -620,9 +622,17 @@ namespace sqlite2orm {
                     carriedParts(decisionPoints, warnings));
             }
             std::string code = "struct " + structName + " {\n";
+            std::map<std::string, std::string> membersByName;
             for (const auto& moduleArgument: node.moduleArguments) {
                 auto* columnRef = static_cast<const ColumnRefNode*>(moduleArgument.get());
                 auto cppName = toCppIdentifier(columnRef->columnName);
+                if (auto warning = recordMemberName(memberOwner,
+                                                    stripIdentifierQuotes(columnRef->columnName),
+                                                    cppName,
+                                                    columnRef->sourceSpan,
+                                                    membersByName)) {
+                    warnings.push_back(std::move(*warning));
+                }
                 code += "    std::string " + cppName + ";\n";
             }
             code += "};\n\n";
@@ -673,9 +683,17 @@ namespace sqlite2orm {
             }
             const bool isInt32 = (moduleLower == "rtree_i32");
             std::string code = "struct " + structName + " {\n";
+            std::map<std::string, std::string> membersByName;
             for (size_t columnIndex = 0; columnIndex < moduleArgumentsCount; ++columnIndex) {
                 auto* columnRef = static_cast<const ColumnRefNode*>(node.moduleArguments[columnIndex].get());
                 auto cppName = toCppIdentifier(columnRef->columnName);
+                if (auto warning = recordMemberName(memberOwner,
+                                                    stripIdentifierQuotes(columnRef->columnName),
+                                                    cppName,
+                                                    columnRef->sourceSpan,
+                                                    membersByName)) {
+                    warnings.push_back(std::move(*warning));
+                }
                 if (columnIndex == 0) {
                     code += "    int64_t " + cppName + " = 0;\n";
                 } else if (isInt32) {
@@ -1171,8 +1189,12 @@ namespace sqlite2orm {
                                const SourceSpan& nameSpan = {}) {
             ViewField field;
             field.cppName = toCppIdentifier(sqlName);
-            if (auto warning =
-                    recordMemberName("view " + rawViewName, sqlName, field.cppName, nameSpan, membersByName, true)) {
+            if (auto warning = recordMemberName("view " + rawViewName,
+                                                sqlName,
+                                                field.cppName,
+                                                nameSpan,
+                                                membersByName,
+                                                MemberDeclaration::reflectedViewMember)) {
                 parts.warnings.push_back(std::move(*warning));
             }
             if (inferred) {

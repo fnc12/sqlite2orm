@@ -1398,24 +1398,29 @@ namespace sqlite2orm {
                                                    std::string_view memberName,
                                                    const SourceSpan& nameSpan,
                                                    std::map<std::string, std::string>& membersByName,
-                                                   bool mappedByMemberName) {
+                                                   MemberDeclaration declaration) {
         const auto anchored = [&nameSpan](std::string message) {
             if (nameSpan.text.empty()) {
                 return CodegenWarning{std::move(message)};
             }
             return CodegenWarning{std::move(message), nameSpan.location, underlineLengthOf(nameSpan.text)};
         };
+        const bool columnAlias = declaration == MemberDeclaration::cteColumnAlias;
         const auto [iterator, inserted] = membersByName.emplace(std::string(memberName), std::string(sqlName));
         if (!inserted) {
             return anchored(std::string(owner) + ": columns `" + iterator->second + "` and `" + std::string(sqlName) +
-                            "` are both named `" + std::string(memberName) +
-                            "` in C++; the generated struct declares that member twice and does not compile");
+                            "` are both named `" + std::string(memberName) + "` in C++; " +
+                            (columnAlias ? "the generated code declares their column alias twice"
+                                         : "the generated struct declares that member twice") +
+                            " and does not compile");
         }
         if (sqlName != memberName) {
             std::string message = std::string(owner) + ": column `" + std::string(sqlName) +
-                                  "` is not a C++ identifier; the member holding it is named `" +
+                                  "` is not a C++ identifier; " +
+                                  (columnAlias ? "the column alias declared for it is named after `"
+                                               : "the member holding it is named `") +
                                   std::string(memberName) + "`";
-            if (mappedByMemberName) {
+            if (declaration == MemberDeclaration::reflectedViewMember) {
                 message += ", and a view is mapped with the names of its members, so the column is named that in "
                            "the mapping too";
             }

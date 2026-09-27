@@ -275,6 +275,7 @@ namespace sqlite2orm {
                                 return nullptr;
                             }
                             cte.columnNames.push_back(std::string(current().value));
+                            cte.columnNameSpans.push_back(SourceSpan{current().location, cte.columnNames.back()});
                             advanceToken();
                         } while (match(TokenType::comma));
                     }

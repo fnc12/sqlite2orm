@@ -127,6 +127,12 @@ namespace sqlite2orm {
     struct CommonTableExpression {
         std::string cteName;
         std::vector<std::string> columnNames;
+        /**
+         *  Where each name of `columnNames` stands in the source, for a warning about the column
+         *  alias that name is declared as. Empty for a CTE built by hand; a reader takes the span of
+         *  a name only when it has one at that index.
+         */
+        std::vector<SourceSpan> columnNameSpans;
         CteMaterialization materialization = CteMaterialization::none;
         AstNodePointer query;
 

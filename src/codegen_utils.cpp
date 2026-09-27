@@ -104,41 +104,158 @@ namespace sqlite2orm {
             return result;
         }
 
+        /**
+         *  The keywords of C++ through C++26, the alternative spellings of operators (`and`, `not`)
+         *  included: words spelled like an identifier that no declaration can be named. Sorted, as
+         *  a name is looked up by bisection.
+         */
+        constexpr std::array<std::string_view, 93> kCppKeywords = {
+            "alignas",
+            "alignof",
+            "and",
+            "and_eq",
+            "asm",
+            "auto",
+            "bitand",
+            "bitor",
+            "bool",
+            "break",
+            "case",
+            "catch",
+            "char",
+            "char16_t",
+            "char32_t",
+            "char8_t",
+            "class",
+            "co_await",
+            "co_return",
+            "co_yield",
+            "compl",
+            "concept",
+            "const",
+            "const_cast",
+            "consteval",
+            "constexpr",
+            "constinit",
+            "continue",
+            "contract_assert",
+            "decltype",
+            "default",
+            "delete",
+            "do",
+            "double",
+            "dynamic_cast",
+            "else",
+            "enum",
+            "explicit",
+            "export",
+            "extern",
+            "false",
+            "float",
+            "for",
+            "friend",
+            "goto",
+            "if",
+            "inline",
+            "int",
+            "long",
+            "mutable",
+            "namespace",
+            "new",
+            "noexcept",
+            "not",
+            "not_eq",
+            "nullptr",
+            "operator",
+            "or",
+            "or_eq",
+            "private",
+            "protected",
+            "public",
+            "register",
+            "reinterpret_cast",
+            "requires",
+            "return",
+            "short",
+            "signed",
+            "sizeof",
+            "static",
+            "static_assert",
+            "static_cast",
+            "struct",
+            "switch",
+            "template",
+            "this",
+            "thread_local",
+            "throw",
+            "true",
+            "try",
+            "typedef",
+            "typeid",
+            "typename",
+            "union",
+            "unsigned",
+            "using",
+            "virtual",
+            "void",
+            "volatile",
+            "wchar_t",
+            "while",
+            "xor",
+            "xor_eq",
+        };
+        static_assert(std::is_sorted(kCppKeywords.begin(), kCppKeywords.end()));
+
+        bool isCppKeyword(std::string_view name) {
+            return std::binary_search(kCppKeywords.begin(), kCppKeywords.end(), name);
+        }
+
+        /** `sqlName` spelled in the characters of a C++ identifier; see `toCppIdentifier()`. */
+        std::string cppIdentifierCharacters(std::string_view sqlName) {
+            auto stripped = stripIdentifierQuotes(sqlName);
+            std::string result;
+            result.reserve(stripped.size());
+            for (size_t index = 0; index < stripped.size();) {
+                const Utf8Character character = decodeUtf8Character(std::string_view(stripped).substr(index));
+                index += character.length;
+                if (!character.valid) {
+                    result += 'x' + hexDigits(character.codePoint, 2);
+                    continue;
+                }
+                // The ASCII classification is spelled out rather than asked of <cctype>, whose answer
+                // for the bytes above 0x7F depends on the locale the program happens to run in.
+                const char32_t codePoint = character.codePoint;
+                if ((codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') ||
+                    (codePoint >= '0' && codePoint <= '9') || codePoint == '_') {
+                    result += static_cast<char>(codePoint);
+                } else if (codePoint < 0x80) {
+                    result += '_';
+                } else if (codePoint <= 0xFFFF) {
+                    result += 'u' + hexDigits(codePoint, 4);
+                } else {
+                    result += 'U' + hexDigits(codePoint, 8);
+                }
+            }
+            if (result.empty()) {
+                // SQLite takes an empty name — `CREATE TABLE t("" INTEGER)` is a table with a column
+                // called nothing — and C++ has no identifier of no characters, so the one character
+                // that carries no letters of its own stands for it.
+                return "_";
+            }
+            if (result[0] >= '0' && result[0] <= '9') {
+                result = "_" + result;
+            }
+            return result;
+        }
+
     }  // namespace
 
     std::string toCppIdentifier(std::string_view sqlName) {
-        auto stripped = stripIdentifierQuotes(sqlName);
-        std::string result;
-        result.reserve(stripped.size());
-        for (size_t index = 0; index < stripped.size();) {
-            const Utf8Character character = decodeUtf8Character(std::string_view(stripped).substr(index));
-            index += character.length;
-            if (!character.valid) {
-                result += 'x' + hexDigits(character.codePoint, 2);
-                continue;
-            }
-            // The ASCII classification is spelled out rather than asked of <cctype>, whose answer
-            // for the bytes above 0x7F depends on the locale the program happens to run in.
-            const char32_t codePoint = character.codePoint;
-            if ((codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') ||
-                (codePoint >= '0' && codePoint <= '9') || codePoint == '_') {
-                result += static_cast<char>(codePoint);
-            } else if (codePoint < 0x80) {
-                result += '_';
-            } else if (codePoint <= 0xFFFF) {
-                result += 'u' + hexDigits(codePoint, 4);
-            } else {
-                result += 'U' + hexDigits(codePoint, 8);
-            }
-        }
-        if (result.empty()) {
-            // SQLite takes an empty name — `CREATE TABLE t("" INTEGER)` is a table with a column
-            // called nothing — and C++ has no identifier of no characters, so the one character
-            // that carries no letters of its own stands for it.
-            return "_";
-        }
-        if (result[0] >= '0' && result[0] <= '9') {
-            result = "_" + result;
+        std::string result = cppIdentifierCharacters(sqlName);
+        if (isCppKeyword(result)) {
+            // `class` and `char` are ordinary column names, and a member cannot be named either:
+            // the trailing `_` is how sqlite_orm itself names such things (`char_`, `typeof_`).
+            result += '_';
         }
         return result;
     }
@@ -248,7 +365,8 @@ namespace sqlite2orm {
         if (isBuiltinColalias(stripped)) {
             return "colalias_" + stripped;
         }
-        std::string name = toCppIdentifier(stripped);
+        // The name only begins the struct's (`class` makes `ClassAlias`), which no keyword can be.
+        std::string name = cppIdentifierCharacters(stripped);
         if (!name.empty() && std::islower(static_cast<unsigned char>(name[0]))) {
             name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
         }
@@ -1415,8 +1533,10 @@ namespace sqlite2orm {
                             " and does not compile");
         }
         if (sqlName != memberName) {
-            std::string message = std::string(owner) + ": column `" + std::string(sqlName) +
-                                  "` is not a C++ identifier; " +
+            const std::string_view reason =
+                isCppKeyword(stripIdentifierQuotes(sqlName)) ? "is a C++ keyword" : "is not a C++ identifier";
+            std::string message = std::string(owner) + ": column `" + std::string(sqlName) + "` " +
+                                  std::string(reason) + "; " +
                                   (columnAlias ? "the column alias declared for it is named after `"
                                                : "the member holding it is named `") +
                                   std::string(memberName) + "`";

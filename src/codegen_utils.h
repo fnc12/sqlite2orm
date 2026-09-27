@@ -41,7 +41,9 @@ namespace sqlite2orm {
      *  `_`; and a character C++ has no letter for is spelled the way C++ spells a universal
      *  character name, `u` and four hex digits (`ü` → `u00FC`) or `U` and eight above the basic
      *  multilingual plane (`🙂` → `U0001F642`), with a byte that is no character at all — SQLite
-     *  takes those in an identifier too — spelled `x` and its two hex digits.
+     *  takes those in an identifier too — spelled `x` and its two hex digits. A name that comes
+     *  out a keyword of C++ (`class`, `char`, `int`) takes a trailing `_`, as sqlite_orm's own
+     *  `char_` and `typeof_` do.
      *
      *  Distinct names can still meet here: `a b` and `a-b` are both `a_b`, and a name spelled
      *  `u00FC` in ASCII is what `ü` is rewritten to. Whoever names the members of one struct

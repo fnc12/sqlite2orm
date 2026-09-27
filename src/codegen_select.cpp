@@ -529,7 +529,7 @@ namespace sqlite2orm {
                         TableAliasInfo info{varName, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
-                        this->context.cpp20TableAliasDeclarations.push_back(
+                        this->context.declareCpp20TableAlias(
                             Cpp20TableAliasDeclaration{varName, mappedStructName, stripIdentifierQuotes(*ft.alias)});
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);
@@ -1118,7 +1118,10 @@ namespace sqlite2orm {
                                                              std::move(tableAliasOptions)});
             }
         }
-        this->context.cpp20TableAliasDeclarations.clear();
+        // Inside WITH the declarations are left to the WITH generator, which puts them in its prelude.
+        if (!this->context.activeWithCteStyle) {
+            this->context.cpp20TableAliasDeclarations.clear();
+        }
         this->context.activeSelectColumnAliases.clear();
         this->context.activeSelectColumnAliasCpp20Vars.clear();
         return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
@@ -1242,7 +1245,7 @@ namespace sqlite2orm {
                         TableAliasInfo info{varName, mappedStructName, ft.tableName};
                         this->context.activeTableAliases[*ft.alias] = info;
                         this->context.activeTableAliases[ft.tableName] = info;
-                        this->context.cpp20TableAliasDeclarations.push_back(
+                        this->context.declareCpp20TableAlias(
                             Cpp20TableAliasDeclaration{varName, mappedStructName, stripIdentifierQuotes(*ft.alias)});
                     } else {
                         char letter = static_cast<char>('a' + this->context.nextAliasLetter++);

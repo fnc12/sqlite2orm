@@ -256,11 +256,6 @@ namespace sqlite2orm {
                                identifierToCppStringLiteral(columnSqlName) + "_col;\n";
                 }
             }
-            for (const auto& tad: this->context.cpp20TableAliasDeclarations) {
-                prelude += "constexpr orm_table_alias auto " + tad.variableName + " = " +
-                           identifierToCppStringLiteral(tad.sqlAlias) + "_alias.for_<" + tad.baseStructName + ">();\n";
-            }
-            this->context.cpp20TableAliasDeclarations.clear();
             warnings.push_back(
                 "WITH: cpp20_monikers requires C++20, SQLITE_ORM_WITH_CPP20_ALIASES, and matching sqlite_orm");
         } else if (withStyle == "legacy_colalias") {
@@ -376,6 +371,19 @@ namespace sqlite2orm {
 
         const char* withApi = withQueryNode.clause.recursive ? "with_recursive" : "with";
 
+        // C++20 table aliases are collected from the CTE bodies and from the outer statement alike,
+        // so they are declared only once the outer statement is generated too.
+        auto tableAliasDeclarations = [this]() {
+            std::string declarations;
+            for (const auto& tad: this->context.cpp20TableAliasDeclarations) {
+                declarations += "constexpr orm_table_alias auto " + tad.variableName + " = " +
+                                identifierToCppStringLiteral(tad.sqlAlias) + "_alias.for_<" + tad.baseStructName +
+                                ">();\n";
+            }
+            this->context.cpp20TableAliasDeclarations.clear();
+            return declarations;
+        };
+
         const auto* outerSelect = dynamic_cast<const SelectNode*>(withQueryNode.statement.get());
         const auto* outerCompound = dynamic_cast<const CompoundSelectNode*>(withQueryNode.statement.get());
         const auto* outerInsert = dynamic_cast<const InsertNode*>(withQueryNode.statement.get());
@@ -413,8 +421,8 @@ namespace sqlite2orm {
                 return CodeGenResult{outerResult.code, std::move(allDecisionPoints), std::move(warnings)};
             }
 
-            std::string code = prelude + "auto " + rowsVariable + " = storage." + std::string(withApi) + "(" +
-                               cteArgument + ", select(" + *outerArgOpt + "));";
+            std::string code = prelude + tableAliasDeclarations() + "auto " + rowsVariable + " = storage." +
+                               std::string(withApi) + "(" + cteArgument + ", select(" + *outerArgOpt + "));";
 
             if (!this->context.suppressWithCteStyleDecisionPoint && ctes.size() == 1u) {
                 const bool hasColumnList = !ctes[0].columnNames.empty();
@@ -480,7 +488,8 @@ namespace sqlite2orm {
                 this->context.activeCteTypedefByTableKey.clear();
                 return CodeGenResult{outerResult.code, std::move(allDecisionPoints), std::move(warnings)};
             }
-            std::string code = prelude + "storage." + std::string(withApi) + "(" + cteArgument + ", " + stripped + ");";
+            std::string code = prelude + tableAliasDeclarations() + "storage." + std::string(withApi) + "(" +
+                               cteArgument + ", " + stripped + ");";
             warnings.push_back(
                 "WITH … DML: second argument omits the `storage.` prefix (sqlite_orm::with / with_recursive)");
             warnings.push_back(

@@ -89,6 +89,15 @@ TEST_CASE("codegen: SELECT t.* FROM alias C++20 style") {
                            "auto rows = storage.select(asterisk<t>());");
 }
 
+TEST_CASE("codegen: C++20 table alias reused in a subquery is declared once") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    auto result = generateWithPolicy("SELECT u.name FROM users u WHERE u.id IN (SELECT u.id FROM users u)", pol);
+    REQUIRE(result.code ==
+            "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+            "auto rows = storage.select(u->*&Users::name, where(in(u->*&Users::id, select(u->*&Users::id))));");
+}
+
 TEST_CASE("codegen: self-join C++20 style") {
     CodeGenPolicy pol;
     pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";

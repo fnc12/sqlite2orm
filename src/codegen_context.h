@@ -404,6 +404,12 @@ namespace sqlite2orm {
          */
         bool emittingMatchField = false;
 
+        /**
+         *  How many MATCH nodes have been generated so far. An operator compares the count before
+         *  and after generating an operand to learn whether that operand holds a MATCH.
+         */
+        int generatedMatchCount = 0;
+
         /** Records a recordset the emitter has just named in the code of the select being generated. */
         void recordEmittedTableType(std::string typeName);
 

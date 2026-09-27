@@ -3724,7 +3724,7 @@ namespace sqlite2orm {
 
     std::string castTypeToCpp(std::string_view typeName) {
         std::string lower = toLowerAscii(typeName);
-        if (lower.find("int") != std::string::npos)
+        if (lower.find("bool") != std::string::npos || lower.find("int") != std::string::npos)
             return "int64_t";
         if (lower.find("char") != std::string::npos || lower.find("clob") != std::string::npos ||
             lower.find("text") != std::string::npos)

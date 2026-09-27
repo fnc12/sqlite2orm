@@ -37,15 +37,15 @@ TEST_CASE("codegen: CREATE VIEW - standalone, types fall back to name heuristics
 
 // A CAST to BOOLEAN converts by the NUMERIC affinity BOOLEAN falls through to, so the view column
 // holds the 7 sqlite3 3.51 answers `CAST(7 AS BOOLEAN)` with, and a `bool` field would read it back
-// as 1. The field takes the type the `cast<double>` in the body is read through.
+// as 1. The field takes the type the `cast<int64_t>` in the body is read through.
 TEST_CASE("codegen: CREATE VIEW - a CAST to BOOLEAN is not read into a bool field") {
     auto result = generateFull("CREATE VIEW v AS SELECT CAST(7 AS BOOLEAN) AS b;");
     REQUIRE(result.code == "struct [[= \"v\"_orm_name]] V {\n"
-                           "    double b = 0.0;\n"
+                           "    int64_t b = 0;\n"
                            "};\n"
                            "\n"
                            "auto storage = make_storage(\"\",\n"
-                           "    make_view<V>(select(cast<double>(7))));");
+                           "    make_view<V>(select(cast<int64_t>(7))));");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 1)});
 }
 

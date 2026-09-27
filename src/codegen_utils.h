@@ -984,6 +984,17 @@ namespace sqlite2orm {
     std::optional<CodegenWarning> comparisonUnaryPlusAffinityWarning(const AstNode& astNode);
 
     std::string sqliteTypeToCpp(std::string_view typeName);
+
+    /**
+     *  The C++ type a `CAST(… AS typeName)` is generated with. Unlike `sqliteTypeToCpp` it has no
+     *  `bool` for a name holding `BOOL`: `BOOLEAN` is no affinity SQLite knows and falls through to
+     *  NUMERIC, so sqlite3 3.51 answers `CAST(7 AS BOOLEAN)` with 7, which `cast<bool>` read back as
+     *  1. Such a name takes `int64_t`, whose `type_printer` writes the same `CAST(… AS INTEGER)`
+     *  `cast<bool>` did, so the SQL inside an expression is unchanged (`CAST(a AS BOOLEAN) / 2` stays
+     *  integer division) and only the read-back is fixed. A fractional operand is still truncated
+     *  (`CAST(1.5 AS BOOLEAN)` is 1.5 in SQLite, 1 here): sqlite_orm has no cast that prints NUMERIC.
+     */
+    std::string castTypeToCpp(std::string_view typeName);
     std::string defaultInitializer(std::string_view cppType);
     std::string toStructName(std::string_view sqlName);
 

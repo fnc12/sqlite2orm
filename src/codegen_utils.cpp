@@ -3648,7 +3648,7 @@ namespace sqlite2orm {
         }
         if (auto* castNode = dynamic_cast<const CastNode*>(&generatedNode)) {
             // `cast_t<T, E>` is typed T, and T is what codegen writes into the CAST.
-            return sqliteTypeToCpp(castNode->typeName);
+            return castTypeToCpp(castNode->typeName);
         }
         return std::nullopt;
     }
@@ -3741,7 +3741,12 @@ namespace sqlite2orm {
         std::string lower = toLowerAscii(typeName);
         if (lower.find("bool") != std::string::npos)
             return "bool";
-        if (lower.find("int") != std::string::npos)
+        return castTypeToCpp(typeName);
+    }
+
+    std::string castTypeToCpp(std::string_view typeName) {
+        std::string lower = toLowerAscii(typeName);
+        if (lower.find("bool") != std::string::npos || lower.find("int") != std::string::npos)
             return "int64_t";
         if (lower.find("char") != std::string::npos || lower.find("clob") != std::string::npos ||
             lower.find("text") != std::string::npos)

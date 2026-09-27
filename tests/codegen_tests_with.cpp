@@ -1031,3 +1031,53 @@ TEST_CASE("codegen: WITH cpp20_monikers - two CTE column names mapped to one ali
                 {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
                  "sqlite_orm::literals` scope for `_ctealias`"}});
 }
+
+// Two CTE column names SQLite tells apart only by case are two columns with two C++ names, so
+// each is declared as its own alias variable, by its place in the column list. A reference to
+// the name resolves the way SQLite resolves it, to the first of the two columns.
+TEST_CASE("codegen: WITH - CTE column names differing only in case are declared apart") {
+    const auto result = generateFull("WITH c(a, A) AS (SELECT 1, 2) SELECT a FROM c;");
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using cte_0 = decltype(1_ctealias);\n"
+                           "constexpr auto c__a = colalias_a{};\n"
+                           "constexpr auto c__A = colalias_b{};\n"
+                           "auto rows = storage.with(cte<cte_0>(\"a\", \"A\").as(select(columns(1 >>= c__a, 2 >>= "
+                           "c__A))), select(column<cte_0>(c__a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+                 "sqlite_orm::literals` scope for `_ctealias`"}});
+}
+
+TEST_CASE("codegen: WITH legacy_colalias - CTE column names differing only in case are declared apart") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["with_cte_style"] = "legacy_colalias";
+    const auto result = generateWithPolicySuppressWithCteDp("WITH c(a, A) AS (SELECT 1, 2) SELECT a FROM c;", policy);
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "using c = decltype(1_ctealias);\n"
+                           "constexpr auto c_a = colalias_a{};\n"
+                           "constexpr auto c_A = colalias_b{};\n"
+                           "auto rows = storage.with(cte<c>(\"a\", \"A\").as(select(columns(1 >>= c_a, 2 >>= "
+                           "c_A))), select(column<c>(c_a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+                 "sqlite_orm::literals` scope for `_ctealias`"}});
+}
+
+TEST_CASE("codegen: WITH cpp20_monikers - CTE column names differing only in case are declared apart") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+    const auto result = generateWithPolicySuppressWithCteDp("WITH c(a, A) AS (SELECT 1, 2) SELECT a FROM c;", policy);
+    REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
+                           "constexpr orm_cte_moniker auto c_cte = \"c\"_cte;\n"
+                           "constexpr orm_column_alias auto c__a = \"a\"_col;\n"
+                           "constexpr orm_column_alias auto c__A = \"A\"_col;\n"
+                           "auto rows = storage.with(c_cte(c__a, c__A).as(select(columns(1, 2))), "
+                           "select(c_cte->*c__a));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"WITH: cpp20_monikers requires C++20, SQLITE_ORM_WITH_CPP20_ALIASES, and matching sqlite_orm"},
+                {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
+                 "sqlite_orm::literals` scope for `_ctealias`"}});
+}

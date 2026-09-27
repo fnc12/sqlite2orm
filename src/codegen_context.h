@@ -336,16 +336,16 @@ namespace sqlite2orm {
          */
         bool canNameInferredFromSources = false;
         /**
-         *  Set by the select generator while a bare `SELECT *` is generated: the recordset types
-         *  of the leading run of its FROM — the first source and every one a comma or a CROSS JOIN
-         *  brings in. The row is read as the plain struct of the first — `get_all<T>()` or
-         *  `asterisk<T>()` — and the rest reach sqlite_orm through `cross_join<alias_b<T>>()`,
-         *  which serializes as a plain `CROSS JOIN "t"`; none of them has its alias written, so a
-         *  reference that would otherwise name one under its alias (the hidden FTS5 column a
-         *  `docs MATCH …` stands for) has to name the plain table. A source a constrained join
-         *  brings in keeps its alias: `join<alias_a<T>>(on(…))` writes it out.
+         *  Set by the select generator for the select being generated: the recordset types of the
+         *  sources that reach sqlite_orm with no alias written for them — the leading source of a
+         *  bare `*`, read as the plain struct through `get_all<T>()` or `asterisk<T>()`, and every
+         *  source written as `cross_join<alias_b<T>>()` or `natural_join<alias_b<T>>()`, which
+         *  serialize as a plain `CROSS JOIN "t"` wherever in the FROM they stand. A reference that
+         *  would otherwise name one of them under its alias (the hidden FTS5 column a
+         *  `docs MATCH …` stands for) has to name the plain table. `from<alias_a<T>>()` and a
+         *  constrained `join<alias_a<T>>(on(…))` write the alias out.
          */
-        std::vector<std::string> plainRowSourceTypes;
+        std::vector<std::string> sourcesWrittenWithoutAlias;
         /**
          *  Set by the `count(*)` branch when it took `canNameInferredFromSources` up and named an
          *  aliased source, which leaves the inferred FROM with nothing standing for that source.

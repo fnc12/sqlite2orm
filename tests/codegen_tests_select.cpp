@@ -834,8 +834,8 @@ TEST_CASE("codegen: MATCH against the table name of an aliased FTS5 source under
                                         "requires an FTS5 virtual table mapped as Docs"});
 }
 
-// A bare `*` writes no alias for the sources of its leading run: `get_all<T>()` writes `FROM "t"`
-// and `cross_join<alias_a<Docs>>()` a plain `CROSS JOIN "docs"`, so a comma source keeps the plain
+// A bare `*` writes no alias for its leading source: `get_all<T>()` writes `FROM "t"`, and
+// `cross_join<alias_a<Docs>>()` a plain `CROSS JOIN "docs"`, so a comma source keeps the plain
 // hidden column. A constrained join writes its alias out — `join<alias_a<Docs>>(on(…))` and
 // `left_join<…>(on(…))` — so the hidden column of such a source names the alias.
 TEST_CASE("codegen: MATCH against the table name of a joined aliased FTS5 source under a bare star") {
@@ -849,6 +849,24 @@ TEST_CASE("codegen: MATCH against the table name of a joined aliased FTS5 source
             "where(match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\")));");
     REQUIRE(generateFull("SELECT * FROM t, docs d WHERE docs MATCH 'hello'").code ==
             "auto rows = storage.get_all<T>(cross_join<alias_a<Docs>>(), "
+            "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));");
+}
+
+// `cross_join<alias_b<T>>()` and `natural_join<alias_b<T>>()` write no alias wherever they stand,
+// so a comma after a constrained join keeps the plain hidden column with a `*` and without one:
+// naming the alias there (`"a"."docs"`) beside the plain `CROSS JOIN "docs"` threw `SQL logic error`.
+TEST_CASE("codegen: MATCH against the table name of an aliased FTS5 source written without its alias") {
+    REQUIRE(generateFull("SELECT * FROM t JOIN u ON t.n = u.m, docs d WHERE docs MATCH 'hello'").code ==
+            "auto rows = storage.get_all<T>(join<U>(on(c(&T::n) == &U::m)), cross_join<alias_a<Docs>>(), "
+            "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));");
+    REQUIRE(generateFull("SELECT t.id FROM t JOIN u ON t.n = u.m, docs d WHERE docs MATCH 'hello'").code ==
+            "auto rows = storage.select(&T::id, join<U>(on(c(&T::n) == &U::m)), cross_join<alias_a<Docs>>(), "
+            "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));");
+    REQUIRE(generateFull("SELECT t.id FROM t JOIN u x ON t.n = x.m, docs d WHERE docs MATCH 'hello'").code ==
+            "auto rows = storage.select(&T::id, join<alias_a<U>>(on(c(&T::n) == alias_column<alias_a<U>>(&U::m))), "
+            "cross_join<alias_b<Docs>>(), where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));");
+    REQUIRE(generateFull("SELECT t.id FROM t NATURAL JOIN docs d WHERE docs MATCH 'hello'").code ==
+            "auto rows = storage.select(&T::id, natural_join<alias_a<Docs>>(), "
             "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));");
 }
 

@@ -416,9 +416,10 @@ namespace {
     }
 
     /**
-     *  Builds a program around the generated select statements over a two-row FTS5 `docs` table
-     *  and a plain `t(id, n)` holding the same two texts (a `T` row prints its `id`), compiles and links it against sqlite_orm, runs it and returns the rows each statement came
-     *  back with, comma separated, or `throws` for a statement SQLite refuses. An FTS table is what
+     *  Builds a program around the generated select statements over a two-row FTS5 `docs` table,
+     *  a plain `t(id, n)` and a plain `u(m)`, both holding the same two texts (a `T` row prints
+     *  its `id`), compiles and links it against sqlite_orm, runs it and returns the rows each
+     *  statement came back with, comma separated, or `throws` for a statement SQLite refuses. An FTS table is what
      *  a MATCH needs to run at all, and a statement whose table is named inside the MATCH alone
      *  went out with no FROM and threw where SQLite answers rows.
      */
@@ -438,6 +439,10 @@ namespace {
                    "    std::string n;\n"
                    "};\n"
                    "\n"
+                   "struct U {\n"
+                   "    std::string m;\n"
+                   "};\n"
+                   "\n"
                    "std::ostream& operator<<(std::ostream& stream, const Docs& docs) {\n"
                    "    return stream << docs.body;\n"
                    "}\n"
@@ -450,12 +455,15 @@ namespace {
                    "    using namespace sqlite_orm;\n"
                    "    auto storage = make_storage(\"\", make_virtual_table<Docs>(\"docs\", "
                    "using_fts5(make_column(\"body\", &Docs::body))), make_table(\"t\", "
-                   "make_column(\"id\", &T::id, primary_key()), make_column(\"n\", &T::n)));\n"
+                   "make_column(\"id\", &T::id, primary_key()), make_column(\"n\", &T::n)), make_table(\"u\", "
+                   "make_column(\"m\", &U::m)));\n"
                    "    storage.sync_schema();\n"
                    "    storage.replace(Docs{\"hello world\"});\n"
                    "    storage.replace(Docs{\"bye\"});\n"
                    "    storage.replace(T{1, \"hello world\"});\n"
-                   "    storage.replace(T{2, \"bye\"});\n";
+                   "    storage.replace(T{2, \"bye\"});\n"
+                   "    storage.insert(U{\"hello world\"});\n"
+                   "    storage.insert(U{\"bye\"});\n";
         for (const auto& statement: selectStatements) {
             program << "    try {\n        " << statement
                     << "\n        const char* separator = \"\";\n"
@@ -2062,7 +2070,7 @@ TEST_CASE("runtime: MATCH against the table name of an aliased FTS5 source under
     REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"hello world", "bye"});
 }
 
-// A bare `*` writes no alias for the sources of its leading run only. A source a constrained join
+// A bare `*` writes no alias for its leading source only. A source a constrained join
 // brings in is written under its alias by `join<alias_a<Docs>>(on(…))`, so its hidden column names
 // the alias too: a `"docs"."docs"` beside `JOIN "docs" "a"` threw `SQL logic error`. A comma source
 // reaches sqlite_orm as a plain `CROSS JOIN "docs"` and keeps the plain column. Expected rows checked
@@ -2086,6 +2094,35 @@ TEST_CASE("runtime: MATCH against the table name of a joined aliased FTS5 source
                               "match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\"))));",
                           });
     REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1", "1,2", "1,2"});
+}
+
+// `cross_join<alias_a<Docs>>()` and `natural_join<alias_a<Docs>>()` write a plain `CROSS JOIN
+// "docs"` / `NATURAL JOIN "docs"` wherever they stand in the FROM, not only in its leading run, so
+// the hidden column of such a source names the plain table with a `*` and without one alike. A
+// comma after a JOIN named the alias (`"a"."docs"`, `"b"."docs"`) and threw `SQL logic error`.
+// Expected rows checked against sqlite3 3.51 with `t` and `u` holding 'hello world' and 'bye':
+// each statement answers both rows of `t`.
+TEST_CASE("runtime: MATCH against the table name of an aliased FTS5 source written without its alias returns the "
+          "rows SQLite returns") {
+    const std::vector<std::string> statements{
+        generate("SELECT * FROM t JOIN u ON t.n = u.m, docs d WHERE docs MATCH 'hello';"),
+        generate("SELECT t.id FROM t JOIN u ON t.n = u.m, docs d WHERE docs MATCH 'hello';"),
+        generate("SELECT t.id FROM t JOIN u x ON t.n = x.m, docs d WHERE docs MATCH 'hello';"),
+        generate("SELECT t.id FROM t NATURAL JOIN docs d WHERE docs MATCH 'hello';"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.get_all<T>(join<U>(on(c(&T::n) == &U::m)), cross_join<alias_a<Docs>>(), "
+                "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));",
+                "auto rows = storage.select(&T::id, join<U>(on(c(&T::n) == &U::m)), cross_join<alias_a<Docs>>(), "
+                "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));",
+                "auto rows = storage.select(&T::id, join<alias_a<U>>(on(c(&T::n) == "
+                "alias_column<alias_a<U>>(&U::m))), cross_join<alias_b<Docs>>(), "
+                "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));",
+                "auto rows = storage.select(&T::id, natural_join<alias_a<Docs>>(), "
+                "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));",
+            });
+    REQUIRE(ftsSelectedRowValues(statements) == std::vector<std::string>{"1,2", "1,2", "1,2", "1,2"});
 }
 
 // The same table named under the MATCH and by a subquery: the mention under the MATCH is the

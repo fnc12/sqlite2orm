@@ -1508,15 +1508,15 @@ namespace sqlite2orm {
                             // only, so SQLite finds no such column and neither is one written here.
                             break;
                         }
-                        // A bare `SELECT *` writes no alias for the sources of its leading run:
-                        // an `"a"."docs"` beside the `FROM "docs"` of a `get_all<Docs>()` or the
-                        // `CROSS JOIN "docs"` of a `cross_join<alias_a<Docs>>()` names a source the
-                        // statement does not have. A constrained join writes its alias out.
-                        const bool readsPlainRow = aliased && std::find(this->context.plainRowSourceTypes.begin(),
-                                                                        this->context.plainRowSourceTypes.end(),
-                                                                        aliasIt->second.ormAliasType) !=
-                                                                  this->context.plainRowSourceTypes.end();
-                        if (aliased && !readsPlainRow) {
+                        // A source sqlite_orm gets with no alias written — the row of a bare `*`,
+                        // a `cross_join<alias_a<Docs>>()` — is a plain `"docs"` in the SQL, and an
+                        // `"a"."docs"` beside it names a source the statement does not have.
+                        const bool writtenWithoutAlias =
+                            aliased &&
+                            std::find(this->context.sourcesWrittenWithoutAlias.begin(),
+                                      this->context.sourcesWrittenWithoutAlias.end(),
+                                      aliasIt->second.ormAliasType) != this->context.sourcesWrittenWithoutAlias.end();
+                        if (aliased && !writtenWithoutAlias) {
                             const auto& info = aliasIt->second;
                             // The table of an aliased source is read through its alias alone, so
                             // its hidden column is the alias's column: `"a"."docs"`, not a

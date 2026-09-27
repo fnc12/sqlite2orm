@@ -417,7 +417,7 @@ namespace sqlite2orm {
         this->context.activeTableAliases.clear();
         this->context.implicitSourceAlias.reset();
         this->context.canNameInferredFromSources = false;
-        this->context.rowReadsPlainStruct = false;
+        this->context.plainRowSourceTypes.clear();
         this->context.countedAliasedSource = false;
         this->context.nextAliasLetter = 0;
         auto isCteKey = [&](std::string_view tableSqlName) -> bool {
@@ -552,7 +552,7 @@ namespace sqlite2orm {
             // no alias (card 1868205961584313865). An `alias_column<alias_a<T>>` beside one of them
             // is a second source to sqlite_orm, and the alias it names is declared by nothing.
             this->context.implicitSourceAlias.reset();
-            this->context.rowReadsPlainStruct = true;
+            this->context.plainRowSourceTypes = fromSources.leadingTypes;
         }
         this->context.canNameInferredFromSources =
             fromSources.leadingAnyAliased && !fromSources.hasCteSource && !isStar;
@@ -1074,7 +1074,7 @@ namespace sqlite2orm {
             std::optional<std::string> savedImplicitCteTableKey;
             std::optional<TableAliasInfo> savedImplicitSourceAlias;
             bool savedCanNameInferredFromSources;
-            bool savedRowReadsPlainStruct;
+            std::vector<std::string> savedPlainRowSourceTypes;
             bool savedCountedAliasedSource;
 
             SubselectAliasRestore(CodeGeneratorContext* context) :
@@ -1092,7 +1092,7 @@ namespace sqlite2orm {
                 savedImplicitCteTableKey(std::exchange(context->implicitCteFromTableKeyNorm, std::nullopt)),
                 savedImplicitSourceAlias(std::exchange(context->implicitSourceAlias, std::nullopt)),
                 savedCanNameInferredFromSources(context->canNameInferredFromSources),
-                savedRowReadsPlainStruct(context->rowReadsPlainStruct),
+                savedPlainRowSourceTypes(context->plainRowSourceTypes),
                 savedCountedAliasedSource(context->countedAliasedSource) {}
 
             ~SubselectAliasRestore() {
@@ -1106,7 +1106,7 @@ namespace sqlite2orm {
                 ctx->implicitCteFromTableKeyNorm = std::move(savedImplicitCteTableKey);
                 ctx->implicitSourceAlias = std::move(savedImplicitSourceAlias);
                 ctx->canNameInferredFromSources = savedCanNameInferredFromSources;
-                ctx->rowReadsPlainStruct = savedRowReadsPlainStruct;
+                ctx->plainRowSourceTypes = std::move(savedPlainRowSourceTypes);
                 ctx->countedAliasedSource = savedCountedAliasedSource;
             }
         } restore{&this->context};
@@ -1139,7 +1139,7 @@ namespace sqlite2orm {
         this->context.activeTableAliases.clear();
         this->context.implicitSourceAlias.reset();
         this->context.canNameInferredFromSources = false;
-        this->context.rowReadsPlainStruct = false;
+        this->context.plainRowSourceTypes.clear();
         this->context.countedAliasedSource = false;
         this->context.nextAliasLetter = 0;
         auto isCteKey = [&](std::string_view tableSqlName) -> bool {
@@ -1295,7 +1295,7 @@ namespace sqlite2orm {
             // Same rule as the outer star: the row comes from the plain struct, so no reference of
             // this select may name the alias.
             this->context.implicitSourceAlias.reset();
-            this->context.rowReadsPlainStruct = true;
+            this->context.plainRowSourceTypes = fromSources.leadingTypes;
         }
         this->context.canNameInferredFromSources =
             fromSources.leadingAnyAliased && !fromSources.hasCteSource && !isStar;

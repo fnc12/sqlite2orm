@@ -834,6 +834,24 @@ TEST_CASE("codegen: MATCH against the table name of an aliased FTS5 source under
                                         "requires an FTS5 virtual table mapped as Docs"});
 }
 
+// A bare `*` writes no alias for the sources of its leading run: `get_all<T>()` writes `FROM "t"`
+// and `cross_join<alias_a<Docs>>()` a plain `CROSS JOIN "docs"`, so a comma source keeps the plain
+// hidden column. A constrained join writes its alias out — `join<alias_a<Docs>>(on(…))` and
+// `left_join<…>(on(…))` — so the hidden column of such a source names the alias.
+TEST_CASE("codegen: MATCH against the table name of a joined aliased FTS5 source under a bare star") {
+    REQUIRE(generateFull("SELECT * FROM t JOIN docs d ON t.n = d.body WHERE docs MATCH 'hello'").code ==
+            "auto rows = storage.get_all<T>(join<alias_a<Docs>>(on(c(&T::n) == "
+            "alias_column<alias_a<Docs>>(&Docs::body))), "
+            "where(match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\")));");
+    REQUIRE(generateFull("SELECT * FROM t LEFT JOIN docs d ON t.n = d.body WHERE docs MATCH 'hello'").code ==
+            "auto rows = storage.get_all<T>(left_join<alias_a<Docs>>(on(c(&T::n) == "
+            "alias_column<alias_a<Docs>>(&Docs::body))), "
+            "where(match(alias_column<alias_a<Docs>>(c<Docs>()->*&fts5::hidden::any), \"hello\")));");
+    REQUIRE(generateFull("SELECT * FROM t, docs d WHERE docs MATCH 'hello'").code ==
+            "auto rows = storage.get_all<T>(cross_join<alias_a<Docs>>(), "
+            "where(match(c<Docs>()->*&fts5::hidden::any, \"hello\")));");
+}
+
 // The alias is no column of the source: SQLite answers `no such column: d`, so the name is not
 // taken for the hidden column and goes out as any other column the table does not declare.
 TEST_CASE("codegen: MATCH against the alias of an FTS5 source is not the hidden column") {

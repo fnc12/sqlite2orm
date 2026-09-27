@@ -5,6 +5,7 @@
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 #include <sqlite2orm/validator.h>
+#include <algorithm>
 
 namespace sqlite2orm {
 
@@ -1501,15 +1502,21 @@ namespace sqlite2orm {
                         const std::string hiddenColumn = "c<" + mappedStructName + ">()->*&fts5::hidden::any";
                         const auto aliasIt = this->context.activeTableAliases.find(fromName);
                         const bool aliased = aliasIt != this->context.activeTableAliases.end();
-                        if (aliased && normalizeSqlIdentifier(stripIdentifierQuotes(aliasIt->second.tableName)) != key) {
+                        if (aliased &&
+                            normalizeSqlIdentifier(stripIdentifierQuotes(aliasIt->second.tableName)) != key) {
                             // The name is the alias: the hidden column is named after the table
                             // only, so SQLite finds no such column and neither is one written here.
                             break;
                         }
-                        // A bare `SELECT *` reads its row as the plain struct and names no alias,
-                        // so its hidden column names the plain table too: an `"a"."docs"` beside
-                        // the `FROM "docs"` of a `get_all<Docs>()` names a source it does not have.
-                        if (aliased && !this->context.rowReadsPlainStruct) {
+                        // A bare `SELECT *` writes no alias for the sources of its leading run:
+                        // an `"a"."docs"` beside the `FROM "docs"` of a `get_all<Docs>()` or the
+                        // `CROSS JOIN "docs"` of a `cross_join<alias_a<Docs>>()` names a source the
+                        // statement does not have. A constrained join writes its alias out.
+                        const bool readsPlainRow = aliased && std::find(this->context.plainRowSourceTypes.begin(),
+                                                                        this->context.plainRowSourceTypes.end(),
+                                                                        aliasIt->second.ormAliasType) !=
+                                                                  this->context.plainRowSourceTypes.end();
+                        if (aliased && !readsPlainRow) {
                             const auto& info = aliasIt->second;
                             // The table of an aliased source is read through its alias alone, so
                             // its hidden column is the alias's column: `"a"."docs"`, not a

@@ -107,3 +107,41 @@ cat > "$dir/ok.expected" <<'EOF'
 EOF
 diff "$dir/ok.expected" "$dir/ok.json"
 test ! -s "$dir/ok_err.txt"
+
+# A foreign key into a table the database does not hold: SQLite stores the schema and only says
+# `no such table: main.users` once a row is written with enforcement on. The header leaves the key
+# out rather than naming a `Users` it never declares, and says so on stderr; nothing failed to
+# generate, so the exit code stays 0.
+"$sqlite3" "$dir/fk.db" 'CREATE TABLE posts (id INTEGER PRIMARY KEY, author INTEGER REFERENCES users(id));'
+
+"$cli" --db "$dir/fk.db" > "$dir/fk.txt" 2> "$dir/fk_err.txt"
+
+cat > "$dir/fk_err.expected" <<'EOF'
+warning: foreign key on column 'author' references users, which this schema does not create, so the generated table has no foreign_key()
+EOF
+diff "$dir/fk_err.expected" "$dir/fk_err.txt"
+
+cat > "$dir/fk.expected" <<'EOF'
+#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct Posts {
+    std::optional<int64_t> id;
+    std::optional<int64_t> author;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("posts",
+        make_column("id", &Posts::id, primary_key()),
+        make_column("author", &Posts::author)));
+}
+EOF
+diff "$dir/fk.expected" "$dir/fk.txt"

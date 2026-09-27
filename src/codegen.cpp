@@ -48,17 +48,6 @@ namespace sqlite2orm {
         constexpr std::string_view kStatementNotGeneratedWarning =
             "a construct in this statement is not mapped to sqlite_orm, so the statement is not generated";
 
-        std::string escapeForCppStringLiteral(std::string_view text) {
-            std::string result;
-            for (char character: text) {
-                if (character == '\\' || character == '"') {
-                    result += '\\';
-                }
-                result += character;
-            }
-            return result;
-        }
-
         std::string renderCustomFunctionStruct(const CustomFunctionUse& fn, std::string_view style) {
             std::string params;
             for (size_t i = 0; i < fn.argTypes.size(); ++i) {
@@ -81,7 +70,7 @@ namespace sqlite2orm {
                 out += "    // TODO: implement this user-defined scalar function\n";
                 out += "    " + fn.returnType + " operator()(" + params + ") const { return {}; }\n";
             }
-            out += "    static const char *name() { return \"" + escapeForCppStringLiteral(fn.sqlName) + "\"; }\n";
+            out += "    static const char *name() { return " + cppStringLiteral(fn.sqlName) + "; }\n";
             out += "};";
             return out;
         }

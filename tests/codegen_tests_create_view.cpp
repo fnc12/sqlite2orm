@@ -610,3 +610,15 @@ TEST_CASE("codegen: CREATE VIEW - two aliases mapped to one field are reported")
                 {"view v: type of column `x-y` could not be inferred; defaulting to int", SourceLocation{1, 37}, 1},
                 cpp26ViewWarning("v", 1)});
 }
+
+// A view's name reaches C++ only through the struct's `[[= "…"_orm_name]]` annotation, a string
+// literal in which a backslash is an escape.
+TEST_CASE("codegen: CREATE VIEW - a name holding a backslash is escaped in the annotation") {
+    auto result = generateFull("CREATE VIEW \"v\\w\" AS SELECT id FROM users;");
+    REQUIRE(result.code == "struct [[= \"v\\\\w\"_orm_name]] VW {\n"
+                           "    int id = 0;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_view<VW>(select(&Users::id)));");
+}

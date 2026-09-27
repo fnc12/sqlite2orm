@@ -2883,3 +2883,16 @@ TEST_CASE("codegen: a compound SELECT standing as a subquery is not widened") {
             "auto rows = storage.with(cte<cte_0>().as(union_(select(c(&Users::a) + 1), select(c(&Users::a) * 2))), "
             "select(asterisk<cte_0>()));");
 }
+
+// The alias a column is read under is spelled by `get()` as a string literal, where a backslash
+// and a line break in it have to be escaped to stay the name SQLite hands back.
+TEST_CASE("codegen: SELECT column alias holding a backslash and a line break") {
+    auto result = generateFull("SELECT name AS \"a\\b\nc\" FROM users");
+    REQUIRE(result.code == "struct A_b_cAlias : sqlite_orm::alias_tag {\n"
+                           "    static const std::string& get() {\n"
+                           "        static const std::string res = \"a\\\\b\\nc\";\n"
+                           "        return res;\n"
+                           "    }\n"
+                           "};\n"
+                           "auto rows = storage.select(as<A_b_cAlias>(&Users::name));");
+}

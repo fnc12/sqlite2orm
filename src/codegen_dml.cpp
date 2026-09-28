@@ -138,11 +138,11 @@ namespace sqlite2orm {
         }
 
         std::vector<DecisionPoint> dps;
-        std::string middle;
+        SpannedCode middle;
         if (insertNode.dataKind == InsertDataKind::defaultValues) {
             middle = "default_values()";
         } else if (insertNode.dataKind == InsertDataKind::values && valueColumnNames.empty()) {
-            std::string code;
+            SpannedCode code;
             for (size_t valueRowIndex = 0; valueRowIndex < insertNode.valueRows.size(); ++valueRowIndex) {
                 if (valueRowIndex > 0) {
                     code += "\n";
@@ -154,7 +154,11 @@ namespace sqlite2orm {
                         code += ", ";
                     }
                     if (dynamic_cast<const NullLiteralNode*>(row[columnIndex].get())) {
-                        code += "std::nullopt";
+                        // The NULL is written as the empty optional its field takes, which is still
+                        // the code that NULL generated.
+                        SpannedCode emptyField = "std::nullopt";
+                        this->context.markExpression(emptyField, *row[columnIndex]);
+                        code += emptyField;
                     } else {
                         auto cell = this->coordinator.generateNode(*row[columnIndex]);
                         dps.insert(dps.end(),
@@ -163,13 +167,13 @@ namespace sqlite2orm {
                         warnings.insert(warnings.end(),
                                         std::make_move_iterator(cell.warnings.begin()),
                                         std::make_move_iterator(cell.warnings.end()));
-                        code += cell.code;
+                        code += SpannedCode::takenFrom(cell);
                     }
                 }
                 code += "});";
             }
             this->context.structName = savedStruct;
-            return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
+            return spannedResult(std::move(code), std::move(dps), std::move(warnings));
         } else if (insertNode.dataKind == InsertDataKind::values) {
             std::string cols = "columns(";
             for (size_t columnIndex = 0; columnIndex < valueColumnNames.size(); ++columnIndex) {
@@ -180,7 +184,7 @@ namespace sqlite2orm {
                         "::" + this->context.structColumnMember(tableStruct, valueColumnNames[columnIndex]);
             }
             cols += ")";
-            std::string vals = "values(";
+            SpannedCode vals = "values(";
             for (size_t rowIndex = 0; rowIndex < insertNode.valueRows.size(); ++rowIndex) {
                 if (rowIndex > 0) {
                     vals += ", ";
@@ -198,7 +202,7 @@ namespace sqlite2orm {
                     warnings.insert(warnings.end(),
                                     std::make_move_iterator(cell.warnings.begin()),
                                     std::make_move_iterator(cell.warnings.end()));
-                    vals += cell.code;
+                    vals += SpannedCode::takenFrom(cell);
                 }
                 vals += ")";
             }
@@ -248,7 +252,7 @@ namespace sqlite2orm {
             }
         }
 
-        std::string upsertSuffix;
+        SpannedCode upsertSuffix;
         if (insertNode.hasUpsertClause) {
             if (insertNode.upsertConflictWhere) {
                 warnings.push_back(
@@ -277,7 +281,7 @@ namespace sqlite2orm {
             if (insertNode.upsertAction == InsertUpsertAction::doNothing) {
                 upsertSuffix = ", " + onTarget + ".do_nothing()";
             } else if (insertNode.upsertAction == InsertUpsertAction::doUpdate) {
-                std::string setArgs;
+                SpannedCode setArgs;
                 for (size_t assignmentIndex = 0; assignmentIndex < insertNode.upsertUpdateAssignments.size();
                      ++assignmentIndex) {
                     if (assignmentIndex > 0) {
@@ -294,7 +298,7 @@ namespace sqlite2orm {
                     std::string cppCol = this->context.structColumnMember(
                         tableStruct,
                         insertNode.upsertUpdateAssignments[assignmentIndex].columnName);
-                    setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
+                    setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + SpannedCode::takenFrom(valueResult);
                 }
                 upsertSuffix = ", " + onTarget + ".do_update(set(" + setArgs + ")";
                 if (insertNode.upsertUpdateWhere) {
@@ -306,29 +310,29 @@ namespace sqlite2orm {
                     warnings.insert(warnings.end(),
                                     std::make_move_iterator(whereResult.warnings.begin()),
                                     std::make_move_iterator(whereResult.warnings.end()));
-                    upsertSuffix += ", where(" + whereResult.code + ")";
+                    upsertSuffix += ", where(" + SpannedCode::takenFrom(whereResult) + ")";
                 }
                 upsertSuffix += ")";
             }
         }
 
         this->context.structName = savedStruct;
-        std::string code =
+        SpannedCode code =
             "storage." + verb + "(" + orPrefix + "into<" + tableStruct + ">(), " + middle + upsertSuffix + ");";
         if (insertNode.replaceInto) {
-            std::string insertOrReplace =
+            SpannedCode insertOrReplace =
                 "storage.insert(or_replace(), into<" + tableStruct + ">(), " + middle + upsertSuffix + ");";
             // options lists every variant (the chosen one included).
             dps.push_back(DecisionPoint{this->context.nextDecisionPointId++,
                                         "replace_style",
                                         "replace_call",
-                                        code,
-                                        {Option{"replace_call", code, "storage.replace(into<T>(), ...)"},
+                                        code.text(),
+                                        {Option{"replace_call", code.text(), "storage.replace(into<T>(), ...)"},
                                          Option{"insert_or_replace",
-                                                insertOrReplace,
+                                                insertOrReplace.text(),
                                                 "same semantics via raw insert(or_replace(), into<T>(), ...)"}}});
         }
-        return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
+        return spannedResult(std::move(code), std::move(dps), std::move(warnings));
     }
 
     CodeGenResult DmlCodeGenerator::generateUpdate(const UpdateNode& updateNode) {
@@ -348,7 +352,7 @@ namespace sqlite2orm {
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
         std::vector<DecisionPoint> dps;
-        std::string setArgs;
+        SpannedCode setArgs;
         for (size_t assignmentIndex = 0; assignmentIndex < updateNode.assignments.size(); ++assignmentIndex) {
             if (assignmentIndex > 0) {
                 setArgs += ", ";
@@ -362,9 +366,9 @@ namespace sqlite2orm {
                             std::make_move_iterator(valueResult.warnings.end()));
             std::string cppCol =
                 this->context.structColumnMember(tableStruct, updateNode.assignments[assignmentIndex].columnName);
-            setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
+            setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + SpannedCode::takenFrom(valueResult);
         }
-        std::string code = "storage.update_all(set(" + setArgs + ")";
+        SpannedCode code = "storage.update_all(set(" + setArgs + ")";
         if (updateNode.whereClause) {
             const ParenthesizedConditionScope conditionScope{this->context, *updateNode.whereClause};
             auto whereResult = this->coordinator.generateNode(*updateNode.whereClause);
@@ -374,11 +378,11 @@ namespace sqlite2orm {
             warnings.insert(warnings.end(),
                             std::make_move_iterator(whereResult.warnings.begin()),
                             std::make_move_iterator(whereResult.warnings.end()));
-            code += ", where(" + whereResult.code + ")";
+            code += ", where(" + SpannedCode::takenFrom(whereResult) + ")";
         }
         code += ");";
         this->context.structName = savedStruct;
-        return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
+        return spannedResult(std::move(code), std::move(dps), std::move(warnings));
     }
 
     CodeGenResult DmlCodeGenerator::generateDelete(const DeleteNode& deleteNode) {
@@ -390,7 +394,7 @@ namespace sqlite2orm {
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
         std::vector<DecisionPoint> dps;
-        std::string code = "storage.remove_all<" + tableStruct + ">()";
+        SpannedCode code = "storage.remove_all<" + tableStruct + ">()";
         if (deleteNode.whereClause) {
             const ParenthesizedConditionScope conditionScope{this->context, *deleteNode.whereClause};
             auto whereResult = this->coordinator.generateNode(*deleteNode.whereClause);
@@ -400,11 +404,11 @@ namespace sqlite2orm {
             warnings.insert(warnings.end(),
                             std::make_move_iterator(whereResult.warnings.begin()),
                             std::make_move_iterator(whereResult.warnings.end()));
-            code = "storage.remove_all<" + tableStruct + ">(where(" + whereResult.code + "))";
+            code = "storage.remove_all<" + tableStruct + ">(where(" + SpannedCode::takenFrom(whereResult) + "))";
         }
         code += ";";
         this->context.structName = savedStruct;
-        return CodeGenResult{std::move(code), std::move(dps), std::move(warnings)};
+        return spannedResult(std::move(code), std::move(dps), std::move(warnings));
     }
 
     CodeGenResult DmlCodeGenerator::generateTriggerStep(const AstNode& statement,

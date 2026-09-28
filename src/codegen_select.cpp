@@ -635,7 +635,7 @@ namespace sqlite2orm {
         const std::string rowsVariable = this->context.statementVariableName("rows");
         CodeGeneratorContext selectAltBaseline = this->context;
 
-        auto expressionCode = [&](const AstNode& node) -> std::string {
+        auto expressionCode = [&](const AstNode& node) -> SpannedCode {
             auto result = this->coordinator.generateNode(node);
             selectWarnings.insert(selectWarnings.end(),
                                   std::make_move_iterator(result.warnings.begin()),
@@ -643,7 +643,7 @@ namespace sqlite2orm {
             selectDecisionPoints.insert(selectDecisionPoints.end(),
                                         std::make_move_iterator(result.decisionPoints.begin()),
                                         std::make_move_iterator(result.decisionPoints.end()));
-            return result.code;
+            return SpannedCode::takenFrom(result);
         };
 
         bool isStar = selectNode.columns.size() == 1 && !selectNode.columns.at(0).expression;
@@ -676,7 +676,7 @@ namespace sqlite2orm {
         if (isStar && !selectNode.fromClause.empty() && !forceOuterAsterisk) {
             apiLevelDecisionId = this->context.nextDecisionPointId++;
         }
-        std::string code;
+        SpannedCode code;
         std::string aliasPreamble;
         const bool cpp20ColumnAliases = this->context.useCpp20ColumnAliasStyle();
         if (!isStar) {
@@ -694,7 +694,7 @@ namespace sqlite2orm {
             // warning for the arithmetic operators, whose `double` no CAST can widen without
             // truncating the REAL they answer with. Warnings dedupe by message, so several columns
             // computed with the same operator report once, anchored at the first of them.
-            auto resultColumnCode = [&](const SelectColumn& column) -> std::string {
+            auto resultColumnCode = [&](const SelectColumn& column) -> SpannedCode {
                 if (!column.expression) {
                     // A bare `*` standing next to other result columns: SQLite runs it, and the
                     // parser leaves it as a column with no expression of its own, so the whole
@@ -763,9 +763,9 @@ namespace sqlite2orm {
             }
         }
 
-        std::vector<std::string> selectTrailingClauses;
-        auto appendClause = [&](const std::string& clause) {
-            selectTrailingClauses.push_back(clause);
+        std::vector<SpannedCode> selectTrailingClauses;
+        auto appendClause = [&](SpannedCode clause) {
+            selectTrailingClauses.push_back(std::move(clause));
         };
 
         auto isCteSource = [&](std::string_view tableName) -> bool {
@@ -824,7 +824,7 @@ namespace sqlite2orm {
             std::string rightType = resolveJoinType(joinItem.table);
             std::string rightStruct = structForFromTable(joinItem.table.tableName);
             std::string leftStruct = structForFromTable(leftTable.tableName);
-            std::string joinCode;
+            SpannedCode joinCode;
             switch (joinKind) {
                 case JoinKind::crossJoin:
                 case JoinKind::naturalInnerJoin:
@@ -885,7 +885,7 @@ namespace sqlite2orm {
         }
 
         if (selectNode.groupBy) {
-            std::string groupCode = "group_by(";
+            SpannedCode groupCode = "group_by(";
             for (size_t i = 0; i < selectNode.groupBy->expressions.size(); ++i) {
                 if (i > 0)
                     groupCode += ", ";
@@ -913,8 +913,8 @@ namespace sqlite2orm {
         }
 
         if (!selectNode.orderBy.empty()) {
-            auto formatOrderTerm = [&](const OrderByTerm& term) -> std::string {
-                std::string orderCode = "order_by(" + expressionCode(*term.expression) + ")";
+            auto formatOrderTerm = [&](const OrderByTerm& term) -> SpannedCode {
+                SpannedCode orderCode = "order_by(" + expressionCode(*term.expression) + ")";
                 if (term.direction == SortDirection::asc) {
                     orderCode += ".asc()";
                 } else if (term.direction == SortDirection::desc) {
@@ -940,7 +940,7 @@ namespace sqlite2orm {
             if (selectNode.orderBy.size() == 1) {
                 appendClause(formatOrderTerm(selectNode.orderBy.at(0)));
             } else {
-                std::string multiCode = "multi_order_by(";
+                SpannedCode multiCode = "multi_order_by(";
                 for (size_t i = 0; i < selectNode.orderBy.size(); ++i) {
                     if (i > 0)
                         multiCode += ", ";
@@ -952,7 +952,7 @@ namespace sqlite2orm {
         }
 
         if (selectNode.limitValue) {
-            std::string limitCode = "limit(" + expressionCode(*selectNode.limitValue);
+            SpannedCode limitCode = "limit(" + expressionCode(*selectNode.limitValue);
             if (selectNode.offsetValue) {
                 limitCode += ", offset(" + expressionCode(*selectNode.offsetValue) + ")";
             }
@@ -981,7 +981,7 @@ namespace sqlite2orm {
                                isStar ? std::string_view(starRowType) : std::string_view());
 
         // What `storage.get_all<T>(...)` takes: the clauses themselves, with no FROM among them.
-        std::string trailingJoined;
+        SpannedCode trailingJoined;
         for (size_t ti = 0; ti < selectTrailingClauses.size(); ++ti) {
             if (ti > 0) {
                 trailingJoined += ", ";
@@ -989,9 +989,10 @@ namespace sqlite2orm {
             trailingJoined += selectTrailingClauses.at(ti);
         }
         // What `storage.select(...)` takes: the same clauses behind the FROM, where one is needed.
-        std::string selectArgsJoined = trailingJoined;
+        SpannedCode selectArgsJoined = trailingJoined;
         if (!explicitFrom.empty()) {
-            selectArgsJoined = trailingJoined.empty() ? explicitFrom : (explicitFrom + ", " + trailingJoined);
+            selectArgsJoined =
+                trailingJoined.empty() ? SpannedCode(explicitFrom) : (explicitFrom + ", " + trailingJoined);
         }
 
         if (isStar) {
@@ -1000,16 +1001,16 @@ namespace sqlite2orm {
             // select to a source the star does not read — `SELECT "users".* FROM "users" "a"`,
             // which SQLite refuses — so the star keeps the form it had.
             const std::string starFrom = namesInferredSource(fromSources, starRowType) ? explicitFrom : std::string();
-            std::string starArgs = trailingJoined;
+            SpannedCode starArgs = trailingJoined;
             if (!starFrom.empty()) {
-                starArgs = trailingJoined.empty() ? starFrom : (starFrom + ", " + trailingJoined);
+                starArgs = trailingJoined.empty() ? SpannedCode(starFrom) : (starFrom + ", " + trailingJoined);
             }
-            std::string tail = starArgs.empty() ? "" : (", " + starArgs);
-            std::string codeGetAll =
+            SpannedCode tail = starArgs.empty() ? SpannedCode() : (", " + starArgs);
+            SpannedCode codeGetAll =
                 "auto " + rowsVariable + " = storage.get_all<" + starRowType + ">(" + trailingJoined + ");";
-            std::string codeSelectObject =
+            SpannedCode codeSelectObject =
                 "auto " + rowsVariable + " = storage.select(object<" + starRowType + ">()" + tail + ");";
-            std::string codeSelectAsterisk =
+            SpannedCode codeSelectAsterisk =
                 "auto " + rowsVariable + " = storage.select(asterisk<" + starRowType + ">()" + tail + ");";
             std::string chosenApi = "get_all";
             code = codeGetAll;
@@ -1028,15 +1029,17 @@ namespace sqlite2orm {
             if (apiLevelDecisionId >= 0) {
                 // options lists every variant (the chosen one included, default get_all first).
                 std::vector<Option> apiOptions = {
-                    Option{"get_all", codeGetAll, "get_all<T>(...) returns full row objects"},
-                    Option{"select_object", codeSelectObject, "select(object<T>(), ...) returns std::tuple of columns"},
+                    Option{"get_all", codeGetAll.text(), "get_all<T>(...) returns full row objects"},
+                    Option{"select_object",
+                           codeSelectObject.text(),
+                           "select(object<T>(), ...) returns std::tuple of columns"},
                     Option{"select_asterisk",
-                           codeSelectAsterisk,
+                           codeSelectAsterisk.text(),
                            "select(asterisk<T>(), ...) returns full row objects"},
                 };
                 selectDecisionPoints.insert(
                     selectDecisionPoints.begin(),
-                    DecisionPoint{apiLevelDecisionId, "api_level", chosenApi, code, std::move(apiOptions)});
+                    DecisionPoint{apiLevelDecisionId, "api_level", chosenApi, code.text(), std::move(apiOptions)});
             }
         } else {
             if (!selectArgsJoined.empty()) {
@@ -1078,7 +1081,7 @@ namespace sqlite2orm {
                     // options lists every applicable variant (the chosen one included).
                     std::vector<Option> aliasOptions = {
                         Option{"alias_tag",
-                               code,
+                               code.text(),
                                "alias_tag / colalias_* / generated struct (default; wider compiler support)"}};
                     if (cpp20Allowed(this->context.codeGenPolicy)) {
                         CodeGenerator altGen;
@@ -1098,7 +1101,7 @@ namespace sqlite2orm {
                     selectDecisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
                                                                  "column_alias_style",
                                                                  "alias_tag",
-                                                                 code,
+                                                                 code.text(),
                                                                  std::move(aliasOptions)});
                 }
             }
@@ -1110,13 +1113,15 @@ namespace sqlite2orm {
             altGen.context().columnAliasStyleOverride = "alias_tag";
             auto altRes = altGen.generateNode(selectNode);
             // options lists every variant (the chosen one included).
-            Option cpp20LiteralChosen{"cpp20_literal", code, "C++20 literal aliases (`orm_column_alias`, `_col`)"};
+            Option cpp20LiteralChosen{"cpp20_literal",
+                                      code.text(),
+                                      "C++20 literal aliases (`orm_column_alias`, `_col`)"};
             cpp20LiteralChosen.minCppStandard = 20;
             selectDecisionPoints.push_back(
                 DecisionPoint{this->context.nextDecisionPointId++,
                               "column_alias_style",
                               "cpp20_literal",
-                              code,
+                              code.text(),
                               {Option{"alias_tag",
                                       altRes.code,
                                       "alias_tag / colalias_* / generated struct (default; wider compiler support)"},
@@ -1161,7 +1166,7 @@ namespace sqlite2orm {
                 selectDecisionPoints.push_back(DecisionPoint{this->context.nextDecisionPointId++,
                                                              "table_alias_style",
                                                              currentStyle,
-                                                             code,
+                                                             code.text(),
                                                              std::move(tableAliasOptions)});
             }
         }
@@ -1171,7 +1176,7 @@ namespace sqlite2orm {
         }
         this->context.activeSelectColumnAliases.clear();
         this->context.activeSelectColumnAliasCpp20Vars.clear();
-        return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
+        return spannedResult(std::move(code), std::move(selectDecisionPoints), std::move(selectWarnings));
     }
 
     CodeGenResult SelectCodeGenerator::tryCodegenSqliteSelectSubexpression(
@@ -1771,6 +1776,9 @@ namespace sqlite2orm {
         this->context.recordFormWithoutDefaultConstructor("a compound SELECT");
         this->context.emittedCompoundSelectForm = true;
         accumulated.code = std::string(compoundSelectApi(operators.front())) + "(" + armsCode + ")";
+        // The arms are joined as plain text, so whatever spans the first one carried no longer
+        // name the code they did.
+        accumulated.expressionSpans.clear();
         return accumulated;
     }
 

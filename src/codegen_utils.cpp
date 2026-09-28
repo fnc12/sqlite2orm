@@ -436,7 +436,7 @@ namespace sqlite2orm {
         return body;
     }
 
-    std::string wrapWithColumnAlias(const std::string& expressionCode, const std::string& rawAlias, bool cpp20Style) {
+    SpannedCode wrapWithColumnAlias(SpannedCode expressionCode, const std::string& rawAlias, bool cpp20Style) {
         if (rawAlias.empty())
             return expressionCode;
         if (cpp20Style) {
@@ -1576,6 +1576,7 @@ namespace sqlite2orm {
                                          CodeGenResult carried) {
         context.recordPlaceholder(PlaceholderSlot::expression);
         carried.code = placeholderCode(label);
+        carried.expressionSpans.clear();
         carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
         return carried;
     }
@@ -1587,6 +1588,7 @@ namespace sqlite2orm {
                                          CodeGenResult carried) {
         context.recordPlaceholder(PlaceholderSlot::expression);
         carried.code = placeholderCode(label);
+        carried.expressionSpans.clear();
         carried.warnings.push_back(sourceSpanWarning(message(carried.code), astNode));
         return carried;
     }
@@ -1598,6 +1600,7 @@ namespace sqlite2orm {
                                                   CodeGenResult carried) {
         context.recordPlaceholder(PlaceholderSlot::statement);
         carried.code = placeholderCode(label);
+        carried.expressionSpans.clear();
         carried.warnings.push_back(sourceSpanWarning(std::move(message), astNode));
         return carried;
     }
@@ -2291,7 +2294,7 @@ namespace sqlite2orm {
         return booleanValueSeen ? OneDeducedTypeForm::widenedToInt64 : form;
     }
 
-    std::string widenToInt64(const AstNode& node, std::string code) {
+    SpannedCode widenToInt64(const AstNode& node, SpannedCode code) {
         const std::optional<GeneratedValueCppType> type = generatedValueCppType(node);
         // A member this cannot type is a bind parameter the caller declares himself, and a cast
         // over one would change the value it binds rather than only its type — `bindParam1` held
@@ -2779,8 +2782,8 @@ namespace sqlite2orm {
                dynamic_cast<const ExcludedRefNode*>(&generatedNode) || dynamic_cast<const RaiseNode*>(&generatedNode);
     }
 
-    std::string wrap(std::string_view code) {
-        return "c(" + std::string(code) + ")";
+    SpannedCode wrap(SpannedCode code) {
+        return "c(" + code + ")";
     }
 
     namespace {
@@ -3851,9 +3854,9 @@ namespace sqlite2orm {
                 // Where no type can be named here — a call, whose type the function and its
                 // arguments decide — an arm spelling the same expression over the same sources is
                 // generated as the same code, and so comes out as the same type whatever it is.
-                const bool sameType = cppType ? generatedResultColumnCppType(columnExpression) == cppType
-                                              : arm->fromClause == leadingArm.fromClause &&
-                                                    columnExpression == leadingExpression;
+                const bool sameType =
+                    cppType ? generatedResultColumnCppType(columnExpression) == cppType
+                            : arm->fromClause == leadingArm.fromClause && columnExpression == leadingExpression;
                 if (!sameType) {
                     sameTypeEverywhere = false;
                     break;

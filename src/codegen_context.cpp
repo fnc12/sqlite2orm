@@ -8,6 +8,12 @@
 
 namespace sqlite2orm {
 
+    void CodeGeneratorContext::markExpression(SpannedCode& code, const AstNode& expression) const {
+        if (this->codeGenPolicy && this->codeGenPolicy->recordExpressionSpans) {
+            code.markGeneratedFrom(expression);
+        }
+    }
+
     bool CodeGeneratorContext::useCpp20ColumnAliasStyle() const {
         if (this->columnAliasStyleOverride) {
             // Internal override used to render the C++20 alternative for the options list; ungated.

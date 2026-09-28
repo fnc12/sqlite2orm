@@ -24,6 +24,16 @@ namespace sqlite2orm {
         return cpp20Allowed(this->codeGenPolicy) && policyEquals(this->codeGenPolicy, "table_alias_style", "cpp20");
     }
 
+    void CodeGeneratorContext::declareCpp20TableAlias(Cpp20TableAliasDeclaration declaration) {
+        for (const auto& declared: this->cpp20TableAliasDeclarations) {
+            if (declared.variableName == declaration.variableName &&
+                declared.baseStructName == declaration.baseStructName && declared.sqlAlias == declaration.sqlAlias) {
+                return;
+            }
+        }
+        this->cpp20TableAliasDeclarations.push_back(std::move(declaration));
+    }
+
     bool CodeGeneratorContext::withCteLegacyColalias() const {
         return this->activeWithCteStyle && *this->activeWithCteStyle == "legacy_colalias";
     }

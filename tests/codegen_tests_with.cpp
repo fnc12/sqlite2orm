@@ -956,6 +956,77 @@ TEST_CASE("codegen: a subquery under a CTE-sourced select names its own table") 
                        "from<cte_0>(), where(exists(select(&U::b)))));");
 }
 
+TEST_CASE("codegen: WITH cpp20_monikers declares the table alias of the outer SELECT") {
+    constexpr std::string_view sql =
+        "WITH c AS (SELECT id FROM users) SELECT u.name FROM users u WHERE u.id IN (SELECT id FROM c);";
+    const std::string expected = "using namespace sqlite_orm::literals;\n"
+                                 "constexpr orm_cte_moniker auto c_cte = \"c\"_cte;\n"
+                                 "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+                                 "auto rows = storage.with(c_cte().as(select(&Users::id)), select(u->*&Users::name, "
+                                 "from<u>(), where(in(u->*&Users::id, select(c_cte->*&Users::id)))));";
+    SECTION("chosen style") {
+        CodeGenPolicy pol;
+        pol.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+        REQUIRE(generateWithPolicy(sql, pol).code == expected);
+    }
+    SECTION("option of the with_cte_style decision point") {
+        const CodeGenResult result = generateFull(sql);
+        std::vector<std::string> cpp20MonikerCodes;
+        for (const auto& dp: result.decisionPoints) {
+            if (dp.category == "with_cte_style") {
+                for (const auto& option: dp.options) {
+                    if (option.value == "cpp20_monikers") {
+                        cpp20MonikerCodes.push_back(option.code);
+                    }
+                }
+            }
+        }
+        REQUIRE(cpp20MonikerCodes == std::vector<std::string>{expected});
+    }
+}
+
+TEST_CASE("codegen: WITH cpp20_monikers declares an alias shared by the CTE body and the outer SELECT once") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+    CodeGenResult codeGenResult = generateWithPolicy(
+        "WITH c AS (SELECT u.id FROM users u) SELECT u.name FROM users u WHERE u.id IN (SELECT id FROM c);",
+        pol);
+    REQUIRE(codeGenResult.code == "using namespace sqlite_orm::literals;\n"
+                                  "constexpr orm_cte_moniker auto c_cte = \"c\"_cte;\n"
+                                  "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+                                  "auto rows = storage.with(c_cte().as(select(u->*&Users::id)), "
+                                  "select(u->*&Users::name, from<u>(), "
+                                  "where(in(u->*&Users::id, select(c_cte->*&Users::id)))));");
+}
+
+TEST_CASE("codegen: WITH indexed_typedef declares the C++20 table alias of the outer SELECT") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["table_alias_style"] = "cpp20";
+    CodeGenResult codeGenResult = generateWithPolicy(
+        "WITH c AS (SELECT id FROM users) SELECT u.name FROM users u WHERE u.id IN (SELECT id FROM c);",
+        pol);
+    REQUIRE(codeGenResult.code == "using namespace sqlite_orm::literals;\n"
+                                  "using cte_0 = decltype(1_ctealias);\n"
+                                  "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+                                  "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), "
+                                  "select(u->*&Users::name, from<u>(), "
+                                  "where(in(u->*&Users::id, select(column<cte_0>(&Users::id))))));");
+}
+
+TEST_CASE("codegen: WITH cpp20_monikers DELETE declares the table alias of its subquery") {
+    CodeGenPolicy pol;
+    pol.chosenAlternativeValueByCategory["with_cte_style"] = "cpp20_monikers";
+    CodeGenResult codeGenResult = generateWithPolicy(
+        "WITH c AS (SELECT id FROM users) DELETE FROM users WHERE id IN (SELECT u.id FROM users u JOIN c ON c.id = "
+        "u.id);",
+        pol);
+    REQUIRE(codeGenResult.code == "using namespace sqlite_orm::literals;\n"
+                                  "constexpr orm_cte_moniker auto c_cte = \"c\"_cte;\n"
+                                  "constexpr orm_table_alias auto u = \"u\"_alias.for_<Users>();\n"
+                                  "storage.with(c_cte().as(select(&Users::id)), remove_all<Users>(where(in(&Users::id, "
+                                  "select(u->*&Users::id, join<c_cte>(on(c_cte->*&Users::id == u->*&Users::id)))))));");
+}
+
 // Each column of a CTE's column list is declared as a `constexpr` alias variable named after the
 // CTE and the column, so two column names C++ has one spelling for declare that variable twice —
 // SQLite takes the CTE — and it is reported, anchored at the second name, in every style.

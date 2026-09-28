@@ -524,6 +524,8 @@ namespace sqlite2orm {
 
         bool useCpp20ColumnAliasStyle() const;
         bool useCpp20TableAliasStyle() const;
+        /** Records a C++20 table alias to declare; the same alias over the same table is declared once. */
+        void declareCpp20TableAlias(Cpp20TableAliasDeclaration declaration);
         bool withCteLegacyColalias() const;
         bool withCteCpp20Monikers() const;
         bool columnRefIsSelectAliasNoWrap(const ColumnRefNode& ref) const;

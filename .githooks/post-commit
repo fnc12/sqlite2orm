@@ -1,0 +1,8 @@
+#!/bin/sh
+# Keeps this clone's worktree manifest in step with every HEAD change; see the `hook` command of
+# scripts/git-worktree-guard.sh. It does nothing in a clone where `protect` never ran, and nothing
+# on a commit that predates the script.
+guard="$(git rev-parse --show-toplevel)/scripts/git-worktree-guard.sh"
+[ -f "$guard" ] || exit 0
+sh "$guard" hook
+exit 0

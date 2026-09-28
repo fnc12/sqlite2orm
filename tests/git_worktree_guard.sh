@@ -11,6 +11,9 @@ fi
 # The test runs from a temporary clone, so the script it drives has to be named from where the
 # caller stood rather than from where the test ends up.
 guard=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+# The hooks that run the guard on every HEAD change, and the script that installs them, sit next to
+# it in the same source tree.
+root=$(cd "$(dirname "$1")/.." && pwd)
 # Both this test and the script under test have to meet the same git the build found.
 if [ -n "${2:-}" ]; then
     PATH=$(cd "$(dirname "$2")" && pwd):$PATH
@@ -379,3 +382,78 @@ EOF
 diff "$dir/restore_traversal.err.expected" "$dir/restore_traversal.err"
 test -d .git/objects
 git cat-file -e "$recorded^{commit}"
+
+# Nothing a person has to remember runs on every HEAD change, so the rule "run `protect` whenever a
+# HEAD moves" is kept by the repository's own hooks. They get a clone of their own that installs
+# them the way a person would, with the scripts committed so that every worktree checks them out.
+git init -q -b master "$dir/hooked"
+cd "$dir/hooked"
+git config user.email s2o@example.com
+git config user.name sqlite2orm
+mkdir .githooks scripts
+for hook in post-checkout post-commit post-merge post-rewrite; do
+    cp "$root/.githooks/$hook" .githooks/
+done
+cp "$guard" "$root/scripts/install-git-hooks.sh" scripts/
+echo one > tracked.txt
+git add .
+git commit -q -m one
+sh scripts/install-git-hooks.sh > /dev/null
+
+# A clone nobody ran `protect` in is left alone: no manifest, no lock, nothing said.
+git worktree add -q "$dir/hkA" -b hkA 2> "$dir/hook_unguarded.err"
+test ! -s "$dir/hook_unguarded.err"
+test ! -e .git/worktrees.manifest
+test ! -e .git/worktrees/hkA/locked
+
+sh scripts/git-worktree-guard.sh protect > /dev/null
+
+# From then on a worktree is recorded and locked as it is added.
+git worktree add -q --detach "$dir/hkB" 2> "$dir/hook_add.err"
+test ! -s "$dir/hook_add.err"
+sh scripts/git-worktree-guard.sh check > "$dir/hook_add.txt"
+cat > "$dir/hook_add.expected" <<'EOF'
+ok hkA
+ok hkB
+EOF
+diff "$dir/hook_add.expected" "$dir/hook_add.txt"
+
+# A detached worktree that commits is exactly the record that used to go stale; post-commit moves
+# the record, and the ref that keeps its commit reachable, along with it.
+echo two > "$dir/hkB/tracked.txt"
+git -C "$dir/hkB" commit -q -am two 2> "$dir/hook_commit.err"
+test ! -s "$dir/hook_commit.err"
+sh scripts/git-worktree-guard.sh check > "$dir/hook_commit.txt"
+diff "$dir/hook_add.expected" "$dir/hook_commit.txt"
+test "$(git rev-parse refs/worktree-guard/hkB)" = "$(git -C "$dir/hkB" rev-parse HEAD)"
+
+# An amended commit is a rewrite, and post-rewrite follows it.
+git -C "$dir/hkB" commit -q --amend -m two-amended
+sh scripts/git-worktree-guard.sh check > "$dir/hook_amend.txt"
+diff "$dir/hook_add.expected" "$dir/hook_amend.txt"
+test "$(git rev-parse refs/worktree-guard/hkB)" = "$(git -C "$dir/hkB" rev-parse HEAD)"
+
+# Switching branches makes even a worktree on a branch stale, and post-checkout follows it.
+git -C "$dir/hkA" checkout -q -b hkA2
+sh scripts/git-worktree-guard.sh check > "$dir/hook_switch.txt"
+diff "$dir/hook_add.expected" "$dir/hook_switch.txt"
+test "$(awk -F '\t' '$1 == "hkA" { print $3 }' .git/worktrees.manifest)" = "ref: refs/heads/hkA2"
+
+# A merge that moves a detached HEAD fires post-merge rather than post-commit.
+git -C "$dir/hkA" commit -q --allow-empty -m side
+git -C "$dir/hkB" merge -q --no-edit hkA2
+sh scripts/git-worktree-guard.sh check > "$dir/hook_merge.txt"
+diff "$dir/hook_add.expected" "$dir/hook_merge.txt"
+test "$(git rev-parse refs/worktree-guard/hkB)" = "$(git -C "$dir/hkB" rev-parse HEAD)"
+
+# A worktree `protect` cannot record is worth a line on stderr, but not a failed commit or checkout
+# in another one: git reports a failed post-checkout as a failed checkout.
+rm .git/worktrees/hkA/commondir
+git -C "$dir/hkB" commit -q --allow-empty -m three 2> "$dir/hook_incomplete.err"
+cat > "$dir/hook_incomplete.expected" <<'EOF'
+worktree-guard: incomplete hkA
+EOF
+diff "$dir/hook_incomplete.expected" "$dir/hook_incomplete.err"
+git -C "$dir/hkB" checkout -q --detach HEAD~1 2> "$dir/hook_incomplete_checkout.err"
+diff "$dir/hook_incomplete.expected" "$dir/hook_incomplete_checkout.err"
+test "$(git rev-parse refs/worktree-guard/hkB)" = "$(git -C "$dir/hkB" rev-parse HEAD)"

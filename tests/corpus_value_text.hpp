@@ -51,8 +51,27 @@ namespace corpus_test_helpers {
         return "NULL";
     }
 
+    /**
+     *  A TEXT value byte for byte, with a control byte written as `\xHH` and a backslash as `\\`, so a
+     *  value holding a NUL or a newline reads back as that value -- neither cut short at the NUL nor
+     *  split across two rows -- and no other value can be spelled the same way.
+     */
     inline std::string cell(const std::string& value) {
-        return value;
+        static constexpr char digits[] = "0123456789abcdef";
+        std::string text;
+        for (const char c: value) {
+            const auto byte = static_cast<unsigned char>(c);
+            if (byte == '\\') {
+                text += "\\\\";
+            } else if (byte < 0x20 || byte == 0x7f) {
+                text += "\\x";
+                text += digits[byte >> 4];
+                text += digits[byte & 0xf];
+            } else {
+                text += c;
+            }
+        }
+        return text;
     }
 
     inline std::string cell(bool value) {

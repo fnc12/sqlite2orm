@@ -190,7 +190,12 @@ namespace {
                             row += corpus_test_helpers::realText(sqlite3_column_double(statement, column));
                             break;
                         default:
-                            row += reinterpret_cast<const char*>(sqlite3_column_text(statement, column));
+                            // Sized by `sqlite3_column_bytes`: a TEXT value may hold a NUL, and
+                            // reading it up to the first one is the very divergence the corpus
+                            // pins for sqlite_orm (card 1869658850404075210).
+                            row += corpus_test_helpers::cell(
+                                std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement, column)),
+                                            static_cast<std::size_t>(sqlite3_column_bytes(statement, column))});
                             break;
                     }
                 }
@@ -237,8 +242,8 @@ namespace {
     /**
      *  A program around `generatedQueries`, to be compiled against the generated header written
      *  next to it. Each query announces how many rows it produced before printing them, so a
-     *  value that happens to read like a separator cannot be mistaken for one; a value holding a
-     *  newline still could, and the corpus has none.
+     *  value that happens to read like a separator cannot be mistaken for one, and a value holding a
+     *  newline cannot split a row either: `corpus_test_helpers::cell` writes it escaped.
      *
      *  The program does what a user does with a header generated from a database they already
      *  have: it opens that very database, calls `sync_schema()` on it and only then queries it.
@@ -691,6 +696,14 @@ TEST_CASE("corpus: Northwind", "[.corpus]") {
             {.sql = "SELECT CustomerDesc FROM CustomerDemographics ORDER BY CustomerTypeID;",
              .rows = {"NULL", "Buys in bulk"}},
             {.sql = "SELECT COUNT(*) FROM Employees WHERE ReportsTo IS NOT NULL;", .rows = {"2"}},
+            // SQLite hands back a TEXT of two bytes, NUL and `B`; sqlite_orm reads a TEXT column up
+            // to its first NUL and returns an empty string, with no error and no warning.
+            {.sql = "SELECT CAST(Picture AS TEXT) FROM Categories ORDER BY CategoryID;",
+             .rows = {"NULL", "NULL", "\\x00B"},
+             .knownBad = {.card = "1869658850404075210", .rows = {"NULL", "NULL", ""}}},
+            {.sql = "SELECT CHAR(0, 66);",
+             .rows = {"\\x00B"},
+             .knownBad = {.card = "1869658850404075210", .rows = {""}}},
         });
 }
 

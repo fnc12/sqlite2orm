@@ -2320,6 +2320,42 @@ TEST_CASE("runtime: a compound of three arms of one operator builds and reads ba
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"4", "7", "8", "7"});
 }
 
+// sqlite_orm types the bitwise operators `int`, so a compound of bitwise arms read the int64 SQLite
+// computes through a 32-bit truncation: the first statement below over `a = 4294967296` printed 0
+// (card 1869499142733039137). Every arm is cast at once, keeping the one common type the row is
+// read back through. Expected first rows checked against sqlite3 3.51 over `users(a INTEGER)`
+// holding one row: 4294967296, -4294967297, 2147483648 and 4294967296 for a = 4294967296; the same
+// with 9223372036854775807, -9223372036854775808 and 4611686018427387903 for a = INT64_MAX; NULL
+// throughout for a NULL row.
+TEST_CASE("runtime: a compound of bitwise arms reads the whole int64 back") {
+    const std::vector<std::string> statements{
+        generate("SELECT a | 0 UNION SELECT a & -1;"),
+        generate("SELECT ~a UNION ALL SELECT a << 1;"),
+        generate("SELECT a >> 1 INTERSECT SELECT a >> 1;"),
+        generate("SELECT a | 0 EXCEPT SELECT 0 & 1;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(union_(select(as_optional(cast<int64_t>(c(&User::a) | 0))), "
+                "select(as_optional(cast<int64_t>(c(&User::a) & -1)))));",
+                "auto rows = storage.select(union_all(select(as_optional(cast<int64_t>(~c(&User::a)))), "
+                "select(as_optional(cast<int64_t>(c(&User::a) << 1)))));",
+                "auto rows = storage.select(intersect(select(as_optional(cast<int64_t>(c(&User::a) >> 1))), "
+                "select(as_optional(cast<int64_t>(c(&User::a) >> 1)))));",
+                "auto rows = storage.select(except(select(as_optional(cast<int64_t>(c(&User::a) | 0))), "
+                "select(as_optional(cast<int64_t>(c(0) & 1)))));",
+            });
+    REQUIRE(selectedValues(statements, "int64_t", "4294967296") ==
+            std::vector<std::string>{"4294967296", "-4294967297", "2147483648", "4294967296"});
+    REQUIRE(selectedValues(statements, "int64_t", "9223372036854775807") ==
+            std::vector<std::string>{"9223372036854775807",
+                                     "-9223372036854775808",
+                                     "4611686018427387903",
+                                     "9223372036854775807"});
+    REQUIRE(selectedValues(statements, "std::optional<int64_t>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL"});
+}
+
 // The arms left alone still compile, which is the whole reason they are left alone: an
 // `std::optional<double>` beside the `std::optional<int>` a nullable column carries has no common
 // type, and one beside the `std::optional<int>` an `&` comes out as has none either. What the first

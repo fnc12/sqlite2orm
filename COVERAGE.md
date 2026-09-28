@@ -250,16 +250,20 @@ Statuses:
 A result column of a compound SELECT is widened to `as_optional` the way a plain SELECT's is, and
 widened in every branch at once: sqlite_orm reads a compound back through `std::common_type` of the
 types its branches come out as, so `SELECT a + 1 FROM users UNION SELECT a * 2 FROM users` now reads
-a NULL row back as an empty optional rather than as 0.
+a NULL row back as an empty optional rather than as 0. The `cast<int64_t>` a plain SELECT puts on a
+bitwise result column follows the same rule: when every branch of a column is a bitwise operator,
+every branch is cast and they move from `int` to `int64_t` together, so
+`SELECT a | 0 FROM users UNION SELECT a & -1 FROM users` over `a = 4294967296` reads back 4294967296
+rather than 0.
 
 What is still `[~]`: the widening needs one common type across the branches, so branches whose types
 differ — `SELECT a & 1 FROM users UNION SELECT a + 1 FROM users`, where sqlite_orm types `&` as
 `int` and `+` as `double` — are left as written and still read a NULL row back as 0. Widening one of
 them alone is what has no common type at all (`std::optional<int>` beside an
 `std::optional<double>`), and the generated code would stop compiling. A branch whose type only the
-schema knows — a column reference, a call, a literal — is left alone for the same reason. The
-`cast<int64_t>` a plain SELECT puts on a bitwise result column is not placed in a branch either, so
-a compound of bitwise branches is still read back through `int`. A subquery in a branch changes
+schema knows — a column reference, a call, a literal — is left alone for the same reason, and so is
+the CAST of a bitwise branch beside it: `SELECT a | 0 FROM users UNION SELECT 1` is still read back
+through `int`. A subquery in a branch changes
 none of this — `SELECT a FROM t UNION SELECT (SELECT b FROM u LIMIT 1)` builds — and branches whose
 types differ fail with or without one: `SELECT a FROM t UNION SELECT sum(b) FROM u` and the same
 `sum(b)` inside a subquery both stop at `static_assert(… "Compound select statements must return a

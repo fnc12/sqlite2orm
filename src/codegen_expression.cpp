@@ -487,20 +487,6 @@ namespace sqlite2orm {
             return false;
         };
         if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
-            if (binaryOp->binaryOperator == BinaryOperator::isOp || binaryOp->binaryOperator == BinaryOperator::isNot ||
-                binaryOp->binaryOperator == BinaryOperator::isDistinctFrom ||
-                binaryOp->binaryOperator == BinaryOperator::isNotDistinctFrom) {
-                std::string message = "binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                                      "is not supported in sqlite_orm";
-                this->context.accumulatedErrors.push_back(message);
-                // The error already stops the whole statement from being generated, but the
-                // placeholder goes through the same funnel as every other one: what stands in the
-                // code says where it came from, whichever channel carries it out.
-                return unsupportedPlaceholder(this->context,
-                                              "unsupported IS expression",
-                                              std::move(message),
-                                              *binaryOp);
-            }
             const int matchesBeforeLeft = this->context.generatedMatchCount;
             auto leftResult = this->coordinator.generateNode(*binaryOp->lhs);
             const int matchesBeforeRight = this->context.generatedMatchCount;
@@ -732,8 +718,11 @@ namespace sqlite2orm {
             // The JSON arrows have no C++ operator spelling at all — they are generated as a
             // `json_extract()` call — so the call is the only form they offer either, and neither
             // does an OR with an operand kept literal.
+            // The IS family has no C++ operator either: sqlite_orm spells it `is()`, `is_not()`,
+            // `is_distinct_from()` and `is_not_distinct_from()` only.
+            const bool hasNoOperatorSpelling = binaryOperatorString(binaryOp->binaryOperator).empty();
             const bool onlyCallSpellingCompiles =
-                needsCallSpelling || operandsBecomeCallArguments || orOperandKeptLiteral;
+                needsCallSpelling || operandsBecomeCallArguments || orOperandKeptLiteral || hasNoOperatorSpelling;
             if (onlyCallSpellingCompiles) {
                 chosenExprVal = "functional";
                 emittedExpr = functionalCode;
@@ -784,8 +773,9 @@ namespace sqlite2orm {
             }
 
             // Only a comparison reads the affinity of its operands, so only there does dropping a
-            // unary plus over a column change what SQLite answers. The operands are reported in
-            // the order they are written in.
+            // unary plus over a column change what SQLite answers. The IS family is one: a TEXT
+            // column `t` holding '1' answers `t IS 1` with 1 and `+t IS 1` with 0. The operands are
+            // reported in the order they are written in.
             switch (binaryOp->binaryOperator) {
                 case BinaryOperator::equals:
                 case BinaryOperator::notEquals:
@@ -793,6 +783,10 @@ namespace sqlite2orm {
                 case BinaryOperator::lessOrEqual:
                 case BinaryOperator::greaterThan:
                 case BinaryOperator::greaterOrEqual:
+                case BinaryOperator::isOp:
+                case BinaryOperator::isNot:
+                case BinaryOperator::isDistinctFrom:
+                case BinaryOperator::isNotDistinctFrom:
                     for (const AstNode* operand: {binaryOp->lhs.get(), binaryOp->rhs.get()}) {
                         if (auto warning = comparisonUnaryPlusAffinityWarning(*operand)) {
                             binWarnings.push_back(std::move(*warning));
@@ -816,6 +810,11 @@ namespace sqlite2orm {
 
             if (castPredicateOperand) {
                 this->context.recordComment(sourceSpanComment(kCommentPredicateGroupingCast, *castPredicateOperand));
+            }
+            if (binaryOp->binaryOperator == BinaryOperator::isDistinctFrom ||
+                binaryOp->binaryOperator == BinaryOperator::isNotDistinctFrom) {
+                // The spelling is the whole expression's, operator and operands together.
+                this->context.recordComment(sourceSpanComment(kCommentDistinctFromSqliteVersion, *binaryOp));
             }
             if (keptLiteralOperand) {
                 this->context.recordComment(sourceSpanComment(kCommentOrMatchLiteralKept, *keptLiteralOperand));

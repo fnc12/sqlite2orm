@@ -789,6 +789,15 @@ namespace sqlite2orm {
         "requested context`. The `literal_holder` is serialized into the SQL as written, and `c()` "
         "hands it to `or_()`, which is the only spelling that keeps it.";
 
+    const std::string kCommentDistinctFromSqliteVersion =
+        "`IS DISTINCT FROM` is generated as `is_distinct_from(left, right)` and `IS NOT DISTINCT "
+        "FROM` as `is_not_distinct_from(left, right)`, which sqlite_orm declares only where the "
+        "sqlite3.h it is built against is SQLite 3.39.0 or newer (`SQLITE_VERSION_NUMBER >= "
+        "3039000`): the release that added the operator, so no older SQLite accepts the statement "
+        "either. Built against older headers the calls do not compile, and `is_not(left, right)` "
+        "and `is(left, right)` are the same comparisons — SQLite defines `IS DISTINCT FROM` as "
+        "`IS NOT` and `IS NOT DISTINCT FROM` as `IS`.";
+
     const std::string kCommentTableReflection =
         "The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and "
         "their constraints are read off the struct's members and `[[= …]]` annotations, and the "
@@ -1027,10 +1036,13 @@ namespace sqlite2orm {
             case BinaryOperator::shiftRight:
                 return "bitwise_shift_right";
             case BinaryOperator::isOp:
+                return "is";
             case BinaryOperator::isNot:
+                return "is_not";
             case BinaryOperator::isDistinctFrom:
+                return "is_distinct_from";
             case BinaryOperator::isNotDistinctFrom:
-                return {};
+                return "is_not_distinct_from";
             // Both arrows are read back through the same call, which spells the result type
             // `functionCallResultTypeArgument` names for it and looks up the path
             // `jsonArrowPathExpansion` expands their right operand into.
@@ -1073,7 +1085,8 @@ namespace sqlite2orm {
             case BinaryOperator::logicalOr:
             case BinaryOperator::concatenate:
                 return 15;
-            // json_extract() is a call, and an IS operator never reaches an emitted operator at all.
+            // json_extract() is a call, and so is every operator of the IS family: `is()`, `is_not()`,
+            // `is_distinct_from()` and `is_not_distinct_from()` are the only spellings sqlite_orm has.
             case BinaryOperator::jsonArrow:
             case BinaryOperator::jsonArrow2:
             case BinaryOperator::isOp:
@@ -1953,8 +1966,12 @@ namespace sqlite2orm {
                 case BinaryOperator::lessOrEqual:
                 case BinaryOperator::greaterThan:
                 case BinaryOperator::greaterOrEqual:
+                case BinaryOperator::isOp:
+                case BinaryOperator::isNot:
+                case BinaryOperator::isDistinctFrom:
+                case BinaryOperator::isNotDistinctFrom:
                 case BinaryOperator::logicalAnd:
-                    // A comparison is a `binary_condition`, `&&` an `and_condition_t`.
+                    // A comparison and an IS are a `binary_condition`, `&&` an `and_condition_t`.
                     return true;
                 case BinaryOperator::logicalOr:
                     // An OR is an `or_condition_t` either way: `or_()` builds one whatever its operands
@@ -1962,7 +1979,7 @@ namespace sqlite2orm {
                     return true;
                 default:
                     // The arithmetic, bitwise and concatenation operators build a `binary_operator`,
-                    // the JSON arrows a `json_extract()` call, and an IS never reaches codegen.
+                    // and the JSON arrows a `json_extract()` call.
                     return false;
             }
         }
@@ -3618,8 +3635,8 @@ namespace sqlite2orm {
                     case BinaryOperator::isNot:
                     case BinaryOperator::isDistinctFrom:
                     case BinaryOperator::isNotDistinctFrom:
-                        // Not generated as a C++ binary operator, and never reaching codegen at all:
-                        // the validator rejects the IS family.
+                        // `NULL IS 1` is 0, not NULL: the IS family compares NULL rather than
+                        // propagates it, so it answers 0 or 1 whatever its operands are.
                         return false;
                     default:
                         // The JSON arrows are generated as a `json_extract<std::string>()` call, whose
@@ -3765,13 +3782,12 @@ namespace sqlite2orm {
                 case BinaryOperator::greaterOrEqual:
                 case BinaryOperator::logicalAnd:
                 case BinaryOperator::logicalOr:
-                    return "bool";
+                // `is_t` and the rest of the IS family are a `binary_condition<…, bool>` too.
                 case BinaryOperator::isOp:
                 case BinaryOperator::isNot:
                 case BinaryOperator::isDistinctFrom:
                 case BinaryOperator::isNotDistinctFrom:
-                    // The validator rejects the IS family, so none of them reaches codegen.
-                    return std::nullopt;
+                    return "bool";
             }
             return std::nullopt;
         }
@@ -3849,9 +3865,9 @@ namespace sqlite2orm {
                 // Where no type can be named here — a call, whose type the function and its
                 // arguments decide — an arm spelling the same expression over the same sources is
                 // generated as the same code, and so comes out as the same type whatever it is.
-                const bool sameType = cppType ? generatedResultColumnCppType(columnExpression) == cppType
-                                              : arm->fromClause == leadingArm.fromClause &&
-                                                    columnExpression == leadingExpression;
+                const bool sameType =
+                    cppType ? generatedResultColumnCppType(columnExpression) == cppType
+                            : arm->fromClause == leadingArm.fromClause && columnExpression == leadingExpression;
                 if (!sameType) {
                     sameTypeEverywhere = false;
                     break;

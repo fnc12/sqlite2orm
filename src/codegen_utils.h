@@ -144,6 +144,7 @@ namespace sqlite2orm {
     extern const std::string kCommentBitwiseResultCast;
     extern const std::string kCommentOrTokenCallSpelling;
     extern const std::string kCommentOrMatchLiteralKept;
+    extern const std::string kCommentDistinctFromSqliteVersion;
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;

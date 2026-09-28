@@ -72,6 +72,17 @@ namespace {
         "spelled `c(1) or 0` runs as `1 || 0` and answers '10', and `(a = 1) || 'x'` spelled "
         "`c(&T::a) == 1 || \"x\"` runs as `(a = 1) OR 'x'`. The call names the node it builds.";
 
+    // The hint attached to every IS [NOT] DISTINCT FROM; asserted on its own in
+    // "codegen: IS [NOT] DISTINCT FROM carries its SQLite version comment".
+    const std::string kDistinctFromSqliteVersionComment =
+        "`IS DISTINCT FROM` is generated as `is_distinct_from(left, right)` and `IS NOT DISTINCT "
+        "FROM` as `is_not_distinct_from(left, right)`, which sqlite_orm declares only where the "
+        "sqlite3.h it is built against is SQLite 3.39.0 or newer (`SQLITE_VERSION_NUMBER >= "
+        "3039000`): the release that added the operator, so no older SQLite accepts the statement "
+        "either. Built against older headers the calls do not compile, and `is_not(left, right)` "
+        "and `is(left, right)` are the same comparisons — SQLite defines `IS DISTINCT FROM` as "
+        "`IS NOT` and `IS NOT DISTINCT FROM` as `IS`.";
+
     // The hint attached to the constant an OR keeps in the SQL beside a MATCH; asserted on its own
     // in "codegen: an OR keeping a constant beside a MATCH carries its comment".
     const std::string kOrMatchLiteralKeptComment =
@@ -2325,39 +2336,97 @@ TEST_CASE("codegen: prefix - CASE with int return type") {
             "case_<int>().when(c(&User::a) > 0, then(1)).else_(0).end()");
 }
 
-TEST_CASE("codegen: IS expr returns error") {
-    REQUIRE(generateFull("SELECT 1 IS 2 FROM users;") == CodeGenResult{{},
-                                                                       {},
-                                                                       {},
-                                                                       {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                                                                        "is not supported in sqlite_orm"}});
+// sqlite_orm has no C++ operator for the IS family, only `is()`, `is_not()`, `is_distinct_from()`
+// and `is_not_distinct_from()`, so the call is the only spelling offered, as it is for the JSON
+// arrows. Each of them is a `binary_condition`, serialized as the operator it was written with.
+TEST_CASE("codegen: IS is generated as is()") {
+    REQUIRE(generateFull("a IS b") ==
+            CodeGenResult{"is(&User::a, &User::b)",
+                          {
+                              columnRefStyleDp(1, "&User::a"),
+                              columnRefStyleDp(2, "&User::b"),
+                              DecisionPoint{3,
+                                            "expr_style",
+                                            "functional",
+                                            "is(&User::a, &User::b)",
+                                            {
+                                                Option{"functional", "is(&User::a, &User::b)", "functional style"},
+                                            }},
+                          }});
 }
 
-TEST_CASE("codegen: IS NOT expr returns error") {
-    REQUIRE(generateFull("SELECT 1 IS NOT 2 FROM users;") ==
-            CodeGenResult{{},
-                          {},
-                          {},
-                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                           "is not supported in sqlite_orm"}});
+TEST_CASE("codegen: every operator of the IS family is spelled as its call") {
+    REQUIRE(generate("a IS 5") == "is(&User::a, 5)");
+    REQUIRE(generate("a IS NOT b") == "is_not(&User::a, &User::b)");
+    REQUIRE(generate("a IS DISTINCT FROM b") == "is_distinct_from(&User::a, &User::b)");
+    REQUIRE(generate("a IS NOT DISTINCT FROM b") == "is_not_distinct_from(&User::a, &User::b)");
+    REQUIRE(generate("1 IS 2") == "is(1, 2)");
+    REQUIRE(generate("'x' IS b") == R"(is("x", &User::b))");
+    // A NULL operand is the one spelling of IS [NOT] NULL the parser does not take over itself,
+    // and `nullptr` is what sqlite_orm binds as NULL.
+    REQUIRE(generate("a IS NOT DISTINCT FROM NULL") == "is_not_distinct_from(&User::a, nullptr)");
+    REQUIRE(generate("a IS NULL") == "is_null(&User::a)");
+    REQUIRE(generate("a IS NOT NULL") == "is_not_null(&User::a)");
 }
 
-TEST_CASE("codegen: IS DISTINCT FROM returns error") {
-    REQUIRE(generateFull("SELECT a IS DISTINCT FROM b FROM t;") ==
-            CodeGenResult{{},
-                          {},
-                          {},
-                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                           "is not supported in sqlite_orm"}});
+// The call takes its arguments as they are generated, never `c()`-quoted on their own: sqlite_orm
+// has no serializer for a bare `quoted_expression_t`, so `is(&User::a, c(0))` does not compile.
+// An operator over a quoted leaf unwraps the quote itself, which is why `c(0) - 1` is an argument
+// it takes. sqlite3 3.51 answers `SELECT 0 IS 0 - 1` with 0, `SELECT 7 IS NULL - 1` with 0 and
+// `SELECT (1 + 1) IS 2` with 1, and the generated calls serialize as `0 IS (0 - 1)`,
+// `"a" IS (NULL - 1)` and `(1 + 1) IS 2`.
+TEST_CASE("codegen: an IS operand is handed to the call as it is generated") {
+    REQUIRE(generate("0 IS 0 - 1") == "is(0, c(0) - 1)");
+    REQUIRE(generate("a IS a - 1") == "is(&User::a, c(&User::a) - 1)");
+    REQUIRE(generate("a IS NULL - 1") == "is(&User::a, c(nullptr) - 1)");
+    REQUIRE(generate("a IS NOT NULL - 1") == "is_not(&User::a, c(nullptr) - 1)");
+    REQUIRE(generate("1 + 1 IS 2") == "is(c(1) + 1, 2)");
+    REQUIRE(generate("-a IS 1") == "is((c(0) - c(&User::a)), 1)");
+    REQUIRE(generate("a IS (SELECT 1)") == "is(&User::a, select(1))");
 }
 
-TEST_CASE("codegen: IS NOT DISTINCT FROM returns error") {
-    REQUIRE(generateFull("SELECT a IS NOT DISTINCT FROM b FROM t;") ==
-            CodeGenResult{{},
-                          {},
-                          {},
-                          {"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                           "is not supported in sqlite_orm"}});
+// IS binds as loosely as `=`, and sqlite_orm parenthesizes a `binary_condition` operand but not a
+// predicate: `in(is(1, &User::a), {1, 2})` is right as it is — sqlite3 3.51 reads
+// `1 IS a IN (1, 2)` as `(1 IS a) IN (1, 2)` — while an IN on the right of an IS needs the CAST
+// that delimits it, or `1 IS "a" IN (1, 2)` would be read back the other way.
+TEST_CASE("codegen: an IS keeps the grouping it was parsed with") {
+    REQUIRE(generate("1 IS a IN (1, 2)") == "in(is(1, &User::a), {1, 2})");
+    REQUIRE(generate("1 IS (a IN (1, 2))") == "is(1, cast<int64_t>(in(&User::a, {1, 2})))");
+    REQUIRE(generate("a IN (1, 2) IS 1") == "is(in(&User::a, {1, 2}), 1)");
+    REQUIRE(generate("(a IS b) IS 1") == "is(is(&User::a, &User::b), 1)");
+    REQUIRE(generate("a IS b = 1") == "is(&User::a, &User::b) == 1");
+    REQUIRE(generate("1 = (a IS b)") == "c(1) == is(&User::a, &User::b)");
+    REQUIRE(generate("NOT a IS b") == "not (is(&User::a, &User::b))");
+}
+
+// An IS is a condition to sqlite_orm, so an AND and an OR over one take the operator spelling, and a
+// concatenation over one needs the call: `is(…) || "x"` would be the OR.
+TEST_CASE("codegen: an IS is a condition to the operators around it") {
+    REQUIRE(generate("a IS b AND b IS NOT 1") == "is(&User::a, &User::b) and is_not(&User::b, 1)");
+    REQUIRE(generate("a IS b OR 1") == "is(&User::a, &User::b) or 1");
+    REQUIRE(generate("(a IS b) || 'x'") == R"(conc(is(&User::a, &User::b), "x"))");
+}
+
+// `NULL IS 1` is 0, not NULL: the IS family compares NULL rather than propagates it, so its result
+// column is read back as the `bool` of the `binary_condition` with no `as_optional()` — unlike the
+// `=` beside it, which answers NULL over a NULL column.
+TEST_CASE("codegen: an IS result column is never NULL") {
+    REQUIRE(generate("SELECT a IS b, a = b, a IS NOT DISTINCT FROM b FROM users;") ==
+            "auto rows = storage.select(columns(is(&Users::a, &Users::b), as_optional(c(&Users::a) == &Users::b), "
+            "is_not_distinct_from(&Users::a, &Users::b)));");
+}
+
+// sqlite_orm declares the DISTINCT FROM calls only against the headers of SQLite 3.39.0 or newer,
+// the release that added the operator — sqlite3 3.38.5 refuses `SELECT 1 IS DISTINCT FROM 2` with
+// `near "distinct": syntax error`. The hint says so, together with the calls that stand for them
+// against older headers; IS and IS NOT carry none.
+TEST_CASE("codegen: IS [NOT] DISTINCT FROM carries its SQLite version comment") {
+    REQUIRE(generateFull("a IS DISTINCT FROM b").comments ==
+            std::vector<CodegenComment>{CodegenComment{kDistinctFromSqliteVersionComment, SourceLocation{1, 1}, 20}});
+    REQUIRE(generateFull("a IS NOT DISTINCT FROM NULL").comments ==
+            std::vector<CodegenComment>{CodegenComment{kDistinctFromSqliteVersionComment, SourceLocation{1, 1}, 27}});
+    REQUIRE(generateFull("a IS b").comments.empty());
+    REQUIRE(generateFull("a IS NOT b").comments.empty());
 }
 
 // `->` answers the JSON text of the value at the path — a string comes back quoted, `true` comes

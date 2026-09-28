@@ -126,6 +126,13 @@ TEST_CASE("COVERAGE.md quotes the CASE branch the type inference still reads thr
                              "SQLite answers `7x`") == 1);
 }
 
+// The IS NULL row quotes what a NULL under an operator on the right of an IS is generated as: a
+// binary IS, not `is_null()`. The fixture names the struct `User`, the row names it `T`.
+TEST_CASE("COVERAGE.md quotes the code the generator emits for an IS over NULL - 1") {
+    REQUIRE(generate("a IS NULL - 1") == "is(&User::a, c(nullptr) - 1)");
+    REQUIRE(countOccurrences(readCoverage(), "`is(&T::a, c(nullptr) - 1)`") == 1);
+}
+
 // Every row that describes one of the four gaps reported in fnc12/sqlite_orm#1543 links it, so a
 // reader who hits the gap reaches the upstream report from wherever this file mentions it: the
 // `OR` row, the UNIQUE index over an expression, `json_extract`, `json_quote` and the PRAGMA row

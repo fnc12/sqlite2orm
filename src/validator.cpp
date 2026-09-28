@@ -41,18 +41,6 @@ namespace sqlite2orm {
             auto operandErrors = validate(*unaryOp->operand);
             errors.insert(errors.end(), operandErrors.begin(), operandErrors.end());
         } else if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&astNode)) {
-            if (binaryOp->binaryOperator == BinaryOperator::isOp || binaryOp->binaryOperator == BinaryOperator::isNot) {
-                errors.push_back(ValidationError{"binary IS / IS NOT is not supported in sqlite_orm "
-                                                 "(only is_null / is_not_null for NULL checks)",
-                                                 binaryOp->location,
-                                                 "BinaryOperatorNode"});
-            }
-            if (binaryOp->binaryOperator == BinaryOperator::isDistinctFrom ||
-                binaryOp->binaryOperator == BinaryOperator::isNotDistinctFrom) {
-                errors.push_back(ValidationError{"IS [NOT] DISTINCT FROM is not supported in sqlite_orm",
-                                                 binaryOp->location,
-                                                 "BinaryOperatorNode"});
-            }
             auto lhsErrors = validate(*binaryOp->lhs);
             errors.insert(errors.end(), lhsErrors.begin(), lhsErrors.end());
             auto rhsErrors = validate(*binaryOp->rhs);

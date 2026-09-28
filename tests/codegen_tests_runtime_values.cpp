@@ -834,6 +834,40 @@ TEST_CASE("runtime: an operator over a NULL test needs no widening to keep its v
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"1"});
 }
 
+// The IS family used to be refused outright, and the calls it is generated as now have to compile
+// and answer what SQLite answers. An argument goes into the call as it is generated — `c(0) - 1` is
+// one sqlite_orm unwraps, a bare `c(0)` is not — and an IN on the right of an IS is delimited by
+// its CAST. Both expected rows checked against sqlite3 3.51 over `users(a INTEGER)` holding NULL
+// first and 7 second: an IS answers 0 or 1 over a NULL, never NULL.
+TEST_CASE("runtime: an IS answers what SQLite answers") {
+    const std::vector<std::string> statements{
+        generate("SELECT a IS NULL - 1;"),
+        generate("SELECT a IS NOT NULL - 1;"),
+        generate("SELECT a IS a - 1;"),
+        generate("SELECT 0 IS 0 - 1;"),
+        generate("SELECT a IS NOT DISTINCT FROM NULL;"),
+        generate("SELECT a IS DISTINCT FROM 7;"),
+        generate("SELECT 1 IS (a IN (1, 7));"),
+        generate("SELECT NOT a IS 7;"),
+        generate("SELECT (a IS 7) = 1;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(is(&User::a, c(nullptr) - 1));",
+                              "auto rows = storage.select(is_not(&User::a, c(nullptr) - 1));",
+                              "auto rows = storage.select(is(&User::a, c(&User::a) - 1));",
+                              "auto rows = storage.select(is(0, c(0) - 1));",
+                              "auto rows = storage.select(is_not_distinct_from(&User::a, nullptr));",
+                              "auto rows = storage.select(is_distinct_from(&User::a, 7));",
+                              "auto rows = storage.select(is(1, cast<int64_t>(in(&User::a, {1, 7}))));",
+                              "auto rows = storage.select(not (is(&User::a, 7)));",
+                              "auto rows = storage.select(is(&User::a, 7) == 1);",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"1", "0", "1", "0", "1", "1", "0", "1", "0"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"0", "1", "0", "0", "0", "0", "1", "0", "1"});
+}
+
 // sqlite_orm serializes IN, BETWEEN, LIKE, GLOB, MATCH, IS [NOT] NULL and NOT without parentheses,
 // and SQLite binds those looser than the operator around them, so `c(1) - is_null(&User::a)` was
 // read back as `(1 - a) IS NULL` — one C++ term, another SQL expression, and no complaint from

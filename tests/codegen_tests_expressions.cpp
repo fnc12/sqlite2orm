@@ -1186,6 +1186,9 @@ TEST_CASE("codegen: an AND or an OR quotes an operand sqlite_orm does not recogn
     }
     SECTION("a window call and a FILTERed aggregate") {
         REQUIRE(generate("(row_number() OVER ()) OR a") == "or_(c(row_number().over()), &User::a)");
+        // A window function written without OVER is still generated as its own aggregate type:
+        // SQLite rejects the statement, and the generated code compiles all the same.
+        REQUIRE(generate("row_number() AND a") == "c(row_number()) and &User::a");
         REQUIRE(generate("(count(a) FILTER (WHERE a > 0)) AND (a + 1)") ==
                 "c(count(&User::a).filter(where(c(&User::a) > 0))) and c(&User::a) + 1");
     }
@@ -1227,6 +1230,42 @@ TEST_CASE("codegen: an AND or an OR quotes an operand sqlite_orm does not recogn
     }
 }
 
+TEST_CASE("codegen: an AND or an OR leaves an operator argument beside an unrecognized operand bare") {
+    SECTION("a CASE") {
+        REQUIRE(generate("(CASE WHEN a THEN 1 ELSE 2 END) AND a") ==
+                "case_<int>().when(&User::a, then(1)).else_(2).end() and &User::a");
+    }
+    SECTION("a JSON arrow, generated as a `json_extract()` call") {
+        REQUIRE(generate("(a ->> '$.x') AND a") == R"(json_extract<std::string>(&User::a, "$.x") and &User::a)");
+    }
+    SECTION("a NEW, an OLD and an EXCLUDED reference") {
+        REQUIRE(generate("CREATE TRIGGER tr AFTER UPDATE ON t BEGIN UPDATE t SET b = NEW.a + 1 AND OLD.b; END;") ==
+                "make_trigger(\"tr\", after().update().on<T>().begin(update_all(set(c(&T::b) = "
+                "c(new_(&T::a)) + 1 and old(&T::b)))));");
+        REQUIRE(generate("CREATE TRIGGER tr AFTER UPDATE ON t BEGIN UPDATE t SET b = OLD.a + 1 AND NEW.b; END;") ==
+                "make_trigger(\"tr\", after().update().on<T>().begin(update_all(set(c(&T::b) = "
+                "c(old(&T::a)) + 1 and new_(&T::b)))));");
+        REQUIRE(generate("INSERT INTO t(a) VALUES(1) ON CONFLICT(a) DO UPDATE SET b = 1 "
+                         "WHERE excluded.a + 1 AND excluded.b;") ==
+                "storage.insert(into<T>(), columns(&T::a), values(std::make_tuple(1)), "
+                "on_conflict(&T::a).do_update(set(c(&T::b) = 1), where(c(excluded(&T::a)) + 1 and excluded(&T::b))));");
+    }
+    SECTION("a column of a CTE, generated as a column pointer") {
+        REQUIRE(generate("WITH cte AS (SELECT a, b FROM t) SELECT a FROM cte WHERE a AND b + 1;") ==
+                "using namespace sqlite_orm::literals;\n"
+                "using cte_0 = decltype(1_ctealias);\n"
+                "auto rows = storage.with(cte<cte_0>().as(select(columns(&T::a, &T::b))), select(column<cte_0>(&T::a), "
+                "where(column<cte_0>(&T::a) and column<cte_0>(&T::b) + 1)));");
+    }
+    SECTION("a C++20 select alias, generated as an alias moniker") {
+        CodeGenPolicy policy;
+        policy.chosenAlternativeValueByCategory["column_alias_style"] = "cpp20_literal";
+        REQUIRE(generateWithPolicy("SELECT instr(a, 'o') i FROM t WHERE i AND 1;", policy).code ==
+                "constexpr orm_column_alias auto i = \"i\"_col;\n"
+                "auto rows = storage.select(as<i>(as_optional(instr(&T::a, \"o\"))), where(i and 1));");
+    }
+}
+
 TEST_CASE("codegen: an AND or an OR with a quoted operand carries its comment") {
     REQUIRE(generateFull("SELECT a MATCH 'x' OR b MATCH 'y';").comments ==
             std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 8}, 26},
@@ -1238,6 +1277,13 @@ TEST_CASE("codegen: an AND or an OR with a quoted operand carries its comment") 
     // hint.
     REQUIRE(generateFull("SELECT a AND b;").comments.empty());
     REQUIRE(generateFull("SELECT a MATCH 'x' OR b = 1;").comments.empty());
+    // The right-wrapping variant quotes its own leaf operand, so the quote it puts on a literal
+    // beside an unrecognized operand speaks for itself too.
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["expr_style"] = "operator_wrap_right";
+    const CodeGenResult wrapRight = generateWithPolicy("SELECT (a + 1) AND 1 FROM t;", policy);
+    REQUIRE(wrapRight.code == "auto rows = storage.select(as_optional(&T::a + c(1) and c(1)));");
+    REQUIRE(wrapRight.comments.empty());
 }
 
 // sqlite_orm binds every literal, and SQLite runs an OR over a MATCH only where it folds the other

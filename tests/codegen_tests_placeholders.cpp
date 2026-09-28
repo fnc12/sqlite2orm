@@ -843,13 +843,20 @@ TEST_CASE("codegen: a subquery as a whole column of a CTE leaves the statement o
             {},
             {},
             {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 17}, withRequirements, kStatementNotGenerated}});
-    // The card's own input, where the subquery carries a NATURAL JOIN of its own.
-    REQUIRE(
-        generateFull("WITH c AS (SELECT (SELECT u.b FROM u NATURAL JOIN w) AS y) SELECT a FROM t") ==
-        CodeGenResult{
-            {},
-            {},
-            {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 34}, withRequirements, kStatementNotGenerated}});
+    // The card's own input, where the subquery carries a NATURAL JOIN of its own. The CTE body has
+    // no FROM of its own, and sqlite_orm would give it the tables of that subquery for one, so it
+    // is underlined too.
+    REQUIRE(generateFull("WITH c AS (SELECT (SELECT u.b FROM u NATURAL JOIN w) AS y) SELECT a FROM t") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{cteColumnMessage, SourceLocation{1, 19}, 34},
+                           CodegenWarning{"a SELECT with no FROM that names a table is not mapped to sqlite_orm: a "
+                                          "select(...) with no from<...>() gets a FROM of every table its code "
+                                          "names, and there is no form of it that has none",
+                                          SourceLocation{1, 12},
+                                          46},
+                           withRequirements,
+                           kStatementNotGenerated}});
 
     // The same subquery inside the column, under a call or a CAST, is generated and builds.
     REQUIRE(generate("WITH c AS (SELECT abs((SELECT b FROM u)) AS y FROM t) SELECT * FROM c") ==

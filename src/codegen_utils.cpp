@@ -3645,13 +3645,10 @@ namespace sqlite2orm {
                 if (nestedSelect->fromClause.empty()) {
                     // A select with no FROM of its own names no scope: every reference in it is
                     // correlated and read over the scope around it, which is the scope this stands
-                    // in — `SELECT (SELECT coalesce(b, c)) FROM t` comes out as
-                    // `select(coalesce<std::string>(&T::b, &T::c))`, the same bytes the form with
-                    // `FROM t` written out comes out as. Swapping the resolver for a scope that
-                    // names nothing answered `nullptr` for every reference, so the spelled result
-                    // type went unseen and the call stayed on the already-nullable list: the
-                    // wrapping form got its `as_optional` and this one did not, reading the NULL of
-                    // a `coalesce<std::string>` back as the empty string.
+                    // in. Swapping the resolver for a scope that names nothing answered `nullptr`
+                    // for every reference, so a spelled result type went unseen. Such a select is
+                    // generated only where it names no table — one that does has no sqlite_orm
+                    // form and leaves the statement out — so the answer matters for its constants.
                     return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, resolveColumn);
                 }
                 const SelectScopeColumns nestedScope(*nestedSelect, context);

@@ -52,6 +52,7 @@ add_library(sqlite2orm_lib
     src/code_span_builder.cpp
     src/codegen_forms.cpp
     src/select_scope_columns.cpp
+    src/expression_subquery_scope.cpp
     src/codegen_context.cpp
     src/codegen_expression.cpp
     src/codegen_select.cpp

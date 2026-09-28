@@ -1714,36 +1714,81 @@ TEST_CASE("runtime: an integer beside a REAL is read back through text without r
                            "9007199254740993") == std::vector<std::string>{"9.0072e+15"});
 }
 
-// A subquery with no FROM clause of its own reads its references over the scope around it, which
-// is where the emitter writes them too, so the call in it spells its result type exactly as the
-// same call spells it under a FROM written out — and the result column is widened around it just
-// the same. Left unwidened, the spelled `std::string` read the NULL back as the empty string:
-// sqlite3 3.51 answers NULL for `(SELECT nullif(a, 1))` over a row holding NULL, and NULLIF
-// answers NULL for a NULL first argument. The second statement is the counterfactual — the very
+// A call in a subquery over a FROM of its own spells its result type, and the result column is
+// widened around it: left unwidened, the spelled `std::string` read the NULL back as the empty
+// string. sqlite3 3.51 answers NULL for `(SELECT nullif(a, 1) FROM user)` over a row holding NULL,
+// and NULLIF answers NULL for a NULL first argument. The last statement is the counterfactual — the
 // code the missing widening generated — and it prints the empty line the value came back as.
-TEST_CASE("runtime: a subquery with no FROM of its own reads its NULL back") {
+TEST_CASE("runtime: a subquery with a FROM of its own reads its NULL back") {
     const std::vector<std::string> statements{
-        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT nullif(a, 1)) FROM user;").code,
         generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT nullif(a, 1) FROM user) FROM user;").code,
-        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT coalesce(a, 1)) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a TEXT); SELECT (SELECT coalesce(a, 1) FROM user) FROM user;").code,
     };
-    // The form with the FROM spelled out generates the same bytes: the scope is the same one.
     REQUIRE(statements ==
             std::vector<std::string>{
-                "auto rows = storage.select(as_optional(select(nullif<std::string>(&User::a, 1))), from<User>());",
                 "auto rows = storage.select(as_optional(select(nullif<std::string>(&User::a, 1))), from<User>());",
                 "auto rows = storage.select(as_optional(select(coalesce<std::string>(&User::a, 1))), from<User>());",
             });
     REQUIRE(selectedValues(statements, "std::optional<std::string>", "std::nullopt") ==
-            std::vector<std::string>{"NULL", "NULL", "1"});
-    REQUIRE(selectedValues(statements, "std::optional<std::string>", "\"hi\"") ==
-            std::vector<std::string>{"hi", "hi", "hi"});
+            std::vector<std::string>{"NULL", "1"});
+    REQUIRE(selectedValues(statements, "std::optional<std::string>", "\"hi\"") == std::vector<std::string>{"hi", "hi"});
 
     // What the same statement read back without the widening hands the caller: an empty string
     // where the row held NULL, and nothing says so.
     REQUIRE(selectedValues({"auto rows = storage.select(select(nullif<std::string>(&User::a, 1)), from<User>());"},
                            "std::optional<std::string>",
                            "std::nullopt") == std::vector<std::string>{""});
+}
+
+// A select with no FROM of its own that names a table is left out, because the code sqlite_orm has
+// for it reads something else. Over `users` holding 1, 2 and 3, sqlite3 3.51 answers
+// `SELECT (SELECT a) FROM users` with 1,2,3, `SELECT (SELECT count(*) FROM users)` with the single
+// row 3, and `SELECT a FROM users WHERE EXISTS (SELECT a WHERE a > 1)` with 2,3. The code generated
+// for them before — the counterfactuals below — gives each select the FROM its code names, and
+// reads the first row for every row, the count once per row, and every row. The two statements
+// that stay generated are the forms that do name a FROM, and they read what sqlite3 reads.
+TEST_CASE("runtime: a subquery with no FROM of its own is left out rather than read off the first row") {
+    REQUIRE(generate("SELECT (SELECT a) FROM users;").empty());
+    REQUIRE(generate("SELECT (SELECT count(*) FROM users);") == "/* SELECT without FROM */");
+    REQUIRE(generate("SELECT a FROM users WHERE EXISTS (SELECT a WHERE a > 1);").empty());
+
+    const std::vector<std::string> statements{
+        generate("SELECT (SELECT a FROM users) FROM users;"),
+        generate("SELECT a FROM users;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(select(&Users::a), from<Users>());",
+                              "auto rows = storage.select(&Users::a);",
+                          });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"1,1,1", "1,2,3"});
+
+    REQUIRE(selectedRowValues({
+                "auto rows = storage.select(select(&Users::a), from<Users>());",
+                "auto rows = storage.select(select(count<Users>()));",
+                "auto rows = storage.select(&Users::a, where(exists(select(&Users::a, where(c(&Users::a) > 1)))));",
+            }) == std::vector<std::string>{"1,1,1", "3,3,3", "1,2,3"});
+}
+
+// The same select in an UPDATE writes rather than reads, and the first row's value went into every
+// row. Over `users` holding 1, 2 and 3, sqlite3 3.51 leaves `UPDATE users SET a = (SELECT a * 10)`
+// with 10,20,30 and `DELETE FROM users WHERE a = (SELECT a WHERE a > 1)` with 1. The code generated
+// for them before — the counterfactuals below — ran as `(SELECT "users"."a" * 10 FROM "users")` and
+// `(SELECT "users"."a" FROM "users" WHERE …)`, and left 10,10,10 and 1,3. The UPDATE over a
+// FROM of its own stays generated and writes what sqlite3 writes, 3,3,3.
+TEST_CASE("runtime: an UPDATE through a subquery with no FROM of its own is left out rather than writing the first "
+          "row everywhere") {
+    REQUIRE(generate("UPDATE users SET a = (SELECT a * 10);").empty());
+    REQUIRE(generate("DELETE FROM users WHERE a = (SELECT a WHERE a > 1);").empty());
+
+    const std::string updateOverOwnFrom = generate("UPDATE users SET a = (SELECT max(a) FROM users);");
+    REQUIRE(updateOverOwnFrom == "storage.update_all(set(c(&Users::a) = select(max(&Users::a))));");
+    REQUIRE(selectedRowValues({updateOverOwnFrom + " auto rows = storage.select(&Users::a);"}) ==
+            std::vector<std::string>{"3,3,3"});
+
+    REQUIRE(selectedRowValues({"storage.update_all(set(c(&Users::a) = select(c(&Users::a) * 10))); auto rows = "
+                               "storage.select(&Users::a);"}) == std::vector<std::string>{"10,10,10"});
+    REQUIRE(selectedRowValues({"storage.remove_all<Users>(where(c(&Users::a) == select(&Users::a, where(c(&Users::a) > "
+                               "1)))); auto rows = storage.select(&Users::a);"}) == std::vector<std::string>{"1,3"});
 }
 
 // A BLOB among the arguments makes the generated type `std::vector<char>` rather than
@@ -1889,15 +1934,15 @@ TEST_CASE("runtime: a scalar subquery result column reads the NULL back") {
         generate("SELECT (SELECT 1 / 0);"),
         generate("SELECT (SELECT 0 * (1e300 * 1e300));"),
         generate("SELECT (SELECT (SELECT 1 / 0));"),
-        generate("SELECT (SELECT a + 1);"),
-        generate("SELECT (SELECT max(a));"),
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT (SELECT a + 1 FROM user) FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER); SELECT (SELECT max(a) FROM user) FROM user;").code,
     };
     REQUIRE(statements == std::vector<std::string>{
                               "auto rows = storage.select(as_optional(select(c(1) / 0)));",
                               "auto rows = storage.select(as_optional(select(c(0) * (c(1e300) * 1e300))));",
                               "auto rows = storage.select(as_optional(select(select(c(1) / 0))));",
-                              "auto rows = storage.select(as_optional(select(c(&User::a) + 1)));",
-                              "auto rows = storage.select(select(max(&User::a)));",
+                              "auto rows = storage.select(as_optional(select(c(&User::a) + 1)), from<User>());",
+                              "auto rows = storage.select(select(max(&User::a)), from<User>());",
                           });
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
             std::vector<std::string>{"NULL", "NULL", "NULL", "8", "7"});

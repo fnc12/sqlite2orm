@@ -36,9 +36,11 @@ namespace sqlite2orm {
                 ctx->emittedTableTypes.clear();
                 ctx->ownEmittedTableTypes.clear();
                 ctx->ownVisibleEmittedTableTypes.clear();
+                ++ctx->selectNestingLevel;
             }
 
             ~EmittedTableTypeScope() {
+                --ctx->selectNestingLevel;
                 ctx->emittedTableTypes.insert(enclosing.begin(), enclosing.end());
                 ctx->ownEmittedTableTypes = std::move(enclosingOwn);
                 ctx->ownVisibleEmittedTableTypes = std::move(enclosingOwnVisible);
@@ -354,6 +356,34 @@ namespace sqlite2orm {
                 }
             }
             return true;
+        }
+
+        constexpr std::string_view kWarningSelectWithoutFromNamesTable =
+            "a SELECT with no FROM that names a table is not mapped to sqlite_orm: a select(...) with "
+            "no from<...>() gets a FROM of every table its code names, and there is no form of it "
+            "that has none";
+
+        /**
+         *  Whether sqlite_orm would give a select that has no FROM clause one of its own. A
+         *  `select(...)` with no `from<...>()` is serialized with a FROM of every recordset its code
+         *  names, a nested select's included, and there is no spelling that leaves the FROM out
+         *  once one is named. `SELECT (SELECT b) FROM t` reads `b` of the row the outer select is
+         *  at; `select(&T::b)` runs as `(SELECT "t"."b" FROM "t")` and answers the first row of the
+         *  table for every row. `SELECT (SELECT count(*) FROM u)` is the same at the top level:
+         *  one row where the table has any, none where it has none.
+         *
+         *  Every mention sqlite_orm sees counts, a nested select's included, because it collects
+         *  those into the FROM as well. Where no statement encloses this one, a column it names itself
+         *  refers to nothing SQLite could resolve, and such a select is left to the FROM sqlite_orm
+         *  infers as before: it is only when the code of this select names no table of its own that
+         *  the mentions come from a query SQLite would run.
+         */
+        bool inferredFromWouldBeInvented(const SelectNode& selectNode, const CodeGeneratorContext& context) {
+            if (!selectNode.fromClause.empty() || context.emittedTableTypes.empty()) {
+                return false;
+            }
+            const bool enclosedByStatement = context.selectNestingLevel > 1u;
+            return enclosedByStatement || context.ownVisibleEmittedTableTypes.empty();
         }
 
         /** The `from<...>()` naming `types`. */
@@ -930,6 +960,16 @@ namespace sqlite2orm {
             appendClause(limitCode);
         }
 
+        if (inferredFromWouldBeInvented(selectNode, this->context)) {
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(selectDecisionPoints);
+            carried.warnings = std::move(selectWarnings);
+            return unsupportedStatementPlaceholder(this->context,
+                                                   "SELECT without FROM",
+                                                   std::string(kWarningSelectWithoutFromNamesTable),
+                                                   selectNode,
+                                                   std::move(carried));
+        }
         const std::string& starRowType = this->context.implicitSingleSourceCteTypedef
                                              ? *this->context.implicitSingleSourceCteTypedef
                                              : this->context.structName;
@@ -1632,6 +1672,19 @@ namespace sqlite2orm {
             tailParts.push_back(std::move(limitPart));
         }
 
+        // A placeholder rather than an empty result: the slots a subquery stands in answer an empty
+        // one differently, and a CTE body answers it with the outer statement generated without
+        // the CTE, where this select is one sqlite_orm has a form for, only not the one it means.
+        if (inferredFromWouldBeInvented(selectNode, this->context)) {
+            CodeGenResult carried;
+            carried.decisionPoints = std::move(subDecisionPoints);
+            carried.warnings = std::move(subWarnings);
+            return unsupportedPlaceholder(this->context,
+                                          "(SELECT ...)",
+                                          std::string(kWarningSelectWithoutFromNamesTable),
+                                          selectNode,
+                                          std::move(carried));
+        }
         // The same single point, with the same criterion, for a subquery: a correlated reference
         // to the enclosing table widens the FROM sqlite_orm infers here just like any other
         // mention, and an alias of its own is lost there just the same.

@@ -2,6 +2,7 @@
 #include "codegen_context.h"
 #include "codegen_forms.h"
 #include "codegen_utils.h"
+#include "expression_subquery_scope.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 #include <sqlite2orm/validator.h>
@@ -1165,8 +1166,11 @@ namespace sqlite2orm {
             return CodeGenResult{code, std::move(decisionPoints), std::move(warnings)};
         } else if (auto* subqueryNode = dynamic_cast<const SubqueryNode*>(&astNode)) {
             bool compoundSubquery = false;
-            auto sub =
-                selectLikeSubqueryForm(this->coordinator, this->context, *subqueryNode->select, compoundSubquery);
+            CodeGenResult sub;
+            {
+                ExpressionSubqueryScope enclosedByStatement{this->context};
+                sub = selectLikeSubqueryForm(this->coordinator, this->context, *subqueryNode->select, compoundSubquery);
+            }
             // A compound form is a statement, and sqlite_orm serializes it without parentheses of
             // its own: `coalesce(union_(…), 1)` comes out as `COALESCE(SELECT … UNION SELECT …, 1)`,
             // which SQLite rejects, and as a result column the compound is what the whole statement
@@ -1202,7 +1206,11 @@ namespace sqlite2orm {
             return CodeGenResult{sub.code, std::move(sub.decisionPoints), std::move(sub.warnings)};
         } else if (auto* existsNode = dynamic_cast<const ExistsNode*>(&astNode)) {
             bool compoundSubquery = false;
-            auto sub = selectLikeSubqueryForm(this->coordinator, this->context, *existsNode->select, compoundSubquery);
+            CodeGenResult sub;
+            {
+                ExpressionSubqueryScope enclosedByStatement{this->context};
+                sub = selectLikeSubqueryForm(this->coordinator, this->context, *existsNode->select, compoundSubquery);
+            }
             // `exists()` writes its argument bare — `EXISTS SELECT … UNION SELECT …` — and SQLite
             // rejects that, so a compound leaves the statement unmapped here the way it does in a
             // value slot. `in(x, union_(…))` is the form that does parenthesize, and it is
@@ -1328,7 +1336,11 @@ namespace sqlite2orm {
             }
             if (inNode->subquerySelect) {
                 auto operandResult = this->coordinator.generateNode(*inNode->operand);
-                auto sub = this->coordinator.tryCodegenSelectLikeSubquery(*inNode->subquerySelect);
+                CodeGenResult sub;
+                {
+                    ExpressionSubqueryScope enclosedByStatement{this->context};
+                    sub = this->coordinator.tryCodegenSelectLikeSubquery(*inNode->subquerySelect);
+                }
                 auto decisionPoints = std::move(operandResult.decisionPoints);
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(sub.decisionPoints.begin()),

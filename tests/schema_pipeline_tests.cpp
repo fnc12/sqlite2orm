@@ -3122,3 +3122,102 @@ TEST_CASE("processMultiSql: a subquery in a slot sqlite_orm has no form for comp
         requireCompiles(prologue + joinGeneratedCode(results));
     }
 }
+
+// A line break is a character SQLite takes in a quoted name (sqlite3 3.51.0 creates `"new<LF>line"`
+// and `sqlite_master` hands it back as written). Written through into the C++ literal it ended the
+// line before the closing quote, and the header stopped compiling on `missing terminating "
+// character` while the CLI still exited 0.
+TEST_CASE("generateSqliteSchemaHeader: a table named with a line break compiles") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE \"new\nline\" (x INTEGER PRIMARY KEY);");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct NewLine {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"new\\nline\",\n"
+                           "        make_column(\"x\", &NewLine::x, primary_key())));\n"
+                           "}\n");
+    requireCompiles(header.code);
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, "") == "new\nline=already_in_sync\n");
+}
+
+// A backslash and a double quote are characters of a name to SQLite and escapes to C++: `"a\b"`
+// written through named a table `a<BS>b`, so `sync_schema()` created that one next to the table the
+// header was generated from and `get_all()` read it empty — with no error and no warning. The rows
+// SQLite put in are read back through the generated header, from the tables they were put in.
+TEST_CASE("generateSqliteSchemaHeader: names holding a backslash or a quote address their own table") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE \"a\\b\" (id INTEGER PRIMARY KEY, \"c\\\\d\" TEXT);"
+            "CREATE INDEX \"a\\b_idx\" ON \"a\\b\"(\"c\\\\d\");"
+            "CREATE TABLE [q\"t] (id INTEGER PRIMARY KEY, [v\"w] TEXT);"
+            "INSERT INTO \"a\\b\" VALUES (1, 'one'), (2, 'two');"
+            "INSERT INTO [q\"t] VALUES (3, 'three');");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct AB {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::string> c__d;\n"
+                           "};\n\n"
+                           "struct QT {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::string> v_w;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_index(\"a\\\\b_idx\", indexed_column(&AB::c__d)),\n"
+                           "        make_table(\"a\\\\b\",\n"
+                           "        make_column(\"id\", &AB::id, primary_key()),\n"
+                           "        make_column(\"c\\\\\\\\d\", &AB::c__d)),\n"
+                           "        make_table(\"q\\\"t\",\n"
+                           "        make_column(\"id\", &QT::id, primary_key()),\n"
+                           "        make_column(\"v\\\"w\", &QT::v_w)));\n"
+                           "}\n");
+
+    constexpr std::string_view kReadBack = R"(    for (const auto& row: storage.get_all<AB>()) {
+        std::cout << "AB " << row.id.value() << "=" << row.c__d.value() << "\n";
+    }
+    for (const auto& row: storage.get_all<QT>()) {
+        std::cout << "QT " << row.id.value() << "=" << row.v_w.value() << "\n";
+    }
+)";
+    // sqlite_orm answers `dropped_and_recreated` for every index it syncs, a plainly named one
+    // included; what matters is that it is this index, and not one next to it.
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, kReadBack) == "a\\b=already_in_sync\n"
+                                                                        "a\\b_idx=dropped_and_recreated\n"
+                                                                        "q\"t=already_in_sync\n"
+                                                                        "AB 1=one\n"
+                                                                        "AB 2=two\n"
+                                                                        "QT 3=three\n");
+
+    // Nothing was created beside what the database already held: the storage addressed the
+    // tables and the index by their own names.
+    REQUIRE(
+        queryText(file.path, "SELECT group_concat(name, '|') FROM (SELECT name FROM sqlite_master ORDER BY name);") ==
+        "a\\b|a\\b_idx|q\"t");
+}

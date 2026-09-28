@@ -51,6 +51,7 @@ namespace sqlite2orm {
      *  name at a time.
      */
     std::string toCppIdentifier(std::string_view sqlName);
+    /** `sqlIdentifier` without its SQL quotes, as a C++ string literal (see `cppStringLiteral()`). */
     std::string identifierToCppStringLiteral(std::string_view sqlIdentifier);
 
     /** C++ variable name for the RAII guard of a savepoint (`sp 1` -> `sp_1_savepoint`). */
@@ -58,7 +59,14 @@ namespace sqlite2orm {
     std::string sqlStringToCpp(std::string_view sqlString);
     /** Contents of a quoted SQL string literal, with doubled quotes collapsed (`'it''s'` -> `it's`). */
     std::string sqlStringLiteralText(std::string_view literal);
-    /** `text` as a C++ string literal, quotes included. */
+    /**
+     *  `text` as a C++ string literal, quotes included, that holds the very bytes `text` does.
+     *  Every name and string reaching the generated code as a literal goes through here: SQLite
+     *  takes a backslash, a double quote, a line break and any other control character in a name,
+     *  and each of them written through would either end the literal or be read as an escape.
+     *  A well-formed UTF-8 character is written as it is; a byte that is no character is an octal
+     *  escape.
+     */
     std::string cppStringLiteral(std::string_view text);
 
     /**

@@ -1319,7 +1319,8 @@ namespace sqlite2orm {
             }
         }
 
-        std::string structDeclaration = "struct [[= \"" + rawViewName + "\"_orm_name]] " + structName + " {\n";
+        std::string structDeclaration =
+            "struct [[= " + cppStringLiteral(rawViewName) + "_orm_name]] " + structName + " {\n";
         for (const ViewField& field: fields) {
             if (field.nullable) {
                 structDeclaration += "    std::optional<" + field.cppType + "> " + field.cppName + ";\n";
@@ -1565,7 +1566,7 @@ namespace sqlite2orm {
 
         std::vector<std::string> memberAnnotations(createTable.columns.size());
 
-        std::string makeExpression = "make_table(\"" + rawTableName + "\"";
+        std::string makeExpression = "make_table(" + cppStringLiteral(rawTableName);
         for (size_t columnIndex = 0; columnIndex < createTable.columns.size(); ++columnIndex) {
             const auto& column = createTable.columns.at(columnIndex);
             std::string& annotations = memberAnnotations.at(columnIndex);
@@ -1574,7 +1575,8 @@ namespace sqlite2orm {
             };
             const auto cppName = toCppIdentifier(column.name);
             const auto rawColumnName = stripIdentifierQuotes(column.name);
-            makeExpression += ",\n        make_column(\"" + rawColumnName + "\", &" + structName + "::" + cppName;
+            makeExpression +=
+                ",\n        make_column(" + cppStringLiteral(rawColumnName) + ", &" + structName + "::" + cppName;
             if (column.primaryKey) {
                 std::string primaryKey = "primary_key()";
                 // The direction is part of what the key means here: an `INTEGER PRIMARY KEY DESC`
@@ -2246,7 +2248,7 @@ namespace sqlite2orm {
         // the output is the classical one, unchanged.
         if (policyTargetCppStandard(this->context.codeGenPolicy) >= 26) {
             std::string reflectedStructDeclaration =
-                "struct [[= " + identifierToCppStringLiteral(rawTableName) + "_orm_name]] " + structName + " {\n";
+                "struct [[= " + cppStringLiteral(rawTableName) + "_orm_name]] " + structName + " {\n";
             for (size_t columnIndex = 0; columnIndex < memberDeclarations.size(); ++columnIndex) {
                 reflectedStructDeclaration +=
                     "    " + memberAnnotations.at(columnIndex) + memberDeclarations.at(columnIndex);

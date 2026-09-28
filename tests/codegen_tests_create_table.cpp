@@ -2812,7 +2812,8 @@ TEST_CASE("codegen: CREATE TABLE - non-ASCII column names become members of thei
 
 // A character above the basic multilingual plane is written the way C++ writes one, with the eight
 // hex digits of its code point; a byte that is no character at all — SQLite takes those in an
-// identifier too — is written as that byte.
+// identifier too — is written as that byte, `x` and its two hex digits in the member's name and
+// its octal escape in the column's string literal.
 TEST_CASE("codegen: CREATE TABLE - a column name outside the basic multilingual plane") {
     const auto result = generateFull("CREATE TABLE t (🙂 INTEGER)");
     REQUIRE(result.code == "struct T {\n"
@@ -2833,8 +2834,7 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is not valid UTF-8 at all"
                            "\n"
                            "auto storage = make_storage(\"\",\n"
                            "    make_table(\"t\",\n"
-                           "        make_column(\"" +
-                               std::string(2, static_cast<char>(0x80)) + "\", &T::x80x80)));");
+                           "        make_column(\"\\200\\200\", &T::x80x80)));");
 }
 
 // Two names C++ has one spelling for is a member declared twice, which no amount of rewriting can
@@ -2955,4 +2955,55 @@ TEST_CASE("codegen: CREATE TABLE - an empty column name still names a member") {
                                    {"table t: column `` is not a C++ identifier; the member holding it is named `_`",
                                     SourceLocation{1, 17},
                                     2}});
+}
+
+// SQLite takes a backslash, a double quote and a line break inside a quoted name, and stores the
+// name as written — sqlite3 3.51.0 creates `"a\b"` and `"new<LF>line"` without a word. The name
+// reaches C++ as a string literal, where the same characters are escapes: written through as they
+// were, `"a\b"` names a table `a<BS>b` that is not in the database, `"c\\d"` a column with one
+// backslash in place of two, and a line break ends the literal before its closing quote.
+TEST_CASE("codegen: CREATE TABLE - a name holding a backslash or a quote or a line break is escaped") {
+    const auto result = generateFull("CREATE TABLE \"a\\b\" (\"c\\\\d\" TEXT, [q\"t] INTEGER, \"new\nline\" TEXT)");
+    REQUIRE(result.code == "struct AB {\n"
+                           "    std::optional<std::string> c__d;\n"
+                           "    std::optional<int64_t> q_t;\n"
+                           "    std::optional<std::string> new_line;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"a\\\\b\",\n"
+                           "        make_column(\"c\\\\\\\\d\", &AB::c__d),\n"
+                           "        make_column(\"q\\\"t\", &AB::q_t),\n"
+                           "        make_column(\"new\\nline\", &AB::new_line)));");
+}
+
+// A control character with no escape of its own, and a byte that is no UTF-8 character at all —
+// SQLite takes both in a name — go in as a three-digit octal escape, which stops after its third
+// digit and so leaves the `9` that follows a character of its own. A character that is well-formed
+// UTF-8 is written through as it is.
+TEST_CASE("codegen: CREATE TABLE - a control character or a stray byte in a name is an octal escape") {
+    const auto result = generateFull("CREATE TABLE \"t\x01\" (\"\xc3\xa9\xff"
+                                     "9\" TEXT)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::string> u00E9xFF9;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\\001\",\n"
+                           "        make_column(\"\xc3\xa9\\377"
+                           "9\", &T::u00E9xFF9)));");
+}
+
+// The C++26 form names the table in the struct's annotation rather than in `make_table`, and the
+// annotation is a string literal as well. The name is written as it is once its SQL quotes are
+// gone: the single quotes inside `"'a\b'"` are part of it (sqlite3 3.51.0 stores `'a\b'`), and
+// the annotation used to strip them a second time and name a table `a\b` instead.
+TEST_CASE("codegen: CREATE TABLE - the reflected table's annotation escapes its name") {
+    const auto result = generateTargetingCpp26("CREATE TABLE \"'a\\b'\" (x INTEGER)");
+    REQUIRE(result.code == "struct [[= \"'a\\\\b'\"_orm_name]] AB {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<AB>());");
 }

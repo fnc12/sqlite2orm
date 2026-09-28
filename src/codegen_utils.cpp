@@ -281,25 +281,7 @@ namespace sqlite2orm {
     }
 
     std::string identifierToCppStringLiteral(std::string_view sqlIdentifier) {
-        auto body = stripIdentifierQuotes(sqlIdentifier);
-        std::string result = "\"";
-        for (char character: body) {
-            if (character == '\\') {
-                result += "\\\\";
-            } else if (character == '"') {
-                result += "\\\"";
-            } else if (character == '\n') {
-                result += "\\n";
-            } else if (character == '\r') {
-                result += "\\r";
-            } else if (character == '\t') {
-                result += "\\t";
-            } else {
-                result += character;
-            }
-        }
-        result += '"';
-        return result;
+        return cppStringLiteral(stripIdentifierQuotes(sqlIdentifier));
     }
 
     std::string sqlStringLiteralText(std::string_view literal) {
@@ -321,19 +303,34 @@ namespace sqlite2orm {
 
     std::string cppStringLiteral(std::string_view text) {
         std::string result = "\"";
-        for (const char character: text) {
-            if (character == '\\') {
+        result.reserve(text.size() + 2);
+        for (size_t index = 0; index < text.size();) {
+            const Utf8Character character = decodeUtf8Character(text.substr(index));
+            index += character.length;
+            const char32_t codePoint = character.codePoint;
+            if (character.valid && codePoint >= 0x80) {
+                result += text.substr(index - character.length, character.length);
+            } else if (codePoint == '\\') {
                 result += "\\\\";
-            } else if (character == '"') {
+            } else if (codePoint == '"') {
                 result += "\\\"";
-            } else if (character == '\n') {
+            } else if (codePoint == '\n') {
                 result += "\\n";
-            } else if (character == '\r') {
+            } else if (codePoint == '\r') {
                 result += "\\r";
-            } else if (character == '\t') {
+            } else if (codePoint == '\t') {
                 result += "\\t";
+            } else if (codePoint < 0x20 || codePoint >= 0x7F) {
+                // Any other control character, and a byte that is no UTF-8 character at all (SQLite
+                // takes both in a name), is written as its three-digit octal escape: unlike `\x`,
+                // which runs on through every hex digit after it, an octal escape stops after three
+                // digits, so a digit that follows in the text stays a character of its own.
+                result += '\\';
+                result += static_cast<char>('0' + ((codePoint >> 6) & 7));
+                result += static_cast<char>('0' + ((codePoint >> 3) & 7));
+                result += static_cast<char>('0' + (codePoint & 7));
             } else {
-                result += character;
+                result += static_cast<char>(codePoint);
             }
         }
         result += '"';
@@ -397,22 +394,12 @@ namespace sqlite2orm {
             if (alreadyEmitted)
                 continue;
             emitted.push_back(typeName);
-            std::string displayName = stripColumnAliasQuotes(column.alias);
-            std::string escaped;
-            for (char character: displayName) {
-                if (character == '\\')
-                    escaped += "\\\\";
-                else if (character == '"')
-                    escaped += "\\\"";
-                else
-                    escaped += character;
-            }
             preamble += "struct " + typeName +
                         " : sqlite_orm::alias_tag {\n"
                         "    static const std::string& get() {\n"
-                        "        static const std::string res = \"" +
-                        escaped +
-                        "\";\n"
+                        "        static const std::string res = " +
+                        cppStringLiteral(stripColumnAliasQuotes(column.alias)) +
+                        ";\n"
                         "        return res;\n"
                         "    }\n"
                         "};\n";

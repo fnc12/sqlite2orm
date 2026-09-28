@@ -1307,3 +1307,54 @@ TEST_CASE("codegen: INSERT VALUES - a literal past the int64 range into a column
     REQUIRE(blob.warnings.empty());
     REQUIRE(blob.errors.empty());
 }
+
+// A subquery with no FROM of its own in a DELETE or an UPDATE reads the row the statement is at,
+// just as it reads the row of the select around it, and sqlite_orm has no form for either: a
+// `select(...)` with no `from<...>()` gets a FROM of every table its code names, so
+// `UPDATE t SET b = (SELECT upper(b))` ran as `UPDATE "t" SET "b" = (SELECT UPPER("t"."b") FROM "t")`
+// and wrote the first row's value into every row (sqlite3 3.51 upper-cases each row's own `b`; the
+// values are pinned in "runtime: an UPDATE through a subquery with no FROM of its own is left out
+// rather than writing the first row everywhere"). The statement is left out, the warning
+// underlining the select that has no FROM, and in a trigger body the trigger goes with it.
+TEST_CASE("codegen: DELETE and UPDATE - a subquery with no FROM of its own that names a table leaves the "
+          "statement out") {
+    const std::string message =
+        "a SELECT with no FROM that names a table is not mapped to sqlite_orm: a select(...) with no "
+        "from<...>() gets a FROM of every table its code names, and there is no form of it that has none";
+
+    REQUIRE(generateFull("UPDATE t SET b = (SELECT upper(b))") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 19}, 15}, kStatementNotGenerated}});
+    REQUIRE(generateFull("DELETE FROM t WHERE b = (SELECT b WHERE a > 1)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 26}, 20}, kStatementNotGenerated}});
+    REQUIRE(generateFull("UPDATE t SET a = 1 WHERE EXISTS (SELECT a WHERE a > 2)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 34}, 20}, kStatementNotGenerated}});
+    REQUIRE(generateFull("DELETE FROM t WHERE a IN (SELECT a)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 27}, 8}, kStatementNotGenerated}});
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET b = (SELECT upper(b)); END") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{message, SourceLocation{1, 61}, 15},
+                           CodegenWarning{"a statement in the trigger body is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 43},
+                                          34},
+                           kStatementNotGenerated}});
+    REQUIRE(generateFull("CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM u WHERE x IN (SELECT x); END") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{message, SourceLocation{1, 69}, 8},
+                           CodegenWarning{"a statement in the trigger body is not mapped to sqlite_orm codegen",
+                                          SourceLocation{1, 43},
+                                          35},
+                           kStatementNotGenerated}});
+
+    // A subquery with a FROM of its own reads its own table, the way the SQL does.
+    REQUIRE(generate("UPDATE t SET b = (SELECT max(x) FROM u)") ==
+            "storage.update_all(set(c(&T::b) = select(max(&U::x))));");
+    // One that names no table is serialized with no FROM, as written.
+    REQUIRE(generate("UPDATE t SET b = (SELECT 'k')") == "storage.update_all(set(c(&T::b) = select(\"k\")));");
+    // NEW. and OLD. name the row that fired the trigger, not a table sqlite_orm collects into a FROM.
+    REQUIRE(generate("CREATE TRIGGER tr BEFORE INSERT ON t WHEN (SELECT NEW.a) > 0 BEGIN SELECT RAISE(ABORT, 'x') "
+                     "WHERE NEW.a < 0; END") ==
+            "make_trigger(\"tr\", before().insert().on<T>().when(c(select(new_(&T::a))) > 0).begin(select("
+            "raise_abort(\"x\"), where(c(new_(&T::a)) < 0))));");
+}

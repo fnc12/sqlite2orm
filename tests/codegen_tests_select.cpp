@@ -1019,10 +1019,10 @@ TEST_CASE("codegen: a scalar subquery whose result column can be NULL is generat
     REQUIRE(generate("SELECT (SELECT 1 / 0);") == "auto rows = storage.select(as_optional(select(c(1) / 0)));");
     REQUIRE(generate("SELECT (SELECT 0 * (1e300 * 1e300));") ==
             "auto rows = storage.select(as_optional(select(c(0) * (c(1e300) * 1e300))));");
-    REQUIRE(generate("SELECT (SELECT a + 1 FROM users);") ==
-            "auto rows = storage.select(as_optional(select(c(&Users::a) + 1)));");
-    REQUIRE(generate("SELECT (SELECT a > 0 FROM users);") ==
-            "auto rows = storage.select(as_optional(select(c(&Users::a) > 0)));");
+    REQUIRE(generate("SELECT (SELECT a + 1 FROM users) FROM users;") ==
+            "auto rows = storage.select(as_optional(select(c(&Users::a) + 1)), from<Users>());");
+    REQUIRE(generate("SELECT (SELECT a > 0 FROM users) FROM users;") ==
+            "auto rows = storage.select(as_optional(select(c(&Users::a) > 0)), from<Users>());");
     // The question is asked of the nested result column however deep the nesting runs, and one
     // `as_optional` at the outermost subquery is what the caller reads the value through.
     REQUIRE(generate("SELECT (SELECT (SELECT 1 / 0));") ==
@@ -1038,13 +1038,16 @@ TEST_CASE("codegen: a scalar subquery whose result column can be NULL is generat
 // WHERE is no result column at all: nothing reads its value back.
 TEST_CASE("codegen: a scalar subquery that needs no widening keeps the type sqlite_orm gives it") {
     REQUIRE(generate("SELECT (SELECT 1);") == "auto rows = storage.select(select(1));");
-    REQUIRE(generate("SELECT (SELECT max(a) FROM users);") == "auto rows = storage.select(select(max(&Users::a)));");
-    REQUIRE(generate("SELECT (SELECT abs(a) FROM users);") == "auto rows = storage.select(select(abs(&Users::a)));");
+    REQUIRE(generate("SELECT (SELECT max(a) FROM users) FROM users;") ==
+            "auto rows = storage.select(select(max(&Users::a)), from<Users>());");
+    REQUIRE(generate("SELECT (SELECT abs(a) FROM users) FROM users;") ==
+            "auto rows = storage.select(select(abs(&Users::a)), from<Users>());");
     // The NULL SQLite answers a scalar subquery over an empty rowset with is a hole of its own:
     // `(SELECT a FROM users)` is NULL on an empty table however the column is declared, and
     // whether the field it is read into already holds an optional is the table's to answer, which
     // no schema reaches this layer to. Carded separately.
-    REQUIRE(generate("SELECT (SELECT a FROM users);") == "auto rows = storage.select(select(&Users::a));");
+    REQUIRE(generate("SELECT (SELECT a FROM users) FROM users;") ==
+            "auto rows = storage.select(select(&Users::a), from<Users>());");
     REQUIRE(generate("SELECT a FROM users WHERE (SELECT 1 / 0);") ==
             "auto rows = storage.select(&Users::a, where(select(c(1) / 0)));");
 }
@@ -1485,55 +1488,66 @@ TEST_CASE("codegen: a call inside a scalar subquery is typed by the subquery's o
     REQUIRE(result.warnings.empty());
 }
 
-// A subquery with no FROM clause of its own is the one that carries no scope: every reference in
-// it is correlated, read over the scope around it, and that is the scope the emitter writes it in
-// too — `(SELECT coalesce(b, c))` under `FROM t` comes out `coalesce<std::string>(&T::b, &T::c)`,
-// the same bytes as the form with `FROM t` spelled out. Handing such a select a scope of its own
-// named nothing, so every reference answered `nullptr`, the spelled result type went unseen and
-// the call stayed on the list of the already-nullable ones: the two forms below differed by the
-// `as_optional` alone, and the one without a FROM read the NULL of a `coalesce<std::string>` back
-// as the empty string. Both compile, so the difference only ever showed up in the value.
-TEST_CASE("codegen: a subquery with no FROM of its own is typed by the scope around it") {
-    // sqlite3 3.51 answers NULL for both forms over a row holding (NULL, NULL); the runtime test
-    // "runtime: a subquery with no FROM of its own reads its NULL back" pins the value.
-    auto result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT coalesce(b, c)) FROM t;");
+// A subquery with no FROM clause of its own reads every column it names off the row of the select
+// around it, and sqlite_orm has no form for that: a `select(...)` with no `from<...>()` is
+// serialized with a FROM of every table its code names, so `(SELECT b)` under `FROM t` ran as
+// `(SELECT "t"."b" FROM "t")` — a subquery over the whole table, answering its first row for every
+// row of `t` (sqlite3 3.51 answers each row's own `b`; the values are pinned in "runtime: a
+// subquery with no FROM of its own is left out rather than read off the first row"). Any
+// expression over such a column is the same select, and so is one that names a table only
+// through a subquery nested in it. The statement is left out, the warning underlining the select
+// that has no FROM.
+TEST_CASE("codegen: a subquery with no FROM of its own that names a table leaves the statement out") {
+    const std::string message =
+        "a SELECT with no FROM that names a table is not mapped to sqlite_orm: a select(...) with no "
+        "from<...>() gets a FROM of every table its code names, and there is no form of it that has none";
+
+    REQUIRE(generateFull("SELECT (SELECT a) FROM users") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 9}, 8}, kStatementNotGenerated}});
+    REQUIRE(generateFull("SELECT (SELECT upper(a)) FROM users") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 9}, 15}, kStatementNotGenerated}});
+    REQUIRE(generateFull("SELECT (SELECT a || 'k') FROM users") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 9}, 15}, kStatementNotGenerated}});
+    REQUIRE(generateFull("SELECT (SELECT max(a, b)) FROM users") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 9}, 16}, kStatementNotGenerated}});
+    REQUIRE(generateFull("SELECT (SELECT a WHERE a > 1) FROM users") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 9}, 20}, kStatementNotGenerated}});
+    // The same select in every slot a subquery stands in.
+    REQUIRE(generateFull("SELECT a FROM users WHERE EXISTS (SELECT a WHERE a > 1)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 35}, 20}, kStatementNotGenerated}});
+    REQUIRE(generateFull("SELECT a FROM users WHERE a IN (SELECT a)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 33}, 8}, kStatementNotGenerated}});
+    REQUIRE(generateFull("SELECT a FROM users WHERE a IN (SELECT 2 UNION SELECT a)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 48}, 8}, kStatementNotGenerated}});
+    // A table named only by a subquery nested in it is collected into its FROM just the same.
+    REQUIRE(generateFull("SELECT (SELECT (SELECT a FROM users WHERE a > b)) FROM t") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 9}, 40}, kStatementNotGenerated}});
+    // Every level that has no FROM is a select of its own, and each is underlined.
+    REQUIRE(generateFull("SELECT (SELECT (SELECT a)) FROM users") ==
+            CodeGenResult{{},
+                          {},
+                          {CodegenWarning{message, SourceLocation{1, 17}, 8},
+                           CodegenWarning{message, SourceLocation{1, 9}, 17},
+                           kStatementNotGenerated}});
+
+    // A subquery that names no table is serialized with no FROM, as written.
+    REQUIRE(generate("SELECT (SELECT 1) FROM users") == "auto rows = storage.select(select(1), from<Users>());");
+    // And one with a FROM of its own reads its own table, the way the SQL does.
+    REQUIRE(generate("SELECT (SELECT a FROM users) FROM users") ==
+            "auto rows = storage.select(select(&Users::a), from<Users>());");
+}
+
+// A subquery over a FROM of its own is typed by that FROM, the way the emitter writes its columns.
+// What decides is the FROM clause being written at all, not the sources in it being ones the
+// schema answers for: a subquery reading a CTE names a scope of its own, whose column comes out
+// `column<cte_0>(…)` and is typed by the SELECT the CTE was built from, so the outer table's
+// same-named column answers nothing for it.
+TEST_CASE("codegen: a subquery with a FROM of its own is typed by that FROM") {
+    auto result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT coalesce(b, c) FROM t) FROM t;");
     REQUIRE(result.code ==
             "auto rows = storage.select(as_optional(select(coalesce<std::string>(&T::b, &T::c))), from<T>());");
     REQUIRE(result.warnings.empty());
 
-    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT coalesce(b, c) FROM t) FROM t;");
-    REQUIRE(result.code ==
-            "auto rows = storage.select(as_optional(select(coalesce<std::string>(&T::b, &T::c))), from<T>());");
-    REQUIRE(result.warnings.empty());
-
-    // The three other builtins typed by the common type of their arguments, over the same form.
-    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT ifnull(b, c)) FROM t;");
-    REQUIRE(result.code ==
-            "auto rows = storage.select(as_optional(select(ifnull<std::string>(&T::b, &T::c))), from<T>());");
-
-    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT nullif(b, c)) FROM t;");
-    REQUIRE(result.code ==
-            "auto rows = storage.select(as_optional(select(nullif<std::string>(&T::b, &T::c))), from<T>());");
-
-    result = generateLastOfBatch("CREATE TABLE t(b TEXT, c REAL); SELECT (SELECT iif(1, b, c)) FROM t;");
-    REQUIRE(result.code ==
-            "auto rows = storage.select(as_optional(select(iif<std::string>(1, &T::b, &T::c))), from<T>());");
-
-    // The scope kept is the nearest one that names sources, not the outermost: the innermost select
-    // has no FROM, so it reads `FROM u` around it, which is the struct `&U::b` the emitter writes —
-    // `t` declares a `b` of its own and typing from it would answer for a field the code never
-    // reads.
-    result = generateLastOfBatch("CREATE TABLE t(b INTEGER); CREATE TABLE u(b TEXT); "
-                                 "SELECT (SELECT (SELECT coalesce(b, 1)) FROM u) FROM t;");
-    REQUIRE(result.code == "auto rows = storage.select(as_optional(select(select(coalesce<std::string>(&U::b, 1)), "
-                           "from<U>())), from<T>());");
-    REQUIRE(result.warnings.empty());
-
-    // What decides is the FROM clause being written at all, not the sources in it being ones the
-    // schema answers for: a subquery reading a CTE names a scope of its own, whose column comes out
-    // `column<cte_0>(…)` and is typed by the SELECT the CTE was built from, so the outer table's
-    // same-named column answers nothing for it. Falling back to the outer scope here would have
-    // spelled nothing — the emitter asks the same scope — and widened the row all the same.
     result = generateLastOfBatch("CREATE TABLE t(a TEXT); WITH k(a) AS (SELECT 1) "
                                  "SELECT (SELECT coalesce(a, 1) FROM k) FROM t;");
     REQUIRE(result.code == "using namespace sqlite_orm::literals;\n"
@@ -1545,15 +1559,34 @@ TEST_CASE("codegen: a subquery with no FROM of its own is typed by the scope aro
             std::vector<CodegenWarning>{
                 {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using "
                  "namespace sqlite_orm::literals` scope for `_ctealias`"}});
+}
 
-    // And a scope around it that answers for nothing keeps answering for nothing: over a view
-    // source the column is typed by the SELECT the view was built from, which no CREATE TABLE of
-    // the batch answers for, so the subquery under it spells no type either — the hole COVERAGE.md
-    // names, the same as it stands on master.
-    result = generateLastOfBatch(
-        "CREATE TABLE t(b TEXT); CREATE VIEW v AS SELECT 'x' AS a; SELECT (SELECT coalesce(a, 1)) FROM v;");
-    REQUIRE(result.code == "auto rows = storage.select(select(coalesce(&V::a, 1)), from<V>());");
-    REQUIRE(result.warnings.empty());
+// The same at the top level: a select with no FROM whose code names a table only through a
+// subquery in it is given that table as its FROM, one row per row of it where SQLite answers a
+// single one — and no row at all where the table is empty. A column the select names itself has
+// no row to be read off there, which SQLite refuses (`no such column`), so that form is left to
+// the FROM sqlite_orm infers, as before.
+TEST_CASE("codegen: a top-level SELECT with no FROM that names a table through a subquery is not generated") {
+    const std::string message =
+        "a SELECT with no FROM that names a table is not mapped to sqlite_orm: a select(...) with no "
+        "from<...>() gets a FROM of every table its code names, and there is no form of it that has none";
+
+    REQUIRE(generateFull("SELECT (SELECT count(*) FROM users)") ==
+            CodeGenResult{"/* SELECT without FROM */", {}, {CodegenWarning{message, SourceLocation{1, 1}, 35}}});
+    REQUIRE(generateFull("SELECT EXISTS (SELECT 1 FROM users)") ==
+            CodeGenResult{"/* SELECT without FROM */", {}, {CodegenWarning{message, SourceLocation{1, 1}, 35}}});
+    // The placeholder carries the decision points the select made on the way, as every one does.
+    const auto inWhere = generateFull("SELECT 1 WHERE 2 IN (SELECT a FROM users)");
+    REQUIRE(inWhere.code == "/* SELECT without FROM */");
+    REQUIRE(inWhere.warnings == std::vector<CodegenWarning>{CodegenWarning{message, SourceLocation{1, 1}, 41}});
+    // A compound arm, an INSERT ... SELECT and a view body are selects of the same kind.
+    REQUIRE(generateFull("SELECT 1 UNION SELECT (SELECT count(*) FROM users)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 16}, 35}, kStatementNotGenerated}});
+    REQUIRE(generateFull("INSERT INTO users SELECT (SELECT count(*) FROM users)") ==
+            CodeGenResult{{}, {}, {CodegenWarning{message, SourceLocation{1, 19}, 35}, kStatementNotGenerated}});
+
+    // Nothing named, nothing inferred.
+    REQUIRE(generate("SELECT (SELECT 1)") == "auto rows = storage.select(select(1));");
 }
 
 // The numbers a value is read back as form a lattice rather than a line: `bool` under `int`, `int`
@@ -2865,6 +2898,44 @@ TEST_CASE("codegen: a compound SELECT leaves its arms alone without one common r
     // A column that no arm can answer NULL for is left alone too, the way a plain SELECT leaves it.
     REQUIRE(generate("SELECT 1 + 2 UNION SELECT 3 * 4;") ==
             "auto rows = storage.select(union_(select(c(1) + 2), select(c(3) * 4)));");
+}
+
+// A call is typed by the function and its arguments, which this layer does not name, so on master a
+// compound of calls was left as written and `SELECT length(a) FROM users UNION SELECT length(a) FROM
+// users` read a NULL row back as 0 where sqlite3 3.51 answers NULL. Arms spelling the same
+// expression over the same FROM clause are generated as the same code, so they come out as one type
+// whatever it is and are widened the way a plain SELECT widens that expression.
+TEST_CASE("codegen: a compound SELECT widens a call every arm spells alike") {
+    REQUIRE(generate("SELECT length(a) UNION SELECT length(a);") ==
+            "auto rows = storage.select(union_(select(as_optional(length(&User::a))), "
+            "select(as_optional(length(&User::a)))));");
+    REQUIRE(generate("SELECT upper(b) UNION ALL SELECT upper(b);") ==
+            "auto rows = storage.select(union_all(select(as_optional(upper(&User::b))), "
+            "select(as_optional(upper(&User::b)))));");
+    REQUIRE(generate("SELECT instr(b, 'x') INTERSECT SELECT instr(b, 'x');") ==
+            "auto rows = storage.select(intersect(select(as_optional(instr(&User::b, \"x\"))), "
+            "select(as_optional(instr(&User::b, \"x\")))));");
+    REQUIRE(generate("SELECT julianday('now') EXCEPT SELECT julianday('now');") ==
+            "auto rows = storage.select(except(select(as_optional(julianday(\"now\"))), "
+            "select(as_optional(julianday(\"now\")))));");
+    // The clauses after the FROM do not decide the type, and every column is decided on its own.
+    REQUIRE(generate("SELECT length(a), b FROM users UNION SELECT length(a), b FROM users WHERE a > 1 "
+                     "UNION SELECT length(a), b FROM users;") ==
+            "auto rows = storage.select(union_(select(columns(as_optional(length(&Users::a)), &Users::b)), "
+            "select(columns(as_optional(length(&Users::a)), &Users::b), where(c(&Users::a) > 1)), "
+            "select(columns(as_optional(length(&Users::a)), &Users::b))));");
+    // A call sqlite_orm already reads back nullably is left alone, as a plain SELECT leaves it.
+    REQUIRE(generate("SELECT abs(a) UNION SELECT abs(a);") ==
+            "auto rows = storage.select(union_(select(abs(&User::a)), select(abs(&User::a))));");
+    // Arms that differ — in an argument, in the expression around the call, in the FROM clause the
+    // arguments are read over — may come out as types with no common optional, and are left alone.
+    REQUIRE(generate("SELECT length(a) UNION SELECT length(b);") ==
+            "auto rows = storage.select(union_(select(length(&User::a)), select(length(&User::b))));");
+    REQUIRE(generate("SELECT length(a) UNION SELECT length(a) + 0;") ==
+            "auto rows = storage.select(union_(select(length(&User::a)), select(length(&User::a) + 0)));");
+    REQUIRE(generate("SELECT length(a) FROM users UNION SELECT length(a) FROM users u;") ==
+            "auto rows = storage.select(union_(select(length(&Users::a)), "
+            "select(length(alias_column<alias_a<Users>>(&Users::a)))));");
 }
 
 // sqlite_orm types the bitwise operators `int`, and a compound is read back through the

@@ -4,6 +4,7 @@
 
 #include <sqlite2orm/utils.h>
 
+#include <algorithm>
 #include <utility>
 
 namespace sqlite2orm {
@@ -264,6 +265,13 @@ namespace sqlite2orm {
             return nullptr;
         }
         if (this->scopeDeclaresColumn(this->columnNameScope(), columnName) != false) {
+            return nullptr;
+        }
+        // A result-column alias of the query at hand answers for the name before any enclosing
+        // query does: `(SELECT uid AS a FROM u WHERE a > 1)` compares `uid`.
+        const std::string aliasKey = toLowerAscii(stripColumnAliasQuotes(columnName));
+        if (std::find(this->selectResultColumnAliases.begin(), this->selectResultColumnAliases.end(), aliasKey) !=
+            this->selectResultColumnAliases.end()) {
             return nullptr;
         }
         // A query whose columns the batch does not say — one reading a CTE, say — is where the

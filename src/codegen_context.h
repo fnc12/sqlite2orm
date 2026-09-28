@@ -451,6 +451,13 @@ namespace sqlite2orm {
          */
         std::vector<ColumnNameScope> enclosingColumnNameScopes;
         /**
+         *  The result-column aliases of the select being generated, lowercased with their quotes
+         *  stripped, once its result list is written: SQLite resolves a name in its ON, WHERE,
+         *  GROUP BY, HAVING and ORDER BY against them before any enclosing query, but not in the
+         *  result list itself. Empty while the result list is generated.
+         */
+        std::vector<std::string> selectResultColumnAliases;
+        /**
          *  Set while the field operand of a MATCH is generated. `match_t` holds that operand, but
          *  sqlite_orm walks only the pattern argument of it (`ast_iterator<match_t<Field, X>>`
          *  iterates `node.argument` alone), so a recordset named there reaches the inferred FROM

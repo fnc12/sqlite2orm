@@ -465,6 +465,17 @@ namespace sqlite2orm {
             return sourceTables;
         }
 
+        /** The result-column aliases of `selectNode`, as `selectResultColumnAliases` holds them. */
+        std::vector<std::string> resultColumnAliases(const SelectNode& selectNode) {
+            std::vector<std::string> aliases;
+            for (const auto& column: selectNode.columns) {
+                if (!column.alias.empty()) {
+                    aliases.push_back(toLowerAscii(stripColumnAliasQuotes(column.alias)));
+                }
+            }
+            return aliases;
+        }
+
     }  // namespace
 
     SelectCodeGenerator::SelectCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -506,14 +517,17 @@ namespace sqlite2orm {
         this->context.withOuterSelect = false;
         EmittedTableTypeScope emittedTableTypes{&this->context};
         // The FROM of this select is what a subquery written in it resolves a correlated name
-        // against; a statement generated after it reads no FROM of it.
+        // against; a statement generated after it reads no FROM of it, and no result-column alias.
         struct SelectSourceTablesScope {
             CodeGeneratorContext* ctx;
             std::optional<std::vector<std::string>> saved;
+            std::vector<std::string> savedResultColumnAliases;
             SelectSourceTablesScope(CodeGeneratorContext* context, std::vector<std::string> sourceTables) :
-                ctx(context), saved(std::exchange(context->selectSourceTables, std::move(sourceTables))) {}
+                ctx(context), saved(std::exchange(context->selectSourceTables, std::move(sourceTables))),
+                savedResultColumnAliases(std::exchange(context->selectResultColumnAliases, {})) {}
             ~SelectSourceTablesScope() {
                 ctx->selectSourceTables = std::move(saved);
+                ctx->selectResultColumnAliases = std::move(savedResultColumnAliases);
             }
         } selectSourceTables{&this->context, fromSourceTables(selectNode, this->context)};
         for (const auto& fromItem: selectNode.fromClause) {
@@ -791,6 +805,7 @@ namespace sqlite2orm {
                 this->context.activeSelectColumnAliasCpp20Vars[key] = columnAliasCpp20VarName(column.alias);
             }
         }
+        this->context.selectResultColumnAliases = resultColumnAliases(selectNode);
 
         std::vector<std::string> selectTrailingClauses;
         auto appendClause = [&](const std::string& clause) {
@@ -1222,6 +1237,7 @@ namespace sqlite2orm {
             std::vector<std::string> savedPlainRowSourceTypes;
             bool savedCountedAliasedSource;
             std::optional<std::vector<std::string>> savedSelectSourceTables;
+            std::vector<std::string> savedResultColumnAliases;
 
             SubselectAliasRestore(CodeGeneratorContext* context) :
                 ctx(context), savedAliases(context->fromTableAliasToStructName),
@@ -1240,7 +1256,9 @@ namespace sqlite2orm {
                 savedCanNameInferredFromSources(context->canNameInferredFromSources),
                 savedPlainRowSourceTypes(context->sourcesWrittenWithoutAlias),
                 savedCountedAliasedSource(context->countedAliasedSource),
-                savedSelectSourceTables(context->selectSourceTables) {}
+                savedSelectSourceTables(context->selectSourceTables),
+                // The result list of the subquery sees no alias, its own or one of the query around it.
+                savedResultColumnAliases(std::exchange(context->selectResultColumnAliases, {})) {}
 
             ~SubselectAliasRestore() {
                 ctx->fromTableAliasToStructName = std::move(savedAliases);
@@ -1256,6 +1274,7 @@ namespace sqlite2orm {
                 ctx->sourcesWrittenWithoutAlias = std::move(savedPlainRowSourceTypes);
                 ctx->countedAliasedSource = savedCountedAliasedSource;
                 ctx->selectSourceTables = std::move(savedSelectSourceTables);
+                ctx->selectResultColumnAliases = std::move(savedResultColumnAliases);
             }
         } restore{&this->context};
         EmittedTableTypeScope emittedTableTypes{&this->context};
@@ -1519,6 +1538,8 @@ namespace sqlite2orm {
             }
         }
         this->context.pendingAnchorCteBindings.clear();
+        // Every clause after the result list resolves a name against its aliases first.
+        this->context.selectResultColumnAliases = resultColumnAliases(selectNode);
 
         auto resolveJoinType = [&](const FromTableClause& ft) -> std::string {
             std::string key = ft.alias ? *ft.alias : ft.tableName;

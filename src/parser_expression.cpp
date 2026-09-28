@@ -685,6 +685,9 @@ namespace sqlite2orm {
         if (type == TokenType::identifier)
             return true;
         switch (type) {
+            // IF is a keyword SQLite falls back to an identifier, and a call of it is IIF under
+            // the name SQLite 3.48 added for it: `SELECT if(a, 1, 2)` is a statement.
+            case TokenType::kwIf:
             case TokenType::kwReplace:
             case TokenType::kwLike:
             case TokenType::kwGlob:

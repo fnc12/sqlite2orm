@@ -746,6 +746,20 @@ TEST_CASE("parser: keyword as function - replace") {
                                                                     makeNode<StringLiteralNode>("'bar'")));
 }
 
+// IF is a keyword to the tokenizer — `CREATE TABLE IF NOT EXISTS` — and one SQLite falls back to
+// an identifier, which is how `if(X, Y, Z)` is a call of IIF under the name SQLite 3.48 added:
+// sqlite3 3.51.0 answers `SELECT if(1, 2, 3)` with 2. The statement used to stop at
+// `unexpected token: if`.
+TEST_CASE("parser: keyword as function - if") {
+    auto parseResult = parse("IF(a, 1, 2)");
+    REQUIRE(requireNode<FunctionCallNode>(parseResult) == *makeFunc("IF",
+                                                                    false,
+                                                                    false,
+                                                                    makeNode<ColumnRefNode>("a"),
+                                                                    makeNode<IntegerLiteralNode>("1"),
+                                                                    makeNode<IntegerLiteralNode>("2")));
+}
+
 TEST_CASE("parser: keyword as function - case insensitive", "[function]") {
     auto funcName = GENERATE("ABS", "Abs", "abs");
     CAPTURE(funcName);

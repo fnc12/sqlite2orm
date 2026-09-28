@@ -622,3 +622,34 @@ TEST_CASE("codegen: CREATE VIEW - a name holding a backslash is escaped in the a
                            "auto storage = make_storage(\"\",\n"
                            "    make_view<VW>(select(&Users::id)));");
 }
+
+// A view field over a call is typed by the name the call is made of, and the name is looked up in
+// the one place built-ins are recorded — the form registry — rather than in a list of its own.
+// The field types used to come from such a list, which knew `concat` and `unixepoch` while the
+// validator did not, so the very SELECT the view was made of generated those calls as user-defined
+// functions. `unixepoch()` is an INTEGER in SQLite (`typeof(unixepoch())` is 'integer' on sqlite3
+// 3.51.0) and declared `sqlite_int64` in sqlite_orm, so its field is an `int64_t` and not the
+// `double` the old list said; `if()` is IIF under the name SQLite 3.48 added, so it is typed by its
+// first branch the way IIF is; the hyperbolic functions answer a REAL like the rest of the math
+// functions, which the old list had left out.
+TEST_CASE("codegen: CREATE VIEW - a field over a built-in call is typed by the registry's row for it") {
+    const auto result = generateLastOfBatch(
+        "CREATE TABLE t(i INTEGER NOT NULL, b TEXT NOT NULL);\n"
+        "CREATE VIEW v AS SELECT concat(b, i) AS c1, unixepoch() AS c2, octet_length(b) AS c3, unhex(b) AS c4, "
+        "median(i) AS c5, if(i, b, 'x') AS c6, acosh(i) AS c7 FROM t;");
+    REQUIRE(result.code ==
+            "struct [[= \"v\"_orm_name]] V {\n"
+            "    std::string c1;\n"
+            "    int64_t c2 = 0;\n"
+            "    int c3 = 0;\n"
+            "    std::vector<char> c4;\n"
+            "    double c5 = 0.0;\n"
+            "    std::string c6;\n"
+            "    double c7 = 0.0;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_view<V>(select(columns(concat(&T::b, &T::i), unixepoch(), octet_length(&T::b), unhex(&T::b), "
+            "median(&T::i), if_(&T::i, &T::b, \"x\"), acosh(&T::i)))));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
+}

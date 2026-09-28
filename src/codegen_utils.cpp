@@ -2588,10 +2588,10 @@ namespace sqlite2orm {
          *  The arguments sqlite_orm reduces to one type when it deduces the result type of a call
          *  of `lowerFunctionName`, and an empty list for every other name. Read off the
          *  declarations in the pinned headers: COALESCE is `common_argument_type<>` — all of them —
-         *  IFNULL and NULLIF `common_argument_type<0, 1>`, and IIF `common_argument_type<1, 2>`,
-         *  the two branches and not the condition. IIF is declared in its three-argument form
-         *  alone, so SQLite's two-argument and n-ary forms name no indexes here; the arity check in
-         *  `functionCallFormRefusal` is what reports them.
+         *  IFNULL and NULLIF `common_argument_type<0, 1>`, and IIF and its spelling IF
+         *  `common_argument_type<1, 2>`, the two branches and not the condition. IIF is declared in
+         *  its three-argument form alone, so SQLite's two-argument and n-ary forms name no indexes
+         *  here; the arity check in `functionCallFormRefusal` is what reports them.
          */
         std::vector<size_t> commonArgumentTypeIndexes(std::string_view lowerFunctionName, size_t argumentCount) {
             if (lowerFunctionName == "coalesce") {
@@ -2604,7 +2604,7 @@ namespace sqlite2orm {
             if ((lowerFunctionName == "ifnull" || lowerFunctionName == "nullif") && argumentCount == 2) {
                 return {0, 1};
             }
-            if (lowerFunctionName == "iif" && argumentCount == 3) {
+            if ((lowerFunctionName == "iif" || lowerFunctionName == "if") && argumentCount == 3) {
                 return {1, 2};
             }
             return {};
@@ -2795,12 +2795,15 @@ namespace sqlite2orm {
          *  empty text, `json_object('k', NULL)` '{"k":null}', `json_quote(NULL)` 'null',
          *  `randomblob(NULL)` and `zeroblob(NULL)` a blob; the ones taking no argument have nothing
          *  to propagate. The aggregates here answer a value over an empty rowset too: `count` 0,
-         *  `total` 0.0, `json_group_array` '[]' and `json_group_object` '{}'.
+         *  `total` 0.0, `json_group_array` '[]' and `json_group_object` '{}'. The names 3.45.1 has
+         *  no function for were checked against sqlite3 3.51.0: `concat(NULL)` is the empty text
+         *  and `unistr_quote(NULL)` the text 'NULL'.
          */
         bool sqliteFunctionNeverAnswersNull(std::string_view functionLower) {
             return isOneOfFunctions(functionLower,
                                     {"changes",
                                      "char",
+                                     "concat",
                                      "count",
                                      "hex",
                                      "json_group_array",
@@ -2812,9 +2815,12 @@ namespace sqlite2orm {
                                      "quote",
                                      "random",
                                      "randomblob",
+                                     "sqlite_source_id",
+                                     "sqlite_version",
                                      "total",
                                      "total_changes",
                                      "typeof",
+                                     "unistr_quote",
                                      "zeroblob"});
         }
 
@@ -2826,16 +2832,47 @@ namespace sqlite2orm {
          *  aggregate, over an empty rowset: `avg`, `group_concat`, `max`, `min` and `sum`. This is
          *  the list SQLite answered a value for over every non-NULL argument of a 11.7M expression
          *  corpus run through libsqlite3 3.45.1, the version this project links, which unlike the
-         *  `sqlite3` CLI in the image carries the math functions. `iif` belongs here for its
-         *  three-argument form alone, which is why the name is not enough to answer with — see
+         *  `sqlite3` CLI in the image carries the math functions. The names 3.45.1 has no function
+         *  for — `concat_ws`, `json_pretty`, `unistr`, `if` — and the ones the corpus did not
+         *  reach were checked by hand against sqlite3 3.51.0: `octet_length(x'')` is 0,
+         *  `json_error_position('x')` 1, `sqlite_compileoption_used('')` 0, `concat_ws(1, NULL)`
+         *  the empty text, and a malformed argument to `json_pretty` or `unistr` is an error rather
+         *  than a NULL. `iif` and its spelling `if` belong here for their three-argument form
+         *  alone, which is why the name is not enough to answer with — see
          *  `iifNotInItsThreeArgumentForm`.
          */
         bool sqliteFunctionOnlyPropagatesANullArgument(std::string_view functionLower) {
             return isOneOfFunctions(functionLower,
-                                    {"abs",        "coalesce",   "glob",       "ifnull",     "iif",     "instr",
-                                     "json",       "json_array", "json_patch", "json_valid", "length",  "like",
-                                     "likelihood", "likely",     "lower",      "ltrim",      "replace", "round",
-                                     "rtrim",      "soundex",    "trim",       "unlikely",   "upper"});
+                                    {"abs",
+                                     "coalesce",
+                                     "concat_ws",
+                                     "glob",
+                                     "if",
+                                     "ifnull",
+                                     "iif",
+                                     "instr",
+                                     "json",
+                                     "json_array",
+                                     "json_error_position",
+                                     "json_patch",
+                                     "json_pretty",
+                                     "json_valid",
+                                     "length",
+                                     "like",
+                                     "likelihood",
+                                     "likely",
+                                     "lower",
+                                     "ltrim",
+                                     "octet_length",
+                                     "replace",
+                                     "round",
+                                     "rtrim",
+                                     "soundex",
+                                     "sqlite_compileoption_used",
+                                     "trim",
+                                     "unistr",
+                                     "unlikely",
+                                     "upper"});
         }
 
         /**
@@ -2848,7 +2885,7 @@ namespace sqlite2orm {
          *  does not run one.
          */
         bool iifNotInItsThreeArgumentForm(const FunctionCallNode& functionCall, std::string_view functionLower) {
-            return functionLower == "iif" && functionCall.arguments.size() != 3;
+            return (functionLower == "iif" || functionLower == "if") && functionCall.arguments.size() != 3;
         }
 
         /** Whether any of `nodes`, the absent ones skipped, may be NULL. */
@@ -2900,9 +2937,10 @@ namespace sqlite2orm {
         /**
          *  Whether sqlite_orm already types a call of this built-in function nullably. This asks
          *  what the generated C++ carries back, not what SQLite can answer — that one is
-         *  `expressionMayBeNull` — so a name can belong to both lists. `abs`, `max`,
-         *  `min` and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif`
-         *  (its three-argument form, the only one sqlite_orm declares), `likely`, `unlikely` and
+         *  `expressionMayBeNull` — so a name can belong to both lists. `abs`, `max`, `median`,
+         *  `min`, the three `percentile` aggregates, `sqlite_compileoption_get`, `sqlite_offset`
+         *  and `sum` are declared `std::unique_ptr`, and `coalesce`, `ifnull`, `nullif`, `iif` and
+         *  `if` (their three-argument form, the only one sqlite_orm declares), `likely`, `unlikely` and
          *  `likelihood` are declared as the result of an argument, so the call is nullable exactly
          *  when sqlite_orm types that argument nullably — a nullable column makes it an
          *  `std::optional`. Widening one of those would nest a second nullable around the first.
@@ -2930,13 +2968,20 @@ namespace sqlite2orm {
             return isOneOfFunctions(functionLower,
                                     {"abs",
                                      "coalesce",
+                                     "if",
                                      "ifnull",
                                      "iif",
                                      "likelihood",
                                      "likely",
                                      "max",
+                                     "median",
                                      "min",
                                      "nullif",
+                                     "percentile",
+                                     "percentile_cont",
+                                     "percentile_disc",
+                                     "sqlite_compileoption_get",
+                                     "sqlite_offset",
                                      "sum",
                                      "unlikely"});
         }

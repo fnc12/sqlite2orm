@@ -33,132 +33,256 @@ namespace sqlite2orm {
          *  `codegen: the registry's argument counts are the ones the sqlite_orm headers declare`
          *  reads the same blocks out of the fetched headers and holds this column to them.
          *
-         *  `sqliteArity` is read off sqlite3 3.51.0 — every name was prepared with 0 to 6
-         *  arguments, the math and SOUNDEX ones against an amalgamation built with
-         *  SQLITE_ENABLE_MATH_FUNCTIONS and SQLITE_SOUNDEX, and what is written here is what it
-         *  accepted. The two are recorded apart because they disagree: sqlite_orm declares the
-         *  three-argument `iif` alone while SQLite has taken `iif(X, Y)` and the n-ary form since
-         *  3.48, and sqlite_orm's `coalesce` wants two arguments where SQLite refuses fewer at
-         *  prepare. `kAcceptsNothing` in the sqlite_orm column means the library spells no call of
-         *  that name codegen can write; in the SQLite column it means SQLite has no such function
-         *  either, i.e. `json_each` and `json_tree`, which are table-valued and refused as `no
-         *  such function` in an expression.
+         *  `sqliteArity` is read off sqlite3 3.51.0 — every name was prepared with 0 to 7 arguments
+         *  against an amalgamation built with SQLITE_ENABLE_MATH_FUNCTIONS, SQLITE_SOUNDEX,
+         *  SQLITE_ENABLE_FTS5, SQLITE_ENABLE_PERCENTILE and SQLITE_ENABLE_OFFSET_SQL_FUNC, and what
+         *  is written here is what it accepted. The one exception is `json_array_insert`, which
+         *  SQLite added in 3.53.0 and 3.51.0 answers with `no such function`; its row is read off
+         *  3.53.0, which prepares it at any argument count the way it does every JSON function. The
+         *  two are recorded apart because they disagree: sqlite_orm declares the three-argument
+         *  `iif` alone while SQLite has taken `iif(X, Y)` and the n-ary form since 3.48, and
+         *  sqlite_orm's `coalesce` wants two arguments where SQLite refuses fewer at prepare.
+         *  `kAcceptsNothing` in the sqlite_orm column means the library spells no call of that name
+         *  codegen can write; in the SQLite column it means SQLite has no such function either,
+         *  i.e. `json_each` and `json_tree`, which are table-valued and refused as `no such
+         *  function` in an expression.
+         *
+         *  A row records the form as the headers declare it with every condition on the
+         *  declaration met. Most of those conditions are SQLite's own: `format()` is declared from
+         *  SQLite 3.38 on, `concat()` from 3.44, `unistr()` from 3.50, `median()` under
+         *  SQLITE_ENABLE_PERCENTILE, `sqlite_offset()` under SQLITE_ENABLE_OFFSET_SQL_FUNC — the
+         *  version and the build that have the function at all, so SQL calling it runs nowhere
+         *  the declaration is missing. The ones that are not — a macro the consumer's own
+         *  translation unit has to define, such as SQLITE_ENABLE_MATH_FUNCTIONS, and a form
+         *  declared narrower below some version, such as `json_valid()` — are not recorded yet;
+         *  that is a card of its own.
          *
          *  `count`, `max` and `min` carry the form their NAME resolves to most often; the call
          *  picks between their overloads in `resolveFunctionCallForm`, the one place that split
          *  lives.
          */
-        constexpr std::array<SqliteOrmFunctionForm, 106> kFunctionForms{{
-            {"abs", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"acos", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"acosh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"asin", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"asinh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"atan", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"atan2", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"atanh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"avg", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}},
-            {"ceil", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"ceiling", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"changes", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
-            {"char", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}, "char_"},
-            {"coalesce", SqliteOrmFormKind::builtinScalar, {2, kVariadicArity}, {2, kVariadicArity}},
-            {"cos", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"cosh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"count", SqliteOrmFormKind::builtinAggregate, {1, 1}, {0, 1}},
-            {"cume_dist", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}},
-            {"date", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
-            {"datetime", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
-            {"degrees", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"dense_rank", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}},
-            {"exp", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"first_value", SqliteOrmFormKind::windowFunction, {1, 1}, {1, 1}},
-            {"floor", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
+        constexpr std::array<SqliteOrmFunctionForm, 131> kFunctionForms{{
+            {"abs", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::firstArgument},
+            {"acos", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"acosh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"asin", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"asinh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"atan", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"atan2", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::real},
+            {"atanh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"avg", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"bm25", SqliteOrmFormKind::fts5Auxiliary, kAcceptsNothing, {0, kVariadicArity}},
+            {"ceil", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"ceiling", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"changes", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}, FunctionResultType::integer},
+            {"char",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text,
+             "char_"},
+            {"coalesce",
+             SqliteOrmFormKind::builtinScalar,
+             {2, kVariadicArity},
+             {2, kVariadicArity},
+             FunctionResultType::firstArgument},
+            {"concat",
+             SqliteOrmFormKind::builtinScalar,
+             {1, kVariadicArity},
+             {1, kVariadicArity},
+             FunctionResultType::text},
+            {"concat_ws",
+             SqliteOrmFormKind::builtinScalar,
+             {2, kVariadicArity},
+             {2, kVariadicArity},
+             FunctionResultType::text},
+            {"cos", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"cosh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"count", SqliteOrmFormKind::builtinAggregate, {1, 1}, {0, 1}, FunctionResultType::integer},
+            {"cume_dist", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}, FunctionResultType::real},
+            {"date",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
+            {"datetime",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
+            {"degrees", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"dense_rank", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}, FunctionResultType::integer},
+            {"exp", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"first_value", SqliteOrmFormKind::windowFunction, {1, 1}, {1, 1}, FunctionResultType::firstArgument},
+            {"floor", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"format",
+             SqliteOrmFormKind::builtinScalar,
+             {1, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
             {"glob", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"group_concat", SqliteOrmFormKind::builtinAggregate, {1, 2}, {1, 2}},
-            {"hex", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
+            {"group_concat", SqliteOrmFormKind::builtinAggregate, {1, 2}, {1, 2}, FunctionResultType::text},
+            {"hex", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
             {"highlight", SqliteOrmFormKind::fts5Auxiliary, kAcceptsNothing, {0, kVariadicArity}},
-            {"ifnull", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"iif", SqliteOrmFormKind::builtinScalar, {3, 3}, {2, kVariadicArity}},
-            {"instr", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"json", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"json_array", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
+            {"if",
+             SqliteOrmFormKind::builtinScalar,
+             {3, 3},
+             {2, kVariadicArity},
+             FunctionResultType::secondArgument,
+             "if_"},
+            {"ifnull", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::firstArgument},
+            {"iif", SqliteOrmFormKind::builtinScalar, {3, 3}, {2, kVariadicArity}, FunctionResultType::secondArgument},
+            {"instr", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::integer},
+            {"json", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"json_array",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
+            // This row, `json_insert`, `json_object`, `json_replace` and `json_set` take their
+            // arguments in pairs, so what the library declares is every other count from the
+            // minimum on; a range cannot say that, and `ArityRange` carries why these five are
+            // knowingly the wider stretch.
+            {"json_array_insert",
+             SqliteOrmFormKind::builtinScalar,
+             {3, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
             {"json_array_length", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
             {"json_each", SqliteOrmFormKind::notMapped, kAcceptsNothing, kAcceptsNothing},
-            {"json_extract", SqliteOrmFormKind::builtinScalar, {2, kVariadicArity}, {0, kVariadicArity}},
-            {"json_group_array", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}},
-            {"json_group_object", SqliteOrmFormKind::builtinAggregate, {2, 2}, {2, 2}},
-            // This row, `json_object`, `json_replace` and `json_set` take their arguments in
-            // pairs, so what the library declares is every other count from the minimum on; a
-            // range cannot say that, and `ArityRange` carries why these four are knowingly the
-            // wider stretch.
+            {"json_error_position", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::integer},
+            {"json_extract",
+             SqliteOrmFormKind::builtinScalar,
+             {2, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
+            {"json_group_array", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"json_group_object", SqliteOrmFormKind::builtinAggregate, {2, 2}, {2, 2}, FunctionResultType::text},
             {"json_insert", SqliteOrmFormKind::builtinScalar, {3, kVariadicArity}, {0, kVariadicArity}},
-            {"json_object", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
+            {"json_object",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
             {"json_patch", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"json_quote", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
+            {"json_pretty", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}, FunctionResultType::text},
+            {"json_quote", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
             {"json_remove", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
             {"json_replace", SqliteOrmFormKind::builtinScalar, {3, kVariadicArity}, {0, kVariadicArity}},
             {"json_set", SqliteOrmFormKind::builtinScalar, {3, kVariadicArity}, {0, kVariadicArity}},
             {"json_tree", SqliteOrmFormKind::notMapped, kAcceptsNothing, kAcceptsNothing},
             {"json_type", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
             {"json_valid", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
-            {"julianday", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
-            {"lag", SqliteOrmFormKind::windowFunction, {1, 3}, {1, 3}},
-            {"last_insert_rowid", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
-            {"last_value", SqliteOrmFormKind::windowFunction, {1, 1}, {1, 1}},
-            {"lead", SqliteOrmFormKind::windowFunction, {1, 3}, {1, 3}},
-            {"length", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
+            {"julianday",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::real},
+            {"lag", SqliteOrmFormKind::windowFunction, {1, 3}, {1, 3}, FunctionResultType::firstArgument},
+            {"last_insert_rowid", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}, FunctionResultType::integer},
+            {"last_value", SqliteOrmFormKind::windowFunction, {1, 1}, {1, 1}, FunctionResultType::firstArgument},
+            {"lead", SqliteOrmFormKind::windowFunction, {1, 3}, {1, 3}, FunctionResultType::firstArgument},
+            {"length", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::integer},
             {"like", SqliteOrmFormKind::builtinScalar, {2, 3}, {2, 3}},
             {"likelihood", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
             {"likely", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"ln", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"log", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
-            {"log10", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"log2", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"lower", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"ltrim", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
+            {"ln", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"log", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}, FunctionResultType::real},
+            {"log10", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"log2", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"lower", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"ltrim", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}, FunctionResultType::text},
             {"match", SqliteOrmFormKind::matchFunction, {2, 2}, {2, 2}},
-            {"max", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, kVariadicArity}},
-            {"min", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, kVariadicArity}},
-            {"mod", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, "mod_f"},
-            {"nth_value", SqliteOrmFormKind::windowFunction, {2, 2}, {2, 2}},
-            {"ntile", SqliteOrmFormKind::windowFunction, {1, 1}, {1, 1}},
-            {"nullif", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"percent_rank", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}},
-            {"pi", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
-            {"pow", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"power", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}},
-            {"printf", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
-            {"quote", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"radians", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"random", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
-            {"randomblob", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"rank", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}},
-            {"replace", SqliteOrmFormKind::builtinScalar, {3, 3}, {3, 3}},
-            {"round", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
-            {"row_number", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}},
-            {"rtrim", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
+            {"max",
+             SqliteOrmFormKind::builtinAggregate,
+             {1, 1},
+             {1, kVariadicArity},
+             FunctionResultType::firstArgument},
+            {"median", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"min",
+             SqliteOrmFormKind::builtinAggregate,
+             {1, 1},
+             {1, kVariadicArity},
+             FunctionResultType::firstArgument},
+            {"mod", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::real, "mod_f"},
+            {"nth_value", SqliteOrmFormKind::windowFunction, {2, 2}, {2, 2}, FunctionResultType::firstArgument},
+            {"ntile", SqliteOrmFormKind::windowFunction, {1, 1}, {1, 1}, FunctionResultType::integer},
+            {"nullif", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::firstArgument},
+            {"octet_length", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::integer},
+            {"percent_rank", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}, FunctionResultType::real},
+            {"percentile", SqliteOrmFormKind::builtinAggregate, {2, 2}, {2, 2}, FunctionResultType::real},
+            {"percentile_cont", SqliteOrmFormKind::builtinAggregate, {2, 2}, {2, 2}, FunctionResultType::real},
+            {"percentile_disc", SqliteOrmFormKind::builtinAggregate, {2, 2}, {2, 2}, FunctionResultType::real},
+            {"pi", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}, FunctionResultType::real},
+            {"pow", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::real},
+            {"power", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::real},
+            {"printf",
+             SqliteOrmFormKind::builtinScalar,
+             {1, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
+            {"quote", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"radians", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"random", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}, FunctionResultType::bigInteger},
+            {"randomblob", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::blob},
+            {"rank", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}, FunctionResultType::integer},
+            {"replace", SqliteOrmFormKind::builtinScalar, {3, 3}, {3, 3}, FunctionResultType::text},
+            {"round", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}, FunctionResultType::real},
+            {"row_number", SqliteOrmFormKind::windowFunction, {0, 0}, {0, 0}, FunctionResultType::integer},
+            {"rtrim", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}, FunctionResultType::text},
             {"sign", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"sin", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"sinh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
+            {"sin", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"sinh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"snippet", SqliteOrmFormKind::fts5Auxiliary, kAcceptsNothing, {0, kVariadicArity}},
             {"soundex", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"sqrt", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"strftime", SqliteOrmFormKind::builtinScalar, {1, kVariadicArity}, {0, kVariadicArity}},
-            {"substr", SqliteOrmFormKind::builtinScalar, {2, 3}, {2, 3}},
-            {"substring", SqliteOrmFormKind::builtinScalar, {2, 3}, {2, 3}},
-            {"sum", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}},
-            {"tan", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"tanh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"time", SqliteOrmFormKind::builtinScalar, {0, kVariadicArity}, {0, kVariadicArity}},
-            {"total", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}},
-            {"total_changes", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}},
-            {"trim", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}},
-            {"trunc", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"typeof", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, "typeof_"},
-            {"unicode", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
+            {"sqlite_compileoption_get", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"sqlite_compileoption_used",
+             SqliteOrmFormKind::builtinScalar,
+             {1, 1},
+             {1, 1},
+             FunctionResultType::integer},
+            {"sqlite_offset",
+             SqliteOrmFormKind::uncompilableFactory,
+             kAcceptsNothing,
+             {1, 1},
+             FunctionResultType::bigInteger},
+            {"sqlite_source_id", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}, FunctionResultType::text},
+            {"sqlite_version", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}, FunctionResultType::text},
+            {"sqrt", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"strftime",
+             SqliteOrmFormKind::builtinScalar,
+             {1, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
+            {"string_agg", SqliteOrmFormKind::builtinAggregate, {2, 2}, {2, 2}, FunctionResultType::text},
+            {"substr", SqliteOrmFormKind::builtinScalar, {2, 3}, {2, 3}, FunctionResultType::text},
+            {"substring", SqliteOrmFormKind::builtinScalar, {2, 3}, {2, 3}, FunctionResultType::text},
+            {"sum", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"tan", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"tanh", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"time",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::text},
+            {"timediff", SqliteOrmFormKind::builtinScalar, {2, 2}, {2, 2}, FunctionResultType::text},
+            {"total", SqliteOrmFormKind::builtinAggregate, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"total_changes", SqliteOrmFormKind::builtinScalar, {0, 0}, {0, 0}, FunctionResultType::integer},
+            {"trim", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}, FunctionResultType::text},
+            {"trunc", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::real},
+            {"typeof", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text, "typeof_"},
+            {"unhex", SqliteOrmFormKind::builtinScalar, {1, 2}, {1, 2}, FunctionResultType::blob},
+            {"unicode", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::integer},
+            {"unistr", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"unistr_quote", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"unixepoch",
+             SqliteOrmFormKind::builtinScalar,
+             {0, kVariadicArity},
+             {0, kVariadicArity},
+             FunctionResultType::bigInteger},
             {"unlikely", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"upper", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
-            {"zeroblob", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}},
+            {"upper", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::text},
+            {"zeroblob", SqliteOrmFormKind::builtinScalar, {1, 1}, {1, 1}, FunctionResultType::blob},
         }};
 
         /** `count` with the noun in the number it takes: `0 arguments`, `1 argument`, `2 arguments`. */
@@ -298,11 +422,12 @@ namespace sqlite2orm {
 
         /**
          *  Why an FTS5 auxiliary function cannot be generated. sqlite_orm declares `highlight()`,
-         *  and declares it over the FTS5 table's hidden column — `highlight(posts, 0, '<b>',
-         *  '</b>')` reads `posts` as a column reference, and the library's factory takes an
-         *  `fts5::hidden::any` column of the mapped virtual table there. Codegen writes an ordinary
-         *  column or expression for every argument it generates, so no call it writes resolves to
-         *  the form, whatever the argument count — which is why the row accepts none.
+         *  `snippet()` and `bm25()`, and declares each over the FTS5 table's hidden column —
+         *  `highlight(posts, 0, '<b>', '</b>')` reads `posts` as a column reference, and the
+         *  library's factory takes an `fts5::hidden::any` column of the mapped virtual table there.
+         *  Codegen writes an ordinary column or expression for every argument it generates, so no
+         *  call it writes resolves to the form, whatever the argument count — which is why the row
+         *  accepts none.
          */
         std::string fts5AuxiliaryRefusal(const FunctionCallNode& functionCall) {
             const std::string name(functionCall.name);
@@ -314,6 +439,21 @@ namespace sqlite2orm {
                    "generate the call as. SQLite prepares the same call whatever it is written with — an FTS5 "
                    "auxiliary function is registered for any argument list — and answers `unable to use function " +
                    toLowerAscii(functionCall.name) + " in the requested context` outside a query over the table";
+        }
+
+        /**
+         *  Why a name whose sqlite_orm factory does not compile cannot be generated: the form is
+         *  declared, and every call of it stops at the consumer's compiler — see
+         *  `SqliteOrmFormKind::uncompilableFactory` — which is what the gate is there to keep out
+         *  of the generated code.
+         */
+        std::string uncompilableFactoryRefusal(const SqliteOrmFunctionForm& form,
+                                               const FunctionCallNode& functionCall) {
+            return std::string(functionCall.name) +
+                   "() is declared in sqlite_orm, but its factory does not compile on the revision the generated "
+                   "code is built against, whatever it is called with, so there is no form to generate the call "
+                   "as. " +
+                   sqliteVerdictOnArity(form, functionCall);
         }
 
         /**
@@ -450,6 +590,9 @@ namespace sqlite2orm {
         }
         if (form->kind == SqliteOrmFormKind::fts5Auxiliary) {
             return fts5AuxiliaryRefusal(functionCall);
+        }
+        if (form->kind == SqliteOrmFormKind::uncompilableFactory) {
+            return uncompilableFactoryRefusal(*form, functionCall);
         }
         if (!form->ormArity.accepts(writtenArgumentCount(functionCall))) {
             return std::string(functionCall.name) + "() takes " + acceptedArgumentCountText(form->ormArity) +

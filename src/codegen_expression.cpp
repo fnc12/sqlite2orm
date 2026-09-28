@@ -158,6 +158,22 @@ namespace sqlite2orm {
             if (const auto text = this->context.clauseColumnAsStringLiteral(columnRef->columnName)) {
                 return CodeGenResult{cppStringLiteral(*text), {}};
             }
+            // A name the subquery's own FROM declares no column of and one of its result columns
+            // is aliased as stands for that column's expression, which SQLite reads in its place
+            // — `(SELECT uid AS a FROM u WHERE a > 1)` compares `uid`. The expression is resolved
+            // where the result list is, which sees no alias.
+            if (const AstNode* aliased = this->context.resultColumnAliasExpression(columnRef->columnName)) {
+                struct ResultListScope {
+                    CodeGeneratorContext& ctx;
+                    std::map<std::string, const AstNode*> saved;
+                    explicit ResultListScope(CodeGeneratorContext& context) :
+                        ctx(context), saved(std::exchange(context.selectResultColumnAliases, {})) {}
+                    ~ResultListScope() {
+                        ctx.selectResultColumnAliases = std::move(saved);
+                    }
+                } resultList{this->context};
+                return this->generateExpression(*aliased);
+            }
             // A name the subquery's own FROM declares no column of is a correlated reference to the
             // enclosing query SQLite resolves it in, and it is written the way it would be there.
             if (const ColumnNameScope* correlated = this->context.correlatedColumnNameScope(columnRef->columnName)) {

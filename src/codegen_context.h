@@ -451,12 +451,14 @@ namespace sqlite2orm {
          */
         std::vector<ColumnNameScope> enclosingColumnNameScopes;
         /**
-         *  The result-column aliases of the select being generated, lowercased with their quotes
-         *  stripped, once its result list is written: SQLite resolves a name in its ON, WHERE,
-         *  GROUP BY, HAVING and ORDER BY against them before any enclosing query, but not in the
-         *  result list itself. Empty while the result list is generated.
+         *  The result-column aliases of the expression subquery being generated, lowercased with
+         *  their quotes stripped, each to the expression it stands for, once its result list is
+         *  written: SQLite resolves a name its FROM does not declare in its ON, WHERE and ORDER BY
+         *  against them before any enclosing query, but not in the result list itself. A subquery
+         *  writes no `as<…>` for them, so such a name is generated as the expression it stands for,
+         *  the one SQLite reads it as.
          */
-        std::vector<std::string> selectResultColumnAliases;
+        std::map<std::string, const AstNode*> selectResultColumnAliases;
         /**
          *  Set while the field operand of a MATCH is generated. `match_t` holds that operand, but
          *  sqlite_orm walks only the pattern argument of it (`ast_iterator<match_t<Field, X>>`
@@ -696,6 +698,14 @@ namespace sqlite2orm {
          *  single enclosing query is left.
          */
         const ColumnNameScope* correlatedColumnNameScope(std::string_view columnName) const;
+
+        /**
+         *  The expression a result-column alias of the subquery at hand stands for where a column
+         *  naming no table is that alias: its FROM declares no such column, and the name is used
+         *  after the result list. Nothing where it is no such alias, and where the FROM may declare
+         *  the name.
+         */
+        const AstNode* resultColumnAliasExpression(std::string_view columnName) const;
 
         /**
          *  Whether the FROM of `scope` declares a column `columnName`; nothing where one of its

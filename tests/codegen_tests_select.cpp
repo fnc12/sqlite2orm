@@ -2381,6 +2381,42 @@ TEST_CASE("codegen: a name the subquery's FROM does not declare is a correlated 
                          "column<cte_0>(&T::Id)))))));");
 }
 
+// SQLite resolves a name the subquery's FROM does not declare against the subquery's own result
+// aliases before any enclosing query, everywhere but in the result list itself, and reads the
+// aliased expression in its place: sqlite3 3.51 compares `uid` in `WHERE Id > 150` and orders by
+// `uid`. Read as a correlated `&T::Id`, those compiled and returned other rows; the values are
+// pinned in "runtime: a subquery's own result alias answers for a name before the enclosing row".
+TEST_CASE("codegen: a subquery's own result alias answers for a name before the enclosing query") {
+    const std::string schema = "CREATE TABLE t (\"Id\" INTEGER, [Name] TEXT, PRIMARY KEY(ID)); "
+                               "CREATE TABLE u (uid INTEGER, \"TId\" INTEGER); ";
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u WHERE Id > 150) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, where(c(&U::uid) > 150)), from<T>());");
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u ORDER BY Id DESC) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, order_by(&U::uid).desc()), from<T>());");
+
+    // The ORDER BY, the LIMIT and the OFFSET of a subquery see no enclosing query: sqlite3 3.51
+    // rejects `ORDER BY Id` and `OFFSET Id` here with "no such column: Id", so they are not written
+    // as the enclosing `&T::Id` — which would compile, and fail in SQLite only once prepared. The
+    // result list does see it, but `ORDER BY Id` naming the alias of `uid + Id` has no spelling
+    // outside the alias, since the text `"t"."Id"` in the ORDER BY is rejected all the same.
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid FROM u ORDER BY Id) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, order_by(&U::Id)), from<T>());");
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid FROM u LIMIT 1 OFFSET Id) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, limit(1, offset(&U::Id))), from<T>());");
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid + Id AS Id FROM u ORDER BY Id DESC) FROM t;").code ==
+            "auto rows = storage.select(as_optional(select(c(&U::uid) + &T::Id, from<U>(), "
+            "order_by(c(&U::uid) + &U::Id).desc())), from<T>());");
+    // A subquery in the ORDER BY of the outermost query still reads that query's row.
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t ORDER BY (SELECT uid FROM u WHERE TId = Id);").code ==
+            "auto rows = storage.select(&T::Name, from<T>(), order_by(select(&U::uid, from<U>(), "
+            "where(c(&U::TId) == &T::Id))));");
+
+    // A column the FROM declares comes before an alias of the same name: `TId` is `u.TId`.
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t WHERE EXISTS (SELECT uid AS TId FROM u WHERE TId = Id);")
+                .code == "auto rows = storage.select(&T::Name, from<T>(), where(exists(select(&U::uid, from<U>(), "
+                         "where(c(&U::TId) == &T::Id)))));");
+}
+
 TEST_CASE("codegen: a scalar subquery result column pins the outer FROM down") {
     REQUIRE(generate("SELECT id, (SELECT COUNT(*) FROM orders) FROM users;") ==
             "auto rows = storage.select(columns(&Users::id, select(count<Orders>())), from<Users>());");

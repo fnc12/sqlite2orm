@@ -4,7 +4,6 @@
 
 #include <sqlite2orm/utils.h>
 
-#include <algorithm>
 #include <utility>
 
 namespace sqlite2orm {
@@ -226,6 +225,10 @@ namespace sqlite2orm {
                 // The form is `get<Alias>()`, typed by the expression the alias was declared over.
                 return nullptr;
             }
+            if (this->resultColumnAliasExpression(columnRef->columnName)) {
+                // The form is the expression the alias stands for, which names no column itself.
+                return nullptr;
+            }
             if (this->implicitSingleSourceCteTypedef) {
                 // Every form a reference that names no table takes under a single CTE source
                 // names that CTE, so no field of a source table is read.
@@ -269,9 +272,7 @@ namespace sqlite2orm {
         }
         // A result-column alias of the query at hand answers for the name before any enclosing
         // query does: `(SELECT uid AS a FROM u WHERE a > 1)` compares `uid`.
-        const std::string aliasKey = toLowerAscii(stripColumnAliasQuotes(columnName));
-        if (std::find(this->selectResultColumnAliases.begin(), this->selectResultColumnAliases.end(), aliasKey) !=
-            this->selectResultColumnAliases.end()) {
+        if (this->selectResultColumnAliases.count(toLowerAscii(stripColumnAliasQuotes(columnName)))) {
             return nullptr;
         }
         // A query whose columns the batch does not say — one reading a CTE, say — is where the
@@ -294,6 +295,16 @@ namespace sqlite2orm {
             undecided = &*scopeIterator;
         }
         return undecided;
+    }
+
+    const AstNode* CodeGeneratorContext::resultColumnAliasExpression(std::string_view columnName) const {
+        const auto aliasIterator =
+            this->selectResultColumnAliases.find(toLowerAscii(stripColumnAliasQuotes(columnName)));
+        if (aliasIterator == this->selectResultColumnAliases.end() ||
+            this->scopeDeclaresColumn(this->columnNameScope(), columnName) != false) {
+            return nullptr;
+        }
+        return aliasIterator->second;
     }
 
     std::optional<bool> CodeGeneratorContext::scopeDeclaresColumn(const ColumnNameScope& scope,

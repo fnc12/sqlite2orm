@@ -1908,6 +1908,22 @@ TEST_CASE("runtime: a correlated name the subquery's FROM does not declare reads
             std::vector<std::string>{"100,200,NULL"});
 }
 
+// A subquery's own result alias answers for a name its FROM does not declare before the enclosing
+// row does, outside the result list. Over the same rows sqlite3 3.51 answers
+// `SELECT (SELECT uid AS Id FROM u WHERE Id > 150) FROM t` with 200,200,200 and
+// `SELECT (SELECT uid AS Id FROM u ORDER BY Id DESC) FROM t` with 300,300,300. Read as the
+// enclosing `t.Id`, the two compiled and came back as NULL,NULL,NULL and 100,100,100.
+TEST_CASE("runtime: a subquery's own result alias answers for a name before the enclosing row") {
+    const std::string schema(correlatedSchema);
+    const std::string where =
+        generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u WHERE Id > 150) FROM t;").code;
+    const std::string orderBy =
+        generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u ORDER BY Id DESC) FROM t;").code;
+    REQUIRE(where == "auto rows = storage.select(select(&U::uid, where(c(&U::uid) > 150)), from<T>());");
+    REQUIRE(orderBy == "auto rows = storage.select(select(&U::uid, order_by(&U::uid).desc()), from<T>());");
+    REQUIRE(correlatedRowValues({where, orderBy}) == std::vector<std::string>{"200,200,200", "300,300,300"});
+}
+
 // A BLOB among the arguments makes the generated type `std::vector<char>` rather than
 // `std::string`: sqlite_orm reads a `std::string` through `sqlite3_column_text`, which stops at
 // the first NUL byte a BLOB holds, and x'004100' would have come back as the empty text. Every

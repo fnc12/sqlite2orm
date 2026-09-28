@@ -1635,6 +1635,73 @@ TEST_CASE("processMultiSql: a table constraint spelling its column otherwise com
                                    "CREATE TABLE t (\"Id\" INTEGER, v TEXT REFERENCES t, PRIMARY KEY(ID));")));
 }
 
+// A table-level UNIQUE over columns of one type. Every member pointer into a mapped struct has `std`
+// among its associated namespaces, so an unqualified `unique(&T::a, &T::b)` finds `std::unique(It, It)`
+// by ADL, and over two or three members of one type that template wins over `sqlite_orm::unique` —
+// the table is then handed a member pointer instead of a constraint and fails a static_assert. Over
+// columns of different types `It` cannot be deduced and nothing is hijacked, which is why a schema
+// like `(a INTEGER, b TEXT, UNIQUE(a, b))` never caught it. sqlite3 3.51.0 takes every statement
+// below and enforces each key. The literal pins the columns to one type; only the compiler says the
+// text is a constraint sqlite_orm accepts.
+TEST_CASE("processMultiSql: a table-level UNIQUE over columns of one type compiles") {
+    const auto requireTableCompiles = [](std::string_view sql, std::string_view expected) {
+        const auto results = processMultiSql(std::string(sql));
+        REQUIRE(results.size() == 1);
+        REQUIRE(results[0].codegen.warnings.empty());
+        REQUIRE(results[0].codegen.code == expected);
+        requireCompiles(compiledPrologue + joinGeneratedCode(results));
+    };
+
+    requireTableCompiles("CREATE TABLE t (a INTEGER, b INTEGER, UNIQUE (a, b));",
+                         "struct T {\n"
+                         "    std::optional<int64_t> a;\n"
+                         "    std::optional<int64_t> b;\n"
+                         "};\n"
+                         "\n"
+                         "auto storage = make_storage(\"\",\n"
+                         "    make_table(\"t\",\n"
+                         "        make_column(\"a\", &T::a),\n"
+                         "        make_column(\"b\", &T::b),\n"
+                         "        sqlite_orm::unique(&T::a, &T::b)));");
+    requireTableCompiles("CREATE TABLE t (a TEXT, b TEXT, UNIQUE (a, b));",
+                         "struct T {\n"
+                         "    std::optional<std::string> a;\n"
+                         "    std::optional<std::string> b;\n"
+                         "};\n"
+                         "\n"
+                         "auto storage = make_storage(\"\",\n"
+                         "    make_table(\"t\",\n"
+                         "        make_column(\"a\", &T::a),\n"
+                         "        make_column(\"b\", &T::b),\n"
+                         "        sqlite_orm::unique(&T::a, &T::b)));");
+    requireTableCompiles("CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER, UNIQUE (a, b, c));",
+                         "struct T {\n"
+                         "    std::optional<int64_t> a;\n"
+                         "    std::optional<int64_t> b;\n"
+                         "    std::optional<int64_t> c;\n"
+                         "};\n"
+                         "\n"
+                         "auto storage = make_storage(\"\",\n"
+                         "    make_table(\"t\",\n"
+                         "        make_column(\"a\", &T::a),\n"
+                         "        make_column(\"b\", &T::b),\n"
+                         "        make_column(\"c\", &T::c),\n"
+                         "        sqlite_orm::unique(&T::a, &T::b, &T::c)));");
+    requireTableCompiles("CREATE TABLE t (a TEXT, b TEXT, c TEXT, UNIQUE (a, b, c));",
+                         "struct T {\n"
+                         "    std::optional<std::string> a;\n"
+                         "    std::optional<std::string> b;\n"
+                         "    std::optional<std::string> c;\n"
+                         "};\n"
+                         "\n"
+                         "auto storage = make_storage(\"\",\n"
+                         "    make_table(\"t\",\n"
+                         "        make_column(\"a\", &T::a),\n"
+                         "        make_column(\"b\", &T::b),\n"
+                         "        make_column(\"c\", &T::c),\n"
+                         "        sqlite_orm::unique(&T::a, &T::b, &T::c)));");
+}
+
 // The names inside a table declaration that are not columns at all, and that the resolution above
 // had turned into member pointers into members no struct declares. A DEFAULT written without
 // parentheses is a string to SQLite in every spelling, and a double-quoted name no column answers

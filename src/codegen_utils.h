@@ -3,6 +3,7 @@
 #include <sqlite2orm/ast.h>
 #include <sqlite2orm/codegen_policy.h>
 #include <sqlite2orm/codegen_result.h>
+#include <sqlite2orm/result_column_widening.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -911,10 +912,11 @@ namespace sqlite2orm {
      */
     std::optional<std::string> generatedResultColumnCppType(const AstNode& astNode);
     /**
-     *  Which result columns of a compound SELECT are generated as `as_optional(...)` — the single
-     *  home of that rule. One entry per result column position, true where EVERY arm widens that
-     *  column; empty where none does. sqlite_orm reads a compound back through
-     *  `std::common_type` of the types its arms come out as, so a column is widened in every arm
+     *  How the result columns of a compound SELECT are widened — `cast<int64_t>(...)`,
+     *  `as_optional(...)` — the single home of that rule. One entry per result column position,
+     *  each widening applied in EVERY arm of that column; empty where no column is widened.
+     *  sqlite_orm reads a compound back through `std::common_type` of the types its arms come out
+     *  as, so a column is widened in every arm
      *  at once or in none: one `std::optional<double>` beside a plain `int` still reads the row
      *  optionally, but beside an `std::optional<int>` it has no common type at all, and the
      *  generated code stops compiling. That is why the widening the ordinary SELECT settles per
@@ -927,12 +929,15 @@ namespace sqlite2orm {
      *  FROM clause is the same type by construction, whatever that type is, so
      *  `length(a) UNION length(a)` is widened like a plain `length(a)`. Any other arm leaves the
      *  column as written, since widening one arm beside it is exactly what may have no common type.
-     *  Arms disagreeing on how many columns
-     *  they carry are left alone too: SQLite refuses such a compound outright ("SELECTs to the
+     *  The `cast<int64_t>` a bitwise result column needs (`selectResultNeedsIntegerCast`) follows the
+     *  same rule: it changes the C++ type of the arm, so it is placed only when every arm of the
+     *  column is a bitwise operator, and then in all of them, which move from `int` to `int64_t`
+     *  together. Arms disagreeing on how many columns they carry are left alone too: SQLite refuses
+     *  such a compound outright ("SELECTs to the
      *  left and right of UNION do not have the same number of result columns").
      */
-    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
-                                                   const CodeGeneratorContext& context);
+    std::vector<ResultColumnWidening> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
+                                                                   const CodeGeneratorContext& context);
     /**
      *  Whether a SELECT result column has to be generated as `cast<int64_t>(...)` for the integer
      *  SQLite computes to reach the caller whole. sqlite_orm types the bitwise operators `int`, so

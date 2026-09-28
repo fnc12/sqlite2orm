@@ -2905,6 +2905,53 @@ TEST_CASE("codegen: a compound SELECT widens a call every arm spells alike") {
             "select(length(alias_column<alias_a<Users>>(&Users::a)))));");
 }
 
+// sqlite_orm types the bitwise operators `int`, and a compound is read back through the
+// `std::common_type` of its arms, so a compound of bitwise arms read the int64 SQLite computes
+// through a 32-bit truncation: `SELECT a | 0 FROM users UNION SELECT a & -1 FROM users` over
+// `a = 4294967296` came back as 0 on master, where sqlite3 3.51 answers 4294967296 (card
+// 1869499142733039137). The CAST a plain SELECT places changes the C++ type an arm comes out as, so
+// it is placed in every arm of the column at once — or, beside an arm of another type, in none.
+// Values checked in "runtime: a compound of bitwise arms reads the whole int64 back".
+TEST_CASE("codegen: a compound SELECT casts a bitwise result column in every arm") {
+    REQUIRE(generate("SELECT a | 0 FROM users UNION SELECT a & -1 FROM users;") ==
+            "auto rows = storage.select(union_(select(as_optional(cast<int64_t>(c(&Users::a) | 0))), "
+            "select(as_optional(cast<int64_t>(c(&Users::a) & -1)))));");
+    REQUIRE(generate("SELECT ~a UNION ALL SELECT a << 1;") ==
+            "auto rows = storage.select(union_all(select(as_optional(cast<int64_t>(~c(&User::a)))), "
+            "select(as_optional(cast<int64_t>(c(&User::a) << 1)))));");
+    REQUIRE(generate("SELECT a >> 1 INTERSECT SELECT a >> 1 INTERSECT SELECT a & -1;") ==
+            "auto rows = storage.select(intersect(select(as_optional(cast<int64_t>(c(&User::a) >> 1))), "
+            "select(as_optional(cast<int64_t>(c(&User::a) >> 1))), "
+            "select(as_optional(cast<int64_t>(c(&User::a) & -1)))));");
+    // An operator over literals alone needs no `as_optional`, and still needs the CAST.
+    REQUIRE(generate("SELECT 9223372036854775807 & -1 UNION SELECT 1 | 2;") ==
+            "auto rows = storage.select(union_(select(cast<int64_t>(c(9223372036854775807) & -1)), "
+            "select(cast<int64_t>(c(1) | 2))));");
+    // Every column is decided on its own: the bitwise one is cast, the arithmetic one beside it is
+    // widened to `as_optional` alone.
+    REQUIRE(generate("SELECT a & 1, a + 1 UNION SELECT a | 2, a * 2;") ==
+            "auto rows = storage.select(union_(select(columns(as_optional(cast<int64_t>(c(&User::a) & 1)), "
+            "as_optional(c(&User::a) + 1))), select(columns(as_optional(cast<int64_t>(c(&User::a) | 2)), "
+            "as_optional(c(&User::a) * 2)))));");
+    // The outer statement of a `WITH` is read back by the caller, and is cast there.
+    REQUIRE(generate("WITH q AS (SELECT 1 AS a) SELECT a & 1 FROM q UNION SELECT a | 2 FROM q;") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(1)), "
+            "select(union_(select(as_optional(cast<int64_t>(column<cte_0>(\"a\") & 1))), "
+            "select(as_optional(cast<int64_t>(column<cte_0>(\"a\") | 2))))));");
+    // A bitwise arm beside one whose type is not `int` too keeps the type it comes out as: casting
+    // it alone is exactly the partial widening the common type may not survive.
+    REQUIRE(generate("SELECT a | 0 UNION SELECT a;") ==
+            "auto rows = storage.select(union_(select(c(&User::a) | 0), select(&User::a)));");
+    REQUIRE(generate("SELECT a | 0 UNION SELECT 1;") ==
+            "auto rows = storage.select(union_(select(c(&User::a) | 0), select(1)));");
+    // A compound standing as a subquery hands its columns to SQL, and nothing there is cast.
+    REQUIRE(generate("SELECT id FROM users WHERE a IN (SELECT a & 1 FROM users UNION SELECT a | 2 FROM users);") ==
+            "auto rows = storage.select(&Users::id, where(in(&Users::a, union_(select(c(&Users::a) & 1), "
+            "select(c(&Users::a) | 2)))));");
+}
+
 // The arms share their generator with the subqueries, and a subquery hands its columns to SQL
 // itself rather than to the caller: a view body, a CTE, an IN and an INSERT ... SELECT read nothing
 // back, so nothing there is widened. The outer statement of a `WITH` is read back, and is.

@@ -3,6 +3,7 @@
 #include <sqlite2orm/ast.h>
 #include <sqlite2orm/codegen_policy.h>
 #include <sqlite2orm/codegen_result.h>
+#include <sqlite2orm/result_column_widening.h>
 
 #include <cstddef>
 #include <memory>
@@ -59,12 +60,14 @@ namespace sqlite2orm {
         CodeGenResult generateStoredExpression(const AstNode& astNode);
 
         /** See `SelectCodeGenerator` for what `widenedResultColumns` and `cteBodySelect` name. */
-        CodeGenResult tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
-                                                          const std::vector<bool>& widenedResultColumns = {},
-                                                          bool cteBodySelect = false);
-        CodeGenResult tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
-                                                            const std::vector<bool>& widenedResultColumns = {},
-                                                            bool cteBodySelect = false);
+        CodeGenResult
+        tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
+                                            const std::vector<ResultColumnWidening>& widenedResultColumns = {},
+                                            bool cteBodySelect = false);
+        CodeGenResult
+        tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
+                                              const std::vector<ResultColumnWidening>& widenedResultColumns = {},
+                                              bool cteBodySelect = false);
         CodeGenResult tryCodegenSelectLikeSubquery(const AstNode& node, bool cteBodySelect = false);
 
         CodeGenResult generateTriggerStep(const AstNode& statement, const std::string& subjectTableStruct);

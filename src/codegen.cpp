@@ -311,9 +311,10 @@ namespace sqlite2orm {
                                                astNode);
     }
 
-    CodeGenResult CodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
-                                                                     const std::vector<bool>& widenedResultColumns,
-                                                                     bool cteBodySelect) {
+    CodeGenResult
+    CodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
+                                                       const std::vector<ResultColumnWidening>& widenedResultColumns,
+                                                       bool cteBodySelect) {
         const GenerationMarks marks = this->generatorContext->mark();
         return this->withRecordedSince(
             this->selectCodeGenerator->tryCodegenSqliteSelectSubexpression(selectNode,
@@ -322,9 +323,10 @@ namespace sqlite2orm {
             marks);
     }
 
-    CodeGenResult CodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
-                                                                       const std::vector<bool>& widenedResultColumns,
-                                                                       bool cteBodySelect) {
+    CodeGenResult
+    CodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
+                                                         const std::vector<ResultColumnWidening>& widenedResultColumns,
+                                                         bool cteBodySelect) {
         const GenerationMarks marks = this->generatorContext->mark();
         return this->withRecordedSince(
             this->selectCodeGenerator->tryCodegenCompoundSelectSubexpression(compoundNode,

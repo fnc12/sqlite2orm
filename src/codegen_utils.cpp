@@ -3705,8 +3705,9 @@ namespace sqlite2orm {
                 case BinaryOperator::bitwiseOr:
                 case BinaryOperator::shiftLeft:
                 case BinaryOperator::shiftRight:
-                    // `int`, not `int64_t`: the CAST `selectResultNeedsIntegerCast` asks for is
-                    // placed by the ordinary SELECT's result column and nowhere else.
+                    // `int`, not `int64_t`: this is the type of the expression as generated, and
+                    // the CAST `selectResultNeedsIntegerCast` asks for is a widening the result
+                    // column places on top of it, as it places `as_optional`.
                     return "int";
                 case BinaryOperator::concatenate:
                     return "std::string";
@@ -3765,8 +3766,8 @@ namespace sqlite2orm {
         return std::nullopt;
     }
 
-    std::vector<bool> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
-                                                   const CodeGeneratorContext& context) {
+    std::vector<ResultColumnWidening> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,
+                                                                   const CodeGeneratorContext& context) {
         std::vector<const SelectNode*> arms;
         arms.reserve(compoundNode.selects.size());
         for (const auto& select: compoundNode.selects) {
@@ -3792,13 +3793,14 @@ namespace sqlite2orm {
                 }
             }
         }
-        std::vector<bool> widenedColumns(columnCount, false);
+        std::vector<ResultColumnWidening> widenedColumns(columnCount);
         bool widensAnyColumn = false;
         const SelectNode& leadingArm = *arms.front();
         for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
             const AstNode& leadingExpression = *leadingArm.columns.at(columnIndex).expression;
             const std::optional<std::string> cppType = generatedResultColumnCppType(leadingExpression);
             bool sameTypeEverywhere = true;
+            bool everyArmNeedsIntegerCast = true;
             bool someArmNeedsWidening = false;
             for (const auto* arm: arms) {
                 const AstNode& columnExpression = *arm->columns.at(columnIndex).expression;
@@ -3812,10 +3814,17 @@ namespace sqlite2orm {
                     sameTypeEverywhere = false;
                     break;
                 }
+                everyArmNeedsIntegerCast = everyArmNeedsIntegerCast && selectResultNeedsIntegerCast(columnExpression);
                 someArmNeedsWidening = someArmNeedsWidening || selectResultNeedsAsOptional(columnExpression, context);
             }
-            widenedColumns[columnIndex] = sameTypeEverywhere && someArmNeedsWidening;
-            widensAnyColumn = widensAnyColumn || widenedColumns[columnIndex];
+            if (!sameTypeEverywhere) {
+                continue;
+            }
+            // Every arm is a bitwise operator here, so every arm comes out `int` and every arm is
+            // cast: the arms move to `int64_t` together and keep their common type.
+            widenedColumns[columnIndex].integerCast = everyArmNeedsIntegerCast;
+            widenedColumns[columnIndex].asOptional = someArmNeedsWidening;
+            widensAnyColumn = widensAnyColumn || widenedColumns[columnIndex] != ResultColumnWidening{};
         }
         if (!widensAnyColumn) {
             return {};

@@ -2324,6 +2324,18 @@ TEST_CASE("codegen: a subquery in WHERE pins the outer FROM down") {
             "auto rows = storage.select(&Users::id, from<Users>(), where(in(&Users::id, select(&Orders::id))));");
 }
 
+// `limit(...)` closes the subquery after its `order_by(...)`: sqlite_orm refuses to compile the
+// clauses in any other order (static_assert on the canonical FROM, JOINs, WHERE, GROUP BY, WINDOW,
+// ORDER BY, LIMIT order).
+TEST_CASE("codegen: a subquery with LIMIT keeps it after ORDER BY") {
+    REQUIRE(generate("SELECT name FROM users WHERE id IN (SELECT uid FROM orders ORDER BY id LIMIT 1);") ==
+            "auto rows = storage.select(&Users::name, from<Users>(), where(in(&Users::id, select(&Orders::uid, "
+            "order_by(&Orders::id), limit(1)))));");
+    REQUIRE(generate("SELECT name FROM users WHERE id IN (SELECT uid FROM orders ORDER BY id LIMIT 2 OFFSET 1);") ==
+            "auto rows = storage.select(&Users::name, from<Users>(), where(in(&Users::id, select(&Orders::uid, "
+            "order_by(&Orders::id), limit(2, offset(1))))));");
+}
+
 TEST_CASE("codegen: a subquery over the outer table leaves the FROM implicit") {
     REQUIRE(generate("SELECT id FROM users WHERE id IN (SELECT id FROM users);") ==
             "auto rows = storage.select(&Users::id, where(in(&Users::id, select(&Users::id))));");
@@ -2436,6 +2448,30 @@ TEST_CASE("codegen: a select over a CTE with a subquery names the CTE in its FRO
             "auto rows = storage.with(cte<cte_0>().as(select(columns(&Users::id, &Users::name))), "
             "select(column<cte_0>(&Users::name), from<cte_0>(), where(in(column<cte_0>(&Users::id), "
             "select(&Orders::uid)))));");
+}
+
+// A CTE joined by a comma gets no `cross_join<cte_0>()` clause of its own: it is one more source of
+// the FROM, which then names both it and the outer table.
+TEST_CASE("codegen: a subquery next to a CTE cross join names both sources in its FROM") {
+    REQUIRE(generate("WITH c AS (SELECT id FROM users) "
+                     "SELECT users.name FROM users, c WHERE users.id IN (SELECT uid FROM orders);") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), select(&Users::name, "
+            "from<Users, cte_0>(), where(in(&Users::id, select(&Orders::uid)))));");
+}
+
+// A CTE joined with an ON clause does not stand in for the outer table, so the FROM still names it:
+// left implicit, the table of the subquery came in as a second source, a cartesian product the SQL
+// never asked for.
+TEST_CASE("codegen: a subquery next to a CTE join names the outer table in its FROM") {
+    REQUIRE(generate("WITH c AS (SELECT id FROM users) "
+                     "SELECT users.name FROM users JOIN c ON c.id = users.id "
+                     "WHERE users.id IN (SELECT uid FROM orders);") ==
+            "using namespace sqlite_orm::literals;\n"
+            "using cte_0 = decltype(1_ctealias);\n"
+            "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), select(&Users::name, from<Users>(), "
+            "join<cte_0>(on(column<cte_0>(&Users::id) == &Users::id)), where(in(&Users::id, select(&Orders::uid)))));");
 }
 
 // A column the SQL leaves unqualified belongs to the FROM source all the same, and an aliased

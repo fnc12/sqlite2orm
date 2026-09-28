@@ -2922,6 +2922,9 @@ TEST_CASE("codegen: a hint is anchored at the SQL it explains") {
     // warning met twice is.
     REQUIRE(generateFull("SELECT a & 1, b & 1 FROM t;").comments ==
             std::vector<CodegenComment>{CodegenComment{kBitwiseResultCastComment, SourceLocation{1, 8}, 5}});
+    // The arms of a compound are cast too, and report the form once, at the first arm.
+    REQUIRE(generateFull("SELECT a & 1 FROM t UNION SELECT a | 2 FROM t;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBitwiseResultCastComment, SourceLocation{1, 8}, 5}});
     // A non-ASCII name before the hint moves its column by characters and not by the bytes UTF-8
     // writes them in: `"üü"` is four characters and six bytes, so a column counted in bytes would
     // point two characters past the negation.

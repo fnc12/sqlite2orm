@@ -1134,10 +1134,10 @@ namespace sqlite2orm {
         return CodeGenResult{code, std::move(selectDecisionPoints), std::move(selectWarnings)};
     }
 
-    CodeGenResult
-    SelectCodeGenerator::tryCodegenSqliteSelectSubexpression(const SelectNode& selectNode,
-                                                             const std::vector<bool>& widenedResultColumns,
-                                                             bool cteBodySelect) {
+    CodeGenResult SelectCodeGenerator::tryCodegenSqliteSelectSubexpression(
+        const SelectNode& selectNode,
+        const std::vector<ResultColumnWidening>& widenedResultColumns,
+        bool cteBodySelect) {
         struct SubselectAliasRestore {
             CodeGeneratorContext* ctx;
             std::map<std::string, std::string> savedAliases;
@@ -1328,10 +1328,20 @@ namespace sqlite2orm {
         // widens its own: the compound this select is an arm of decided the widening for every arm
         // at once, so that the arms keep the one common type sqlite_orm reads them back through.
         auto colExprAsResultColumn = [&](size_t colIndex, const std::string& expr) -> std::string {
-            if (colIndex < widenedResultColumns.size() && widenedResultColumns[colIndex]) {
-                return "as_optional(" + expr + ")";
+            if (colIndex >= widenedResultColumns.size()) {
+                return expr;
             }
-            return expr;
+            const ResultColumnWidening& widening = widenedResultColumns[colIndex];
+            std::string widened = expr;
+            if (widening.integerCast) {
+                widened = "cast<int64_t>(" + widened + ")";
+                this->context.recordComment(
+                    sourceSpanComment(kCommentBitwiseResultCast, *selectNode.columns.at(colIndex).expression));
+            }
+            if (widening.asOptional) {
+                widened = "as_optional(" + widened + ")";
+            }
+            return widened;
         };
         // A CTE column is read back through sqlite_orm's `extract_colref_expressions`, which is
         // deleted for a `select_t`, so a subquery standing as a WHOLE column of a CTE has no form
@@ -1651,10 +1661,10 @@ namespace sqlite2orm {
         return CodeGenResult{code, std::move(subDecisionPoints), std::move(subWarnings)};
     }
 
-    CodeGenResult
-    SelectCodeGenerator::tryCodegenCompoundSelectSubexpression(const CompoundSelectNode& compoundNode,
-                                                               const std::vector<bool>& widenedResultColumns,
-                                                               bool cteBodySelect) {
+    CodeGenResult SelectCodeGenerator::tryCodegenCompoundSelectSubexpression(
+        const CompoundSelectNode& compoundNode,
+        const std::vector<ResultColumnWidening>& widenedResultColumns,
+        bool cteBodySelect) {
         if (compoundNode.selects.size() != compoundNode.operators.size() + 1) {
             return CodeGenResult{{}, {}, {"internal: compound SELECT operand count mismatch"}};
         }

@@ -8,7 +8,7 @@
 INSERT INTO [Categories] ([CategoryID], [CategoryName], [Description], [Picture]) VALUES
     (1, 'Beverages', 'Soft drinks, coffees, teas, beers, and ales', NULL),
     (2, 'Condiments', 'Sweet and savory sauces, relishes, spreads, and seasonings', NULL),
-    (3, 'Confections', 'Desserts, candies, and sweet breads', NULL);
+    (3, 'Confections', 'Desserts, candies, and sweet breads', x'0042');
 
 INSERT INTO [Suppliers] ([SupplierID], [CompanyName], [ContactName], [ContactTitle], [Address], [City], [Region], [PostalCode], [Country], [Phone], [Fax], [HomePage]) VALUES
     (1, 'Exotic Liquids', 'Charlotte Cooper', 'Purchasing Manager', '49 Gilbert St.', 'London', NULL, 'EC1 4SD', 'UK', '(171) 555-2222', NULL, NULL),

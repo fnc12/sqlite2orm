@@ -2,6 +2,7 @@
 #include "codegen_context.h"
 #include "codegen_forms.h"
 #include "codegen_utils.h"
+#include "correlated_column_scope.h"
 #include "expression_subquery_scope.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
@@ -156,6 +157,12 @@ namespace sqlite2orm {
             // ("no such column: t.zz"), which is why this stands under the bare form alone.
             if (const auto text = this->context.clauseColumnAsStringLiteral(columnRef->columnName)) {
                 return CodeGenResult{cppStringLiteral(*text), {}};
+            }
+            // A name the subquery's own FROM declares no column of is a correlated reference to the
+            // enclosing query SQLite resolves it in, and it is written the way it would be there.
+            if (const ColumnNameScope* correlated = this->context.correlatedColumnNameScope(columnRef->columnName)) {
+                const CorrelatedColumnScope enclosingQuery{this->context, *correlated};
+                return this->generateExpression(astNode);
             }
             // Inside a CREATE TABLE — a CHECK, a generated column or a DEFAULT — the name is resolved
             // against the columns that table declares, so a spelling SQLite reads as the same column is

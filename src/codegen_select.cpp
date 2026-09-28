@@ -447,6 +447,24 @@ namespace sqlite2orm {
             return explicitFrom;
         }
 
+        /**
+         *  The tables the FROM of `selectNode` names, in the form `ColumnNameScope::sourceTables`
+         *  holds them: a CTE, a derived table and a table-valued function name no schema table, so
+         *  each stands as an empty name there.
+         */
+        std::vector<std::string> fromSourceTables(const SelectNode& selectNode, const CodeGeneratorContext& context) {
+            std::vector<std::string> sourceTables;
+            for (const auto& fromItem: selectNode.fromClause) {
+                const auto& fromTable = fromItem.table;
+                const bool opaque =
+                    fromTable.derivedSelect || !fromTable.tableFunctionArgs.empty() ||
+                    context.activeCteTypedefByTableKey.find(normalizeSqlIdentifier(fromTable.tableName)) !=
+                        context.activeCteTypedefByTableKey.end();
+                sourceTables.push_back(opaque ? std::string() : fromTable.tableName);
+            }
+            return sourceTables;
+        }
+
     }  // namespace
 
     SelectCodeGenerator::SelectCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -487,6 +505,17 @@ namespace sqlite2orm {
         const bool forceOuterAsterisk = this->context.withOuterSelect;
         this->context.withOuterSelect = false;
         EmittedTableTypeScope emittedTableTypes{&this->context};
+        // The FROM of this select is what a subquery written in it resolves a correlated name
+        // against; a statement generated after it reads no FROM of it.
+        struct SelectSourceTablesScope {
+            CodeGeneratorContext* ctx;
+            std::optional<std::vector<std::string>> saved;
+            SelectSourceTablesScope(CodeGeneratorContext* context, std::vector<std::string> sourceTables) :
+                ctx(context), saved(std::exchange(context->selectSourceTables, std::move(sourceTables))) {}
+            ~SelectSourceTablesScope() {
+                ctx->selectSourceTables = std::move(saved);
+            }
+        } selectSourceTables{&this->context, fromSourceTables(selectNode, this->context)};
         for (const auto& fromItem: selectNode.fromClause) {
             if (fromItem.table.derivedSelect) {
                 CodeGenResult carried;
@@ -1192,6 +1221,7 @@ namespace sqlite2orm {
             bool savedCanNameInferredFromSources;
             std::vector<std::string> savedPlainRowSourceTypes;
             bool savedCountedAliasedSource;
+            std::optional<std::vector<std::string>> savedSelectSourceTables;
 
             SubselectAliasRestore(CodeGeneratorContext* context) :
                 ctx(context), savedAliases(context->fromTableAliasToStructName),
@@ -1209,7 +1239,8 @@ namespace sqlite2orm {
                 savedImplicitSourceAlias(std::exchange(context->implicitSourceAlias, std::nullopt)),
                 savedCanNameInferredFromSources(context->canNameInferredFromSources),
                 savedPlainRowSourceTypes(context->sourcesWrittenWithoutAlias),
-                savedCountedAliasedSource(context->countedAliasedSource) {}
+                savedCountedAliasedSource(context->countedAliasedSource),
+                savedSelectSourceTables(context->selectSourceTables) {}
 
             ~SubselectAliasRestore() {
                 ctx->fromTableAliasToStructName = std::move(savedAliases);
@@ -1224,6 +1255,7 @@ namespace sqlite2orm {
                 ctx->canNameInferredFromSources = savedCanNameInferredFromSources;
                 ctx->sourcesWrittenWithoutAlias = std::move(savedPlainRowSourceTypes);
                 ctx->countedAliasedSource = savedCountedAliasedSource;
+                ctx->selectSourceTables = std::move(savedSelectSourceTables);
             }
         } restore{&this->context};
         EmittedTableTypeScope emittedTableTypes{&this->context};
@@ -1251,6 +1283,7 @@ namespace sqlite2orm {
             }
         }
 
+        this->context.selectSourceTables = fromSourceTables(selectNode, this->context);
         this->context.fromTableAliasToStructName.clear();
         this->context.activeTableAliases.clear();
         this->context.implicitSourceAlias.reset();

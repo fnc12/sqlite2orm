@@ -25,6 +25,27 @@ namespace sqlite2orm {
     };
 
     /**
+     *  What a column reference naming no table is resolved against in one query: the struct the
+     *  emitter writes it a member of, the alias or the CTE that struct is read through, and the
+     *  tables the query's FROM names. An expression subquery keeps one of these for every
+     *  statement enclosing it, because SQLite resolves such a name in the innermost query whose
+     *  FROM declares it: `UPDATE t SET b = (SELECT x FROM u WHERE y = a)` reads `a` of the row of
+     *  `t` being updated when `u` declares no column `a`.
+     */
+    struct ColumnNameScope {
+        std::string structName;
+        std::optional<TableAliasInfo> implicitSourceAlias;
+        std::optional<std::string> implicitSingleSourceCteTypedef;
+        std::optional<std::string> implicitCteFromTableKeyNorm;
+        /**
+         *  The tables the query's FROM names, in order, with an empty name standing for a source no
+         *  schema table answers for — a CTE, a derived table, a table-valued function. Nothing
+         *  where the query is no SELECT: the statement reads the one table behind `structName`.
+         */
+        std::optional<std::vector<std::string>> sourceTables;
+    };
+
+    /**
      *  A literal generated as an infinity inside an expression sqlite_orm writes into the DDL of a
      *  schema object. sqlite_orm has no DDL spelling for the value, so the generator owning the
      *  clause warns about it, naming the literal and underlining the SQL it was written as.
@@ -419,6 +440,17 @@ namespace sqlite2orm {
          */
         size_t selectNestingLevel = 0;
         /**
+         *  The tables the FROM of the select being generated names, as `ColumnNameScope::sourceTables`
+         *  holds them; nothing outside a select, where the statement reads the table behind
+         *  `structName`.
+         */
+        std::optional<std::vector<std::string>> selectSourceTables;
+        /**
+         *  What a name was resolved against in every statement enclosing the expression subquery at
+         *  hand, the innermost last. `ExpressionSubqueryScope` pushes the one it is written in.
+         */
+        std::vector<ColumnNameScope> enclosingColumnNameScopes;
+        /**
          *  Set while the field operand of a MATCH is generated. `match_t` holds that operand, but
          *  sqlite_orm walks only the pattern argument of it (`ast_iterator<match_t<Field, X>>`
          *  iterates `node.argument` alone), so a recordset named there reaches the inferred FROM
@@ -643,6 +675,26 @@ namespace sqlite2orm {
          *  column the generated code never names.
          */
         const SourceTableColumn* findReferencedColumn(const AstNode& node) const;
+
+        /** What a column naming no table is resolved against in the query being generated. */
+        ColumnNameScope columnNameScope() const;
+
+        /**
+         *  The enclosing query a column naming no table is a correlated reference to: the one
+         *  SQLite resolves it in when the FROM of the query at hand declares no such column, and
+         *  neither does any query between the two. An enclosing query reading a source whose
+         *  columns the batch does not say — a CTE, say — is that query only where no other
+         *  enclosing query declares the name, since SQLite takes the statement only where the name
+         *  resolves somewhere. Nothing where the query at hand may declare the name, and where no
+         *  single enclosing query is left.
+         */
+        const ColumnNameScope* correlatedColumnNameScope(std::string_view columnName) const;
+
+        /**
+         *  Whether the FROM of `scope` declares a column `columnName`; nothing where one of its
+         *  sources is a table the batch declares no columns of, or a source no table answers for.
+         */
+        std::optional<bool> scopeDeclaresColumn(const ColumnNameScope& scope, std::string_view columnName) const;
 
         /** Best-effort C++ type for a custom-function argument: schema type when known, else the name heuristic. */
         std::string customFunctionArgType(const AstNode& argument) const;

@@ -9,12 +9,10 @@
 #include <string_view>
 #include <vector>
 
+#include "codegen_context.h"
 #include "codegen_utils.h"
 
 namespace sqlite2orm {
-
-    class CodeGeneratorContext;
-    struct SourceTableColumn;
 
     /**
      *  The sources one SELECT names in its own FROM clause, and the schema columns behind them.
@@ -36,7 +34,14 @@ namespace sqlite2orm {
      */
     class SelectScopeColumns {
       public:
-        SelectScopeColumns(const SelectNode& selectNode, const CodeGeneratorContext& context);
+        /**
+         *  `enclosingResolver`, where given, answers for the query this select is a subquery of: a
+         *  name this FROM declares no column of is a correlated reference SQLite resolves there,
+         *  and the emitter writes it a member of that query's source.
+         */
+        SelectScopeColumns(const SelectNode& selectNode,
+                           const CodeGeneratorContext& context,
+                           ReferencedColumnResolver enclosingResolver = {});
 
         /**
          *  The schema column `columnName` names under `tableOrAlias`, and `nullptr` where the
@@ -74,6 +79,9 @@ namespace sqlite2orm {
 
       private:
         const CodeGeneratorContext& context;
+        ReferencedColumnResolver enclosingResolver;
+        /** The sources as `CodeGeneratorContext::scopeDeclaresColumn` reads them. */
+        ColumnNameScope columnNameScope;
         /** Source names in FROM order, quotes stripped, the ones no schema table can answer left out. */
         std::vector<std::string> sources;
         /** Normalized alias → the source name it stands for. */

@@ -3696,7 +3696,7 @@ namespace sqlite2orm {
                     // form and leaves the statement out — so the answer matters for its constants.
                     return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, resolveColumn);
                 }
-                const SelectScopeColumns nestedScope(*nestedSelect, context);
+                const SelectScopeColumns nestedScope(*nestedSelect, context, resolveColumn);
                 return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, nestedScope.resolver());
             }
             if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
@@ -3849,9 +3849,9 @@ namespace sqlite2orm {
                 // Where no type can be named here — a call, whose type the function and its
                 // arguments decide — an arm spelling the same expression over the same sources is
                 // generated as the same code, and so comes out as the same type whatever it is.
-                const bool sameType = cppType ? generatedResultColumnCppType(columnExpression) == cppType
-                                              : arm->fromClause == leadingArm.fromClause &&
-                                                    columnExpression == leadingExpression;
+                const bool sameType =
+                    cppType ? generatedResultColumnCppType(columnExpression) == cppType
+                            : arm->fromClause == leadingArm.fromClause && columnExpression == leadingExpression;
                 if (!sameType) {
                     sameTypeEverywhere = false;
                     break;

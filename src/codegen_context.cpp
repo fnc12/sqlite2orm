@@ -230,6 +230,17 @@ namespace sqlite2orm {
                 // names that CTE, so no field of a source table is read.
                 return nullptr;
             }
+            // A correlated reference is written a member of the enclosing query's source, so that
+            // is the field it is read back through.
+            if (const ColumnNameScope* correlated = this->correlatedColumnNameScope(columnRef->columnName)) {
+                if (correlated->implicitSingleSourceCteTypedef) {
+                    return nullptr;
+                }
+                return this->findStructColumn(correlated->implicitSourceAlias
+                                                  ? correlated->implicitSourceAlias->baseStructName
+                                                  : correlated->structName,
+                                              columnRef->columnName);
+            }
             // A reference that names no table belongs to the source the select reads, which the
             // emitter has settled into `structName` — or, where that source carries a SQL alias,
             // into the alias's base struct, the one the `alias_column<…>(&T::x)` form names.
@@ -238,6 +249,88 @@ namespace sqlite2orm {
                                           columnRef->columnName);
         }
         return nullptr;
+    }
+
+    ColumnNameScope CodeGeneratorContext::columnNameScope() const {
+        return ColumnNameScope{this->structName,
+                               this->implicitSourceAlias,
+                               this->implicitSingleSourceCteTypedef,
+                               this->implicitCteFromTableKeyNorm,
+                               this->selectSourceTables};
+    }
+
+    const ColumnNameScope* CodeGeneratorContext::correlatedColumnNameScope(std::string_view columnName) const {
+        if (this->enclosingColumnNameScopes.empty() || this->constraintColumnsTableIsBeingGenerated()) {
+            return nullptr;
+        }
+        if (this->scopeDeclaresColumn(this->columnNameScope(), columnName) != false) {
+            return nullptr;
+        }
+        // A query whose columns the batch does not say — one reading a CTE, say — is where the
+        // name resolves only when no query around it declares it either: SQLite takes a statement
+        // only where the name resolves somewhere. Two such queries leave it undecided.
+        const ColumnNameScope* undecided = nullptr;
+        for (auto scopeIterator = this->enclosingColumnNameScopes.rbegin();
+             scopeIterator != this->enclosingColumnNameScopes.rend();
+             ++scopeIterator) {
+            const std::optional<bool> declares = this->scopeDeclaresColumn(*scopeIterator, columnName);
+            if (declares == false) {
+                continue;
+            }
+            if (undecided) {
+                return nullptr;
+            }
+            if (declares == true) {
+                return &*scopeIterator;
+            }
+            undecided = &*scopeIterator;
+        }
+        return undecided;
+    }
+
+    std::optional<bool> CodeGeneratorContext::scopeDeclaresColumn(const ColumnNameScope& scope,
+                                                                  std::string_view columnName) const {
+        if (scope.implicitSingleSourceCteTypedef) {
+            return std::nullopt;
+        }
+        std::vector<const std::vector<SourceTableColumn>*> sourceColumns;
+        if (scope.sourceTables) {
+            for (const std::string& tableName: *scope.sourceTables) {
+                const auto tableIterator =
+                    this->sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(tableName));
+                if (tableName.empty() || tableIterator == this->sourceTableColumnsByNormalizedName.end()) {
+                    return std::nullopt;
+                }
+                sourceColumns.push_back(&tableIterator->second);
+            }
+        } else {
+            // The statement reads the one table behind its struct; two tables of the batch read
+            // into struct names differing only in case answer nothing, as in `findStructColumn`.
+            const std::string structKey =
+                toLowerAscii(scope.implicitSourceAlias ? scope.implicitSourceAlias->baseStructName : scope.structName);
+            for (const auto& [tableKey, columns]: this->sourceTableColumnsByNormalizedName) {
+                if (toLowerAscii(toStructName(tableKey)) == structKey) {
+                    sourceColumns.push_back(&columns);
+                }
+            }
+            if (sourceColumns.size() != 1u) {
+                return std::nullopt;
+            }
+        }
+        const std::string normalizedColumn = normalizeSqlIdentifier(columnName);
+        for (const std::vector<SourceTableColumn>* columns: sourceColumns) {
+            for (const SourceTableColumn& column: *columns) {
+                if (normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
+                    return true;
+                }
+            }
+        }
+        // Every table has a row id, which a name SQLite reads as one resolves to however few
+        // columns the table declares.
+        if (isImplicitRowIdName(columnName)) {
+            return std::nullopt;
+        }
+        return false;
     }
 
     std::string CodeGeneratorContext::customFunctionArgType(const AstNode& argument) const {

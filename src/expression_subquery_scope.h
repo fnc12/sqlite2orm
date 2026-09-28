@@ -12,6 +12,10 @@ namespace sqlite2orm {
      *  The select scopes alone count only selects, so a subquery of a DELETE, an UPDATE or a trigger
      *  step stood where a top-level select does. The previous level is restored, so the count never
      *  outlives the subquery it was taken for.
+     *
+     *  What a name is resolved against in the enclosing statement is kept for the same stretch, so
+     *  a name the subquery's own FROM does not declare can be resolved there, the way SQLite reads
+     *  a correlated reference.
      */
     class ExpressionSubqueryScope {
       public:

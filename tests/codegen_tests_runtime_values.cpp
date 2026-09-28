@@ -1769,6 +1769,28 @@ TEST_CASE("runtime: a subquery with no FROM of its own is left out rather than r
             }) == std::vector<std::string>{"1,1,1", "3,3,3", "1,2,3"});
 }
 
+// The same select in an UPDATE writes rather than reads, and the first row's value went into every
+// row. Over `users` holding 1, 2 and 3, sqlite3 3.51 leaves `UPDATE users SET a = (SELECT a * 10)`
+// with 10,20,30 and `DELETE FROM users WHERE a = (SELECT a WHERE a > 1)` with 1. The code generated
+// for them before — the counterfactuals below — ran as `(SELECT "users"."a" * 10 FROM "users")` and
+// `(SELECT "users"."a" FROM "users" WHERE …)`, and left 10,10,10 and 1,3. The UPDATE over a
+// FROM of its own stays generated and writes what sqlite3 writes, 3,3,3.
+TEST_CASE("runtime: an UPDATE through a subquery with no FROM of its own is left out rather than writing the first "
+          "row everywhere") {
+    REQUIRE(generate("UPDATE users SET a = (SELECT a * 10);").empty());
+    REQUIRE(generate("DELETE FROM users WHERE a = (SELECT a WHERE a > 1);").empty());
+
+    const std::string updateOverOwnFrom = generate("UPDATE users SET a = (SELECT max(a) FROM users);");
+    REQUIRE(updateOverOwnFrom == "storage.update_all(set(c(&Users::a) = select(max(&Users::a))));");
+    REQUIRE(selectedRowValues({updateOverOwnFrom + " auto rows = storage.select(&Users::a);"}) ==
+            std::vector<std::string>{"3,3,3"});
+
+    REQUIRE(selectedRowValues({"storage.update_all(set(c(&Users::a) = select(c(&Users::a) * 10))); auto rows = "
+                               "storage.select(&Users::a);"}) == std::vector<std::string>{"10,10,10"});
+    REQUIRE(selectedRowValues({"storage.remove_all<Users>(where(c(&Users::a) == select(&Users::a, where(c(&Users::a) > "
+                               "1)))); auto rows = storage.select(&Users::a);"}) == std::vector<std::string>{"1,3"});
+}
+
 // A BLOB among the arguments makes the generated type `std::vector<char>` rather than
 // `std::string`: sqlite_orm reads a `std::string` through `sqlite3_column_text`, which stops at
 // the first NUL byte a BLOB holds, and x'004100' would have come back as the empty text. Every

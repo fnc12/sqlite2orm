@@ -410,10 +410,12 @@ namespace sqlite2orm {
          */
         std::set<std::string> ownVisibleEmittedTableTypes;
         /**
-         *  How many selects are being generated one inside the other, the one at hand included. A
-         *  select with no FROM that names a column of its own is a correlated subquery where
-         *  another select encloses it, and an unresolvable name where none does, so the two are
-         *  told apart by whether this is above one.
+         *  How many queries are being generated one inside the other, the one at hand included:
+         *  every select counts, and so does the statement an expression subquery is written in
+         *  (`ExpressionSubqueryScope`), a DELETE, an UPDATE or a trigger step as much as a select.
+         *  A select with no FROM that names a column of its own is a correlated subquery where a
+         *  statement encloses it, and an unresolvable name where none does, so the two are told
+         *  apart by whether this is above one.
          */
         size_t selectNestingLevel = 0;
         /**

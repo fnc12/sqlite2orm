@@ -373,7 +373,7 @@ namespace sqlite2orm {
          *  one row where the table has any, none where it has none.
          *
          *  Every mention sqlite_orm sees counts, a nested select's included, because it collects
-         *  those into the FROM as well. Where no select encloses this one, a column it names itself
+         *  those into the FROM as well. Where no statement encloses this one, a column it names itself
          *  refers to nothing SQLite could resolve, and such a select is left to the FROM sqlite_orm
          *  infers as before: it is only when the code of this select names no table of its own that
          *  the mentions come from a query SQLite would run.
@@ -382,8 +382,8 @@ namespace sqlite2orm {
             if (!selectNode.fromClause.empty() || context.emittedTableTypes.empty()) {
                 return false;
             }
-            const bool enclosedBySelect = context.selectNestingLevel > 1u;
-            return enclosedBySelect || context.ownVisibleEmittedTableTypes.empty();
+            const bool enclosedByStatement = context.selectNestingLevel > 1u;
+            return enclosedByStatement || context.ownVisibleEmittedTableTypes.empty();
         }
 
         /** The `from<...>()` naming `types`. */

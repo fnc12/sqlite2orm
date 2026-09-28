@@ -142,43 +142,52 @@ namespace sqlite2orm {
         return toCppIdentifier(columnName);
     }
 
+    std::string CodeGeneratorContext::structColumnMember(std::string_view structName,
+                                                         std::string_view columnName) const {
+        if (const SourceTableColumn* declared = this->findStructColumn(structName, columnName)) {
+            return toCppIdentifier(declared->sqlName);
+        }
+        return toCppIdentifier(columnName);
+    }
+
+    const SourceTableColumn* CodeGeneratorContext::findStructColumn(std::string_view structName,
+                                                                    std::string_view columnName) const {
+        // The struct a source table's rows are read into is `toStructName` of its name, and two SQL
+        // names differing only in case name one table, so the match is case-insensitive; two tables
+        // of one batch read into struct names that differ only in case answer nothing at all.
+        const std::string structKey = toLowerAscii(structName);
+        if (structKey.empty()) {
+            return nullptr;
+        }
+        const std::vector<SourceTableColumn>* tableColumns = nullptr;
+        for (const auto& [tableKey, columns]: this->sourceTableColumnsByNormalizedName) {
+            if (toLowerAscii(toStructName(tableKey)) != structKey) {
+                continue;
+            }
+            if (tableColumns) {
+                return nullptr;
+            }
+            tableColumns = &columns;
+        }
+        if (!tableColumns) {
+            return nullptr;
+        }
+        const std::string normalizedColumn = normalizeSqlIdentifier(columnName);
+        for (const SourceTableColumn& column: *tableColumns) {
+            if (normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
+                return &column;
+            }
+        }
+        return nullptr;
+    }
+
     const SourceTableColumn* CodeGeneratorContext::findReferencedColumn(const AstNode& node) const {
         // A COLLATE or a unary plus generates its operand and nothing else, so the column named
         // under one is the column the expression is built over.
         const AstNode& valueNode = generatedOperandNode(node);
         // What a reference is read back as is the type of the field the form the emitter wrote
         // names it a member of, so what is asked here is which struct that form names — and not
-        // which table of the batch happens to declare a column of that name. The struct a source
-        // table's rows are read into is `toStructName` of its name, and two SQL names differing
-        // only in case name one table, so the match is case-insensitive; two tables of one batch
-        // read into struct names that differ only in case answer nothing at all.
-        auto columnOfStruct = [this](std::string_view structForReference,
-                                     std::string_view columnName) -> const SourceTableColumn* {
-            const std::string structKey = toLowerAscii(structForReference);
-            if (structKey.empty()) {
-                return nullptr;
-            }
-            const std::vector<SourceTableColumn>* tableColumns = nullptr;
-            for (const auto& [tableKey, columns]: this->sourceTableColumnsByNormalizedName) {
-                if (toLowerAscii(toStructName(tableKey)) != structKey) {
-                    continue;
-                }
-                if (tableColumns) {
-                    return nullptr;
-                }
-                tableColumns = &columns;
-            }
-            if (!tableColumns) {
-                return nullptr;
-            }
-            const std::string normalizedColumn = normalizeSqlIdentifier(columnName);
-            for (const SourceTableColumn& column: *tableColumns) {
-                if (normalizeSqlIdentifier(column.sqlName) == normalizedColumn) {
-                    return &column;
-                }
-            }
-            return nullptr;
-        };
+        // which table of the batch happens to declare a column of that name.
         if (auto* qualifiedRef = dynamic_cast<const QualifiedColumnRefNode*>(&valueNode)) {
             const std::string tableKeyNorm = normalizeSqlIdentifier(qualifiedRef->tableName);
             if (this->activeCteTypedefByTableKey.find(tableKeyNorm) != this->activeCteTypedefByTableKey.end()) {
@@ -189,16 +198,16 @@ namespace sqlite2orm {
             const std::string tableKey(qualifiedRef->tableName);
             if (const auto aliasIterator = this->activeTableAliases.find(tableKey);
                 aliasIterator != this->activeTableAliases.end()) {
-                return columnOfStruct(aliasIterator->second.baseStructName, qualifiedRef->columnName);
+                return this->findStructColumn(aliasIterator->second.baseStructName, qualifiedRef->columnName);
             }
             if (const auto fromIterator = this->fromTableAliasToStructName.find(tableKey);
                 fromIterator != this->fromTableAliasToStructName.end()) {
-                return columnOfStruct(fromIterator->second, qualifiedRef->columnName);
+                return this->findStructColumn(fromIterator->second, qualifiedRef->columnName);
             }
             // Whatever the qualifier is, the reference comes out a member of the struct that name
             // maps to: a view of the batch answers nothing here, since the schema this reads
             // holds the CREATE TABLEs alone and not the fields a view's struct is built with.
-            return columnOfStruct(toStructName(qualifiedRef->tableName), qualifiedRef->columnName);
+            return this->findStructColumn(toStructName(qualifiedRef->tableName), qualifiedRef->columnName);
         }
         if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
             const std::string normalized = toLowerAscii(stripIdentifierQuotes(columnRef->columnName));
@@ -214,9 +223,9 @@ namespace sqlite2orm {
             // A reference that names no table belongs to the source the select reads, which the
             // emitter has settled into `structName` — or, where that source carries a SQL alias,
             // into the alias's base struct, the one the `alias_column<…>(&T::x)` form names.
-            return columnOfStruct(this->implicitSourceAlias ? this->implicitSourceAlias->baseStructName
-                                                            : this->structName,
-                                  columnRef->columnName);
+            return this->findStructColumn(this->implicitSourceAlias ? this->implicitSourceAlias->baseStructName
+                                                                    : this->structName,
+                                          columnRef->columnName);
         }
         return nullptr;
     }

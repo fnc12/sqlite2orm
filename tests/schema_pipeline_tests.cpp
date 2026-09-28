@@ -62,6 +62,39 @@ namespace {
         REQUIRE(exitCode == 0);
     }
 
+    const std::string compiledPrologue = "#include <sqlite_orm/sqlite_orm.h>\n"
+                                         "#include <cstdint>\n"
+                                         "#include <optional>\n"
+                                         "#include <string>\n"
+                                         "#include <vector>\n"
+                                         "using namespace sqlite_orm;\n";
+
+    /**
+     *  Generates `statement` after the tables of `schema`, and compiles it inside a function over
+     *  the storage those tables generate — a statement is no declaration, so it cannot stand at
+     *  namespace scope the way the snippet prints it. Returns the code the statement generated.
+     */
+    std::string requireStatementCompiles(std::string_view schema, std::string_view statement) {
+        auto results = processMultiSql(std::string(schema) + "\n" + std::string(statement));
+        REQUIRE_FALSE(results.empty());
+        std::string statementCode = results.back().codegen.code;
+        results.pop_back();
+        requireCompiles(compiledPrologue + joinGeneratedCode(results) + "\ninline void runStatement() {\n" +
+                        statementCode + "\n}\n");
+        return statementCode;
+    }
+
+    /**
+     *  The same for a statement generated as an argument of the storage — an index or a trigger —
+     *  which is compiled where the snippet puts it, inside `make_storage()` beside the tables.
+     */
+    std::string requireStorageArgumentCompiles(std::string_view schema, std::string_view statement) {
+        const auto results = processMultiSql(std::string(schema) + "\n" + std::string(statement));
+        REQUIRE_FALSE(results.empty());
+        requireCompiles(compiledPrologue + joinGeneratedCode(results));
+        return results.back().codegen.code;
+    }
+
     /**
      *  One `sqlite_master` row, run through the pipeline as `processSqliteSchema` would run it.
      *  A CREATE VIRTUAL TABLE only reaches a database when its module is compiled into the
@@ -1661,6 +1694,69 @@ TEST_CASE("processMultiSql: a column constraint spelling its column otherwise co
                     "#include <vector>\n"
                     "using namespace sqlite_orm;\n" +
                     joinGeneratedCode(results));
+}
+
+// Outside a table declaration a column is named in whatever case and quoting the statement was written
+// with too, and SQLite reads `ID`, `"Id"`, `[id]` and `` `id` `` as the one column declared `"Id"` —
+// sqlite3 3.51.0 takes every statement below. Each of them used to write the member pointer from the
+// spelling (`&T::ID` beside `std::optional<int64_t> Id`), at exit 0 and with no warning, and only a
+// compiler saw it; the name is now resolved against the table behind the struct the form names, be
+// that the statement's own table, a qualifier, an alias, the base of a CTE or a trigger's subject.
+// A literal alone would fix whatever text came out, so each one is compiled as well.
+namespace {
+    constexpr std::string_view tablesSpelledOtherwise =
+        "CREATE TABLE t (\"Id\" INTEGER, [Name] TEXT, PRIMARY KEY(ID));\n"
+        "CREATE TABLE u (uid INTEGER, \"TId\" INTEGER);";
+}
+
+TEST_CASE("processMultiSql: CREATE INDEX spelling its columns otherwise compiles") {
+    const std::string code =
+        requireStorageArgumentCompiles(tablesSpelledOtherwise,
+                                       "CREATE INDEX IF NOT EXISTS i ON t(ID, [NAME] COLLATE nocase);");
+    REQUIRE(code == "make_index(\"i\", indexed_column(&T::Id), indexed_column(&T::Name).collate(\"nocase\"));");
+}
+
+TEST_CASE("processMultiSql: INSERT spelling its columns otherwise compiles") {
+    REQUIRE(requireStatementCompiles(tablesSpelledOtherwise, "INSERT INTO t(ID, name) VALUES(1, 'a');") ==
+            "storage.insert(into<T>(), columns(&T::Id, &T::Name), values(std::make_tuple(1, \"a\")));");
+    REQUIRE(requireStatementCompiles(
+                tablesSpelledOtherwise,
+                "INSERT INTO t(ID, `name`) VALUES(2, 'b') ON CONFLICT(id) DO UPDATE SET NAME = excluded.NAME;") ==
+            "storage.insert(into<T>(), columns(&T::Id, &T::Name), values(std::make_tuple(2, \"b\")), "
+            "on_conflict(&T::Id).do_update(set(c(&T::Name) = excluded(&T::Name))));");
+}
+
+TEST_CASE("processMultiSql: SELECT spelling its columns otherwise compiles") {
+    REQUIRE(requireStatementCompiles(tablesSpelledOtherwise, "SELECT ID, \"name\" FROM t;") ==
+            "auto rows = storage.select(columns(&T::Id, &T::Name));");
+    REQUIRE(requireStatementCompiles(tablesSpelledOtherwise, "SELECT x.id FROM t x WHERE ID > 0;") ==
+            "auto rows = storage.select(alias_column<alias_a<T>>(&T::Id), where(c(alias_column<alias_a<T>>(&T::Id)) > "
+            "0));");
+    REQUIRE(requireStatementCompiles(tablesSpelledOtherwise, "SELECT t.id, u.tid FROM t JOIN u ON u.TID = t.ID;") ==
+            "auto rows = storage.select(columns(&T::Id, &U::TId), join<U>(on(c(&U::TId) == &T::Id)));");
+    REQUIRE(requireStatementCompiles(tablesSpelledOtherwise, "WITH c AS (SELECT ID FROM t) SELECT id FROM c;") ==
+            "using namespace sqlite_orm::literals;\nusing cte_0 = decltype(1_ctealias);\nauto rows = "
+            "storage.with(cte<cte_0>().as(select(&T::Id)), select(column<cte_0>(&T::Id)));");
+    // USING names one column of both tables, each of which may declare it in its own spelling.
+    const std::string_view joinedTables = "CREATE TABLE a (k INTEGER, \"V\" TEXT);\n"
+                                          "CREATE TABLE b (\"K\" INTEGER, v TEXT);";
+    REQUIRE(requireStatementCompiles(joinedTables, "SELECT * FROM a JOIN b USING (k);") ==
+            "auto rows = storage.get_all<A>(join<B>(using_(&B::K)));");
+    REQUIRE(requireStatementCompiles(joinedTables, "SELECT * FROM a JOIN b USING (K, v);") ==
+            "auto rows = storage.get_all<A>(join<B>(on(c(&A::k) == c(&B::K) and c(&A::V) == c(&B::v))));");
+}
+
+TEST_CASE("processMultiSql: UPDATE spelling its columns otherwise compiles") {
+    REQUIRE(requireStatementCompiles(tablesSpelledOtherwise, "UPDATE t SET ID = 3, NAME = 'c' WHERE name = 'a';") ==
+            "storage.update_all(set(c(&T::Id) = 3, c(&T::Name) = \"c\"), where(c(&T::Name) == \"a\"));");
+}
+
+TEST_CASE("processMultiSql: a trigger spelling its columns otherwise compiles") {
+    REQUIRE(requireStorageArgumentCompiles(tablesSpelledOtherwise,
+                                           "CREATE TRIGGER tr AFTER UPDATE OF ID ON t BEGIN "
+                                           "UPDATE u SET TID = NEW.ID WHERE tid = OLD.id; END;") ==
+            "make_trigger(\"tr\", after().update_of(&T::Id).on<T>().begin(update_all(set(c(&U::TId) = new_(&T::Id)), "
+            "where(c(&U::TId) == old(&T::Id)))));");
 }
 
 // The snippet path carries the same hole: a batch is one database, so a parent none of its

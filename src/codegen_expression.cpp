@@ -158,8 +158,15 @@ namespace sqlite2orm {
             }
             // Inside a CREATE TABLE — a CHECK, a generated column or a DEFAULT — the name is resolved
             // against the columns that table declares, so a spelling SQLite reads as the same column is
-            // written as the member the declaration produced. Anywhere else the name itself.
+            // written as the member the declaration produced. Anywhere else it is resolved against the
+            // table behind the struct the form below names the column a member of.
             auto cppName = this->context.clauseColumnMember(columnRef->columnName);
+            auto memberOf = [&](std::string_view structForReference) {
+                if (this->context.constraintColumnsTableIsBeingGenerated()) {
+                    return cppName;
+                }
+                return this->context.structColumnMember(structForReference, columnRef->columnName);
+            };
             this->context.registerPrefixColumn(cppName, this->context.syntheticColumnCppType(cppName));
             if (this->context.implicitSingleSourceCteTypedef) {
                 // Every form below this point names that CTE, whichever of them the column takes.
@@ -182,7 +189,8 @@ namespace sqlite2orm {
                             auto baseIt =
                                 this->context.cteBaseStructByKey.find(*this->context.implicitCteFromTableKeyNorm);
                             if (baseIt != this->context.cteBaseStructByKey.end()) {
-                                return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + cppName,
+                                return CodeGenResult{monIt->second + "->*&" + baseIt->second +
+                                                         "::" + memberOf(baseIt->second),
                                                      {},
                                                      {},
                                                      {}};
@@ -227,7 +235,7 @@ namespace sqlite2orm {
                     auto baseIt = this->context.cteBaseStructByKey.find(*this->context.implicitCteFromTableKeyNorm);
                     if (baseIt != this->context.cteBaseStructByKey.end()) {
                         std::string cteCol = "column<" + *this->context.implicitSingleSourceCteTypedef + ">(&" +
-                                             baseIt->second + "::" + cppName + ")";
+                                             baseIt->second + "::" + memberOf(baseIt->second) + ")";
                         return CodeGenResult{std::move(cteCol), {}, {}, {}};
                     }
                 }
@@ -242,13 +250,14 @@ namespace sqlite2orm {
                 // second, unaliased source and infers a FROM naming both.
                 const auto& info = *this->context.implicitSourceAlias;
                 this->context.recordEmittedTableType(info.ormAliasType);
-                std::string aliasedCode =
-                    this->context.useCpp20TableAliasStyle()
-                        ? info.ormAliasType + "->*&" + info.baseStructName + "::" + cppName
-                        : "alias_column<" + info.ormAliasType + ">(&" + info.baseStructName + "::" + cppName + ")";
+                const std::string aliasedMember = memberOf(info.baseStructName);
+                std::string aliasedCode = this->context.useCpp20TableAliasStyle()
+                                              ? info.ormAliasType + "->*&" + info.baseStructName + "::" + aliasedMember
+                                              : "alias_column<" + info.ormAliasType + ">(&" + info.baseStructName +
+                                                    "::" + aliasedMember + ")";
                 return CodeGenResult{std::move(aliasedCode), {}, {}, {}, {}};
             }
-            std::string memberPointer = "&" + this->context.structName + "::" + cppName;
+            std::string memberPointer = "&" + this->context.structName + "::" + memberOf(this->context.structName);
             std::string columnPointer = "column<" + this->context.structName + ">(" + memberPointer + ")";
             this->context.emittedTableTypedColumnRef = true;
             this->context.recordEmittedTableType(this->context.structName);
@@ -306,7 +315,8 @@ namespace sqlite2orm {
                         if (!this->context.isExplicitCteColumn(tableKeyNorm, qualifiedRef->columnName)) {
                             auto baseIt = this->context.cteBaseStructByKey.find(tableKeyNorm);
                             if (baseIt != this->context.cteBaseStructByKey.end()) {
-                                std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+                                std::string colCpp =
+                                    this->context.structColumnMember(baseIt->second, qualifiedRef->columnName);
                                 return CodeGenResult{monIt->second + "->*&" + baseIt->second + "::" + colCpp,
                                                      {},
                                                      std::move(qualWarnings),
@@ -346,7 +356,7 @@ namespace sqlite2orm {
                 }
                 auto baseIt = this->context.cteBaseStructByKey.find(tableKeyNorm);
                 if (baseIt != this->context.cteBaseStructByKey.end()) {
-                    std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+                    std::string colCpp = this->context.structColumnMember(baseIt->second, qualifiedRef->columnName);
                     return CodeGenResult{"column<" + cteIt->second + ">(&" + baseIt->second + "::" + colCpp + ")",
                                          {},
                                          std::move(qualWarnings),
@@ -364,7 +374,8 @@ namespace sqlite2orm {
             auto tableAliasIt = this->context.activeTableAliases.find(tableKey);
             if (tableAliasIt != this->context.activeTableAliases.end()) {
                 const auto& info = tableAliasIt->second;
-                const std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+                const std::string colCpp =
+                    this->context.structColumnMember(info.baseStructName, qualifiedRef->columnName);
                 this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
                 this->context.recordEmittedTableType(info.ormAliasType);
                 std::string code;
@@ -382,13 +393,15 @@ namespace sqlite2orm {
             // A CHECK may qualify the column with the table it is declared on, and that is the one
             // qualifier the table being generated answers for. A qualifier naming another table is
             // that table's column — SQLite refuses such a CREATE TABLE ("no such column: o.k") — so
-            // it is written as that table declares it. Outside a CREATE TABLE there is nothing to
-            // resolve against and the name goes as it was written.
-            std::string colCpp = toCppIdentifier(qualifiedRef->columnName);
+            // it is written as that table declares it. Outside a CREATE TABLE the name is resolved
+            // against the table behind the struct the qualifier maps to, alias or not.
+            std::string colCpp;
             if (this->context.constraintColumnsAreOfTable(qualifiedRef->tableName)) {
                 colCpp = this->context.clauseColumnMember(qualifiedRef->columnName);
             } else if (this->context.constraintColumnsTableIsBeingGenerated()) {
                 colCpp = this->context.sourceColumnMember(qualifiedRef->tableName, qualifiedRef->columnName);
+            } else {
+                colCpp = this->context.structColumnMember(structForColumn, qualifiedRef->columnName);
             }
             this->context.registerPrefixColumn(colCpp, this->context.syntheticColumnCppType(colCpp));
             this->context.recordEmittedTableType(structForColumn);
@@ -436,19 +449,19 @@ namespace sqlite2orm {
             this->context.recordEmittedTableType(asteriskStruct);
             return CodeGenResult{"asterisk<" + asteriskStruct + ">()", {}, std::move(qualifiedAsteriskWarnings)};
         } else if (auto* newRef = dynamic_cast<const NewRefNode*>(&astNode)) {
-            auto cppName = toCppIdentifier(newRef->columnName);
-            this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
             const std::string& subjectStruct =
                 this->context.triggerSubjectStructName.value_or(this->context.structName);
+            auto cppName = this->context.structColumnMember(subjectStruct, newRef->columnName);
+            this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
             return CodeGenResult{"new_(&" + subjectStruct + "::" + cppName + ")", {}};
         } else if (auto* oldRef = dynamic_cast<const OldRefNode*>(&astNode)) {
-            auto cppName = toCppIdentifier(oldRef->columnName);
-            this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
             const std::string& subjectStruct =
                 this->context.triggerSubjectStructName.value_or(this->context.structName);
+            auto cppName = this->context.structColumnMember(subjectStruct, oldRef->columnName);
+            this->context.registerColumn(cppName, defaultCppTypeForSyntheticColumn(cppName));
             return CodeGenResult{"old(&" + subjectStruct + "::" + cppName + ")", {}};
         } else if (auto* excludedRef = dynamic_cast<const ExcludedRefNode*>(&astNode)) {
-            auto cppName = toCppIdentifier(excludedRef->columnName);
+            auto cppName = this->context.structColumnMember(this->context.structName, excludedRef->columnName);
             return CodeGenResult{"excluded(&" + this->context.structName + "::" + cppName + ")", {}};
         }
         auto nodeGeneratesColumnPointer = [&](const AstNode* node) -> bool {

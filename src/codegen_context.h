@@ -606,6 +606,19 @@ namespace sqlite2orm {
         std::string sourceColumnMember(std::string_view tableName, std::string_view columnName) const;
 
         /**
+         *  The same answer for a column written as a member of the struct `structName`, for a site
+         *  that knows the struct a reference comes out a member of but not the SQL name behind it —
+         *  an alias, a CTE built over a table, the source of a SELECT. SQLite matches the name
+         *  against the declarations ignoring case and quotes, so `SELECT ID FROM t` over a column
+         *  declared `"Id"` is the member `Id`. A struct no single table of the batch is read into,
+         *  or a column its table does not declare, leaves the name as it was written.
+         */
+        std::string structColumnMember(std::string_view structName, std::string_view columnName) const;
+
+        /** The schema column `columnName` names in the one table of the batch read into `structName`. */
+        const SourceTableColumn* findStructColumn(std::string_view structName, std::string_view columnName) const;
+
+        /**
          *  The schema column an expression is generated as a member of, or `nullptr` where the
          *  form the emitter writes names no column of a source table. The field the generated
          *  struct declares is the C++ type an argument written as `&T::a` is read back as, so

@@ -154,7 +154,8 @@ namespace sqlite2orm {
                     if (columnIndex > 0) {
                         typeChain += ", ";
                     }
-                    typeChain += "&" + subject + "::" + toCppIdentifier(createTrigger.updateOfColumns[columnIndex]);
+                    typeChain += "&" + subject + "::" +
+                                 this->context.structColumnMember(subject, createTrigger.updateOfColumns[columnIndex]);
                 }
                 typeChain += ")";
                 break;

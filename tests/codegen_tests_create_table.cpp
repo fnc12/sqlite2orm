@@ -2862,6 +2862,82 @@ TEST_CASE("codegen: CREATE TABLE - two column names mapped to one member are rep
                  5}});
 }
 
+// `char`, `class` and `int` are ordinary column names — SQLite takes all three bare — and not one
+// of them can name a member, so each member takes a trailing `_`, the way sqlite_orm names its own
+// `char_` and `typeof_`. The column keeps its name: `make_column` is handed it, so the SQL the
+// storage writes and reads says `class`, not `class_`.
+TEST_CASE("codegen: CREATE TABLE - a column named with a C++ keyword") {
+    const auto result = generateFull("CREATE TABLE k (char INTEGER, class TEXT, int REAL)");
+    REQUIRE(result.code == "struct K {\n"
+                           "    std::optional<int64_t> char_;\n"
+                           "    std::optional<std::string> class_;\n"
+                           "    std::optional<double> int_;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"k\",\n"
+                           "        make_column(\"char\", &K::char_),\n"
+                           "        make_column(\"class\", &K::class_),\n"
+                           "        make_column(\"int\", &K::int_)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {"table k: column `char` is a C++ keyword; the member holding it is named `char_`",
+                                    SourceLocation{1, 17},
+                                    4},
+                                   {"table k: column `class` is a C++ keyword; the member holding it is named `class_`",
+                                    SourceLocation{1, 31},
+                                    5},
+                                   {"table k: column `int` is a C++ keyword; the member holding it is named `int_`",
+                                    SourceLocation{1, 43},
+                                    3}});
+}
+
+// A keyword quoted in SQL is the same keyword once the quotes are gone, and the warning names the
+// column as it was written.
+TEST_CASE("codegen: CREATE TABLE - a quoted column named with a C++ keyword") {
+    const auto result = generateFull("CREATE TABLE k (\"delete\" INTEGER, [new] INTEGER, Class TEXT)");
+    REQUIRE(result.code == "struct K {\n"
+                           "    std::optional<int64_t> delete_;\n"
+                           "    std::optional<int64_t> new_;\n"
+                           "    std::optional<std::string> Class;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"k\",\n"
+                           "        make_column(\"delete\", &K::delete_),\n"
+                           "        make_column(\"new\", &K::new_),\n"
+                           "        make_column(\"Class\", &K::Class)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"table k: column `delete` is a C++ keyword; the member holding it is named `delete_`",
+                 SourceLocation{1, 17},
+                 8},
+                {"table k: column `new` is a C++ keyword; the member holding it is named `new_`",
+                 SourceLocation{1, 35},
+                 5}});
+}
+
+// The trailing `_` can meet a column that is already spelled with it, which is the same member
+// declared twice as any other two names C++ spells alike, and is reported the same way.
+TEST_CASE("codegen: CREATE TABLE - a keyword column next to its own member name is reported") {
+    const auto result = generateFull("CREATE TABLE k (class TEXT, class_ TEXT)");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"table k: column `class` is a C++ keyword; the member holding it is named `class_`",
+                 SourceLocation{1, 17},
+                 5},
+                {"table k: columns `class` and `class_` are both named `class_` in C++; the generated struct "
+                 "declares that member twice and does not compile",
+                 SourceLocation{1, 29},
+                 6}});
+}
+
+// A statement over such a table names the member the table's struct declares.
+TEST_CASE("codegen: SELECT - a column named with a C++ keyword is read through its member") {
+    const auto result = generateLastOfBatch("CREATE TABLE k (class TEXT, int INTEGER); "
+                                            "SELECT class FROM k WHERE int > 1");
+    REQUIRE(result.code == "auto rows = storage.select(&K::class_, where(c(&K::int_) > 1));");
+}
+
 // SQLite takes a name of no characters at all: `""` is a column called nothing, and it reads and
 // writes like any other. C++ has no identifier of no characters, so the member is named with the
 // one character that carries no letters — without it the struct declared a member with no name at

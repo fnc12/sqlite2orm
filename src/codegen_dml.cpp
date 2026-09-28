@@ -176,7 +176,8 @@ namespace sqlite2orm {
                 if (columnIndex > 0) {
                     cols += ", ";
                 }
-                cols += "&" + tableStruct + "::" + toCppIdentifier(valueColumnNames[columnIndex]);
+                cols += "&" + tableStruct +
+                        "::" + this->context.structColumnMember(tableStruct, valueColumnNames[columnIndex]);
             }
             cols += ")";
             std::string vals = "values(";
@@ -237,7 +238,8 @@ namespace sqlite2orm {
                     if (columnIndex > 0) {
                         cols += ", ";
                     }
-                    cols += "&" + tableStruct + "::" + toCppIdentifier(insertNode.columnNames[columnIndex]);
+                    cols += "&" + tableStruct +
+                            "::" + this->context.structColumnMember(tableStruct, insertNode.columnNames[columnIndex]);
                 }
                 cols += ")";
                 middle = cols + ", " + sub.code;
@@ -257,8 +259,9 @@ namespace sqlite2orm {
             if (insertNode.upsertConflictColumns.empty()) {
                 onTarget = "on_conflict()";
             } else if (insertNode.upsertConflictColumns.size() == 1u) {
-                onTarget =
-                    "on_conflict(&" + tableStruct + "::" + toCppIdentifier(insertNode.upsertConflictColumns[0]) + ")";
+                onTarget = "on_conflict(&" + tableStruct +
+                           "::" + this->context.structColumnMember(tableStruct, insertNode.upsertConflictColumns[0]) +
+                           ")";
             } else {
                 onTarget = "on_conflict(columns(";
                 for (size_t upsertIndex = 0; upsertIndex < insertNode.upsertConflictColumns.size(); ++upsertIndex) {
@@ -266,7 +269,8 @@ namespace sqlite2orm {
                         onTarget += ", ";
                     }
                     onTarget +=
-                        "&" + tableStruct + "::" + toCppIdentifier(insertNode.upsertConflictColumns[upsertIndex]);
+                        "&" + tableStruct + "::" +
+                        this->context.structColumnMember(tableStruct, insertNode.upsertConflictColumns[upsertIndex]);
                 }
                 onTarget += "))";
             }
@@ -287,8 +291,9 @@ namespace sqlite2orm {
                     warnings.insert(warnings.end(),
                                     std::make_move_iterator(valueResult.warnings.begin()),
                                     std::make_move_iterator(valueResult.warnings.end()));
-                    std::string cppCol =
-                        toCppIdentifier(insertNode.upsertUpdateAssignments[assignmentIndex].columnName);
+                    std::string cppCol = this->context.structColumnMember(
+                        tableStruct,
+                        insertNode.upsertUpdateAssignments[assignmentIndex].columnName);
                     setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
                 }
                 upsertSuffix = ", " + onTarget + ".do_update(set(" + setArgs + ")";
@@ -355,7 +360,8 @@ namespace sqlite2orm {
             warnings.insert(warnings.end(),
                             std::make_move_iterator(valueResult.warnings.begin()),
                             std::make_move_iterator(valueResult.warnings.end()));
-            std::string cppCol = toCppIdentifier(updateNode.assignments[assignmentIndex].columnName);
+            std::string cppCol =
+                this->context.structColumnMember(tableStruct, updateNode.assignments[assignmentIndex].columnName);
             setArgs += "c(&" + tableStruct + "::" + cppCol + ") = " + valueResult.code;
         }
         std::string code = "storage.update_all(set(" + setArgs + ")";

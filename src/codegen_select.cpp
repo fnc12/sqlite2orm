@@ -774,12 +774,14 @@ namespace sqlite2orm {
                 }
                 auto baseIt = this->context.cteBaseStructByKey.find(tableKey);
                 if (baseIt != this->context.cteBaseStructByKey.end()) {
-                    return "column<" + cteIt->second + ">(&" + baseIt->second + "::" + toCppIdentifier(colSql) + ")";
+                    return "column<" + cteIt->second + ">(&" + baseIt->second +
+                           "::" + this->context.structColumnMember(baseIt->second, colSql) + ")";
                 }
                 return "column<" + cteIt->second + ">(" + identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) +
                        ")";
             }
-            return "&" + structForFromTable(tableName) + "::" + toCppIdentifier(colSql);
+            const std::string tableStruct = structForFromTable(tableName);
+            return "&" + tableStruct + "::" + this->context.structColumnMember(tableStruct, colSql);
         };
         for (size_t joinIndex = 1; joinIndex < selectNode.fromClause.size(); ++joinIndex) {
             const auto& joinItem = selectNode.fromClause.at(joinIndex);
@@ -816,7 +818,9 @@ namespace sqlite2orm {
                             if (rightIsCte) {
                                 usingCol = cteUsingColumnCode(leftTable.tableName, joinItem.usingColumnNames.at(0));
                             } else {
-                                usingCol = "&" + rightStruct + "::" + toCppIdentifier(joinItem.usingColumnNames.at(0));
+                                usingCol =
+                                    "&" + rightStruct + "::" +
+                                    this->context.structColumnMember(rightStruct, joinItem.usingColumnNames.at(0));
                             }
                             joinCode = std::string(api) + "<" + rightType + ">(using_(" + usingCol + "))";
                         } else {
@@ -825,8 +829,11 @@ namespace sqlite2orm {
                                 if (ci > 0) {
                                     cond += " and ";
                                 }
-                                auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
-                                cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col + ")";
+                                const std::string& usingName = joinItem.usingColumnNames.at(ci);
+                                cond += "c(&" + leftStruct +
+                                        "::" + this->context.structColumnMember(leftStruct, usingName) + ") == c(&" +
+                                        rightStruct + "::" + this->context.structColumnMember(rightStruct, usingName) +
+                                        ")";
                             }
                             joinCode = std::string(api) + "<" + rightType + ">(on(" + cond + "))";
                         }
@@ -1462,12 +1469,14 @@ namespace sqlite2orm {
                 }
                 auto baseIt = this->context.cteBaseStructByKey.find(tableKey);
                 if (baseIt != this->context.cteBaseStructByKey.end()) {
-                    return "column<" + cteIt->second + ">(&" + baseIt->second + "::" + toCppIdentifier(colSql) + ")";
+                    return "column<" + cteIt->second + ">(&" + baseIt->second +
+                           "::" + this->context.structColumnMember(baseIt->second, colSql) + ")";
                 }
                 return "column<" + cteIt->second + ">(" + identifierToCppStringLiteral(stripIdentifierQuotes(colSql)) +
                        ")";
             }
-            return "&" + structForFromTable(tableName) + "::" + toCppIdentifier(colSql);
+            const std::string tableStruct = structForFromTable(tableName);
+            return "&" + tableStruct + "::" + this->context.structColumnMember(tableStruct, colSql);
         };
         auto isCteSource = [&](std::string_view tableName) -> bool {
             auto key = normalizeSqlIdentifier(tableName);
@@ -1509,7 +1518,9 @@ namespace sqlite2orm {
                             if (rightIsCte) {
                                 usingCol = cteUsingColumnCode(leftTable.tableName, joinItem.usingColumnNames.at(0));
                             } else {
-                                usingCol = "&" + rightStruct + "::" + toCppIdentifier(joinItem.usingColumnNames.at(0));
+                                usingCol =
+                                    "&" + rightStruct + "::" +
+                                    this->context.structColumnMember(rightStruct, joinItem.usingColumnNames.at(0));
                             }
                             joinCode = std::string(api) + "<" + rightType + ">(using_(" + usingCol + "))";
                         } else {
@@ -1518,8 +1529,11 @@ namespace sqlite2orm {
                                 if (ci > 0) {
                                     cond += " and ";
                                 }
-                                auto col = toCppIdentifier(joinItem.usingColumnNames.at(ci));
-                                cond += "c(&" + leftStruct + "::" + col + ") == c(&" + rightStruct + "::" + col + ")";
+                                const std::string& usingName = joinItem.usingColumnNames.at(ci);
+                                cond += "c(&" + leftStruct +
+                                        "::" + this->context.structColumnMember(leftStruct, usingName) + ") == c(&" +
+                                        rightStruct + "::" + this->context.structColumnMember(rightStruct, usingName) +
+                                        ")";
                             }
                             joinCode = std::string(api) + "<" + rightType + ">(on(" + cond + "))";
                         }

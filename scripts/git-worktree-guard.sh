@@ -16,6 +16,10 @@
 # that has committed since is recorded at the commit it left behind, so `protect` belongs on every
 # HEAD change and not only on every `git worktree add`, `check` calls such a record `stale`, and
 # `restore` names the HEAD it used rather than claiming the checkout came back where it was.
+#
+# Nothing a person has to remember runs on every HEAD change, so `hook` is what the post-checkout,
+# post-commit, post-merge and post-rewrite hooks in `.githooks/` run: `protect`, in a clone that
+# already has a manifest, with nothing on stdout and never a failed git command.
 set -e
 
 lock_reason='registered path is not visible from every process sharing this clone'
@@ -30,6 +34,7 @@ usage: git-worktree-guard.sh <command> [<id>...]
   restore       rebuild the administrative files of every recorded worktree that lost them
   forget <id>   drop one worktree from the manifest, for a checkout that is finished with
   unlock <id>   drop one worktree's lock, so `git worktree remove` accepts it again
+  hook          what the repository's git hooks run: a quiet `protect`, once a manifest exists
 EOF
 }
 
@@ -135,6 +140,17 @@ cmd_protect() {
     LC_ALL=C sort -o "$tmp" "$tmp"
     mv "$tmp" "$manifest"
     return $status
+}
+
+# A hook fires in every clone that installed `.githooks/`, most of them a single checkout nobody
+# ever ran `protect` in, and a lock there would only stand in the way of `git worktree remove`. The
+# manifest is what marks a clone as guarded. What `protect` reports on stderr is a worktree it could
+# not record, which is worth seeing; its exit status is not worth failing the checkout or commit
+# that fired the hook, since git reports a failed post-checkout as a failed checkout. `protect` runs
+# as a process of its own so that `|| true` does not switch off `set -e` inside it.
+cmd_hook() {
+    [ -f "$manifest" ] || return 0
+    { sh "$0" protect > /dev/null 2>&3 || true; } 3>&1 | sed 's/^/worktree-guard: /' >&2
 }
 
 cmd_check() {
@@ -287,6 +303,7 @@ case "$command" in
     restore) cmd_restore ;;
     forget) cmd_forget "$@" ;;
     unlock) cmd_unlock "$@" ;;
+    hook) cmd_hook ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
 esac

@@ -244,6 +244,7 @@ deletes their administrative files. The owning checkout then answers every comma
 | `restore` | rebuild the administrative files of every recorded worktree that lost them |
 | `forget <id>` | drop one worktree from the manifest, for a checkout that is finished with |
 | `unlock <id>` | drop one worktree's lock, so `git worktree remove` accepts it again |
+| `hook` | what the repository's git hooks run: a quiet `protect`, once a manifest exists |
 
 Run `protect` from anywhere inside the repository, and run it again whenever a worktree's `HEAD`
 moves — not only when one is added. What it records is a snapshot, so a worktree that has committed
@@ -253,6 +254,16 @@ on every commit, checkout and branch switch a shared clone makes. Nothing enforc
 has fallen behind as `stale <id>`. A worktree on a branch does not go stale as the branch moves —
 `ref: refs/heads/<branch>` stays true, and a restore from it loses nothing — but a detached one, or
 one that switched branches, does.
+
+The hooks in `.githooks/` keep that rule for you: once `./scripts/install-git-hooks.sh` has pointed
+the clone at them, post-checkout, post-commit, post-merge and post-rewrite run
+`git-worktree-guard.sh hook` — a `protect` that prints nothing on success, says
+`worktree-guard: <word> <id>` on stderr for a worktree it could not record, and never fails the git
+command that fired it. `git worktree add` checks the new worktree out, so it is recorded as it is
+added. The hook does nothing in a clone without a manifest, so run `protect` by hand once to adopt
+the guard. Only what runs hooks is followed: a `git reset` or `git update-ref` that moves a `HEAD`
+still leaves the record stale until the next `protect`, and a worktree only runs the hooks once its
+own checkout contains them.
 
 `restore` rebuilds `HEAD`, `gitdir`, `commondir` and the index from the manifest, and names the
 commit or branch it used (`restored <id> at <head>`). That is the recorded `HEAD`, which is not

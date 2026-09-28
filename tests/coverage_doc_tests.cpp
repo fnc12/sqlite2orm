@@ -133,6 +133,16 @@ TEST_CASE("COVERAGE.md quotes the code the generator emits for an IS over NULL -
     REQUIRE(countOccurrences(readCoverage(), "`is(&T::a, c(nullptr) - 1)`") == 1);
 }
 
+// The `IS expr` row quotes what an IS against TRUE or FALSE is generated as: a truth test of the left
+// operand, not a comparison with the 1 or 0 the keyword binds as. The fixture names the struct
+// `User`, the row names it `T`.
+TEST_CASE("COVERAGE.md quotes the code the generator emits for an IS truth test") {
+    REQUIRE(generate("a IS TRUE") == "is(and_(&User::a, true), true)");
+    REQUIRE(generate("a IS NOT FALSE") == "is_not(and_(&User::a, true), false)");
+    REQUIRE(countOccurrences(readCoverage(), "`is(and_(&T::a, true), true)`") == 1);
+    REQUIRE(countOccurrences(readCoverage(), "`is_not(and_(&T::a, true), false)`") == 1);
+}
+
 // Every row that describes one of the four gaps reported in fnc12/sqlite_orm#1543 links it, so a
 // reader who hits the gap reaches the upstream report from wherever this file mentions it: the
 // `OR` row, the UNIQUE index over an expression, `json_extract`, `json_quote` and the PRAGMA row

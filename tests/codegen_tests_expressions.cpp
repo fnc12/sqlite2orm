@@ -83,6 +83,16 @@ namespace {
         "and `is(left, right)` are the same comparisons — SQLite defines `IS DISTINCT FROM` as "
         "`IS NOT` and `IS NOT DISTINCT FROM` as `IS`.";
 
+    // The hint attached to every IS whose right operand is TRUE or FALSE; asserted on its own in
+    // "codegen: an IS truth test carries its comment".
+    const std::string kIsTruthTestComment =
+        "A TRUE or FALSE on the right of `IS`, `IS NOT` or `IS [NOT] DISTINCT FROM` makes the "
+        "operator a truth test of its left operand, not a comparison with 1 or 0: SQLite answers "
+        "`2 IS TRUE` with 1 where `2 IS 1` is 0, and `'x' IS FALSE` with 1 where `'x' IS 0` is 0. "
+        "sqlite_orm binds `true` and `false` as 1 and 0, so the left operand is handed to the call "
+        "as `and_(left, true)`, which is 1 where the operand is true, 0 where it is false and NULL "
+        "where it is NULL — the truth value the keyword is compared with.";
+
     // The hint attached to the constant an OR keeps in the SQL beside a MATCH; asserted on its own
     // in "codegen: an OR keeping a constant beside a MATCH carries its comment".
     const std::string kOrMatchLiteralKeptComment =
@@ -2427,6 +2437,50 @@ TEST_CASE("codegen: IS [NOT] DISTINCT FROM carries its SQLite version comment") 
             std::vector<CodegenComment>{CodegenComment{kDistinctFromSqliteVersionComment, SourceLocation{1, 1}, 27}});
     REQUIRE(generateFull("a IS b").comments.empty());
     REQUIRE(generateFull("a IS NOT b").comments.empty());
+}
+
+// SQLite reads a TRUE or FALSE on the right of an IS as a truth test, not as 1 or 0: sqlite3 3.51
+// answers `2 IS TRUE` with 1 and `2 IS 1` with 0, `'x' IS FALSE` with 1 and `'x' IS 0` with 0. It
+// finds the keyword through parentheses and a COLLATE, but not under a sign, and never on the left:
+// `2 IS +TRUE` and `TRUE IS 2` are both 0. `is(&User::a, true)` would bind the 1, so the left
+// operand goes in as `and_(left, true)` — its truth as 1, 0 or NULL — and the keyword stays.
+TEST_CASE("codegen: an IS against TRUE or FALSE tests the truth of its left operand") {
+    REQUIRE(generate("a IS TRUE") == "is(and_(&User::a, true), true)");
+    REQUIRE(generate("a IS FALSE") == "is(and_(&User::a, true), false)");
+    REQUIRE(generate("a IS NOT TRUE") == "is_not(and_(&User::a, true), true)");
+    REQUIRE(generate("a IS NOT FALSE") == "is_not(and_(&User::a, true), false)");
+    REQUIRE(generate("a IS DISTINCT FROM TRUE") == "is_distinct_from(and_(&User::a, true), true)");
+    REQUIRE(generate("a IS DISTINCT FROM FALSE") == "is_distinct_from(and_(&User::a, true), false)");
+    REQUIRE(generate("a IS NOT DISTINCT FROM TRUE") == "is_not_distinct_from(and_(&User::a, true), true)");
+    REQUIRE(generate("a IS NOT DISTINCT FROM FALSE") == "is_not_distinct_from(and_(&User::a, true), false)");
+    REQUIRE(generate("a IS true") == "is(and_(&User::a, true), true)");
+    REQUIRE(generate("a IS (TRUE)") == "is(and_(&User::a, true), true)");
+    REQUIRE(generate("a IS NOT ((FALSE))") == "is_not(and_(&User::a, true), false)");
+    REQUIRE(generate("2 IS TRUE") == "is(and_(2, true), true)");
+    REQUIRE(generate("'x' IS FALSE") == R"(is(and_("x", true), false))");
+    REQUIRE(generate("a + 1 IS TRUE") == "is(and_(c(&User::a) + 1, true), true)");
+    // The truth of a predicate needs no CAST: the AND it goes into delimits it in the SQL.
+    REQUIRE(generate("(a IN (1, 2)) IS TRUE") == "is(and_(in(&User::a, {1, 2}), true), true)");
+    // A sign or the left side takes the keyword for the value 1 or 0, and so does the call.
+    REQUIRE(generate("a IS +TRUE") == "is(&User::a, true)");
+    REQUIRE(generate("a IS NOT +FALSE") == "is_not(&User::a, false)");
+    REQUIRE(generate("TRUE IS a") == "is(true, &User::a)");
+    REQUIRE(generate("a IS 1") == "is(&User::a, 1)");
+}
+
+// `x COLLATE nocase` has no sqlite_orm form and generates `x`, which is what SQLite tests the truth
+// of too: sqlite3 3.51 answers `2 IS TRUE COLLATE nocase` with 1.
+TEST_CASE("codegen: an IS truth test finds its keyword under a COLLATE") {
+    REQUIRE(generateFull("a IS TRUE COLLATE nocase").code == "is(and_(&User::a, true), true)");
+}
+
+TEST_CASE("codegen: an IS truth test carries its comment") {
+    REQUIRE(generateFull("a IS TRUE").comments ==
+            std::vector<CodegenComment>{CodegenComment{kIsTruthTestComment, SourceLocation{1, 1}, 9}});
+    REQUIRE(generateFull("a IS NOT (FALSE)").comments ==
+            std::vector<CodegenComment>{CodegenComment{kIsTruthTestComment, SourceLocation{1, 1}, 16}});
+    REQUIRE(generateFull("a IS +TRUE").comments.empty());
+    REQUIRE(generateFull("TRUE IS a").comments.empty());
 }
 
 // `->` answers the JSON text of the value at the path — a string comes back quoted, `true` comes

@@ -798,6 +798,14 @@ namespace sqlite2orm {
         "and `is(left, right)` are the same comparisons — SQLite defines `IS DISTINCT FROM` as "
         "`IS NOT` and `IS NOT DISTINCT FROM` as `IS`.";
 
+    const std::string kCommentIsTruthTest =
+        "A TRUE or FALSE on the right of `IS`, `IS NOT` or `IS [NOT] DISTINCT FROM` makes the "
+        "operator a truth test of its left operand, not a comparison with 1 or 0: SQLite answers "
+        "`2 IS TRUE` with 1 where `2 IS 1` is 0, and `'x' IS FALSE` with 1 where `'x' IS 0` is 0. "
+        "sqlite_orm binds `true` and `false` as 1 and 0, so the left operand is handed to the call "
+        "as `and_(left, true)`, which is 1 where the operand is true, 0 where it is false and NULL "
+        "where it is NULL — the truth value the keyword is compared with.";
+
     const std::string kCommentTableReflection =
         "The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and "
         "their constraints are read off the struct's members and `[[= …]]` annotations, and the "
@@ -1111,6 +1119,30 @@ namespace sqlite2orm {
             }
         }
         return astNode;
+    }
+
+    const BoolLiteralNode* isFamilyTruthKeyword(const BinaryOperatorNode& binaryOp) {
+        switch (binaryOp.binaryOperator) {
+            case BinaryOperator::isOp:
+            case BinaryOperator::isNot:
+            case BinaryOperator::isDistinctFrom:
+            case BinaryOperator::isNotDistinctFrom:
+                break;
+            default:
+                return nullptr;
+        }
+        // The parser keeps no node for parentheses, so a COLLATE is all there is to step through.
+        const AstNode* rightNode = binaryOp.rhs.get();
+        while (auto* collateNode = dynamic_cast<const CollateNode*>(rightNode)) {
+            rightNode = collateNode->operand.get();
+        }
+        auto* keyword = dynamic_cast<const BoolLiteralNode*>(rightNode);
+        if (!keyword) {
+            return nullptr;
+        }
+        // `ON` is a boolean only as a PRAGMA value; SQLite refuses it as an operand.
+        const std::string spelling = toLowerAscii(keyword->spelling);
+        return spelling == "true" || spelling == "false" ? keyword : nullptr;
     }
 
     int sqlOperatorPrecedence(BinaryOperator binaryOperator) {

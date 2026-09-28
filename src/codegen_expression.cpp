@@ -603,7 +603,18 @@ namespace sqlite2orm {
                     castPredicateOperand = &operandNode;
                 }
             };
-            castPredicate(leftResult.code, *binaryOp->lhs, false);
+            // A TRUE or FALSE on the right of an IS tests the truth of the left operand, which
+            // `is(left, true)` would compare with 1 instead. `and_(left, true)` answers that truth
+            // as 1, 0 or NULL, and a condition is an operand sqlite_orm serializes parenthesized,
+            // so it needs no CAST to keep its grouping.
+            const BoolLiteralNode* truthKeyword = isFamilyTruthKeyword(*binaryOp);
+            if (truthKeyword) {
+                const std::string truthOperand =
+                    generatesSqliteOrmOperandOrBindable(leftNode) ? leftResult.code : wrap(leftResult.code);
+                leftResult.code = "and_(" + truthOperand + ", true)";
+            } else {
+                castPredicate(leftResult.code, *binaryOp->lhs, false);
+            }
             castPredicate(rightResult.code, *binaryOp->rhs, true);
 
             // sqlite_orm reads the operand types to decide what an AND or an OR may build at all.
@@ -787,6 +798,10 @@ namespace sqlite2orm {
                 case BinaryOperator::isNot:
                 case BinaryOperator::isDistinctFrom:
                 case BinaryOperator::isNotDistinctFrom:
+                    // A truth test reads no affinity: `+t IS TRUE` and `t IS TRUE` agree.
+                    if (truthKeyword) {
+                        break;
+                    }
                     for (const AstNode* operand: {binaryOp->lhs.get(), binaryOp->rhs.get()}) {
                         if (auto warning = comparisonUnaryPlusAffinityWarning(*operand)) {
                             binWarnings.push_back(std::move(*warning));
@@ -815,6 +830,10 @@ namespace sqlite2orm {
                 binaryOp->binaryOperator == BinaryOperator::isNotDistinctFrom) {
                 // The spelling is the whole expression's, operator and operands together.
                 this->context.recordComment(sourceSpanComment(kCommentDistinctFromSqliteVersion, *binaryOp));
+            }
+            if (truthKeyword) {
+                // The spelling is the whole expression's, operator and operands together.
+                this->context.recordComment(sourceSpanComment(kCommentIsTruthTest, *binaryOp));
             }
             if (keptLiteralOperand) {
                 this->context.recordComment(sourceSpanComment(kCommentOrMatchLiteralKept, *keptLiteralOperand));

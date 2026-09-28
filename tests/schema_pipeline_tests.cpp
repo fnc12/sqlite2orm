@@ -1988,7 +1988,9 @@ TEST_CASE("processMultiSql: the snippet of a batch with an ungenerated view comp
 // it, so the names it created have to be left out too: the trigger on `bad_v` and the view on
 // `bad_t` would otherwise reach a compiler as `.on<BadV>()` and `&BadT::a` with no struct behind
 // them, at a header that looks fine as text. SQLite accepts every statement below — it stores a
-// view body and a CHECK without compiling them — so this whole schema comes back from sqlite_master.
+// view body without compiling it, and a generated column that ALTER TABLE adds as written — so this
+// whole schema comes back from sqlite_master. The generated column holds a hex literal too big for
+// 64 bits, which SQLite refuses only in the statements that read it and codegen refuses outright.
 // `bad_v` selects the one literal SQLite itself refuses to compile, `hex literal too big`, so that
 // the view stays ungeneratable: a view that does generate is C++26 reflection code by design
 // (`make_view<T>` over a `struct [[= "…"_orm_name]]`, carrying its own codegen warning) and no
@@ -1997,7 +1999,8 @@ TEST_CASE("generateSqliteSchemaHeader: a schema with a statement that did not ge
     TempDbFile file{makeTempDbPath()};
     execSql(file.path,
             "CREATE TABLE ok_t (id INTEGER PRIMARY KEY);"
-            "CREATE TABLE bad_t (a INTEGER CHECK (a IS NOT 1));"
+            "CREATE TABLE bad_t (a INTEGER);"
+            "ALTER TABLE bad_t ADD COLUMN b INTEGER AS (0x10000000000000000);"
             "CREATE VIEW bad_v AS SELECT -0x8000000000000000 AS id FROM ok_t;"
             "CREATE VIEW on_bad_t AS SELECT a FROM bad_t;"
             "CREATE TRIGGER on_bad_v INSTEAD OF INSERT ON bad_v BEGIN DELETE FROM ok_t; END;");

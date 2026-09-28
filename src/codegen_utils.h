@@ -109,9 +109,9 @@ namespace sqlite2orm {
     /**
      *  Whether generated code for a column DEFAULT may stand inside a `[[= default_value(…)]]`
      *  annotation. An annotation is a constant expression, so only a literal the compiler folds —
-     *  an integer, a floating-point number or a boolean — qualifies. A text default is generated
-     *  as a `const char*` pointing at a string literal, which is not one, and an expression
-     *  default is not a literal at all.
+     *  an integer, a floating-point number, a boolean or `nullptr` — qualifies. A text default is
+     *  generated as a `const char*` pointing at a string literal, which is not one, and an
+     *  expression default is not a literal at all.
      */
     bool isAnnotationConstantValueCode(std::string_view code);
 

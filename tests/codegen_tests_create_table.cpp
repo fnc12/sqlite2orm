@@ -2663,6 +2663,90 @@ TEST_CASE("codegen: CREATE TABLE - a text DEFAULT keeps the classical mapping un
                                                    1)}}});
 }
 
+// `default_value(nullptr)` is a `default_t<std::nullptr_t>`, a structural type, so DEFAULT NULL is a
+// constant expression an annotation carries like a number.
+TEST_CASE("codegen: CREATE TABLE - a DEFAULT NULL annotates the member of the reflected struct") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER DEFAULT NULL);");
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a, default_value(nullptr)))";
+    const std::string reflectedCode = "struct [[= \"t\"_orm_name]] T {\n"
+                                      "    [[= default_value(nullptr)]] std::optional<int64_t> a;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table<T>()";
+    Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
+    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12});
+    reflectedOption.minCppStandard = 26;
+    REQUIRE(result == CodeGenResult{"struct [[= \"t\"_orm_name]] T {\n"
+                                    "    [[= default_value(nullptr)]] std::optional<int64_t> a;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table<T>());",
+                                    {DecisionPoint{1,
+                                                   "table_mapping_style",
+                                                   "reflection",
+                                                   reflectedCode,
+                                                   {Option{"make_table", classicalCode, kClassicalOptionDescription},
+                                                    reflectedOption}}},
+                                    {},
+                                    {},
+                                    {CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12}}});
+}
+
+// `current_timestamp()`, `current_date()` and `current_time()` return empty structs, but sqlite_orm
+// declares them `inline` without `constexpr`, so the call is no constant expression and the table
+// keeps the classical mapping — whether the keyword is written bare or in parentheses.
+TEST_CASE("codegen: CREATE TABLE - a DEFAULT CURRENT_TIMESTAMP keeps the classical mapping under C++26") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, created TEXT DEFAULT CURRENT_TIMESTAMP);");
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "    std::optional<std::string> created;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"a\", &T::a),\n"
+                                      "        make_column(\"created\", &T::created, default_value(current_timestamp())))";
+    REQUIRE(result.decisionPoints ==
+            std::vector<DecisionPoint>{
+                DecisionPoint{1,
+                              "table_mapping_style",
+                              "make_table",
+                              classicalCode,
+                              {classicalOnlyOption(classicalCode,
+                                                   "the DEFAULT of column `created` is generated as "
+                                                   "`current_timestamp()`, which sqlite_orm does not declare "
+                                                   "constexpr, so an annotation cannot carry it",
+                                                   SourceLocation{1, 28},
+                                                   7)}}});
+}
+
+TEST_CASE("codegen: CREATE TABLE - a parenthesized DEFAULT (CURRENT_DATE) keeps the classical mapping under C++26") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (d TEXT DEFAULT (CURRENT_DATE));");
+    const std::string classicalCode = "struct T {\n"
+                                      "    std::optional<std::string> d;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table(\"t\",\n"
+                                      "        make_column(\"d\", &T::d, default_value(current_date())))";
+    REQUIRE(result.decisionPoints ==
+            std::vector<DecisionPoint>{
+                DecisionPoint{1,
+                              "table_mapping_style",
+                              "make_table",
+                              classicalCode,
+                              {classicalOnlyOption(classicalCode,
+                                                   "the DEFAULT of column `d` is generated as `current_date()`, which "
+                                                   "sqlite_orm does not declare constexpr, so an annotation cannot "
+                                                   "carry it",
+                                                   SourceLocation{1, 17},
+                                                   1)}}});
+}
+
 // `unique_t` is one of sqlite_orm's column constraints (`is_column_constraint`), and a member
 // annotation is handed straight to `make_column()`, whose only gate is that very list — so a
 // column UNIQUE annotates the member like the primary key and the collation do.

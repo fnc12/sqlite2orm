@@ -821,16 +821,89 @@ TEST_CASE("codegen: an OVER over a form that carries one warns of nothing") {
         REQUIRE(result.warnings == std::vector<CodegenWarning>{});
     }
 
-    SECTION("count over DISTINCT") {
-        const auto result = generateFull("SELECT count(DISTINCT id) OVER () FROM users;");
-        REQUIRE(result.code == "auto rows = storage.select(count(distinct(&Users::id)).over());");
-        REQUIRE(result.warnings == std::vector<CodegenWarning>{});
-    }
-
     SECTION("window function taking an argument") {
         const auto result = generateFull("SELECT lag(id) OVER () FROM users;");
         REQUIRE(result.code == "auto rows = storage.select(lag(&Users::id).over());");
         REQUIRE(result.warnings == std::vector<CodegenWarning>{});
+    }
+}
+
+// A DISTINCT under an OVER is the one windowed call sqlite_orm writes and SQLite takes nowhere:
+// `count(distinct(&Users::id)).over()` compiles and the storage throws `SQL logic error` when it
+// prepares it, because sqlite3 3.51.0 answers `DISTINCT is not supported for window functions`
+// over every function — an aggregate, a scalar, a window function, one it does not know — and
+// refuses to create a trigger or a view holding the call too. That verdict is the one quoted,
+// asked before whatever the registry says of the form.
+TEST_CASE("codegen: a DISTINCT under an OVER is not generated") {
+    SECTION("count") {
+        const auto result = generateFull("SELECT count(DISTINCT id) OVER () FROM users;");
+        REQUIRE(result.code.empty());
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"count() is written with DISTINCT under an OVER, which SQLite takes over no function — "
+                     "DISTINCT is not supported for window functions — so there is no call to generate: code written "
+                     "for it would fail when the storage prepares the statement. SQLite refuses the call as it parses "
+                     "the SQL, so no trigger or view holding it is ever stored either",
+                     SourceLocation{1, 8},
+                     26},
+                    {kStatementNotGenerated}});
+    }
+
+    SECTION("aggregate under a FILTER over a named window") {
+        const auto result =
+            generateFull("SELECT sum(DISTINCT id) FILTER (WHERE id > 0) OVER w FROM users WINDOW w AS (ORDER BY id);");
+        REQUIRE(result.code.empty());
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"sum() is written with DISTINCT under an OVER, which SQLite takes over no function — "
+                     "DISTINCT is not supported for window functions — so there is no call to generate: code written "
+                     "for it would fail when the storage prepares the statement. SQLite refuses the call as it parses "
+                     "the SQL, so no trigger or view holding it is ever stored either",
+                     SourceLocation{1, 8},
+                     45},
+                    {kStatementNotGenerated}});
+    }
+
+    SECTION("scalar function") {
+        const auto result = generateFull("SELECT upper(DISTINCT name) OVER () FROM users;");
+        REQUIRE(result.code.empty());
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"upper() is written with DISTINCT under an OVER, which SQLite takes over no function — "
+                     "DISTINCT is not supported for window functions — so there is no call to generate: code written "
+                     "for it would fail when the storage prepares the statement. SQLite refuses the call as it parses "
+                     "the SQL, so no trigger or view holding it is ever stored either",
+                     SourceLocation{1, 8},
+                     28},
+                    {kStatementNotGenerated}});
+    }
+
+    SECTION("window function") {
+        const auto result = generateFull("SELECT row_number(DISTINCT id) OVER () FROM users;");
+        REQUIRE(result.code.empty());
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"row_number() is written with DISTINCT under an OVER, which SQLite takes over no function — "
+                     "DISTINCT is not supported for window functions — so there is no call to generate: code written "
+                     "for it would fail when the storage prepares the statement. SQLite refuses the call as it parses "
+                     "the SQL, so no trigger or view holding it is ever stored either",
+                     SourceLocation{1, 8},
+                     31},
+                    {kStatementNotGenerated}});
+    }
+
+    SECTION("user-defined function") {
+        const auto result = generateFull("SELECT myagg(DISTINCT id) OVER () FROM users;");
+        REQUIRE(result.code.empty());
+        REQUIRE(result.warnings ==
+                std::vector<CodegenWarning>{
+                    {"myagg() is written with DISTINCT under an OVER, which SQLite takes over no function — "
+                     "DISTINCT is not supported for window functions — so there is no call to generate: code written "
+                     "for it would fail when the storage prepares the statement. SQLite refuses the call as it parses "
+                     "the SQL, so no trigger or view holding it is ever stored either",
+                     SourceLocation{1, 8},
+                     26},
+                    {kStatementNotGenerated}});
     }
 }
 

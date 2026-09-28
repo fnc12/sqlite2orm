@@ -281,6 +281,22 @@ namespace sqlite2orm {
         }
 
         /**
+         *  Why a DISTINCT under an OVER cannot be generated. sqlite_orm writes the aggregate calls
+         *  as readily over a `distinct()` argument as over any other — `count(distinct(x)).over()`
+         *  compiles — but SQLite windows no call written with DISTINCT, whatever the function, and
+         *  says so while it parses the SQL, before it resolves the name or counts the arguments:
+         *  sqlite3 3.51.0 answers the diagnostic quoted here at prepare and refuses to create a
+         *  trigger or a view holding such a call as well, so a schema never carries one.
+         */
+        std::string distinctOverRefusal(std::string_view functionName) {
+            return std::string(functionName) +
+                   "() is written with DISTINCT under an OVER, which SQLite takes over no function — DISTINCT is "
+                   "not supported for window functions — so there is no call to generate: code written for it "
+                   "would fail when the storage prepares the statement. SQLite refuses the call as it parses the "
+                   "SQL, so no trigger or view holding it is ever stored either";
+        }
+
+        /**
          *  Why an FTS5 auxiliary function cannot be generated. sqlite_orm declares `highlight()`,
          *  and declares it over the FTS5 table's hidden column — `highlight(posts, 0, '<b>',
          *  '</b>')` reads `posts` as a column reference, and the library's factory takes an
@@ -408,6 +424,11 @@ namespace sqlite2orm {
     std::optional<std::string> functionCallFormRefusal(const FunctionCallNode& functionCall,
                                                        bool generatedAsCountAsterisk,
                                                        bool userDefinedFunction) {
+        // Asked first: SQLite refuses a windowed DISTINCT before anything else about the call, so
+        // that is the verdict to quote whatever the registry would have said of the form.
+        if (functionCall.distinct && functionCall.over != nullptr) {
+            return distinctOverRefusal(functionCall.name);
+        }
         if (userDefinedFunction) {
             // A `func<…>()` call takes whatever argument list it is written with — the generated
             // stub declares one `operator()` per call — and carries no `filter()` at all.

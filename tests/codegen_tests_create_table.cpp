@@ -2703,14 +2703,15 @@ TEST_CASE("codegen: CREATE TABLE - a DEFAULT NULL annotates the member of the re
 // keeps the classical mapping — whether the keyword is written bare or in parentheses.
 TEST_CASE("codegen: CREATE TABLE - a DEFAULT CURRENT_TIMESTAMP keeps the classical mapping under C++26") {
     const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, created TEXT DEFAULT CURRENT_TIMESTAMP);");
-    const std::string classicalCode = "struct T {\n"
-                                      "    std::optional<int64_t> a;\n"
-                                      "    std::optional<std::string> created;\n"
-                                      "};\n"
-                                      "\n"
-                                      "make_table(\"t\",\n"
-                                      "        make_column(\"a\", &T::a),\n"
-                                      "        make_column(\"created\", &T::created, default_value(current_timestamp())))";
+    const std::string classicalCode =
+        "struct T {\n"
+        "    std::optional<int64_t> a;\n"
+        "    std::optional<std::string> created;\n"
+        "};\n"
+        "\n"
+        "make_table(\"t\",\n"
+        "        make_column(\"a\", &T::a),\n"
+        "        make_column(\"created\", &T::created, default_value(current_timestamp())))";
     REQUIRE(result.decisionPoints ==
             std::vector<DecisionPoint>{
                 DecisionPoint{1,

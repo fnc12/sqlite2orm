@@ -257,7 +257,11 @@ differ — `SELECT a & 1 FROM users UNION SELECT a + 1 FROM users`, where sqlite
 `int` and `+` as `double` — are left as written and still read a NULL row back as 0. Widening one of
 them alone is what has no common type at all (`std::optional<int>` beside an
 `std::optional<double>`), and the generated code would stop compiling. A branch whose type only the
-schema knows — a column reference, a call, a literal — is left alone for the same reason. The
+schema knows — a column reference, a call, a literal — is left alone for the same reason, unless
+every branch spells the same expression over the same FROM clause: those are generated as the same
+code and so come out as one type, and `SELECT length(a) FROM users UNION SELECT length(a) FROM
+users` is widened the way a plain `SELECT length(a)` is. Calls that differ between the branches —
+`length(a)` beside `length(b)`, or one read over another FROM — are still left as written. The
 `cast<int64_t>` a plain SELECT puts on a bitwise result column is not placed in a branch either, so
 a compound of bitwise branches is still read back through `int`. A subquery in a branch changes
 none of this — `SELECT a FROM t UNION SELECT (SELECT b FROM u LIMIT 1)` builds — and branches whose

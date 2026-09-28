@@ -2867,6 +2867,44 @@ TEST_CASE("codegen: a compound SELECT leaves its arms alone without one common r
             "auto rows = storage.select(union_(select(c(1) + 2), select(c(3) * 4)));");
 }
 
+// A call is typed by the function and its arguments, which this layer does not name, so on master a
+// compound of calls was left as written and `SELECT length(a) FROM users UNION SELECT length(a) FROM
+// users` read a NULL row back as 0 where sqlite3 3.51 answers NULL. Arms spelling the same
+// expression over the same FROM clause are generated as the same code, so they come out as one type
+// whatever it is and are widened the way a plain SELECT widens that expression.
+TEST_CASE("codegen: a compound SELECT widens a call every arm spells alike") {
+    REQUIRE(generate("SELECT length(a) UNION SELECT length(a);") ==
+            "auto rows = storage.select(union_(select(as_optional(length(&User::a))), "
+            "select(as_optional(length(&User::a)))));");
+    REQUIRE(generate("SELECT upper(b) UNION ALL SELECT upper(b);") ==
+            "auto rows = storage.select(union_all(select(as_optional(upper(&User::b))), "
+            "select(as_optional(upper(&User::b)))));");
+    REQUIRE(generate("SELECT instr(b, 'x') INTERSECT SELECT instr(b, 'x');") ==
+            "auto rows = storage.select(intersect(select(as_optional(instr(&User::b, \"x\"))), "
+            "select(as_optional(instr(&User::b, \"x\")))));");
+    REQUIRE(generate("SELECT julianday('now') EXCEPT SELECT julianday('now');") ==
+            "auto rows = storage.select(except(select(as_optional(julianday(\"now\"))), "
+            "select(as_optional(julianday(\"now\")))));");
+    // The clauses after the FROM do not decide the type, and every column is decided on its own.
+    REQUIRE(generate("SELECT length(a), b FROM users UNION SELECT length(a), b FROM users WHERE a > 1 "
+                     "UNION SELECT length(a), b FROM users;") ==
+            "auto rows = storage.select(union_(select(columns(as_optional(length(&Users::a)), &Users::b)), "
+            "select(columns(as_optional(length(&Users::a)), &Users::b), where(c(&Users::a) > 1)), "
+            "select(columns(as_optional(length(&Users::a)), &Users::b))));");
+    // A call sqlite_orm already reads back nullably is left alone, as a plain SELECT leaves it.
+    REQUIRE(generate("SELECT abs(a) UNION SELECT abs(a);") ==
+            "auto rows = storage.select(union_(select(abs(&User::a)), select(abs(&User::a))));");
+    // Arms that differ — in an argument, in the expression around the call, in the FROM clause the
+    // arguments are read over — may come out as types with no common optional, and are left alone.
+    REQUIRE(generate("SELECT length(a) UNION SELECT length(b);") ==
+            "auto rows = storage.select(union_(select(length(&User::a)), select(length(&User::b))));");
+    REQUIRE(generate("SELECT length(a) UNION SELECT length(a) + 0;") ==
+            "auto rows = storage.select(union_(select(length(&User::a)), select(length(&User::a) + 0)));");
+    REQUIRE(generate("SELECT length(a) FROM users UNION SELECT length(a) FROM users u;") ==
+            "auto rows = storage.select(union_(select(length(&Users::a)), "
+            "select(length(alias_column<alias_a<Users>>(&Users::a)))));");
+}
+
 // The arms share their generator with the subqueries, and a subquery hands its columns to SQL
 // itself rather than to the caller: a view body, a CTE, an IN and an INSERT ... SELECT read nothing
 // back, so nothing there is widened. The outer statement of a `WITH` is read back, and is.

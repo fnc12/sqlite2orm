@@ -2295,6 +2295,32 @@ TEST_CASE("runtime: a compound SELECT reads a NULL result column back") {
             std::vector<std::string>{"8", "8", "8", "8", "0", "7x"});
 }
 
+// A call is typed by sqlite_orm as the return type its function declares, `int` for `length` and
+// `instr`, `std::string` for `upper`, and a compound of calls spelled alike in every arm read a NULL
+// row back as 0 / "" on master. Expected rows checked against sqlite3 3.51 over `users(a INTEGER)`
+// holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a compound SELECT of calls spelled alike reads a NULL result column back") {
+    const std::vector<std::string> statements{
+        generate("SELECT length(a) UNION SELECT length(a);"),
+        generate("SELECT upper(a) UNION ALL SELECT upper(a);"),
+        generate("SELECT instr(a, '7') INTERSECT SELECT instr(a, '7');"),
+        generate("SELECT length(a) EXCEPT SELECT length(a) WHERE a > 100;"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(union_(select(as_optional(length(&User::a))), "
+                              "select(as_optional(length(&User::a)))));",
+                              "auto rows = storage.select(union_all(select(as_optional(upper(&User::a))), "
+                              "select(as_optional(upper(&User::a)))));",
+                              "auto rows = storage.select(intersect(select(as_optional(instr(&User::a, \"7\"))), "
+                              "select(as_optional(instr(&User::a, \"7\")))));",
+                              "auto rows = storage.select(except(select(as_optional(length(&User::a))), "
+                              "select(as_optional(length(&User::a)), where(c(&User::a) > 100))));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"1", "7", "1", "1"});
+}
+
 // sqlite_orm takes every arm of a compound as an argument of the one call and has no nested form:
 // `union_(union_(a, b), c)` fails to compile over `highest_level`, a member only `select_t` has.
 // Three arms and more of one operator came out nested on master and did not build (card

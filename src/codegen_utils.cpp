@@ -3794,17 +3794,21 @@ namespace sqlite2orm {
         }
         std::vector<bool> widenedColumns(columnCount, false);
         bool widensAnyColumn = false;
+        const SelectNode& leadingArm = *arms.front();
         for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
-            const std::optional<std::string> cppType =
-                generatedResultColumnCppType(*arms.front()->columns.at(columnIndex).expression);
-            if (!cppType) {
-                continue;
-            }
+            const AstNode& leadingExpression = *leadingArm.columns.at(columnIndex).expression;
+            const std::optional<std::string> cppType = generatedResultColumnCppType(leadingExpression);
             bool sameTypeEverywhere = true;
             bool someArmNeedsWidening = false;
             for (const auto* arm: arms) {
                 const AstNode& columnExpression = *arm->columns.at(columnIndex).expression;
-                if (generatedResultColumnCppType(columnExpression) != cppType) {
+                // Where no type can be named here — a call, whose type the function and its
+                // arguments decide — an arm spelling the same expression over the same sources is
+                // generated as the same code, and so comes out as the same type whatever it is.
+                const bool sameType = cppType ? generatedResultColumnCppType(columnExpression) == cppType
+                                              : arm->fromClause == leadingArm.fromClause &&
+                                                    columnExpression == leadingExpression;
+                if (!sameType) {
                     sameTypeEverywhere = false;
                     break;
                 }

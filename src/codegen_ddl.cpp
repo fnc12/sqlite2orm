@@ -1643,6 +1643,15 @@ namespace sqlite2orm {
                     // expression default is no literal at all.
                     if (isAnnotationConstantValueCode(defaultCode)) {
                         annotate("default_value(" + defaultCode + ")");
+                    } else if (dynamic_cast<const CurrentDatetimeLiteralNode*>(column.defaultValue.get())) {
+                        // `current_timestamp()` and its two siblings return an empty struct, but
+                        // sqlite_orm declares them `inline` without `constexpr`, so calling one is
+                        // not a constant expression.
+                        blockReflection("the DEFAULT of column `" + rawColumnName + "` is generated as `" +
+                                            defaultCode +
+                                            "`, which sqlite_orm does not declare constexpr, so an annotation "
+                                            "cannot carry it",
+                                        column.nameSpan);
                     } else {
                         blockReflection("the DEFAULT of column `" + rawColumnName + "` is generated as `" +
                                             defaultCode +

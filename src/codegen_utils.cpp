@@ -261,7 +261,9 @@ namespace sqlite2orm {
     }
 
     bool isAnnotationConstantValueCode(std::string_view code) {
-        if (code == "true" || code == "false") {
+        // `default_value(nullptr)` is a `default_t<std::nullptr_t>`, a structural type the compiler
+        // folds like the numbers below.
+        if (code == "true" || code == "false" || code == "nullptr") {
             return true;
         }
         std::string_view body = code;

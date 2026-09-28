@@ -2515,3 +2515,22 @@ TEST_CASE("runtime: a CAST to BOOLEAN reads back the number SQLite answers") {
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"7", "3", "7x"});
     REQUIRE(selectedValues({statements[0]}, "double", "1.5") == std::vector<std::string>{"1"});
 }
+
+// A built-in codegen did not know was generated as a `func<Format>()` over a stub whose
+// `operator()` answers 0 — code that compiled and ran and printed the wrong value. Generated as
+// the built-in sqlite_orm declares, the call answers what SQLite does: sqlite3 3.51 answers these
+// with '0!' over a NULL `a`, '7!' over a = 7, and 1577836800 for the epoch. Only names SQLite has
+// had since 3.38 are run here, the oldest the platforms this is built on link.
+TEST_CASE("runtime: a built-in the validator did not know answers what SQLite does") {
+    const std::vector<std::string> statements{
+        generate("SELECT format('%d!', a);"),
+        generate("SELECT unixepoch('2020-01-01');"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(format(\"%d!\", &User::a)));",
+                              "auto rows = storage.select(as_optional(unixepoch(\"2020-01-01\")));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"0!", "1577836800"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"7!", "1577836800"});
+}

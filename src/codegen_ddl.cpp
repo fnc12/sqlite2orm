@@ -1,5 +1,6 @@
 #include "codegen_ddl.h"
 #include "codegen_context.h"
+#include "codegen_forms.h"
 #include "codegen_utils.h"
 #include "select_scope_columns.h"
 #include <sqlite2orm/codegen.h>
@@ -840,35 +841,26 @@ namespace sqlite2orm {
                     }
                     return this->infer(*functionCall.arguments.front());
                 };
-                if (lower == "count" || lower == "row_number" || lower == "rank" || lower == "dense_rank" ||
-                    lower == "ntile" || lower == "length" || lower == "octet_length" || lower == "instr" ||
-                    lower == "unicode" || lower == "changes" || lower == "total_changes" ||
-                    lower == "last_insert_rowid") {
-                    return InferredFieldType{"int"};
+                const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(lower);
+                if (form == nullptr) {
+                    return std::nullopt;
                 }
-                if (lower == "avg" || lower == "total" || lower == "sum" || lower == "round" || lower == "julianday" ||
-                    lower == "percent_rank" || lower == "cume_dist" || lower == "unixepoch" || lower == "pow" ||
-                    lower == "power" || lower == "sqrt" || lower == "exp" || lower == "ln" || lower == "log" ||
-                    lower == "log2" || lower == "log10" || lower == "sin" || lower == "cos" || lower == "tan" ||
-                    lower == "asin" || lower == "acos" || lower == "atan" || lower == "atan2" || lower == "degrees" ||
-                    lower == "radians" || lower == "pi" || lower == "ceil" || lower == "ceiling" || lower == "floor" ||
-                    lower == "trunc" || lower == "mod") {
-                    return InferredFieldType{"double"};
-                }
-                if (lower == "group_concat" || lower == "string_agg" || lower == "upper" || lower == "lower" ||
-                    lower == "substr" || lower == "substring" || lower == "trim" || lower == "ltrim" ||
-                    lower == "rtrim" || lower == "replace" || lower == "hex" || lower == "quote" || lower == "printf" ||
-                    lower == "format" || lower == "typeof" || lower == "char" || lower == "date" || lower == "time" ||
-                    lower == "datetime" || lower == "strftime" || lower == "concat" || lower == "concat_ws" ||
-                    lower == "json" || lower == "json_extract" || lower == "json_array" || lower == "json_object" ||
-                    lower == "json_quote" || lower == "json_group_array" || lower == "json_group_object") {
-                    return InferredFieldType{"std::string"};
-                }
-                if (lower == "random") {
-                    return InferredFieldType{"int64_t"};
-                }
-                if (lower == "randomblob" || lower == "zeroblob") {
-                    return InferredFieldType{"std::vector<char>"};
+                switch (form->resultType) {
+                    case FunctionResultType::integer:
+                        return InferredFieldType{"int"};
+                    case FunctionResultType::bigInteger:
+                        return InferredFieldType{"int64_t"};
+                    case FunctionResultType::real:
+                        return InferredFieldType{"double"};
+                    case FunctionResultType::text:
+                        return InferredFieldType{"std::string"};
+                    case FunctionResultType::blob:
+                        return InferredFieldType{"std::vector<char>"};
+                    case FunctionResultType::unknown:
+                        return std::nullopt;
+                    case FunctionResultType::firstArgument:
+                    case FunctionResultType::secondArgument:
+                        break;
                 }
                 // A call generated with its result type spelled out — COALESCE, IFNULL, NULLIF or
                 // IIF over arguments with no common C++ type — is read back as exactly that type,
@@ -888,16 +880,11 @@ namespace sqlite2orm {
                     }
                     return InferredFieldType{spelledType, deduced && deduced->nullable};
                 };
-                if (lower == "abs" || lower == "min" || lower == "max" || lower == "coalesce" || lower == "ifnull" ||
-                    lower == "nullif" || lower == "lag" || lower == "lead" || lower == "first_value" ||
-                    lower == "last_value" || lower == "nth_value") {
+                if (form->resultType == FunctionResultType::firstArgument) {
                     return spelledOr(firstArgument());
                 }
-                if (lower == "iif") {
-                    if (functionCall.arguments.size() >= 2 && functionCall.arguments.at(1)) {
-                        return spelledOr(this->infer(*functionCall.arguments.at(1)));
-                    }
-                    return std::nullopt;
+                if (functionCall.arguments.size() >= 2 && functionCall.arguments.at(1)) {
+                    return spelledOr(this->infer(*functionCall.arguments.at(1)));
                 }
                 return std::nullopt;
             }

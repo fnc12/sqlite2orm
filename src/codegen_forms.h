@@ -27,12 +27,12 @@ namespace sqlite2orm {
     /**
      *  Argument counts a form declares an overload for.
      *
-     *  A single stretch, which is every form's shape but three: `json_insert`, `json_replace` and
-     *  `json_set` take a path and a value per pair, so their overload is the odd counts from three
-     *  on, and `json_object` the even ones. Their rows are recorded as the whole stretch and are
-     *  knowingly wider than the declaration — the gate lets an even `json_insert` through, as it
-     *  did before there was a gate — because a stretch cannot say "every other one". Narrowing
-     *  them is a card of its own.
+     *  A single stretch, which is every form's shape but five: `json_insert`, `json_replace`,
+     *  `json_set` and `json_array_insert` take a path and a value per pair, so their overload is
+     *  the odd counts from three on, and `json_object` the even ones. Their rows are recorded as
+     *  the whole stretch and are knowingly wider than the declaration — the gate lets an even
+     *  `json_insert` through, as it did before there was a gate — because a stretch cannot say
+     *  "every other one". Narrowing them is a card of its own.
      */
     struct ArityRange {
         size_t minimum = 0;
@@ -67,15 +67,50 @@ namespace sqlite2orm {
         /** `count_asterisk_without_type`, what the argument-less `count()` becomes; it holds nothing. */
         countWithoutType,
         /**
-         *  An FTS5 auxiliary function — `highlight()` — which sqlite_orm declares, and declares
+         *  An FTS5 auxiliary function — `highlight()`, `snippet()`, `bm25()` — which sqlite_orm declares, and declares
          *  over the table's hidden column: `highlight(posts, 0, '<b>', '</b>')` names the table in
          *  its first argument, and the library takes that argument as an `fts5::hidden::any`
          *  column of the mapped virtual table. Codegen writes no such column, so no call it can
          *  write resolves to the form, whatever the argument count.
          */
         fts5Auxiliary,
+        /**
+         *  A name sqlite_orm declares a form for, fronted by a public factory that does not compile
+         *  whatever it is called with. `sqlite_offset()` is the one: on the pinned revision its
+         *  factory — in both branches of the headers — checks its argument with a
+         *  `polyfill::disjunction` the library does not define, so any translation unit calling
+         *  it stops at the compiler.
+         */
+        uncompilableFactory,
         /** sqlite_orm has no form under this name at all, whatever the call is written with. */
         notMapped,
+    };
+
+    /**
+     *  What a call of a name is read back as, where the name alone says so: the type the field of a
+     *  view's struct holding the call is declared with. Recorded once, next to the form, so that a
+     *  name the registry carries and a name the field type is answered for cannot drift apart —
+     *  they did while the two were separate lists, and `concat()`, `format()` and `unixepoch()`
+     *  were typed as the built-ins they are in a view and generated as user-defined functions in
+     *  the very SELECT the view was made of.
+     */
+    enum class FunctionResultType {
+        /** The name alone says nothing, and the field falls back to what it is declared with otherwise. */
+        unknown,
+        /** An `int`. */
+        integer,
+        /** An `int64_t`. */
+        bigInteger,
+        /** A `double`. */
+        real,
+        /** An `std::string`. */
+        text,
+        /** An `std::vector<char>`. */
+        blob,
+        /** Whatever the first argument is read back as — `abs`, `coalesce`, `max`, `lag`, … */
+        firstArgument,
+        /** Whatever the second argument is — the first branch of `iif` and of its spelling `if`. */
+        secondArgument,
     };
 
     /**
@@ -89,12 +124,13 @@ namespace sqlite2orm {
         SqliteOrmFormKind kind = SqliteOrmFormKind::builtinScalar;
         ArityRange ormArity;
         ArityRange sqliteArity;
+        FunctionResultType resultType = FunctionResultType::unknown;
         /**
          *  What sqlite_orm calls this function when it calls it something else, and what codegen
-         *  writes the call as. Three names in the library are spelled otherwise, and the headers
-         *  name all three: `char_` for CHAR and `typeof_` for TYPEOF, names C++ already means
-         *  something by, and `mod_f` for MOD, because `mod()` in sqlite_orm is the `%` operator
-         *  and not the MOD function. Empty when the library spells the SQL name itself, and for a
+         *  writes the call as. Four names in the library are spelled otherwise, and the headers
+         *  name all four: `char_` for CHAR, `typeof_` for TYPEOF and `if_` for IF, names C++
+         *  already means something by, and `mod_f` for MOD, because `mod()` in sqlite_orm is the
+         *  `%` operator and not the MOD function. Empty when the library spells the SQL name itself, and for a
          *  `notMapped` name it has no form for under any spelling.
          */
         std::string_view ormSpelling;

@@ -551,11 +551,12 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 - [x] changes()
 - [x] char(X1,X2,...,XN) — generated as `char_(...)`, the name sqlite_orm declares it under, `char` being a type in C++
 - [~] coalesce(X,Y,...) — sqlite_orm types the call as the common C++ type of its arguments (`common_argument_type<>`), and arguments with no common type — a text next to a number, a BLOB next to anything else, two `std::optional`s of different types, a NULL next to a number — took the `storage.select(...)` around the call down with them (`no type named 'type' in 'column_result_t<…>'`). Where the generated types say there is none, the call spells the type it is read back through instead. Where every argument that carries a value carries a NUMBER they all fit in, that type is the number they reduce to — a NULL carries no value of its own, SQLite answering such a call with one of the other arguments, and an `std::optional` is a wrapper around a value — so `coalesce(NULL, 1)` is `coalesce<int>(nullptr, 1)` and `coalesce(NULL, 1, 2.5)` is `coalesce<double>(…)`, an `int` being exact in a `double`, and nothing is lost to report. The numbers form a lattice and not a line: `int64_t` and `double` sit beside each other with nothing above them, a `double` losing every integer past 2^53 (9007199254740993 comes back as 9007199254740992) and an `int64_t` the fractional part of a REAL, so that pair falls through to the text fallback below rather than rounding silently — the same rule `CASE` reduces its branches by. Otherwise it is `std::vector<char>` when a BLOB takes part, which carries every byte of one, and `std::string` otherwise, which carries every storage class as its text; what that costs is reported at the column the value is read back into — a result column of a SELECT, a field of a view's struct — since a number comes back as its digits: codegen warning. A call standing in the column list of a scalar subquery spells its type but carries no report: the whole result-column report family stops at the outer column, `json_extract` included, on master as here; carded separately. The argument types are read in the scope of the SELECT the call belongs to, which for a call inside a scalar subquery or a view body is that select's own FROM clause and not the one the emitter stands in; a select with no FROM clause of its own names no scope and reads the one around it, the way the emitter does for the correlated reference it writes there. Partial because only a constant and a column of a CREATE TABLE of the batch are answered for, and only where the generated code writes that column as a member of the table's struct; an argument sqlite_orm types out of what it is built over — a nested call, an operator, a CAST, a bind parameter, a column of a CTE or of a view, a column no schema names — is left as it is generated, so `coalesce(abs(a), 'x')` still does not compile
-- [!] concat(X,...) — not in sqlite_orm (SQLite 3.44+)
-- [!] concat_ws(SEP,X,...) — not in sqlite_orm (SQLite 3.44+)
-- [!] format(FORMAT,...) — not in sqlite_orm (SQLite 3.38+)
+- [x] concat(X,...) (SQLite 3.44+)
+- [x] concat_ws(SEP,X,...) (SQLite 3.44+)
+- [x] format(FORMAT,...) (SQLite 3.38+)
 - [x] glob(X,Y)
 - [x] hex(X)
+- [~] if(X,Y,Z) (SQLite 3.48+) — IIF under another name, generated as `if_(...)`, the name sqlite_orm declares it under, `if` being a statement in C++; typed and reduced the way `iif(X,Y,Z)` is, with the same partiality
 - [~] ifnull(X,Y) — the arguments are reduced to one C++ type the way `coalesce(X,Y,...)` reduces them (`common_argument_type<0, 1>`), with the same spelled result type, the same report and the same partiality
 - [~] iif(X,Y,Z) — the two branches are reduced to one C++ type the way `coalesce(X,Y,...)` reduces its arguments (`common_argument_type<1, 2>`, the condition taking no part), with the same spelled result type, the same report and the same partiality
 - [x] instr(X,Y)
@@ -573,7 +574,7 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 - [x] max(X,Y,...)
 - [x] min(X,Y,...)
 - [~] nullif(X,Y) — the arguments are reduced to one C++ type the way `coalesce(X,Y,...)` reduces them (`common_argument_type<0, 1>`), with the same spelled result type, the same report and the same partiality. The spelled type replaces the `std::optional` sqlite_orm wraps the deduced one in, so the result column is widened with `as_optional` instead — NULLIF answers NULL whenever its two arguments are equal
-- [!] octet_length(X) — not in sqlite_orm (SQLite 3.43+)
+- [x] octet_length(X) (SQLite 3.43+)
 - [x] printf(FORMAT,...)
 - [x] quote(X)
 - [x] random()
@@ -585,11 +586,11 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 - [x] rtrim(X,Y)
 - [x] sign(X)
 - [x] soundex(X)
-- [!] sqlite_compileoption_get(N) — not in sqlite_orm
-- [!] sqlite_compileoption_used(X) — not in sqlite_orm
-- [!] sqlite_offset(X) — not in sqlite_orm
-- [!] sqlite_source_id() — not in sqlite_orm
-- [!] sqlite_version() — not in sqlite_orm
+- [x] sqlite_compileoption_get(N)
+- [x] sqlite_compileoption_used(X)
+- [!] sqlite_offset(X) — sqlite_orm declares it under SQLITE_ENABLE_OFFSET_SQL_FUNC, but on the pinned revision its factory checks its argument with a `polyfill::disjunction` the library does not define, so no call of it compiles; the call is not generated (codegen warning)
+- [x] sqlite_source_id()
+- [x] sqlite_version()
 - [x] substr(X,Y)
 - [x] substr(X,Y,Z)
 - [x] substring(X,Y)
@@ -598,9 +599,11 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 - [x] trim(X)
 - [x] trim(X,Y)
 - [x] typeof(X) — generated as `typeof_(...)`, the name sqlite_orm declares it under, `typeof` being a compiler extension in C++
-- [!] unhex(X) — not in sqlite_orm (SQLite 3.41+)
-- [!] unhex(X,Y) — not in sqlite_orm (SQLite 3.41+)
+- [x] unhex(X) (SQLite 3.41+)
+- [x] unhex(X,Y) (SQLite 3.41+)
 - [x] unicode(X)
+- [x] unistr(X) (SQLite 3.50+)
+- [x] unistr_quote(X) (SQLite 3.50+)
 - [x] unlikely(X)
 - [x] upper(X)
 - [x] zeroblob(N)
@@ -615,16 +618,22 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 - [x] min(X)
 - [x] sum(X)
 - [x] total(X)
-- [!] string_agg(X,Y) — not in sqlite_orm (SQLite 3.44+)
+- [x] string_agg(X,Y) (SQLite 3.44+)
+
+### Percentile functions (SQLITE_ENABLE_PERCENTILE)
+- [x] median(X)
+- [x] percentile(Y,P)
+- [x] percentile_cont(Y,P)
+- [x] percentile_disc(Y,P)
 
 ### Date/time functions
 - [x] date(time-value, modifier, ...)
 - [x] time(time-value, modifier, ...)
 - [x] datetime(time-value, modifier, ...)
 - [x] julianday(time-value, modifier, ...)
-- [!] unixepoch(time-value, modifier, ...) — not in sqlite_orm (SQLite 3.38+)
+- [x] unixepoch(time-value, modifier, ...) (SQLite 3.38+)
 - [x] strftime(format, time-value, modifier, ...)
-- [!] timediff(time-value, time-value) — not in sqlite_orm (SQLite 3.43+)
+- [x] timediff(time-value, time-value) (SQLite 3.43+)
 
 ### Math functions (SQLITE_ENABLE_MATH_FUNCTIONS)
 - [x] acos(X)
@@ -661,10 +670,14 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 - [x] json_array(value1, ...)
 - [x] json_array_length(json)
 - [x] json_array_length(json, path)
+- [x] json_array_insert(json, path, value, ...) (SQLite 3.53+)
+- [x] json_error_position(json) (SQLite 3.42+)
 - [x] json_extract(json, path, ...) → `json_extract<std::string>(…)`: sqlite_orm declares the call with a result type parameter that has no default, so a call generated without one does not compile. JSON_EXTRACT over one path answers the value at it, of whatever storage class the JSON holds, and `std::string` reads every one of them back as its text — reported on a result column; over two paths or more it answers the JSON array of what it found, which is text anyway. The missing default result type is reported upstream: https://github.com/fnc12/sqlite_orm/issues/1543
 - [x] json_insert(json, path, value, ...)
 - [x] json_object(label1, value1, ...)
 - [x] json_patch(json1, json2)
+- [x] json_pretty(json) (SQLite 3.46+)
+- [x] json_pretty(json, indent) (SQLite 3.46+)
 - [x] json_remove(json, path, ...)
 - [x] json_replace(json, path, value, ...)
 - [x] json_set(json, path, value, ...)
@@ -710,11 +723,6 @@ parser recognizes everything listed; this section tracks **downstream** support.
 - [x] PRAGMA — parsed as `PragmaNode`; supported names map to `storage.pragma` in sqlite_orm (`journal_mode`, `locking_mode`, `user_version`, `synchronous`, `application_id`, `busy_timeout`, `auto_vacuum`, `max_page_count`, `recursive_triggers`, `module_list`, `quick_check`, `integrity_check`, `table_info`, `table_xinfo`); schema-qualified `PRAGMA main.xxx` is a validator error; other pragma names are validator errors. The value is a name to SQLite (`nmnum`), not an expression, so every keyword its parser falls back to an identifier stands as one, `ON`, `DELETE` and `DEFAULT` included — `PRAGMA journal_mode = DELETE`, `PRAGMA locking_mode = EXCLUSIVE` and `PRAGMA recursive_triggers = no` are statements, while the 55 reserved words are a syntax error there. Each PRAGMA reads that text with a reader of its own, so a name reaches the generated call as the number its reader answers: `getSafetyLevel()` reads `full` as 2 and `extra` as 3 for `synchronous`, `getAutoVacuum()` reads `none`/`full`/`incremental` as 0/1/2, and `sqlite3DecOrHexToI64()` refuses a name for `max_page_count`, which leaves the limit alone and only reports it — `PRAGMA synchronous = full` generates `synchronous(2)` with a warning, not the `&User::full` a name handed to expression codegen used to become. sqlite_orm declares each of those setters as taking an `int`, so a limit past that range — `max_page_count` clamps at 0xfffffffe — generates no call at all, the warning naming the limit SQLite sets and saying that `max_page_count(int)` cannot pass it on. A table name reaches `integrity_check` unquoted — `pragma_t::integrity_check(T)` streams the argument into the pragma text raw where `table_info` and `table_xinfo` run it through `streaming_identifier` — so the `storage.pragma.integrity_check("my table")` generated for a name that needs quoting prepares as `PRAGMA integrity_check(my table)`, which SQLite answers with `near "table": syntax error` where the quoted form answers `ok`. None of that text reaches the caller on the pinned revision: the pragma runs through `sqlite3_exec` and only its return code is translated, so the generated call throws a `std::system_error` reading `SQL logic error`, which names neither the pragma nor the name that broke it; reported upstream: https://github.com/fnc12/sqlite_orm/issues/1543
 - [!] SAVEPOINT (parsed as `SavepointNode`; validator error)
 - [!] RELEASE (parsed as `ReleaseNode`; validator error)
-- [!] snippet() — FTS5 (not in sqlite_orm)
-- [!] bm25() — FTS5 (not in sqlite_orm)
-- [!] concat(), concat_ws(), format() — not in sqlite_orm (SQLite 3.38+/3.44+)
+- [!] highlight(), snippet(), bm25() — FTS5 auxiliary functions: sqlite_orm declares them over the FTS5 table's hidden column, which codegen does not write, so the call is not generated (codegen warning)
 - [!] load_extension() — not in sqlite_orm
-- [!] octet_length(), unhex() — not in sqlite_orm (SQLite 3.41+/3.43+)
-- [!] sqlite_version(), sqlite_source_id(), sqlite_compileoption_*(), sqlite_offset() — not in sqlite_orm
-- [!] string_agg() — not in sqlite_orm (SQLite 3.44+)
-- [!] unixepoch(), timediff() — not in sqlite_orm (SQLite 3.38+/3.43+)
+- [!] sqlite_offset() — declared in sqlite_orm, but its factory does not compile on the pinned revision; not generated (codegen warning)

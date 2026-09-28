@@ -443,6 +443,17 @@ namespace sqlite2orm {
                                    origin});
                 continue;
             }
+            // A virtual table is generated as a struct and a `make_virtual_table` of its own, which
+            // stands outside make_storage(); the tables and views the storage maps may still name
+            // its struct, so the whole of it goes among the declarations written before the storage.
+            if (dynamic_cast<const CreateVirtualTableNode*>(root)) {
+                std::string declaration = code;
+                while (!declaration.empty() && declaration.back() == '\n') {
+                    declaration.pop_back();
+                }
+                structBlocks.push_back(PlacedFragment{std::move(declaration), origin});
+                continue;
+            }
             // An index or a trigger is generated as a bare make_storage() argument, whatever the
             // form the generator picked for it, so the statement it came from is what tells them
             // apart from a statement that stands on its own.
@@ -466,10 +477,18 @@ namespace sqlite2orm {
 
         CodeSpanBuilder out;
         for (const PlacedFragment& structBlock: structBlocks) {
+            if (!out.empty()) {
+                out.append("\n\n");
+            }
             out.appendFragment(structBlock.text, structBlock.origin);
-            out.append("\n\n");
+        }
+        if (!out.empty()) {
+            out.append("\n");
         }
         if (!storageArguments.empty()) {
+            if (!out.empty()) {
+                out.append("\n");
+            }
             out.append("auto storage = make_storage(\"\"");
             for (const PlacedFragment& storageArgument: storageArguments) {
                 out.append(",\n    ");

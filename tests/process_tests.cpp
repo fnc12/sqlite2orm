@@ -333,9 +333,86 @@ TEST_CASE("joinGeneratedCodeWithSpans: a span ends where the statement's code do
                            "};\n"
                            "\n"
                            "auto vtab = make_virtual_table<F>(\"f\", using_fts5(make_column(\"a\", &F::a)));\n"
+                           "\n"
                            "auto rows = storage.select(1);\n");
     REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 110, 0, SourceLocation{1, 1}, 36},
-                                                           {111, 30, 1, SourceLocation{1, 39}, 8}});
+                                                           {112, 30, 1, SourceLocation{1, 39}, 8}});
+}
+
+// A virtual table stands outside make_storage(), yet a table or a view the storage maps may name
+// its struct, so the virtual table is written among the declarations before the storage.
+TEST_CASE("joinGeneratedCode: a virtual table is declared before the storage that names its struct") {
+    const auto results = processMultiSql("CREATE VIRTUAL TABLE ft USING fts5(a); "
+                                         "CREATE TABLE tv(id INTEGER PRIMARY KEY, r INTEGER REFERENCES ft(a));");
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct Ft {\n"
+            "    std::string a;\n"
+            "};\n"
+            "\n"
+            "auto vtab = make_virtual_table<Ft>(\"ft\", using_fts5(make_column(\"a\", &Ft::a)));\n"
+            "\n"
+            "struct Tv {\n"
+            "    std::optional<int64_t> id;\n"
+            "    std::optional<int64_t> r;\n"
+            "};\n"
+            "\n"
+            "auto storage = make_storage(\"\",\n"
+            "    make_table(\"tv\",\n"
+            "        make_column(\"id\", &Tv::id, primary_key()),\n"
+            "        make_column(\"r\", &Tv::r),\n"
+            "        foreign_key(&Tv::r).references(&Ft::a)));\n");
+}
+
+TEST_CASE("joinGeneratedCodeWithSpans: a virtual table written before the storage keeps its span") {
+    const auto results = processMultiSql("CREATE TABLE t(x INTEGER); CREATE VIRTUAL TABLE f USING fts5(a);");
+    const JoinedGeneratedCode joined = joinGeneratedCodeWithSpans(results);
+    REQUIRE(joined.code == "struct T {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "};\n"
+                           "\n"
+                           "struct F {\n"
+                           "    std::string a;\n"
+                           "};\n"
+                           "\n"
+                           "auto vtab = make_virtual_table<F>(\"f\", using_fts5(make_column(\"a\", &F::a)));\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"x\", &T::x)));\n");
+    REQUIRE(joined.spans == std::vector<GeneratedCodeSpan>{{0, 43, 0, SourceLocation{1, 1}, 25},
+                                                           {45, 110, 1, SourceLocation{1, 28}, 36},
+                                                           {193, 48, 0, SourceLocation{1, 1}, 25}});
+}
+
+// A virtual table inside a savepoint is still a declaration: it is not left among the savepoint
+// calls, where a struct would end up in the middle of the statements that use the storage.
+TEST_CASE("joinGeneratedCode: a virtual table between savepoint calls is declared before the storage") {
+    const auto results = processMultiSql("SAVEPOINT s; CREATE VIRTUAL TABLE ft USING fts5(a); RELEASE s;");
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct Ft {\n"
+            "    std::string a;\n"
+            "};\n"
+            "\n"
+            "auto vtab = make_virtual_table<Ft>(\"ft\", using_fts5(make_column(\"a\", &Ft::a)));\n"
+            "\n"
+            "storage.savepoint(\"s\");\n"
+            "storage.release_savepoint(\"s\");\n");
+}
+
+TEST_CASE("joinGeneratedCode: a batch of virtual tables alone ends with a single line break") {
+    const auto results = processMultiSql("CREATE VIRTUAL TABLE f USING fts5(a); CREATE VIRTUAL TABLE g USING fts5(b);");
+    REQUIRE(joinGeneratedCode(results) ==
+            "struct F {\n"
+            "    std::string a;\n"
+            "};\n"
+            "\n"
+            "auto vtab = make_virtual_table<F>(\"f\", using_fts5(make_column(\"a\", &F::a)));\n"
+            "\n"
+            "struct G {\n"
+            "    std::string b;\n"
+            "};\n"
+            "\n"
+            "auto vtab2 = make_virtual_table<G>(\"g\", using_fts5(make_column(\"b\", &G::b)));\n");
 }
 
 TEST_CASE("processMultiSql: validation error does not block other statements") {

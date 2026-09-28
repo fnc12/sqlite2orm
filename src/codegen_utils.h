@@ -924,13 +924,16 @@ namespace sqlite2orm {
      *
      *  A column is widened when some arm's expression needs it by the rule every result column
      *  follows (`selectResultNeedsAsOptional`) and every arm generates that column as the same C++
-     *  type, which is what keeps that common type defined. An arm whose type nothing here can name
-     *  — a column reference, a call, a literal — leaves the column as written, since widening one
-     *  arm beside it is exactly what may have no common type. The `cast<int64_t>` a bitwise result
-     *  column needs (`selectResultNeedsIntegerCast`) follows the same rule: it changes the C++ type
-     *  of the arm, so it is placed only when every arm of the column is a bitwise operator, and then
-     *  in all of them, which move from `int` to `int64_t` together. Arms disagreeing on how many
-     *  columns they carry are left alone too: SQLite refuses such a compound outright ("SELECTs to the
+     *  type, which is what keeps that common type defined. Where nothing here can name the type — a
+     *  column reference, a call, a literal — every arm spelling the same expression over the same
+     *  FROM clause is the same type by construction, whatever that type is, so
+     *  `length(a) UNION length(a)` is widened like a plain `length(a)`. Any other arm leaves the
+     *  column as written, since widening one arm beside it is exactly what may have no common type.
+     *  The `cast<int64_t>` a bitwise result column needs (`selectResultNeedsIntegerCast`) follows the
+     *  same rule: it changes the C++ type of the arm, so it is placed only when every arm of the
+     *  column is a bitwise operator, and then in all of them, which move from `int` to `int64_t`
+     *  together. Arms disagreeing on how many columns they carry are left alone too: SQLite refuses
+     *  such a compound outright ("SELECTs to the
      *  left and right of UNION do not have the same number of result columns").
      */
     std::vector<ResultColumnWidening> compoundSelectResultWidening(const CompoundSelectNode& compoundNode,

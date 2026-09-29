@@ -130,6 +130,18 @@ namespace {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    // The hint attached to every BETWEEN whose bounds the generator widens to one C++ type;
+    // asserted on its own in "codegen: widened BETWEEN bounds carry their comment".
+    const std::string kBetweenBoundsWidenedComment =
+        "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
+        "constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a "
+        "64-bit constant and does not compile. The cast goes on every bound that is not already "
+        "an `int64_t`, rather than on the narrower one: the type a 64-bit constant is given is "
+        "`long` where an `int64_t` is a `long long`, and the two are distinct types even where "
+        "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
+        "signed 64-bit number anyway, TRUE and FALSE among them.";
+
     // The hint attached to every bitwise result column; asserted with its anchor in
     // "codegen: a hint is anchored at the SQL it explains".
     const std::string kBitwiseResultCastComment =
@@ -1420,6 +1432,15 @@ TEST_CASE("codegen: BETWEEN bounds of two integer widths are widened to one") {
     REQUIRE(generate("a BETWEEN 3000000000 AND 4000000000") == "between(&User::a, 3000000000, 4000000000)");
     REQUIRE(generate("a BETWEEN 0xFFFFFFFF AND 0xFFFFFFFF") ==
             "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), static_cast<int64_t>(0xFFFFFFFF))");
+}
+
+TEST_CASE("codegen: widened BETWEEN bounds carry their comment") {
+    REQUIRE(generateFull("a BETWEEN 1 AND 3000000000").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBetweenBoundsWidenedComment, SourceLocation{1, 1}, 26}});
+    REQUIRE(generateFull("a NOT BETWEEN 1 AND 3000000000").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBetweenBoundsWidenedComment, SourceLocation{1, 1}, 30}});
+    REQUIRE(generateFull("a BETWEEN 1 AND 10").comments.empty());
+    REQUIRE(generateFull("a BETWEEN 3000000000 AND 4000000000").comments.empty());
 }
 
 // Two bounds with no C++ type to widen to have no working form at all: `between(A, T, T)` takes

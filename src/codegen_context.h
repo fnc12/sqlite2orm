@@ -4,6 +4,8 @@
 #include <sqlite2orm/codegen_policy.h>
 #include <sqlite2orm/codegen_result.h>
 
+#include "spanned_code.h"
+
 #include <map>
 #include <optional>
 #include <set>
@@ -571,6 +573,14 @@ namespace sqlite2orm {
 
         /** `rows` for the first statement declaring it in the batch, then `rows2`, `rows3`, … */
         std::string statementVariableName(std::string_view baseName);
+
+        /**
+         *  Records that `code` was generated from `expression`, when the policy asks for the map of
+         *  the generated code (`CodeGenPolicy::recordExpressionSpans`), and does nothing otherwise.
+         *  The one funnel every expression span is recorded through, so with the policy off not a
+         *  single one is.
+         */
+        void markExpression(SpannedCode& code, const AstNode& expression) const;
 
         bool useCpp20ColumnAliasStyle() const;
         bool useCpp20TableAliasStyle() const;

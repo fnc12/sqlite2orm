@@ -35,6 +35,12 @@ namespace sqlite2orm {
          */
         void noteDdlInfinity(const AstNode& literal, std::string_view spelling);
 
+        /**
+         *  The code of `astNode` with the spans its operands recorded; `generateExpression` adds
+         *  the node's own around them.
+         */
+        CodeGenResult generateExpressionCode(const AstNode& astNode);
+
         std::string codegenWindowFrameBound(const WindowFrameBound& bound,
                                             std::vector<DecisionPoint>& decisionPoints,
                                             std::vector<CodegenWarning>& warnings);

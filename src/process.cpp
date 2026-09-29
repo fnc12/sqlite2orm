@@ -319,16 +319,19 @@ namespace sqlite2orm {
          *  with the text they cover, the SAVEPOINT owns the line opening the lambda and the RELEASE
          *  the lines closing it.
          *
-         *  `statements`, `statementNodes` and `statementOrigins` are filled in step by the caller,
-         *  one entry per statement, so an index into one is an index into all three.
+         *  `statements`, `statementNodes`, `statementOrigins` and `statementExpressionSpans` are
+         *  filled in step by the caller, one entry per statement, so an index into one is an index
+         *  into all four.
          */
-        std::vector<CodeSpanBuilder> foldFunctionalSavepoints(std::vector<std::string> statements,
-                                                              const std::vector<const AstNode*>& statementNodes,
-                                                              const std::vector<GeneratedFrom>& statementOrigins) {
+        std::vector<CodeSpanBuilder>
+        foldFunctionalSavepoints(std::vector<std::string> statements,
+                                 const std::vector<const AstNode*>& statementNodes,
+                                 const std::vector<std::optional<GeneratedFrom>>& statementOrigins,
+                                 const std::vector<std::vector<GeneratedCodeSpan>>& statementExpressionSpans) {
             struct OpenWrap {
                 std::string name;
                 std::string header;
-                GeneratedFrom origin;
+                std::optional<GeneratedFrom> origin;
                 std::vector<CodeSpanBuilder> innerStatements;
             };
             std::vector<OpenWrap> stack;
@@ -344,7 +347,7 @@ namespace sqlite2orm {
 
             for (size_t index = 0; index < statements.size(); ++index) {
                 const AstNode* node = statementNodes[index];
-                const GeneratedFrom& origin = statementOrigins[index];
+                const std::optional<GeneratedFrom>& origin = statementOrigins[index];
                 std::string& code = statements[index];
                 if (const auto* savepointNode = dynamic_cast<const SavepointNode*>(node);
                     savepointNode && code.find(", [&] {") != std::string::npos) {
@@ -373,7 +376,9 @@ namespace sqlite2orm {
                 // keeps it, but as separation rather than as part of what the statement covers.
                 const size_t codeEnd = code.find_last_not_of('\n') + 1;
                 CodeSpanBuilder statement;
-                statement.appendFragment(std::string_view(code).substr(0, codeEnd), origin);
+                statement.appendFragment(std::string_view(code).substr(0, codeEnd),
+                                         origin,
+                                         statementExpressionSpans[index]);
                 statement.append(std::string_view(code).substr(codeEnd));
                 appendStatement(std::move(statement));
             }
@@ -420,14 +425,16 @@ namespace sqlite2orm {
         std::vector<PlacedFragment> dependentStorageArguments;
         std::vector<std::string> otherStatements;
         std::vector<const AstNode*> otherStatementNodes;
-        std::vector<GeneratedFrom> otherStatementOrigins;
+        std::vector<std::optional<GeneratedFrom>> otherStatementOrigins;
+        std::vector<std::vector<GeneratedCodeSpan>> otherStatementExpressionSpans;
         for (size_t index = 0; index < results.size(); ++index) {
             const std::string& code = results[index].codegen.code;
             if (code.empty()) {
                 continue;
             }
             const AstNode* root = results[index].parseResult.astNodePointer.get();
-            const GeneratedFrom origin = root ? generatedFromStatement(index, *root) : GeneratedFrom{index};
+            const std::optional<GeneratedFrom> origin =
+                root ? std::optional<GeneratedFrom>(generatedFromStatement(index, *root)) : std::nullopt;
             const size_t markerPosition = code.find(storageMarker);
             if (markerPosition != std::string::npos && code.ends_with(");")) {
                 std::string structPart = code.substr(0, markerPosition);
@@ -466,14 +473,21 @@ namespace sqlite2orm {
                 dependentStorageArguments.push_back(PlacedFragment{std::move(argument), origin});
                 continue;
             }
+            // Only a statement placed whole carries its expression spans along: the ones above are
+            // cut apart or trimmed, and are DDL besides, which records none. A SAVEPOINT, a RELEASE
+            // and a ROLLBACK TO are rewritten below, but they hold no expression to record a span
+            // for either.
             otherStatements.push_back(code);
             otherStatementNodes.push_back(root);
             otherStatementOrigins.push_back(origin);
+            otherStatementExpressionSpans.push_back(results[index].codegen.expressionSpans);
         }
         storageArguments = storageArgumentOrder(std::move(storageArguments), std::move(dependentStorageArguments));
         otherStatements = resolveGuardSavepoints(std::move(otherStatements), otherStatementNodes);
-        const std::vector<CodeSpanBuilder> statementBlocks =
-            foldFunctionalSavepoints(std::move(otherStatements), otherStatementNodes, otherStatementOrigins);
+        const std::vector<CodeSpanBuilder> statementBlocks = foldFunctionalSavepoints(std::move(otherStatements),
+                                                                                      otherStatementNodes,
+                                                                                      otherStatementOrigins,
+                                                                                      otherStatementExpressionSpans);
 
         CodeSpanBuilder out;
         for (const PlacedFragment& structBlock: structBlocks) {
@@ -507,7 +521,7 @@ namespace sqlite2orm {
                 out.append("\n");
             }
         }
-        return JoinedGeneratedCode{out.takeCode(), out.takeSpans()};
+        return JoinedGeneratedCode{out.takeCode(), out.takeSpans(), out.takeExpressionSpans()};
     }
 
 }  // namespace sqlite2orm

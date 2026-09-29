@@ -128,7 +128,10 @@ namespace sqlite2orm {
         auto allChosen = [&](const CustomFunctionUse&) {
             return chosen;
         };
-        result.code = customFunctionsPreamble(fns, allChosen) + "\n" + statementCode;
+        // The preamble goes in front of the statement, and the spans of the statement's expressions
+        // move along with its text.
+        SpannedCode code = customFunctionsPreamble(fns, allChosen) + "\n" + SpannedCode::takenFrom(result);
+        std::move(code).placeInto(result);
 
         // One decision point per function: scalar (impl) / aggregate (impl) / func_only (extension).
         for (const CustomFunctionUse& fn: fns) {

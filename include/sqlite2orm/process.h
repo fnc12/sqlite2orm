@@ -54,6 +54,14 @@ namespace sqlite2orm {
          *  argument — and a statement that generated nothing is named by no span at all.
          */
         std::vector<GeneratedCodeSpan> spans;
+        /**
+         *  Expression-level map of `code`: the `expressionSpans` each statement's result carries,
+         *  moved to where the statement's code landed and named by its index in `results`. Empty
+         *  unless the statements were generated with `CodeGenPolicy::recordExpressionSpans`. Spans
+         *  nest and are ordered as `CodeGenResult::expressionSpans` says, and each lies within the
+         *  statement-level span of its statement.
+         */
+        std::vector<GeneratedCodeSpan> expressionSpans;
 
         bool operator==(const JoinedGeneratedCode&) const = default;
     };

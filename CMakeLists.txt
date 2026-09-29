@@ -50,6 +50,7 @@ add_library(sqlite2orm_lib
     src/codegen.cpp
     src/codegen_utils.cpp
     src/code_span_builder.cpp
+    src/spanned_code.cpp
     src/codegen_forms.cpp
     src/select_scope_columns.cpp
     src/expression_subquery_scope.cpp
@@ -186,6 +187,8 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/validator_tests.cpp
         tests/process_tests.cpp
         tests/code_span_builder_tests.cpp
+        tests/spanned_code_tests.cpp
+        tests/expression_spans_tests.cpp
         tests/ast_lifetime_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp

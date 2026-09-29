@@ -5,6 +5,8 @@
 #include <sqlite2orm/codegen_result.h>
 #include <sqlite2orm/result_column_widening.h>
 
+#include "spanned_code.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -97,7 +99,7 @@ namespace sqlite2orm {
     std::string generateColumnAliasPreamble(const std::vector<SelectColumn>& columns);
     std::string columnAliasCpp20VarName(std::string_view rawAlias);
     std::string generateCpp20ColumnAliasPreamble(const std::vector<SelectColumn>& columns);
-    std::string wrapWithColumnAlias(const std::string& expressionCode, const std::string& rawAlias, bool cpp20Style);
+    SpannedCode wrapWithColumnAlias(SpannedCode expressionCode, const std::string& rawAlias, bool cpp20Style);
     bool hasAnyColumnAlias(const std::vector<SelectColumn>& columns);
     /**
      *  The span of the alias of the first result column written with one, and an empty span when no
@@ -840,7 +842,7 @@ namespace sqlite2orm {
      *  the `int` range is typed by its magnitude, as the `long` that is not the `long long` an
      *  `int64_t` is on macOS. So every member but that one is cast, rather than the narrower ones.
      */
-    std::string widenToInt64(const AstNode& node, std::string code);
+    SpannedCode widenToInt64(const AstNode& node, SpannedCode code);
     /**
      *  The shape the values of an IN list are generated in. sqlite_orm collects the initializer
      *  list into a `std::vector<E>`, so those values are under one rule more than the bounds of a
@@ -883,7 +885,7 @@ namespace sqlite2orm {
     bool generatesConcatenation(const AstNode& astNode);
     /** True for a node that generates a bare C++ value, which `wrap` turns into a sqlite_orm expression. */
     bool isLeafNode(const AstNode& astNode);
-    std::string wrap(std::string_view code);
+    SpannedCode wrap(SpannedCode code);
 
     /**
      *  Whether SQLite can answer `astNode` with NULL. Conservative: only a node whose value is

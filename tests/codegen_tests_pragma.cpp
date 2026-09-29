@@ -447,7 +447,7 @@ TEST_CASE("codegen: PRAGMA recursive_triggers = CURRENT_TIMESTAMP") {
     REQUIRE(generateFull("PRAGMA recursive_triggers = CURRENT_TIMESTAMP;") ==
             CodeGenResult{"storage.pragma.recursive_triggers(false);",
                           {},
-                          {CodegenWarning{"PRAGMA recursive_triggers = current_timestamp: SQLite reads this as "
+                          {CodegenWarning{"PRAGMA recursive_triggers = CURRENT_TIMESTAMP: SQLite reads this as "
                                           "false; spell it 0/1, TRUE/FALSE or ON/OFF instead",
                                           SourceLocation{1, 29},
                                           17}},
@@ -512,6 +512,8 @@ TEST_CASE("codegen: PRAGMA table_info of a table named after a keyword") {
             CodeGenResult{R"(storage.pragma.table_xinfo("TRUE");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA table_info(current_date);") ==
             CodeGenResult{R"(storage.pragma.table_info("current_date");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA table_info(CURRENT_DATE);") ==
+            CodeGenResult{R"(storage.pragma.table_info("CURRENT_DATE");)", {}, {}, {}});
 }
 
 // `PRAGMA integrity_check` reads its argument with `sqlite3GetInt32()` and takes for a table name
@@ -803,7 +805,7 @@ TEST_CASE("codegen: a keyword PRAGMA value reaches the reader of a PRAGMA that h
     REQUIRE(generateFull("PRAGMA synchronous = CURRENT_DATE;") ==
             CodeGenResult{"storage.pragma.synchronous(1);",
                           {},
-                          {CodegenWarning{"PRAGMA synchronous = current_date: SQLite reads a PRAGMA value as "
+                          {CodegenWarning{"PRAGMA synchronous = CURRENT_DATE: SQLite reads a PRAGMA value as "
                                           "text, so it sets 1",
                                           SourceLocation{1, 22},
                                           12}},
@@ -1219,6 +1221,32 @@ TEST_CASE("codegen: a keyword PRAGMA value is spelled back and underlined as wri
                                           "integer and cannot read this one, so it sets 0",
                                           SourceLocation{1, 23},
                                           5}},
+                          {}});
+    // CURRENT_DATE and its siblings are spelled back as written too, not in the lower case their
+    // node used to make up for itself.
+    REQUIRE(generateFull("PRAGMA user_version = CURRENT_DATE;") ==
+            CodeGenResult{"storage.pragma.user_version(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA user_version = CURRENT_DATE: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 23},
+                                          12}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA application_id = Current_Time;") ==
+            CodeGenResult{"storage.pragma.application_id(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA application_id = Current_Time: SQLite reads a PRAGMA value as a "
+                                          "32-bit integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 25},
+                                          12}},
+                          {}});
+    REQUIRE(generateFull("PRAGMA busy_timeout = current_timestamp;") ==
+            CodeGenResult{"storage.pragma.busy_timeout(0);",
+                          {},
+                          {CodegenWarning{"PRAGMA busy_timeout = current_timestamp: SQLite reads a PRAGMA value as "
+                                          "a 32-bit integer and cannot read this one, so it sets 0",
+                                          SourceLocation{1, 23},
+                                          17}},
                           {}});
 }
 

@@ -112,12 +112,15 @@ namespace sqlite2orm {
 
     struct CurrentDatetimeLiteralNode : AstNode {
         CurrentDatetimeKind kind;
+        /** The keyword as written: `CURRENT_DATE`, `CURRENT_TIME` or `CURRENT_TIMESTAMP`, in its own case. */
+        std::string spelling;
 
-        CurrentDatetimeLiteralNode(CurrentDatetimeKind kind, SourceLocation location) : AstNode(location), kind(kind) {}
+        CurrentDatetimeLiteralNode(CurrentDatetimeKind kind, std::string_view spelling, SourceLocation location) :
+            AstNode(location), kind(kind), spelling(spelling) {}
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const CurrentDatetimeLiteralNode*>(&other);
-            return o && this->kind == o->kind;
+            return o && this->kind == o->kind && this->spelling == o->spelling;
         }
     };
 

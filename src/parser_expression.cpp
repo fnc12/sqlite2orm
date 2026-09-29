@@ -583,15 +583,15 @@ namespace sqlite2orm {
             }
             case TokenType::kwCurrentTime: {
                 advanceToken();
-                return std::make_unique<CurrentDatetimeLiteralNode>(CurrentDatetimeKind::time, token.location);
+                return std::make_unique<CurrentDatetimeLiteralNode>(CurrentDatetimeKind::time, token.value, token.location);
             }
             case TokenType::kwCurrentDate: {
                 advanceToken();
-                return std::make_unique<CurrentDatetimeLiteralNode>(CurrentDatetimeKind::date, token.location);
+                return std::make_unique<CurrentDatetimeLiteralNode>(CurrentDatetimeKind::date, token.value, token.location);
             }
             case TokenType::kwCurrentTimestamp: {
                 advanceToken();
-                return std::make_unique<CurrentDatetimeLiteralNode>(CurrentDatetimeKind::timestamp, token.location);
+                return std::make_unique<CurrentDatetimeLiteralNode>(CurrentDatetimeKind::timestamp, token.value, token.location);
             }
             default:
                 return nullptr;

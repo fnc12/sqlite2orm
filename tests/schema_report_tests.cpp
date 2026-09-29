@@ -1,3 +1,4 @@
+#include <sqlite2orm/process.h>
 #include <sqlite2orm/schema_process.h>
 #include <sqlite2orm/schema_reader.h>
 #include <sqlite2orm/schema_report.h>
@@ -60,6 +61,14 @@ namespace {
         return reportSqliteSchema(processSqliteSchema(reader), jsonOnly);
     }
 
+    /** A `sqlite_master` row run through the pipeline, for a schema SQLite needs a module to store. */
+    [[nodiscard]] SchemaStatementResult masterRow(std::string type, std::string name, std::string sql) {
+        SchemaStatementResult statement;
+        statement.meta = SchemaStatementMeta{std::move(type), name, name, sql};
+        statement.pipeline = processSql(sql);
+        return statement;
+    }
+
     /** What `--db` prints under `--std <targetCppStandard>`: the schema and the report share the policy. */
     [[nodiscard]] SchemaReport
     reportForStandard(const std::filesystem::path& dbPath, bool jsonOnly, int targetCppStandard) {
@@ -81,7 +90,7 @@ TEST_CASE("reportSqliteSchema: --json reports a codegen error and exits 1") {
     const SchemaReport result = report(file.path, true);
     REQUIRE(
         result.out ==
-        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}],"targetCppStandard":20})"
+        R"({"coverage":{"generated":0,"total":1},"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}],"targetCppStandard":20})"
         "\n");
     REQUIRE(result.err == "codegen error [table q]: hex literal too big: 0x10000000000000000\n");
     REQUIRE(result.exitCode == 1);
@@ -118,7 +127,7 @@ TEST_CASE("reportSqliteSchema: --json on a schema that generates stays quiet and
     const SchemaReport result = report(file.path, true);
     REQUIRE(
         result.out ==
-        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":20})"
+        R"({"coverage":{"generated":1,"total":1},"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":20})"
         "\n");
     REQUIRE(result.err.empty());
     REQUIRE(result.exitCode == 0);
@@ -359,7 +368,7 @@ TEST_CASE("reportSqliteSchema: --json under C++26 offers the reflected table and
     const SchemaReport result = reportForStandard(file.path, true, 26);
     REQUIRE(
         result.out ==
-        R"json({"statements":[{"comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"decisionPoints":[{"category":"table_mapping_style","chosenCode":"struct [[= \"t\"_orm_name]] T {\n    [[= primary_key()]] std::optional<int64_t> id;\n};\n\nmake_table<T>()","chosenValue":"reflection","id":1,"options":[{"code":"struct T {\n    std::optional<int64_t> id;\n};\n\nmake_table(\"t\",\n        make_column(\"id\", &T::id, primary_key()))","comments":[],"description":"make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)","hidden":false,"minCppStandard":14,"value":"make_table"},{"code":"struct [[= \"t\"_orm_name]] T {\n    [[= primary_key()]] std::optional<int64_t> id;\n};\n\nmake_table<T>()","comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"description":"C++26 reflection: annotated struct + make_table<T>()","hidden":false,"minCppStandard":26,"value":"reflection"}]}],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":26})json"
+        R"json({"coverage":{"generated":1,"total":1},"statements":[{"comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"decisionPoints":[{"category":"table_mapping_style","chosenCode":"struct [[= \"t\"_orm_name]] T {\n    [[= primary_key()]] std::optional<int64_t> id;\n};\n\nmake_table<T>()","chosenValue":"reflection","id":1,"options":[{"code":"struct T {\n    std::optional<int64_t> id;\n};\n\nmake_table(\"t\",\n        make_column(\"id\", &T::id, primary_key()))","comments":[],"description":"make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)","hidden":false,"minCppStandard":14,"value":"make_table"},{"code":"struct [[= \"t\"_orm_name]] T {\n    [[= primary_key()]] std::optional<int64_t> id;\n};\n\nmake_table<T>()","comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"description":"C++26 reflection: annotated struct + make_table<T>()","hidden":false,"minCppStandard":26,"value":"reflection"}]}],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":26})json"
         "\n");
     REQUIRE(result.err.empty());
     REQUIRE(result.exitCode == 0);
@@ -460,6 +469,69 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 )",
                                                                     "",
                                                                     0});
+}
+
+// `--strict` asks for the whole schema in the header. A schema that is all there reads exactly as
+// it does without the flag.
+TEST_CASE("reportSqliteSchema: --strict on a schema the header carries whole exits 0") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(reportSqliteSchema(schema, true, nullptr, true) == reportSqliteSchema(schema, true));
+    REQUIRE(reportSqliteSchema(schema, false, nullptr, true) == reportSqliteSchema(schema, false));
+    REQUIRE(reportSqliteSchema(schema, true, nullptr, true).exitCode == 0);
+}
+
+// Every row here generates on its own, so without `--strict` the exit code stays 0, as it always
+// has. But the virtual table is never merged into make_storage() and the view over it goes with it,
+// so the header carries one row of three, and `--strict` says so and exits 1. The JSON reports the
+// same coverage either way.
+TEST_CASE("reportSqliteSchema: --strict fails a schema the header carries only part of") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "ft", "CREATE VIRTUAL TABLE ft USING fts5(a)"));
+    schema.statements.push_back(masterRow("table", "t", "CREATE TABLE t(id INTEGER PRIMARY KEY)"));
+    schema.statements.push_back(masterRow("view", "vv", "CREATE VIEW vv AS SELECT a FROM ft"));
+    REQUIRE(schema.allOk());
+
+    const SchemaReport lenient = reportSqliteSchema(schema, true);
+    const SchemaReport strict = reportSqliteSchema(schema, true, nullptr, true);
+    const std::string statementWarnings =
+        "warning: sqlite_orm serializes virtual tables as CREATE VIRTUAL TABLE IF NOT EXISTS; SQL without IF NOT "
+        "EXISTS differs from serialized output\n"
+        "warning: view vv: type of column `a` could not be inferred; defaulting to int\n"
+        "warning: CREATE VIEW vv: sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this "
+        "code requires C++26 and will not compile under the selected C++ standard\n";
+    REQUIRE(lenient.err == statementWarnings);
+    REQUIRE(lenient.exitCode == 0);
+    REQUIRE(strict.out == lenient.out);
+    REQUIRE(strict.err == lenient.err + "strict: 1 of 3 schema statements generated\n");
+    REQUIRE(strict.exitCode == 1);
+
+    const SchemaReport plain = reportSqliteSchema(schema, false, nullptr, true);
+    // Without `--json` only the header's warnings are reported: the rows it left out take their own
+    // warnings with them, and the header names them instead, ahead of the count.
+    REQUIRE(plain.err == "warning: CREATE VIRTUAL TABLE `ft` is not merged into make_storage(); run sqlite2orm "
+                         "on its SQL separately\n"
+                         "warning: `vv` rests on a table that is not generated and is not merged into "
+                         "make_storage()\n"
+                         "strict: 1 of 3 schema statements generated\n");
+    REQUIRE(plain.exitCode == 1);
+}
+
+// A statement that does not generate already exits 1; `--strict` adds the count to the reasons.
+TEST_CASE("reportSqliteSchema: --strict on a schema with a failed statement adds the coverage line") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE q (a INTEGER); ALTER TABLE q ADD COLUMN b INTEGER AS (0x10000000000000000);");
+    SqliteSchemaReader reader(file.path.string());
+    const SchemaReport result = reportSqliteSchema(processSqliteSchema(reader), true, nullptr, true);
+    REQUIRE(
+        result.out ==
+        R"({"coverage":{"generated":0,"total":1},"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}],"targetCppStandard":20})"
+        "\n");
+    REQUIRE(result.err == "codegen error [table q]: hex literal too big: 0x10000000000000000\n"
+                          "strict: 0 of 1 schema statements generated\n");
+    REQUIRE(result.exitCode == 1);
 }
 
 // The header generates every statement over again, so a statement's warning is reported once, not

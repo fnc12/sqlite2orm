@@ -16,7 +16,10 @@ namespace sqlite2orm {
         std::string out;
         /** Warnings and, for a schema that did not generate, the per-statement diagnostics. */
         std::string err;
-        /** 0 when every statement generated, 1 otherwise — independent of `--json`. */
+        /**
+         *  0 when every statement generated, 1 otherwise — independent of `--json`. Under `--strict`
+         *  it is also 1 when the header carries fewer rows than the schema holds (`SchemaCoverage`).
+         */
         int exitCode = 0;
 
         bool operator==(const SchemaReport&) const = default;
@@ -27,9 +30,12 @@ namespace sqlite2orm {
      *  JSON decision points on `out`; the diagnostics and the exit code are the same either way,
      *  so a script can tell a failed schema from a good one without reading the JSON. The JSON names
      *  `policy`'s target C++ standard (the default one when `policy` is null), which should be the
-     *  policy `schema` was processed with.
+     *  policy `schema` was processed with, and the header's coverage whatever `strict` says.
+     *  `strict` also fails a schema whose statements all generated but whose header left some out.
      */
-    SchemaReport
-    reportSqliteSchema(const ProcessSqliteSchemaResult& schema, bool jsonOnly, const CodeGenPolicy* policy = nullptr);
+    SchemaReport reportSqliteSchema(const ProcessSqliteSchemaResult& schema,
+                                    bool jsonOnly,
+                                    const CodeGenPolicy* policy = nullptr,
+                                    bool strict = false);
 
 }  // namespace sqlite2orm

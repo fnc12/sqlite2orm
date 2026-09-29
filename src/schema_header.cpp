@@ -297,7 +297,8 @@ namespace sqlite2orm {
                                          const CodeGenPolicy* policy,
                                          const std::unordered_map<std::string, std::string>& shadowTables,
                                          std::set<std::string>& ungeneratableTables,
-                                         std::set<std::string>& ungeneratableViews) {
+                                         std::set<std::string>& ungeneratableViews,
+                                         SchemaCoverage& coverage) {
             CodeGenerator gen;
             gen.codeGenPolicy = policy;
             gen.context().ungeneratableTables = ungeneratableTables;
@@ -345,6 +346,16 @@ namespace sqlite2orm {
             }
             // A node that is not a statement of this schema has no row to name, and gets no span
             // rather than one borrowing the first row's.
+            // Which rows end up in the header is only known once each has been placed, so a row counts
+            // as generated from the moment its code is appended and not before.
+            std::vector<bool> rowGenerated(schema.statements.size(), false);
+            const auto markGenerated = [&statementIndexByNode, &rowGenerated](const AstNode& node) {
+                const auto found = statementIndexByNode.find(&node);
+                if (found != statementIndexByNode.end()) {
+                    rowGenerated[found->second] = true;
+                }
+            };
+
             const auto originOfStatement =
                 [&statementIndexByNode](const AstNode& node) -> std::optional<GeneratedFrom> {
                 const auto found = statementIndexByNode.find(&node);
@@ -459,6 +470,7 @@ namespace sqlite2orm {
                 declarations.append("\n");
                 declarationsCarryAnnotations = declarationsCarryAnnotations || parts.structIsReflected;
                 storageArgs.push_back(PlacedFragment{parts.makeTableExpression, origin});
+                markGenerated(*sortedTables[tableIndex]);
             }
 
             // A view that is left out is a name sqlite_orm has no type for, exactly as an
@@ -531,6 +543,7 @@ namespace sqlite2orm {
                     declarations.append("\n");
                     declarationsCarryAnnotations = true;
                     storageArgs.push_back(PlacedFragment{viewParts.makeViewExpression, origin});
+                    markGenerated(*createView);
                     continue;
                 }
 
@@ -554,6 +567,7 @@ namespace sqlite2orm {
                         continue;
                     }
                     dependentStorageArgs.push_back(PlacedFragment{std::move(storageArgLine), originOfStatement(*root)});
+                    markGenerated(*root);
                 }
             }
 
@@ -608,6 +622,7 @@ namespace sqlite2orm {
                                          fragment.decisionPoints.end());
                 if (!fragment.code.empty()) {
                     dmlStatements.push_back(PlacedFragment{std::move(fragment.code), originOfStatement(*root)});
+                    markGenerated(*root);
                 }
             }
             if (!dmlStatements.empty()) {
@@ -630,6 +645,17 @@ namespace sqlite2orm {
 
             body.prepend(prologue);
 
+            coverage = SchemaCoverage{};
+            for (size_t index = 0; index < schema.statements.size(); ++index) {
+                if (sqliteOwnsStatement(schema.statements[index].meta)) {
+                    continue;
+                }
+                ++coverage.total;
+                if (rowGenerated[index]) {
+                    ++coverage.generated;
+                }
+            }
+
             ungeneratableTables = gen.context().ungeneratableTables;
             ungeneratableViews = gen.context().ungeneratableViews;
             return CodeGenResult{body.takeCode(),
@@ -643,6 +669,13 @@ namespace sqlite2orm {
     }  // namespace
 
     CodeGenResult generateSqliteSchemaHeader(const ProcessSqliteSchemaResult& schema, const CodeGenPolicy* policy) {
+        SchemaCoverage coverage;
+        return generateSqliteSchemaHeader(schema, policy, coverage);
+    }
+
+    CodeGenResult generateSqliteSchemaHeader(const ProcessSqliteSchemaResult& schema,
+                                             const CodeGenPolicy* policy,
+                                             SchemaCoverage& coverage) {
         // A table this schema cannot map, and a view left out of the storage, are alike names
         // sqlite_orm has no type for, so a foreign key into one, and every view, index and trigger
         // resting on one, has to go too — otherwise the header names a struct it never declares
@@ -658,7 +691,7 @@ namespace sqlite2orm {
         for (;;) {
             const size_t knownBefore = ungeneratableTables.size();
             CodeGenResult result =
-                generateHeaderPass(schema, policy, shadowTables, ungeneratableTables, ungeneratableViews);
+                generateHeaderPass(schema, policy, shadowTables, ungeneratableTables, ungeneratableViews, coverage);
             if (ungeneratableTables.size() == knownBefore) {
                 return result;
             }

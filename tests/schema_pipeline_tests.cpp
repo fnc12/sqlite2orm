@@ -1254,6 +1254,14 @@ TEST_CASE("sqliteSchemaResultToJson: shape") {
 // `statements[].comments` is the only way a codegen comment reaches a consumer of `--db --json`, and
 // an expression generated inside a CHECK used to record one that nothing carried up: the array came
 // out empty for a table whose generated code is full of forms the comments explain.
+TEST_CASE("sqliteSchemaResultToJson: coverage sits beside the statements") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "t", "CREATE TABLE t(id INTEGER)"));
+    REQUIRE(
+        sqliteSchemaResultToJson(schema, 20, SchemaCoverage{2, 1}) ==
+        R"({"coverage":{"generated":1,"total":2},"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":20})");
+}
+
 TEST_CASE("sqliteSchemaResultToJson: a comment from a CHECK reaches its statement") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE t (a INTEGER CHECK(NOT a), b INTEGER CHECK(1 - (a LIKE 'x')));");
@@ -2168,6 +2176,49 @@ TEST_CASE("generateSqliteSchemaHeader: nothing that names a virtual table is mer
                 {"`vv` rests on a table that is not generated and is not merged into make_storage()"}});
     REQUIRE(header.errors.empty());
     requireCompiles(header.code);
+}
+
+// The coverage `--db --json` reports and `--strict` gates on counts what the header carries, not
+// what parsed: every row above generates on its own, yet only `tv` reaches the storage. The FTS5
+// shadow table and `sqlite_sequence` are SQLite's own and are left out of the count altogether.
+TEST_CASE("generateSqliteSchemaHeader: coverage counts only the rows the header carries") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "ft", "CREATE VIRTUAL TABLE ft USING fts5(a)"));
+    schema.statements.push_back(
+        masterRow("table", "ft_data", "CREATE TABLE 'ft_data'(id INTEGER PRIMARY KEY, block BLOB)"));
+    schema.statements.push_back(masterRow("table", "sqlite_sequence", "CREATE TABLE sqlite_sequence(name,seq)"));
+    schema.statements.push_back(masterRow("table", "tv", "CREATE TABLE tv(id INTEGER PRIMARY KEY)"));
+    schema.statements.push_back(masterRow("view", "vv", "CREATE VIEW vv AS SELECT a FROM ft"));
+    REQUIRE(schema.allOk());
+    SchemaCoverage coverage;
+    generateSqliteSchemaHeader(schema, nullptr, coverage);
+    REQUIRE(coverage == SchemaCoverage{3, 1});
+    REQUIRE_FALSE(coverage.complete());
+}
+
+// A table, an index and a trigger that all reach the storage are the whole schema.
+TEST_CASE("generateSqliteSchemaHeader: coverage is complete when every row is in the header") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "t", "CREATE TABLE t(id INTEGER PRIMARY KEY, a INTEGER)"));
+    schema.statements.push_back(masterRow("index", "ta", "CREATE INDEX ta ON t(a)"));
+    schema.statements.push_back(masterRow("trigger", "tr", "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END"));
+    SchemaCoverage coverage;
+    generateSqliteSchemaHeader(schema, nullptr, coverage);
+    REQUIRE(coverage == SchemaCoverage{3, 3});
+    REQUIRE(coverage.complete());
+}
+
+// A row that did not generate is not in the header, and neither is an index resting on it.
+TEST_CASE("generateSqliteSchemaHeader: coverage leaves out a failed row and what rests on it") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "t", "CREATE TABLE t(id INTEGER PRIMARY KEY)"));
+    schema.statements.push_back(
+        masterRow("table", "q", "CREATE TABLE q (a INTEGER, b INTEGER AS (0x10000000000000000))"));
+    schema.statements.push_back(masterRow("index", "qa", "CREATE INDEX qa ON q(a)"));
+    REQUIRE_FALSE(schema.allOk());
+    SchemaCoverage coverage;
+    generateSqliteSchemaHeader(schema, nullptr, coverage);
+    REQUIRE(coverage == SchemaCoverage{3, 1});
 }
 
 // FTS5 keeps its index in ordinary tables named `<virtual-table>_data`, `_idx`, `_content`,

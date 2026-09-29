@@ -77,4 +77,13 @@ namespace sqlite2orm {
             .dump();
     }
 
+    std::string sqliteSchemaResultToJson(const ProcessSqliteSchemaResult& schema,
+                                         int targetCppStandard,
+                                         const SchemaCoverage& coverage) {
+        return nlohmann::json{{"statements", schemaStatementsJson(schema)},
+                              {"targetCppStandard", targetCppStandard},
+                              {"coverage", {{"generated", coverage.generated}, {"total", coverage.total}}}}
+            .dump();
+    }
+
 }  // namespace sqlite2orm

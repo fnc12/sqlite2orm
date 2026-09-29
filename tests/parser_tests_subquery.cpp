@@ -168,6 +168,48 @@ TEST_CASE("parser: CTE bodies nested past the depth limit are refused") {
     CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
 }
 
+TEST_CASE("parser: the nesting depth limit is reported at the query that goes past it") {
+    SECTION("on one line") {
+        // `SELECT * FROM ` is 14 columns wide and each `(SELECT * FROM ` 15 more, so the 201st
+        // SELECT, the first one past the limit, starts at column 16 + 199 * 15 = 3001.
+        auto parseResult = parse(nestedFromSubqueries(kMaxQueryDepth + 1));
+        REQUIRE(parseResult.errors.size() == 1);
+        CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
+        CHECK(parseResult.errors.front().location == SourceLocation{1, 3001});
+    }
+    SECTION("one level per line") {
+        std::string sql = "SELECT * FROM";
+        for (size_t i = 1; i <= kMaxQueryDepth; ++i) {
+            sql += "\n   (SELECT * FROM";
+        }
+        sql += " t";
+        sql += std::string(kMaxQueryDepth, ')');
+        auto parseResult = parse(sql);
+        REQUIRE(parseResult.errors.size() == 1);
+        CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
+        CHECK(parseResult.errors.front().location == SourceLocation{201, 5});
+    }
+}
+
+// Every query below is shallow; what adds up past the limit is only how many of them stand side
+// by side, which costs nothing as long as each one gives back the level it took. The compounds
+// stay under SQLite's own 500 terms, and each arm under its 64 tables in a join.
+
+TEST_CASE("parser: scalar subqueries side by side past the nesting depth limit are accepted") {
+    auto parseResult = parse("SELECT " + repeated(1000, ", ", "(SELECT 1)"));
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: FROM subqueries side by side past the nesting depth limit are accepted") {
+    auto parseResult = parse(repeated(300, " UNION ALL ", "SELECT * FROM (SELECT 1) AS s"));
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: parenthesized join groups side by side past the nesting depth limit are accepted") {
+    auto parseResult = parse(repeated(300, " UNION ALL ", "SELECT * FROM (t JOIN u ON t.a = u.a)"));
+    REQUIRE(parseResult);
+}
+
 TEST_CASE("parser: a query at the nesting depth limit is still parsed in full") {
     // Refusing one level deeper is the point; what sits just under the limit has to come back
     // whole, down to the innermost table name.

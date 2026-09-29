@@ -953,6 +953,51 @@ TEST_CASE("parser: subqueries nested past the depth limit are refused") {
     CHECK(parseResult.errors.front().message == "query is nested too deeply (maximum depth 200)");
 }
 
+TEST_CASE("parser: the depth limit is reported at the level that goes past it") {
+    SECTION("on one line") {
+        // `SELECT 1` is 8 columns wide and each ` + 1` 4 more, so the operand of the 1000th `+`,
+        // the one that goes a level past the limit, ends the line at column 8 + 1000 * 4 = 4008.
+        auto parseResult = parse("SELECT " + additionChain(kMaxExpressionDepth + 1));
+        REQUIRE(parseResult.errors.size() == 1);
+        CHECK(parseResult.errors.front().message == "expression tree is too large (maximum depth 1000)");
+        CHECK(parseResult.errors.front().location == SourceLocation{1, 4008});
+    }
+    SECTION("one level per line") {
+        std::string sql = "SELECT 1";
+        for (size_t i = 0; i < kMaxExpressionDepth; ++i) {
+            sql += "\n + 1";
+        }
+        auto parseResult = parse(sql);
+        REQUIRE(parseResult.errors.size() == 1);
+        CHECK(parseResult.errors.front().message == "expression tree is too large (maximum depth 1000)");
+        CHECK(parseResult.errors.front().location == SourceLocation{1001, 4});
+    }
+}
+
+// Every expression below is shallow; what adds up past the limit is only how many of them stand
+// side by side, which costs nothing as long as each one gives back the levels it took.
+
+TEST_CASE("parser: result columns side by side past the depth limit are accepted") {
+    auto parseResult = parse("SELECT " + repeated(1500, ", ", "a + 1") + " FROM t");
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: VALUES rows side by side past the depth limit are accepted") {
+    auto parseResult = parse("INSERT INTO t VALUES " + repeated(1500, ", ", "(1 + 1)"));
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: function arguments side by side up to the depth limit are accepted") {
+    // SQLite takes no more than 1000 arguments to a function, so this stops at the limit itself.
+    auto parseResult = parse("SELECT coalesce(" + repeated(kMaxExpressionDepth, ", ", "a + 1") + ") FROM t");
+    REQUIRE(parseResult);
+}
+
+TEST_CASE("parser: ORDER BY terms side by side past the depth limit are accepted") {
+    auto parseResult = parse("SELECT a FROM t ORDER BY " + repeated(1500, ", ", "a + 1"));
+    REQUIRE(parseResult);
+}
+
 // --- IS / IS NOT / IS [NOT] DISTINCT FROM ---
 
 TEST_CASE("parser: IS expr") {

@@ -2702,6 +2702,11 @@ TEST_CASE("codegen: a JSON arrow expands the path it is written with") {
     // with the subscript SQLite puts one in front of.
     REQUIRE(generate("SELECT data ->> '$.name' FROM users;") == prefix + "\"$.name\")));");
     REQUIRE(generate("SELECT data ->> '[1]' FROM users;") == prefix + "\"$[1]\")));");
+    // A subscript needs something between its brackets: `[]`, like `[` and `[0`, is a label, and
+    // SQLite reads `{"[]":9} ->> '[]'` as 9 where `$[]` finds nothing.
+    REQUIRE(generate("SELECT data ->> '[]' FROM users;") == prefix + "\"$.\\\"[]\\\"\")));");
+    REQUIRE(generate("SELECT data ->> '[' FROM users;") == prefix + "\"$.\\\"[\\\"\")));");
+    REQUIRE(generate("SELECT data ->> '[0' FROM users;") == prefix + "\"$.\\\"[0\\\"\")));");
     // A NULL path needs no expansion: SQLite answers NULL for it, and so does the generated call.
     REQUIRE(generate("SELECT data ->> NULL FROM users;") == prefix + "nullptr)));");
 }

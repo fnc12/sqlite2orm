@@ -1382,6 +1382,22 @@ TEST_CASE("codegen: CREATE TABLE - a COLLATE in a table-level PRIMARY KEY is not
                                         "sqlite_orm — ignored in codegen"});
 }
 
+// sqlite3 keeps the last of repeated collations, so that is the one the warning names.
+TEST_CASE("codegen: CREATE TABLE - a repeated COLLATE in a table-level UNIQUE is reported by its last name") {
+    const auto result = generateFull("CREATE TABLE t (a TEXT, UNIQUE (a COLLATE BINARY COLLATE NOCASE))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::string> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        sqlite_orm::unique(&T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"COLLATE NOCASE on column 'a' of a table-level UNIQUE is not supported "
+                                        "in sqlite_orm — ignored in codegen"});
+}
+
 TEST_CASE("codegen: CREATE TABLE - a DESC in a table-level UNIQUE is not generated") {
     const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, UNIQUE (a, b DESC))");
     REQUIRE(result.code == "struct T {\n"

@@ -445,8 +445,9 @@ namespace sqlite2orm {
         advanceToken();
         // `indexed-column` again, but the one a key is spelled with: a plain name, then an
         // optional collation, then an optional direction, in that order. SQLite refuses the parts
-        // swapped — `PRIMARY KEY(id DESC COLLATE NOCASE)` is a syntax error there.
-        if (match(TokenType::kwCollate)) {
+        // swapped — `PRIMARY KEY(id DESC COLLATE NOCASE)` is a syntax error there. The collation may
+        // be repeated (`a COLLATE NOCASE COLLATE BINARY`); like SQLite, the last one wins.
+        while (match(TokenType::kwCollate)) {
             if (!isColumnNameToken())
                 return false;
             out.collation = std::string(current().value);

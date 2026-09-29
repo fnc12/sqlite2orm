@@ -524,6 +524,34 @@ TEST_CASE("parser: CREATE TABLE - table-level PRIMARY KEY with a collation and a
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 
+// sqlite3 takes the collation repeated and keeps the last one: `PRAGMA index_xinfo` reports BINARY
+// for the key below.
+TEST_CASE("parser: CREATE TABLE - table-level PRIMARY KEY with a repeated collation keeps the last one") {
+    auto parseResult =
+        parse("CREATE TABLE t (a TEXT, PRIMARY KEY (a COLLATE NOCASE COLLATE RTRIM COLLATE BINARY DESC))");
+    REQUIRE(parseResult);
+    CreateTableNode expected("t", {ColumnDef{"a", "TEXT"}}, false, {});
+    expected.primaryKeys = {TablePrimaryKey{{KeyColumn{"a", "BINARY", SortDirection::desc}}}};
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
+}
+
+// A repeated collation is still bound to come before the direction: sqlite3 answers this one with
+// `near "COLLATE": syntax error`.
+TEST_CASE("parser: CREATE TABLE - error on a table-level PRIMARY KEY with a second COLLATE after the direction") {
+    auto parseResult = parse("CREATE TABLE t (a TEXT, PRIMARY KEY (a COLLATE NOCASE DESC COLLATE BINARY))");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: COLLATE");
+}
+
+// sqlite3: `near ")": syntax error`.
+TEST_CASE("parser: CREATE TABLE - error on a table-level PRIMARY KEY with a COLLATE missing its name") {
+    auto parseResult = parse("CREATE TABLE t (a TEXT, PRIMARY KEY (a COLLATE NOCASE COLLATE))");
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(parseResult.errors.size() == 1);
+    CHECK(parseResult.errors.front().message == "unexpected token: )");
+}
+
 // The two parts come in that order and no other: sqlite3 answers the swapped spelling with
 // `near "COLLATE": syntax error`.
 TEST_CASE("parser: CREATE TABLE - error on a table-level PRIMARY KEY with COLLATE after the direction") {
@@ -573,6 +601,14 @@ TEST_CASE("parser: CREATE TABLE - table-level UNIQUE with a collation and a dire
     REQUIRE(parseResult);
     CreateTableNode expected("t", {ColumnDef{"a", "INTEGER"}, ColumnDef{"b", "TEXT"}}, false, {});
     expected.uniques = {TableUnique{{KeyColumn{"a", "", SortDirection::desc}, KeyColumn{"b", "NOCASE"}}}};
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: CREATE TABLE - table-level UNIQUE with a repeated collation keeps the last one") {
+    auto parseResult = parse("CREATE TABLE t (a TEXT, b INTEGER, UNIQUE (a COLLATE NOCASE COLLATE BINARY ASC, b))");
+    REQUIRE(parseResult);
+    CreateTableNode expected("t", {ColumnDef{"a", "TEXT"}, ColumnDef{"b", "INTEGER"}}, false, {});
+    expected.uniques = {TableUnique{{KeyColumn{"a", "BINARY", SortDirection::asc}, KeyColumn{"b"}}}};
     REQUIRE(requireNode<CreateTableNode>(parseResult) == expected);
 }
 

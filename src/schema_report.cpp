@@ -9,13 +9,19 @@
 
 namespace sqlite2orm {
 
-    SchemaReport
-    reportSqliteSchema(const ProcessSqliteSchemaResult& schema, bool jsonOnly, const CodeGenPolicy* policy) {
+    SchemaReport reportSqliteSchema(const ProcessSqliteSchemaResult& schema,
+                                    bool jsonOnly,
+                                    const CodeGenPolicy* policy,
+                                    bool strict) {
         std::ostringstream out;
         std::ostringstream err;
         SchemaReport report;
+        // The header is generated in `--json` mode too: which rows it carries is only known once it
+        // is, and the JSON reports that coverage whether or not the header itself is printed.
+        SchemaCoverage coverage;
+        const CodeGenResult header = generateSqliteSchemaHeader(schema, policy, coverage);
         if (jsonOnly) {
-            out << sqliteSchemaResultToJson(schema, policyTargetCppStandard(policy)) << "\n";
+            out << sqliteSchemaResultToJson(schema, policyTargetCppStandard(policy), coverage) << "\n";
         }
         for (const SchemaStatementResult& statement: schema.statements) {
             for (const CodegenWarning& warning: statement.pipeline.codegen.warnings) {
@@ -23,7 +29,6 @@ namespace sqlite2orm {
             }
         }
         if (!jsonOnly) {
-            const CodeGenResult header = generateSqliteSchemaHeader(schema, policy);
             for (const CodegenWarning& warning: header.warnings) {
                 err << "warning: " << warning.message << "\n";
             }
@@ -54,6 +59,10 @@ namespace sqlite2orm {
                     err << "codegen error " << where << ": " << error << "\n";
                 }
             }
+            report.exitCode = 1;
+        }
+        if (strict && !coverage.complete()) {
+            err << "strict: " << coverage.generated << " of " << coverage.total << " schema statements generated\n";
             report.exitCode = 1;
         }
         report.out = out.str();

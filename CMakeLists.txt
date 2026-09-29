@@ -293,6 +293,10 @@ if(SQLITE2ORM_BUILD_TESTS)
                     COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_db_json_exit_code.sh"
                             "$<TARGET_FILE:sqlite2orm_cli>" "${SQLITE2ORM_SQLITE3_EXECUTABLE}")
                 add_test(
+                    NAME sqlite2orm_cli_strict
+                    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_strict.sh" "$<TARGET_FILE:sqlite2orm_cli>"
+                            "${SQLITE2ORM_SQLITE3_EXECUTABLE}")
+                add_test(
                     NAME sqlite2orm_cli_std
                     COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_std.sh" "$<TARGET_FILE:sqlite2orm_cli>"
                             "${SQLITE2ORM_SQLITE3_EXECUTABLE}")

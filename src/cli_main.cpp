@@ -23,13 +23,15 @@ namespace {
                    "sqlite2orm — sqlite2orm codegen (single SQL statement or .sqlite3 schema)\n\n"
                    "Usage:\n"
                    "  sqlite2orm -e <sql>           Codegen from a SQL string\n"
-                   "  sqlite2orm --db <file.sqlite3> [--json]\n"
+                   "  sqlite2orm --db <file.sqlite3> [--json] [--strict]\n"
                    "                                Full header from DB schema (phase 21)\n"
                    "  sqlite2orm <file.sql>         Read one statement from file\n"
                    "  sqlite2orm                    Read one statement from stdin\n"
                    "\n"
                    "Options:\n"
                    "  --json                       With --db: print JSON decision points (stderr: diagnostics)\n"
+                   "  --strict                     With --db: exit 1 unless every schema statement is in the\n"
+                   "                               generated header (the coverage --json reports)\n"
                    "  --std <14|17|20|26>          Target C++ standard of the generated code (default: 20)\n"
                    "  -h, --help                   Show this help\n");
     }
@@ -57,12 +59,12 @@ namespace {
         return -1;
     }
 
-    int runDbMode(const std::string& dbPath, bool jsonOnly, const sqlite2orm::CodeGenPolicy* policy) {
+    int runDbMode(const std::string& dbPath, bool jsonOnly, bool strict, const sqlite2orm::CodeGenPolicy* policy) {
         using namespace sqlite2orm;
         try {
             SqliteSchemaReader reader(dbPath);
             const ProcessSqliteSchemaResult schema = processSqliteSchema(reader, policy);
-            const SchemaReport report = reportSqliteSchema(schema, jsonOnly, policy);
+            const SchemaReport report = reportSqliteSchema(schema, jsonOnly, policy, strict);
             fmt::print(stderr, "{}", report.err);
             fmt::print("{}", report.out);
             return report.exitCode;
@@ -116,7 +118,8 @@ int main(int argc, char** argv) {
             return 2;
         }
         const bool jsonOnly = indexOfArg(args, "--json") >= 0;
-        return runDbMode(std::string(args[dbFlag + 1]), jsonOnly, policyPointer);
+        const bool strict = indexOfArg(args, "--strict") >= 0;
+        return runDbMode(std::string(args[dbFlag + 1]), jsonOnly, strict, policyPointer);
     }
 
     std::string sql;

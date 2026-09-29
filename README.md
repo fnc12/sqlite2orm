@@ -43,6 +43,9 @@ cmake --build build -j$(nproc)
 # JSON output with decision points
 ./build/sqlite2orm --db app.sqlite --json
 
+# Exit 1 unless every schema statement made it into the header (a CI gate)
+./build/sqlite2orm --db app.sqlite --strict
+
 # Target C++ standard (14, 17, 20 or 26; default 20) — works with -e, a file, stdin and --db
 ./build/sqlite2orm --std 26 --db app.sqlite
 

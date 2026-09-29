@@ -1149,9 +1149,9 @@ namespace sqlite2orm {
         // The value is one token, or a single sign in front of a number (`plus_num`/`minus_num`),
         // never an expression: `= (1)`, `= ++2` and `= 1 + 2` are all syntax errors to SQLite. The
         // expression parser still builds the value's node, it just may not read past that extent.
-        const bool signedNumber = (check(TokenType::plus) || check(TokenType::minus)) &&
-                                  (peekToken(1).type == TokenType::integerLiteral ||
-                                   peekToken(1).type == TokenType::realLiteral);
+        const bool signedNumber =
+            (check(TokenType::plus) || check(TokenType::minus)) &&
+            (peekToken(1).type == TokenType::integerLiteral || peekToken(1).type == TokenType::realLiteral);
         const size_t valueEnd = valueStart + (signedNumber ? 2 : 1);
         const TokenType firstType = current().type;
         if (auto expression = this->parser.parseExpression()) {

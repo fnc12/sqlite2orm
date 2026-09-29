@@ -60,6 +60,15 @@ namespace {
         return reportSqliteSchema(processSqliteSchema(reader), jsonOnly);
     }
 
+    /** What `--db` prints under `--std <targetCppStandard>`: the schema and the report share the policy. */
+    [[nodiscard]] SchemaReport
+    reportForStandard(const std::filesystem::path& dbPath, bool jsonOnly, int targetCppStandard) {
+        CodeGenPolicy policy;
+        policy.targetCppStandard = targetCppStandard;
+        SqliteSchemaReader reader(dbPath.string());
+        return reportSqliteSchema(processSqliteSchema(reader, &policy), jsonOnly, &policy);
+    }
+
 }  // namespace
 
 // `--json` used to swallow every diagnostic and exit 0, so a script driving the CLI could not tell a
@@ -72,7 +81,7 @@ TEST_CASE("reportSqliteSchema: --json reports a codegen error and exits 1") {
     const SchemaReport result = report(file.path, true);
     REQUIRE(
         result.out ==
-        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}]})"
+        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}],"targetCppStandard":20})"
         "\n");
     REQUIRE(result.err == "codegen error [table q]: hex literal too big: 0x10000000000000000\n");
     REQUIRE(result.exitCode == 1);
@@ -109,7 +118,7 @@ TEST_CASE("reportSqliteSchema: --json on a schema that generates stays quiet and
     const SchemaReport result = report(file.path, true);
     REQUIRE(
         result.out ==
-        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]})"
+        R"({"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":20})"
         "\n");
     REQUIRE(result.err.empty());
     REQUIRE(result.exitCode == 0);
@@ -343,4 +352,116 @@ TEST_CASE("reportSqliteSchema: the header of an AUTOINCREMENT schema creates its
     INFO("the generated storage printed:\n" << output);
     REQUIRE(exitCode == 0);
     REQUIRE(output == "users: new table created\ninserted 1\n");
+}
+
+// `--std 26` reaches the `table_mapping_style` decision point, which only a C++26 target is offered:
+// the JSON carries it and names the standard, and the header maps the table by reflection.
+TEST_CASE("reportSqliteSchema: --json under C++26 offers the reflected table and names the standard") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");
+    const SchemaReport result = reportForStandard(file.path, true, 26);
+    REQUIRE(
+        result.out ==
+        R"json({"statements":[{"comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"decisionPoints":[{"category":"table_mapping_style","chosenCode":"struct [[= \"t\"_orm_name]] T {\n    [[= primary_key()]] std::optional<int64_t> id;\n};\n\nmake_table<T>()","chosenValue":"reflection","id":1,"options":[{"code":"struct T {\n    std::optional<int64_t> id;\n};\n\nmake_table(\"t\",\n        make_column(\"id\", &T::id, primary_key()))","comments":[],"description":"make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)","hidden":false,"minCppStandard":14,"value":"make_table"},{"code":"struct [[= \"t\"_orm_name]] T {\n    [[= primary_key()]] std::optional<int64_t> id;\n};\n\nmake_table<T>()","comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"description":"C++26 reflection: annotated struct + make_table<T>()","hidden":false,"minCppStandard":26,"value":"reflection"}]}],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":26})json"
+        "\n");
+    REQUIRE(result.err.empty());
+    REQUIRE(result.exitCode == 0);
+}
+
+TEST_CASE("reportSqliteSchema: the header under C++26 maps the table by reflection") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY);");
+    const SchemaReport result = reportForStandard(file.path, false, 26);
+    REQUIRE(result.out == R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace sqlite_orm;
+
+struct [[= "t"_orm_name]] T {
+    [[= primary_key()]] std::optional<int64_t> id;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table<T>());
+}
+)");
+    REQUIRE(result.err.empty());
+    REQUIRE(result.exitCode == 0);
+}
+
+// Views are generated by reflection whatever the target, so below C++26 the only difference is the
+// warning saying the code will not compile; under C++26 that warning is gone. The JSON names the
+// standard it was generated for, and a C++17 target is not offered anything C++20 needs.
+TEST_CASE("reportSqliteSchema: a view warns below C++26 and not under it") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (id INTEGER PRIMARY KEY); CREATE VIEW v AS SELECT id FROM t;");
+    const std::string header = R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace sqlite_orm;
+
+struct T {
+    std::optional<int64_t> id;
+};
+
+struct [[= "v"_orm_name]] V {
+    std::optional<int64_t> id;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("t",
+        make_column("id", &T::id, primary_key())),
+        make_view<V>(select(&T::id)));
+}
+)";
+    // Printed twice as things stand: once for the view statement and once again for the header.
+    const std::string viewWarning =
+        "warning: CREATE VIEW v: sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this "
+        "code requires C++26 and will not compile under the selected C++ standard\n";
+    REQUIRE(reportForStandard(file.path, false, 17) == SchemaReport{header, viewWarning + viewWarning, 0});
+    REQUIRE(report(file.path, false) == SchemaReport{header, viewWarning + viewWarning, 0});
+    REQUIRE(reportForStandard(file.path, false, 26) == SchemaReport{R"(#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace sqlite_orm;
+
+struct [[= "t"_orm_name]] T {
+    [[= primary_key()]] std::optional<int64_t> id;
+};
+
+struct [[= "v"_orm_name]] V {
+    std::optional<int64_t> id;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table<T>(),
+        make_view<V>(select(&T::id)));
+}
+)",
+                                                                    "",
+                                                                    0});
 }

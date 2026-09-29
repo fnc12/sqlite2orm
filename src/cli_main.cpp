@@ -1,3 +1,4 @@
+#include <sqlite2orm/cpp_standard.h>
 #include <sqlite2orm/process.h>
 #include <sqlite2orm/schema_process.h>
 #include <sqlite2orm/schema_reader.h>
@@ -8,10 +9,12 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -27,6 +30,7 @@ namespace {
                    "\n"
                    "Options:\n"
                    "  --json                       With --db: print JSON decision points (stderr: diagnostics)\n"
+                   "  --std <14|17|20|26>          Target C++ standard of the generated code (default: 20)\n"
                    "  -h, --help                   Show this help\n");
     }
 
@@ -44,21 +48,21 @@ namespace {
         return readStream(stream);
     }
 
-    int indexOfArg(int argc, char** argv, std::string_view flag) {
-        for (int i = 1; i < argc; ++i) {
-            if (std::string_view(argv[i]) == flag) {
-                return i;
+    int indexOfArg(const std::vector<std::string_view>& args, std::string_view flag) {
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (args[i] == flag) {
+                return int(i);
             }
         }
         return -1;
     }
 
-    int runDbMode(const std::string& dbPath, bool jsonOnly) {
+    int runDbMode(const std::string& dbPath, bool jsonOnly, const sqlite2orm::CodeGenPolicy* policy) {
         using namespace sqlite2orm;
         try {
             SqliteSchemaReader reader(dbPath);
-            const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
-            const SchemaReport report = reportSqliteSchema(schema, jsonOnly);
+            const ProcessSqliteSchemaResult schema = processSqliteSchema(reader, policy);
+            const SchemaReport report = reportSqliteSchema(schema, jsonOnly, policy);
             fmt::print(stderr, "{}", report.err);
             fmt::print("{}", report.out);
             return report.exitCode;
@@ -76,34 +80,62 @@ namespace {
 int main(int argc, char** argv) {
     using namespace sqlite2orm;
 
-    const int dbFlag = indexOfArg(argc, argv, "--db");
+    std::vector<std::string_view> args(argv + 1, argv + argc);
+
+    // Without `--std` no policy is passed at all, so the default run is exactly what it was before
+    // the flag existed.
+    std::optional<CodeGenPolicy> policy;
+    const int stdFlag = indexOfArg(args, "--std");
+    if (stdFlag >= 0) {
+        if (size_t(stdFlag) + 1 >= args.size()) {
+            fmt::print(stderr, "sqlite2orm: --std requires a value (one of {})\n", kCppStandardChoices);
+            printUsage(stderr);
+            return 2;
+        }
+        const std::string_view value = args[stdFlag + 1];
+        const std::optional<int> standard = parseCppStandard(value);
+        if (!standard) {
+            fmt::print(stderr,
+                       "sqlite2orm: unsupported --std value '{}' (expected one of {})\n",
+                       value,
+                       kCppStandardChoices);
+            printUsage(stderr);
+            return 2;
+        }
+        policy.emplace();
+        policy->targetCppStandard = *standard;
+        args.erase(args.begin() + stdFlag, args.begin() + stdFlag + 2);
+    }
+    const CodeGenPolicy* policyPointer = policy ? &*policy : nullptr;
+
+    const int dbFlag = indexOfArg(args, "--db");
     if (dbFlag >= 0) {
-        if (dbFlag + 1 >= argc) {
+        if (size_t(dbFlag) + 1 >= args.size()) {
             fmt::print(stderr, "sqlite2orm: --db requires a path\n");
             printUsage(stderr);
             return 2;
         }
-        const bool jsonOnly = indexOfArg(argc, argv, "--json") >= 0;
-        return runDbMode(argv[dbFlag + 1], jsonOnly);
+        const bool jsonOnly = indexOfArg(args, "--json") >= 0;
+        return runDbMode(std::string(args[dbFlag + 1]), jsonOnly, policyPointer);
     }
 
     std::string sql;
     try {
-        if (argc >= 2) {
-            const std::string_view arg1 = argv[1];
+        if (!args.empty()) {
+            const std::string_view arg1 = args[0];
             if (arg1 == "-h" || arg1 == "--help") {
                 printUsage(stdout);
                 return EXIT_SUCCESS;
             }
             if (arg1 == "-e") {
-                if (argc < 3) {
+                if (args.size() < 2) {
                     fmt::print(stderr, "sqlite2orm: -e requires a SQL argument\n");
                     printUsage(stderr);
                     return 2;
                 }
-                sql = argv[2];
+                sql = args[1];
             } else {
-                sql = readFile(argv[1]);
+                sql = readFile(std::string(arg1));
             }
         } else {
             sql = readStream(std::cin);
@@ -118,7 +150,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    const auto results = processMultiSql(sql);
+    const auto results = processMultiSql(sql, policyPointer);
     int exitCode = EXIT_SUCCESS;
     for (const ProcessSqlResult& result: results) {
         for (const auto& warning: result.codegen.warnings) {

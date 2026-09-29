@@ -43,25 +43,38 @@ namespace sqlite2orm {
         return nlohmann::json(decisionPoints).dump();
     }
 
-    std::string sqliteSchemaResultToJson(const ProcessSqliteSchemaResult& schema) {
-        nlohmann::json statements = nlohmann::json::array();
-        for (const SchemaStatementResult& statement: schema.statements) {
-            nlohmann::json row = {{"type", statement.meta.type},
-                                  {"name", statement.meta.name},
-                                  {"tableName", statement.meta.tableName},
-                                  {"ok", statement.pipeline.ok()}};
-            if (statement.pipeline.ok()) {
-                row["decisionPoints"] = statement.pipeline.codegen.decisionPoints;
-                row["comments"] = commentMessages(statement.pipeline.codegen.comments);
-            } else {
-                // A consumer reads the same keys either way: a statement that did not generate has
-                // no decision points and no comments, not a missing key.
-                row["decisionPoints"] = nlohmann::json::array();
-                row["comments"] = nlohmann::json::array();
+    namespace {
+
+        nlohmann::json schemaStatementsJson(const ProcessSqliteSchemaResult& schema) {
+            nlohmann::json statements = nlohmann::json::array();
+            for (const SchemaStatementResult& statement: schema.statements) {
+                nlohmann::json row = {{"type", statement.meta.type},
+                                      {"name", statement.meta.name},
+                                      {"tableName", statement.meta.tableName},
+                                      {"ok", statement.pipeline.ok()}};
+                if (statement.pipeline.ok()) {
+                    row["decisionPoints"] = statement.pipeline.codegen.decisionPoints;
+                    row["comments"] = commentMessages(statement.pipeline.codegen.comments);
+                } else {
+                    // A consumer reads the same keys either way: a statement that did not generate has
+                    // no decision points and no comments, not a missing key.
+                    row["decisionPoints"] = nlohmann::json::array();
+                    row["comments"] = nlohmann::json::array();
+                }
+                statements.push_back(std::move(row));
             }
-            statements.push_back(std::move(row));
+            return statements;
         }
-        return nlohmann::json{{"statements", std::move(statements)}}.dump();
+
+    }  // namespace
+
+    std::string sqliteSchemaResultToJson(const ProcessSqliteSchemaResult& schema) {
+        return nlohmann::json{{"statements", schemaStatementsJson(schema)}}.dump();
+    }
+
+    std::string sqliteSchemaResultToJson(const ProcessSqliteSchemaResult& schema, int targetCppStandard) {
+        return nlohmann::json{{"statements", schemaStatementsJson(schema)}, {"targetCppStandard", targetCppStandard}}
+            .dump();
     }
 
 }  // namespace sqlite2orm

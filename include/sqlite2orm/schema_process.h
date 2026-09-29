@@ -35,7 +35,9 @@ namespace sqlite2orm {
 
     /**
      *  Read `sqlite_master`, order DDL (tables → views → indexes → triggers), run `processSql` per `sql`.
+     *  `policy` steers the decision points of every statement, as it does for `processSql`.
      */
-    ProcessSqliteSchemaResult processSqliteSchema(const SqliteSchemaReader& reader);
+    ProcessSqliteSchemaResult processSqliteSchema(const SqliteSchemaReader& reader,
+                                                  const CodeGenPolicy* policy = nullptr);
 
 }  // namespace sqlite2orm

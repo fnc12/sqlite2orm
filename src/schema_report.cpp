@@ -3,6 +3,8 @@
 #include <sqlite2orm/json_emit.h>
 #include <sqlite2orm/schema_header.h>
 
+#include "codegen_utils.h"
+
 #include <sstream>
 
 namespace sqlite2orm {
@@ -13,7 +15,7 @@ namespace sqlite2orm {
         std::ostringstream err;
         SchemaReport report;
         if (jsonOnly) {
-            out << sqliteSchemaResultToJson(schema) << "\n";
+            out << sqliteSchemaResultToJson(schema, policyTargetCppStandard(policy)) << "\n";
         }
         for (const SchemaStatementResult& statement: schema.statements) {
             for (const CodegenWarning& warning: statement.pipeline.codegen.warnings) {

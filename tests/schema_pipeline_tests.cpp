@@ -1572,6 +1572,75 @@ TEST_CASE("generateSqliteSchemaHeader: a literal past the double range is spelle
     REQUIRE(exitCode == 0);
 }
 
+// The same `<limits>`, reached through the other literal that can run past the double range: a
+// decimal integer too long for an int64 is read by SQLite as a REAL, and 1 followed by 309 zeros is
+// past DBL_MAX, so it stores Inf just as `9e999` does (checked against sqlite3 3.51). It is the only
+// out-of-range literal in this schema, so the flag has to be set on the integer path; the trigger
+// again carries it across the `resetForGeneration()` a later statement starts with.
+TEST_CASE("generateSqliteSchemaHeader: an integer literal past the double range takes <limits> along") {
+    TempDbFile file{makeTempDbPath()};
+    const std::string hugeInteger = "1" + std::string(309, '0');
+    execSql(file.path,
+            "CREATE TABLE a_t (x REAL DEFAULT " + hugeInteger +
+                ");"
+                "CREATE TABLE b_t (y TEXT);"
+                "CREATE TRIGGER b_tr AFTER INSERT ON b_t BEGIN DELETE FROM b_t; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    const CodeGenResult expected{
+        std::string("#pragma once\n\n"
+                    "#include <sqlite_orm/sqlite_orm.h>\n"
+                    "#include <cstdint>\n"
+                    "#include <limits>\n"
+                    "#include <optional>\n"
+                    "#include <string>\n"
+                    "#include <vector>\n\n"
+                    "struct AT {\n"
+                    "    std::optional<double> x;\n"
+                    "};\n\n"
+                    "struct BT {\n"
+                    "    std::optional<std::string> y;\n"
+                    "};\n\n\n"
+                    "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                    "    using namespace sqlite_orm;\n"
+                    "    return make_storage(db_path,\n"
+                    "        make_trigger(\"b_tr\", after().insert().on<BT>().begin(remove_all<BT>())),\n"
+                    "        make_table(\"a_t\",\n"
+                    "        make_column(\"x\", &AT::x, "
+                    "default_value(std::numeric_limits<double>::infinity()))),\n"
+                    "        make_table(\"b_t\",\n"
+                    "        make_column(\"y\", &BT::y)));\n"
+                    "}\n"),
+        {},
+        // The literal is quoted in full, as the SQL spells it: 1 and then 309 zeros.
+        {CodegenWarning{"the DEFAULT of column 'x' uses "
+                        "1000000000000000000000000000000000000000000000000000000000000000000000"
+                        "0000000000000000000000000000000000000000000000000000000000000000000000"
+                        "0000000000000000000000000000000000000000000000000000000000000000000000"
+                        "0000000000000000000000000000000000000000000000000000000000000000000000"
+                        "000000000000000000000000000000"
+                        ", an infinity: sqlite_orm writes an infinity into DDL as `inf`, which SQLite "
+                        "reads as a column name rather than as a number, so sync_schema() throws "
+                        "instead of creating table a_t (sqlite_orm writes a DEFAULT in parentheses, "
+                        "and SQLite answers DEFAULT (inf) with \"default value of column [x] is not "
+                        "constant\")",
+                        SourceLocation{1, 34},
+                        310}},
+        {},
+        {},
+        {{143, 44, 0, SourceLocation{1, 1}, 344},
+         {188, 49, 1, SourceLocation{1, 1}, 25},
+         {381, 71, 2, SourceLocation{1, 1}, 66},
+         {462, 107, 0, SourceLocation{1, 1}, 344},
+         {579, 51, 1, SourceLocation{1, 1}, 25}}};
+
+    REQUIRE(header == expected);
+}
+
 TEST_CASE("phase 21.7: fsyntax-only compile of generated header") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path, "CREATE TABLE round_t (id INTEGER PRIMARY KEY, name TEXT);");

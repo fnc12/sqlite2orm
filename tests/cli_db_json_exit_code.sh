@@ -147,3 +147,17 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 }
 EOF
 diff "$dir/fk.expected" "$dir/fk.txt"
+
+# A statement's warning is printed once, in either mode: the header generates every statement over
+# again, and its warnings are the only ones printed with the header.
+"$sqlite3" "$dir/warn.db" 'CREATE TABLE t (id INTEGER, v TEXT, PRIMARY KEY(id DESC));'
+
+cat > "$dir/warn_err.expected" <<'EOF2'
+warning: DESC on column 'id' of a table-level PRIMARY KEY is not supported in sqlite_orm — ignored in codegen
+EOF2
+
+"$cli" --db "$dir/warn.db" > "$dir/warn.txt" 2> "$dir/warn_err.txt"
+diff "$dir/warn_err.expected" "$dir/warn_err.txt"
+
+"$cli" --db "$dir/warn.db" --json > "$dir/warn.json" 2> "$dir/warn_json_err.txt"
+diff "$dir/warn_err.expected" "$dir/warn_json_err.txt"

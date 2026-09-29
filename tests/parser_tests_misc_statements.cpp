@@ -460,7 +460,7 @@ TEST_CASE("parser: the PRAGMA values SQLite refuses as a syntax error") {
         {"PRAGMA synchronous = not 1;", "unexpected token: not", 22},
         {"PRAGMA synchronous = ~1;", "unexpected token: ~", 22},
     };
-    for (const Case& testCase : cases) {
+    for (const Case& testCase: cases) {
         INFO(testCase.sql);
         const auto parseResult = parse(testCase.sql);
         REQUIRE(parseResult.astNodePointer == nullptr);

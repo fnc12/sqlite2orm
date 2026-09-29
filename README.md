@@ -178,11 +178,13 @@ installed automatically — enable it per clone with:
 That sets `core.hooksPath` to `.githooks`; `git config --unset core.hooksPath` turns it off
 again. Set `CLANG_FORMAT` to point the hook at a specific binary.
 
-The whole tree is checked the same way by the `sqlite2orm_clang_format` test, which is
-registered only when clang-format 19 is on `PATH`:
+The whole tree is checked the same way by the `sqlite2orm_tests_clang_format` test, which is
+registered only when clang-format 19 is found. Where it is not installed, configure with
+`-DSQLITE2ORM_FETCH_CLANG_FORMAT=ON` to have the pinned release downloaded into the build tree;
+that is the default wherever the `CI` environment variable is set, so CI always checks formatting.
 
 ```bash
-ctest --test-dir build -R "sqlite2orm_clang_format|sqlite2orm_git_hooks"
+ctest --test-dir build -R "sqlite2orm_tests_clang_format|sqlite2orm_tests_git_hooks"
 ```
 
 ## Architecture

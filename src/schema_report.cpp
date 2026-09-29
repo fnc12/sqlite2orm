@@ -22,13 +22,15 @@ namespace sqlite2orm {
         const CodeGenResult header = generateSqliteSchemaHeader(schema, policy, coverage);
         if (jsonOnly) {
             out << sqliteSchemaResultToJson(schema, policyTargetCppStandard(policy), coverage) << "\n";
-        }
-        for (const SchemaStatementResult& statement: schema.statements) {
-            for (const CodegenWarning& warning: statement.pipeline.codegen.warnings) {
-                err << "warning: " << warning.message << "\n";
+            for (const SchemaStatementResult& statement: schema.statements) {
+                for (const CodegenWarning& warning: statement.pipeline.codegen.warnings) {
+                    err << "warning: " << warning.message << "\n";
+                }
             }
-        }
-        if (!jsonOnly) {
+        } else {
+            // The header generates every statement over again, so its warnings are the statements'
+            // own warnings, reported once each, and only for the statements it actually holds: one
+            // it leaves out takes its warnings with it rather than warning about code never printed.
             for (const CodegenWarning& warning: header.warnings) {
                 err << "warning: " << warning.message << "\n";
             }

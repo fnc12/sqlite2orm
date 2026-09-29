@@ -256,6 +256,11 @@ if(SQLITE2ORM_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmPinnedRevision.cmake"
                     "${CMAKE_COMMAND}")
         add_test(
+            NAME sqlite2orm_tests_clang_format_fetch
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_clang_format_test.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmClangFormat.cmake"
+                    "${CMAKE_COMMAND}")
+        add_test(
             NAME sqlite2orm_tests_headers_revision_note
             COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_headers_revision_note_test.sh"
                     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SqliteOrmHeadersRevisionNote.cmake"
@@ -308,31 +313,21 @@ if(SQLITE2ORM_BUILD_TESTS)
         endif()
     endif()
 
-    # The formatting tests need clang-format 19 exactly: other versions format this tree
-    # differently, so an older one in PATH would only produce noise.
+    # The formatting tests keep the `sqlite2orm_tests` prefix for the reason the corpus does: CI
+    # selects by it, and a name outside it is never run there.
     if(UNIX)
-        find_program(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE NAMES clang-format-19 clang-format)
-        if(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE)
-            execute_process(
-                COMMAND "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" --version
-                OUTPUT_VARIABLE sqlite2orm_clang_format_version
-                ERROR_QUIET)
-            if(NOT sqlite2orm_clang_format_version MATCHES "clang-format version 19\\.")
-                message(STATUS "[sqlite2orm] clang-format 19 not found, skipping the formatting tests.")
-                set(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE "")
-            endif()
-        endif()
+        include("${CMAKE_CURRENT_LIST_DIR}/cmake/SqliteOrmClangFormat.cmake")
         if(SQLITE2ORM_CLANG_FORMAT_EXECUTABLE)
             add_test(
-                NAME sqlite2orm_clang_format
+                NAME sqlite2orm_tests_clang_format
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/clang_format_check.sh"
                         "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
             add_test(
-                NAME sqlite2orm_clang_format_report
+                NAME sqlite2orm_tests_clang_format_report
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/clang_format_report_test.sh"
                         "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
             add_test(
-                NAME sqlite2orm_git_hooks
+                NAME sqlite2orm_tests_git_hooks
                 COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/git_hooks_test.sh"
                         "${SQLITE2ORM_CLANG_FORMAT_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}")
         endif()

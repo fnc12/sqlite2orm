@@ -85,9 +85,6 @@ if "$sqlite3" "$dir/fts.db" 'CREATE VIRTUAL TABLE ft USING fts5(a); CREATE VIEW 
     "$cli" --db "$dir/fts.db" --strict > /dev/null 2> "$dir/fts_err.txt" || status=$?
     test "$status" -eq 1
     cat > "$dir/fts_err.expected" <<'EOT'
-warning: sqlite_orm serializes virtual tables as CREATE VIRTUAL TABLE IF NOT EXISTS; SQL without IF NOT EXISTS differs from serialized output
-warning: view vv: type of column `a` could not be inferred; defaulting to int
-warning: CREATE VIEW vv: sqlite_orm views use C++26 reflection (make_view + [[= "…"_orm_name]]); this code requires C++26 and will not compile under the selected C++ standard
 warning: CREATE TABLE `ft_config` is an internal FTS5 table of virtual table `ft` and is not merged into make_storage()
 warning: CREATE TABLE `ft_content` is an internal FTS5 table of virtual table `ft` and is not merged into make_storage()
 warning: CREATE TABLE `ft_data` is an internal FTS5 table of virtual table `ft` and is not merged into make_storage()

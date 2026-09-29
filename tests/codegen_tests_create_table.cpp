@@ -3067,6 +3067,51 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is not valid UTF-8 at all"
                            "        make_column(\"\\200\\200\", &T::x80x80)));");
 }
 
+// Each of these is a lead byte followed by what could pass for its continuation, and none of them is
+// a character: `C0 AF` and `E0 80 80` are overlong spellings of `/` and of U+0000, `ED A0 80` is
+// the surrogate half U+D800, `F5 80 80 80` would be U+140000, past the last code point, and
+// `F0 9F 99` stops one byte short of `🙂`. SQLite takes every one of them as a column name, so
+// each is spelled byte by byte — and all of its bytes, so that two names differing only after the
+// lead byte do not end up as one member.
+TEST_CASE("codegen: CREATE TABLE - column names that only look like UTF-8 are spelled byte by byte") {
+    const std::string sql = "CREATE TABLE t (\xC0\xAF INTEGER, \xE0\x80\x80 INTEGER, \xED\xA0\x80 INTEGER, "
+                            "\xF5\x80\x80\x80 INTEGER, \xF0\x9F\x99 INTEGER)";
+    const auto result = generateFull(sql);
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> xC0xAF;\n"
+                           "    std::optional<int64_t> xE0x80x80;\n"
+                           "    std::optional<int64_t> xEDxA0x80;\n"
+                           "    std::optional<int64_t> xF5x80x80x80;\n"
+                           "    std::optional<int64_t> xF0x9Fx99;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"\\300\\257\", &T::xC0xAF),\n"
+                           "        make_column(\"\\340\\200\\200\", &T::xE0x80x80),\n"
+                           "        make_column(\"\\355\\240\\200\", &T::xEDxA0x80),\n"
+                           "        make_column(\"\\365\\200\\200\\200\", &T::xF5x80x80x80),\n"
+                           "        make_column(\"\\360\\237\\231\", &T::xF0x9Fx99)));");
+}
+
+// SQLite takes a quoted name that starts with a digit, and C++ takes no identifier that does, so
+// the member is led by a `_`.
+TEST_CASE("codegen: CREATE TABLE - a column name that starts with a digit") {
+    const auto result = generateFull("CREATE TABLE t (\"1t\" INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> _1t;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"1t\", &T::_1t)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"table t: column `1t` is not a C++ identifier; the member holding it is named `_1t`",
+                 SourceLocation{1, 17},
+                 4}});
+}
+
 // Two names C++ has one spelling for is a member declared twice, which no amount of rewriting can
 // avoid — it happens to plain ASCII names as readily as to any other — so it is reported, anchored
 // at the name that lands on the member second, quotes and all.

@@ -17,6 +17,8 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace sqlite2orm {
@@ -831,15 +833,16 @@ namespace sqlite2orm {
         "SQLITE_ORM_WITH_VIEW); on older compilers this code does not compile.";
 
     void appendUniqueWarnings(std::vector<CodegenWarning>& destination, const std::vector<CodegenWarning>& source) {
+        // The views point into the messages themselves, so `destination` must not reallocate while
+        // they are held: reserving for the whole of `source` up front keeps every element in place.
+        destination.reserve(destination.size() + source.size());
+        std::unordered_set<std::string_view> seenMessages;
+        seenMessages.reserve(destination.size() + source.size());
+        for (const auto& existing: destination) {
+            seenMessages.insert(existing.message);
+        }
         for (const auto& warning: source) {
-            bool dupe = false;
-            for (const auto& existing: destination) {
-                if (existing.message == warning.message) {
-                    dupe = true;
-                    break;
-                }
-            }
-            if (!dupe) {
+            if (seenMessages.insert(warning.message).second) {
                 destination.push_back(warning);
             }
         }

@@ -916,6 +916,28 @@ TEST_CASE("parser: expression at the depth limit is accepted") {
     REQUIRE(parseResult);
 }
 
+// The limit is on how deep one expression nests, not on how much a statement holds: SQLite takes
+// both of these, whose expressions are each well under the limit and together far past it.
+TEST_CASE("parser: sibling result columns do not add up their depth") {
+    std::string sql = "SELECT " + additionChain(900);
+    for (size_t i = 1; i < 30; ++i) {
+        sql += ", " + additionChain(900);
+    }
+    auto parseResult = parse(sql + " FROM t");
+    REQUIRE(parseResult);
+    REQUIRE(parseResult.errors.empty());
+}
+
+TEST_CASE("parser: sibling function arguments do not add up their depth") {
+    std::string sql = "SELECT max(" + additionChain(900);
+    for (size_t i = 1; i < 30; ++i) {
+        sql += ", " + additionChain(900);
+    }
+    auto parseResult = parse(sql + ")");
+    REQUIRE(parseResult);
+    REQUIRE(parseResult.errors.empty());
+}
+
 TEST_CASE("parser: parentheses count towards the depth limit") {
     // SQLite drops parentheses before it measures, so it takes these; they cost a level here
     // because the parser recurses once per pair, and recursing that deep is what has to stop.

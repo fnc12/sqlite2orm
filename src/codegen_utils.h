@@ -217,6 +217,12 @@ namespace sqlite2orm {
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 
+    /**
+     *  Appends the warnings of `source` whose message `destination` has none of yet, `source`
+     *  deduplicated against itself too. Only the message is compared: of two warnings saying the
+     *  same thing at different places the first one stays, anchor and all. Linear in the sizes of
+     *  both, so a caller merging many results should gather them and merge once.
+     */
     void appendUniqueWarnings(std::vector<CodegenWarning>& destination, const std::vector<CodegenWarning>& source);
     /**
      *  Appends the comments of `source` that `destination` has none of yet, compared by message

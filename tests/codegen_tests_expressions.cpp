@@ -1778,6 +1778,73 @@ TEST_CASE("codegen: the pair an IN warning names is found without a pass over ev
     REQUIRE(withConflictTook < 5 * withoutConflictTook + std::chrono::milliseconds(500));
 }
 
+// The warnings of an IN list are deduplicated by message alone: two values saying the same thing
+// at different places report once, anchored at the first of them, and the ones left keep the
+// order they were first met in — the operand ahead of the values, the values from left to right.
+TEST_CASE("codegen: IN list warnings dedupe by message and keep the first of each") {
+    const auto bindWarning = [](const std::string& parameter) {
+        return CodegenWarning{"bind parameter " + parameter + " -> C++ variable 'bindParam" + parameter.substr(1) +
+                              "'; for prepared statements use storage.prepare() + get<N>(stmt)"};
+    };
+    auto result = generateFull("a IN (b BETWEEN 1 AND 'x', ?1, c BETWEEN 1 AND 'x', ?1)");
+    REQUIRE(result.code ==
+            "in(&User::a, {between(&User::b, 1, \"x\"), bindParam1, between(&User::c, 1, \"x\"), bindParam1})");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"sqlite_orm's between(A, T, T) deduces one C++ type from both bounds of a BETWEEN, and "
+                               "an `int` next to a `const char*` is not one type, so the generated code does not "
+                               "compile",
+                               SourceLocation{1, 7},
+                               19},
+                bindWarning("?1")});
+    result = generateFull("?1 IN (?2, ?1, a)");
+    REQUIRE(result.code == "in(bindParam1, {bindParam2, bindParam1, &User::a})");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{bindWarning("?1"), bindWarning("?2")});
+}
+
+// Every anonymous bind parameter warns with a message of its own, so a list of them is as many
+// different warnings as it has values, and merging them one value at a time compared each against
+// all the ones before it: 32766 of them, the most host parameters SQLite binds in one statement,
+// took 0.9 s in Release and 4.8 s in Debug, 100000 took 54 s in Debug. The list here is past what
+// SQLite binds, which is not a limit the generator checks, so that the merge value by value is
+// seconds on any build. The bound is measured against the same list with one parameter named in
+// every place — the same parse, the same values and as many warnings made, only all but one of
+// them duplicates — so it is the merge being linear that is pinned here rather than the speed of
+// the machine running it.
+TEST_CASE("codegen: IN list warnings merge in time linear in their number") {
+    const size_t bindParameterCount = 100000;
+    std::string anonymousValues;
+    std::string numberedValues;
+    std::string expectedAnonymousValues;
+    std::string expectedNumberedValues;
+    for (size_t parameter = 1; parameter <= bindParameterCount; ++parameter) {
+        anonymousValues += "?, ";
+        numberedValues += "?1, ";
+        expectedAnonymousValues += "bindParam" + std::to_string(parameter) + ", ";
+        expectedNumberedValues += "bindParam1, ";
+    }
+
+    const auto generateTook = [](const std::string& sql) {
+        const auto startedAt = std::chrono::steady_clock::now();
+        CodeGenResult result = generateFull(sql);
+        return std::pair{std::chrono::steady_clock::now() - startedAt, std::move(result)};
+    };
+    const auto [numberedTook, numberedResult] = generateTook("a IN (" + numberedValues + "1)");
+    const auto [anonymousTook, anonymousResult] = generateTook("a IN (" + anonymousValues + "1)");
+
+    REQUIRE(numberedResult.code == "in(&User::a, {" + expectedNumberedValues + "1})");
+    REQUIRE(numberedResult.warnings.size() == 1);
+    REQUIRE(anonymousResult.code == "in(&User::a, {" + expectedAnonymousValues + "1})");
+    REQUIRE(anonymousResult.warnings.size() == bindParameterCount);
+    REQUIRE(anonymousResult.warnings.back() ==
+            CodegenWarning{"bind parameter ? -> C++ variable 'bindParam100000'; for prepared statements use "
+                           "storage.prepare() + get<N>(stmt)"});
+    // Fivefold of the run whose warnings are all one, against the tenfold and more the merge value
+    // by value cost; the half second on top is there so that a machine that stalls in the middle
+    // of a run this short is not what reports the merge back.
+    REQUIRE(anonymousTook < 5 * numberedTook + std::chrono::milliseconds(500));
+}
+
 // An empty list has no value to deduce `E` from, so `in(&User::a, {})` does not compile at all:
 // `no matching function for call to 'in(int User::*, <brace-enclosed initializer list>)'`. SQLite
 // takes `a IN ()` and answers 0 for it, so the list is spelled as an empty vector, which names a

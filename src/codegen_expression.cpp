@@ -1394,19 +1394,26 @@ namespace sqlite2orm {
             const OneDeducedTypeForm valuesForm = inValuesForm(valueNodes);
 
             std::string valuesList;
+            // Merged into `warnings` once after the loop rather than value by value: every bind
+            // parameter warns with a message of its own, and a merge per value would compare each
+            // of them against all the ones before it.
+            std::vector<CodegenWarning> valueWarnings;
             for (size_t valueIndex = 0; valueIndex < inNode->values.size(); ++valueIndex) {
                 const AstNode& value = *inNode->values.at(valueIndex);
                 auto valueResult = this->coordinator.generateNode(value);
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(valueResult.decisionPoints.begin()),
                                       std::make_move_iterator(valueResult.decisionPoints.end()));
-                appendUniqueWarnings(warnings, valueResult.warnings);
+                valueWarnings.insert(valueWarnings.end(),
+                                     std::make_move_iterator(valueResult.warnings.begin()),
+                                     std::make_move_iterator(valueResult.warnings.end()));
                 if (valueIndex > 0)
                     valuesList += ", ";
                 valuesList += valuesForm == OneDeducedTypeForm::widenedToInt64
                                   ? widenToInt64(value, std::move(valueResult.code))
                                   : valueResult.code;
             }
+            appendUniqueWarnings(warnings, valueWarnings);
             switch (valuesForm) {
                 case OneDeducedTypeForm::asWritten:
                     break;

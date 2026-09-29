@@ -447,6 +447,35 @@ namespace sqlite2orm {
             return explicitFrom;
         }
 
+        /**
+         *  The tables the FROM of `selectNode` names, in the form `ColumnNameScope::sourceTables`
+         *  holds them: a CTE, a derived table and a table-valued function name no schema table, so
+         *  each stands as an empty name there.
+         */
+        std::vector<std::string> fromSourceTables(const SelectNode& selectNode, const CodeGeneratorContext& context) {
+            std::vector<std::string> sourceTables;
+            for (const auto& fromItem: selectNode.fromClause) {
+                const auto& fromTable = fromItem.table;
+                const bool opaque =
+                    fromTable.derivedSelect || !fromTable.tableFunctionArgs.empty() ||
+                    context.activeCteTypedefByTableKey.find(normalizeSqlIdentifier(fromTable.tableName)) !=
+                        context.activeCteTypedefByTableKey.end();
+                sourceTables.push_back(opaque ? std::string() : fromTable.tableName);
+            }
+            return sourceTables;
+        }
+
+        /** The result-column aliases of `selectNode`, as `selectResultColumnAliases` holds them. */
+        std::map<std::string, const AstNode*> resultColumnAliases(const SelectNode& selectNode) {
+            std::map<std::string, const AstNode*> aliases;
+            for (const auto& column: selectNode.columns) {
+                if (!column.alias.empty() && column.expression) {
+                    aliases.emplace(toLowerAscii(stripColumnAliasQuotes(column.alias)), column.expression.get());
+                }
+            }
+            return aliases;
+        }
+
     }  // namespace
 
     SelectCodeGenerator::SelectCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -487,6 +516,21 @@ namespace sqlite2orm {
         const bool forceOuterAsterisk = this->context.withOuterSelect;
         this->context.withOuterSelect = false;
         EmittedTableTypeScope emittedTableTypes{&this->context};
+        // The FROM of this select is what a subquery written in it resolves a correlated name
+        // against; a statement generated after it reads no FROM of it. The aliases of this select
+        // are `activeSelectColumnAliases`, and no subquery around it lends it its own.
+        struct SelectSourceTablesScope {
+            CodeGeneratorContext* ctx;
+            std::optional<std::vector<std::string>> saved;
+            std::map<std::string, const AstNode*> savedResultColumnAliases;
+            SelectSourceTablesScope(CodeGeneratorContext* context, std::vector<std::string> sourceTables) :
+                ctx(context), saved(std::exchange(context->selectSourceTables, std::move(sourceTables))),
+                savedResultColumnAliases(std::exchange(context->selectResultColumnAliases, {})) {}
+            ~SelectSourceTablesScope() {
+                ctx->selectSourceTables = std::move(saved);
+                ctx->selectResultColumnAliases = std::move(savedResultColumnAliases);
+            }
+        } selectSourceTables{&this->context, fromSourceTables(selectNode, this->context)};
         for (const auto& fromItem: selectNode.fromClause) {
             if (fromItem.table.derivedSelect) {
                 CodeGenResult carried;
@@ -1192,6 +1236,8 @@ namespace sqlite2orm {
             bool savedCanNameInferredFromSources;
             std::vector<std::string> savedPlainRowSourceTypes;
             bool savedCountedAliasedSource;
+            std::optional<std::vector<std::string>> savedSelectSourceTables;
+            std::map<std::string, const AstNode*> savedResultColumnAliases;
 
             SubselectAliasRestore(CodeGeneratorContext* context) :
                 ctx(context), savedAliases(context->fromTableAliasToStructName),
@@ -1209,7 +1255,10 @@ namespace sqlite2orm {
                 savedImplicitSourceAlias(std::exchange(context->implicitSourceAlias, std::nullopt)),
                 savedCanNameInferredFromSources(context->canNameInferredFromSources),
                 savedPlainRowSourceTypes(context->sourcesWrittenWithoutAlias),
-                savedCountedAliasedSource(context->countedAliasedSource) {}
+                savedCountedAliasedSource(context->countedAliasedSource),
+                savedSelectSourceTables(context->selectSourceTables),
+                // The result list of the subquery sees no alias, its own or one of the query around it.
+                savedResultColumnAliases(std::exchange(context->selectResultColumnAliases, {})) {}
 
             ~SubselectAliasRestore() {
                 ctx->fromTableAliasToStructName = std::move(savedAliases);
@@ -1224,6 +1273,8 @@ namespace sqlite2orm {
                 ctx->canNameInferredFromSources = savedCanNameInferredFromSources;
                 ctx->sourcesWrittenWithoutAlias = std::move(savedPlainRowSourceTypes);
                 ctx->countedAliasedSource = savedCountedAliasedSource;
+                ctx->selectSourceTables = std::move(savedSelectSourceTables);
+                ctx->selectResultColumnAliases = std::move(savedResultColumnAliases);
             }
         } restore{&this->context};
         EmittedTableTypeScope emittedTableTypes{&this->context};
@@ -1251,6 +1302,7 @@ namespace sqlite2orm {
             }
         }
 
+        this->context.selectSourceTables = fromSourceTables(selectNode, this->context);
         this->context.fromTableAliasToStructName.clear();
         this->context.activeTableAliases.clear();
         this->context.implicitSourceAlias.reset();
@@ -1486,6 +1538,8 @@ namespace sqlite2orm {
             }
         }
         this->context.pendingAnchorCteBindings.clear();
+        // Every clause after the result list resolves a name against its aliases first.
+        this->context.selectResultColumnAliases = resultColumnAliases(selectNode);
 
         auto resolveJoinType = [&](const FromTableClause& ft) -> std::string {
             std::string key = ft.alias ? *ft.alias : ft.tableName;
@@ -1621,6 +1675,18 @@ namespace sqlite2orm {
             }
         }
 
+        // SQLite resolves the ORDER BY, the LIMIT and the OFFSET of a subquery against its own FROM
+        // and result aliases alone ("no such column: t.Id" for `ORDER BY t.Id` over an enclosing
+        // `t`), so no name there is a correlated reference, nor one of a subquery written there.
+        struct EnclosingQueriesHidden {
+            CodeGeneratorContext* ctx;
+            std::vector<ColumnNameScope> saved;
+            explicit EnclosingQueriesHidden(CodeGeneratorContext* context) :
+                ctx(context), saved(std::exchange(context->enclosingColumnNameScopes, {})) {}
+            ~EnclosingQueriesHidden() {
+                ctx->enclosingColumnNameScopes = std::move(saved);
+            }
+        } enclosingQueriesHidden{&this->context};
         if (!selectNode.orderBy.empty()) {
             this->context.recordFormWithoutDefaultConstructor("ORDER BY");
             auto formatSubOrderTerm = [&](const OrderByTerm& term) -> std::string {

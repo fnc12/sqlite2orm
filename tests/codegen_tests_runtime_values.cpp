@@ -324,6 +324,99 @@ namespace {
     }
 
     /**
+     *  The schema `correlatedRowValues` runs statements over: every name `u` declares differs
+     *  from the ones `t` does, so a name of a subquery over `u` that `u` does not declare is a
+     *  correlated reference to `t`.
+     */
+    constexpr std::string_view correlatedSchema = "CREATE TABLE t (\"Id\" INTEGER, [Name] TEXT, PRIMARY KEY(ID)); "
+                                                  "CREATE TABLE u (uid INTEGER, \"TId\" INTEGER); ";
+
+    /**
+     *  Builds a program around generated statements over `correlatedSchema`, with `t` holding
+     *  (1, 'orig1'), (2, 'orig2'), (3, 'orig3') and `u` holding (100, 1), (200, 2), (300, 7),
+     *  compiles and links it against sqlite_orm, runs it and returns the rows each statement came
+     *  back with, comma separated, a NULL as `NULL`.
+     */
+    std::vector<std::string> correlatedRowValues(const std::vector<std::string>& statements) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <iostream>\n"
+                   "#include <optional>\n"
+                   "\n"
+                   "struct T {\n"
+                   "    std::optional<int64_t> Id;\n"
+                   "    std::optional<std::string> Name;\n"
+                   "};\n"
+                   "\n"
+                   "struct U {\n"
+                   "    std::optional<int64_t> uid;\n"
+                   "    std::optional<int64_t> TId;\n"
+                   "};\n"
+                   "\n"
+                   "template<class V>\n"
+                   "void printValue(const std::optional<V>& value) {\n"
+                   "    if(value) {\n"
+                   "        std::cout << *value;\n"
+                   "    } else {\n"
+                   "        std::cout << \"NULL\";\n"
+                   "    }\n"
+                   "}\n"
+                   "\n"
+                   "int main() {\n"
+                   "    using namespace sqlite_orm;\n"
+                   "    auto storage = make_storage(\"\",\n"
+                   "        make_table(\"t\", make_column(\"Id\", &T::Id), make_column(\"Name\", &T::Name), "
+                   "primary_key(&T::Id)),\n"
+                   "        make_table(\"u\", make_column(\"uid\", &U::uid), make_column(\"TId\", &U::TId)));\n"
+                   "    storage.sync_schema();\n"
+                   "    storage.replace(T{1, \"orig1\"});\n"
+                   "    storage.replace(T{2, \"orig2\"});\n"
+                   "    storage.replace(T{3, \"orig3\"});\n"
+                   "    storage.insert(into<U>(), columns(&U::uid, &U::TId), values(std::make_tuple(100, 1), "
+                   "std::make_tuple(200, 2), std::make_tuple(300, 7)));\n";
+        for (const auto& statement: statements) {
+            program << "    {\n        " << statement
+                    << "\n        const char* separator = \"\";\n"
+                       "        for(const auto& row: rows) {\n"
+                       "            std::cout << separator;\n"
+                       "            printValue(row);\n"
+                       "            separator = \",\";\n"
+                       "        }\n"
+                       "        std::cout << '\\n';\n    }\n";
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("correlated.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("correlated");
+        const std::filesystem::path outpath = dir.file("correlated.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> rows;
+        {
+            std::ifstream out(outpath);
+            for (std::string line; std::getline(out, line);) {
+                rows.push_back(line);
+            }
+        }
+        if (exitCode != 0) {
+            WARN("building the generated statements failed (exit " << exitCode
+                                                                   << "); ensure c++, sqlite_orm headers and "
+                                                                      "libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return rows;
+    }
+
+    /**
      *  Builds the generated `make_storage` of a single CREATE TABLE, compiles and links it against
      *  sqlite_orm, runs `sync_schema()` and returns one line per probe value saying whether an
      *  insert of it was accepted, followed by the CHECK clause SQLite stored. The generated storage
@@ -1789,6 +1882,46 @@ TEST_CASE("runtime: an UPDATE through a subquery with no FROM of its own is left
                                "storage.select(&Users::a);"}) == std::vector<std::string>{"10,10,10"});
     REQUIRE(selectedRowValues({"storage.remove_all<Users>(where(c(&Users::a) == select(&Users::a, where(c(&Users::a) > "
                                "1)))); auto rows = storage.select(&Users::a);"}) == std::vector<std::string>{"1,3"});
+}
+
+// A name the subquery's own FROM does not declare is read off the row of the enclosing query. Over
+// `t` holding (1, 'orig1'), (2, 'orig2'), (3, 'orig3') and `u` holding (100, 1), (200, 2), (300, 7),
+// sqlite3 3.51 leaves `UPDATE t SET Name = (SELECT uid FROM u WHERE TId = Id)` with 100,200,NULL,
+// answers `SELECT Name FROM t WHERE EXISTS (SELECT 1 FROM u WHERE TId = Id)` with orig1,orig2 and
+// `SELECT (SELECT uid FROM u WHERE TId = Id) FROM t` with 100,200,NULL. The code generated before
+// named `&U::Id`, which `U` does not declare, and did not compile.
+TEST_CASE("runtime: a correlated name the subquery's FROM does not declare reads the enclosing row") {
+    const std::string schema(correlatedSchema);
+    const std::string update =
+        generateLastOfBatch(schema + "UPDATE t SET Name = (SELECT uid FROM u WHERE TId = Id);").code;
+    const std::string exists =
+        generateLastOfBatch(schema + "SELECT Name FROM t WHERE EXISTS (SELECT 1 FROM u WHERE TId = Id);").code;
+    const std::string scalar = generateLastOfBatch(schema + "SELECT (SELECT uid FROM u WHERE TId = Id) FROM t;").code;
+    REQUIRE(update ==
+            "storage.update_all(set(c(&T::Name) = select(&U::uid, from<U>(), where(c(&U::TId) == &T::Id))));");
+    REQUIRE(exists == "auto rows = storage.select(&T::Name, from<T>(), where(exists(select(1, from<U>(), "
+                      "where(c(&U::TId) == &T::Id)))));");
+    REQUIRE(scalar == "auto rows = storage.select(select(&U::uid, from<U>(), where(c(&U::TId) == &T::Id)), "
+                      "from<T>());");
+    REQUIRE(correlatedRowValues({exists, scalar}) == std::vector<std::string>{"orig1,orig2", "100,200,NULL"});
+    REQUIRE(correlatedRowValues({update + " auto rows = storage.select(&T::Name, order_by(&T::Id));"}) ==
+            std::vector<std::string>{"100,200,NULL"});
+}
+
+// A subquery's own result alias answers for a name its FROM does not declare before the enclosing
+// row does, outside the result list. Over the same rows sqlite3 3.51 answers
+// `SELECT (SELECT uid AS Id FROM u WHERE Id > 150) FROM t` with 200,200,200 and
+// `SELECT (SELECT uid AS Id FROM u ORDER BY Id DESC) FROM t` with 300,300,300. Read as the
+// enclosing `t.Id`, the two compiled and came back as NULL,NULL,NULL and 100,100,100.
+TEST_CASE("runtime: a subquery's own result alias answers for a name before the enclosing row") {
+    const std::string schema(correlatedSchema);
+    const std::string where =
+        generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u WHERE Id > 150) FROM t;").code;
+    const std::string orderBy =
+        generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u ORDER BY Id DESC) FROM t;").code;
+    REQUIRE(where == "auto rows = storage.select(select(&U::uid, where(c(&U::uid) > 150)), from<T>());");
+    REQUIRE(orderBy == "auto rows = storage.select(select(&U::uid, order_by(&U::uid).desc()), from<T>());");
+    REQUIRE(correlatedRowValues({where, orderBy}) == std::vector<std::string>{"200,200,200", "300,300,300"});
 }
 
 // A BLOB among the arguments makes the generated type `std::vector<char>` rather than

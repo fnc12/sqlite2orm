@@ -37,7 +37,7 @@ namespace sqlite2orm {
         return true;
     }
 
-    ProcessSqliteSchemaResult processSqliteSchema(const SqliteSchemaReader& reader) {
+    ProcessSqliteSchemaResult processSqliteSchema(const SqliteSchemaReader& reader, const CodeGenPolicy* policy) {
         std::vector<SqliteMasterRow> rows = reader.masterEntries();
         std::stable_sort(rows.begin(), rows.end(), [](const SqliteMasterRow& leftRow, const SqliteMasterRow& rightRow) {
             const int orderLeft = masterTypeOrder(leftRow.type);
@@ -69,7 +69,7 @@ namespace sqlite2orm {
             one.meta.name = row.name;
             one.meta.tableName = row.tableName;
             one.meta.sql = row.sql;
-            one.pipeline = processSqlWithSourceTables(one.meta.sql, nullptr, sourceTables);
+            one.pipeline = processSqlWithSourceTables(one.meta.sql, policy, sourceTables);
             if (const auto* createTable =
                     dynamic_cast<const CreateTableNode*>(one.pipeline.parseResult.astNodePointer.get())) {
                 sourceTables[normalizeSqlIdentifier(stripIdentifierQuotes(createTable->tableName))] =

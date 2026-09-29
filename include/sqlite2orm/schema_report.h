@@ -25,7 +25,9 @@ namespace sqlite2orm {
     /**
      *  Render `schema` the way the CLI reports it. `jsonOnly` swaps the generated header for the
      *  JSON decision points on `out`; the diagnostics and the exit code are the same either way,
-     *  so a script can tell a failed schema from a good one without reading the JSON.
+     *  so a script can tell a failed schema from a good one without reading the JSON. The JSON names
+     *  `policy`'s target C++ standard (the default one when `policy` is null), which should be the
+     *  policy `schema` was processed with.
      */
     SchemaReport
     reportSqliteSchema(const ProcessSqliteSchemaResult& schema, bool jsonOnly, const CodeGenPolicy* policy = nullptr);

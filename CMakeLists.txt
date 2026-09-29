@@ -69,6 +69,7 @@ add_library(sqlite2orm_lib
     src/schema_header.cpp
     src/json_emit.cpp
     src/schema_report.cpp
+    src/cpp_standard.cpp
 )
 
 target_include_directories(sqlite2orm_lib PUBLIC include "${SQLITE2ORM_NLOHMANN_JSON_DIR}")
@@ -193,6 +194,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp
         tests/schema_report_tests.cpp
+        tests/cpp_standard_tests.cpp
         tests/readme_tests.cpp
         tests/coverage_doc_tests.cpp
         tests/source_file_text.cpp
@@ -290,6 +292,10 @@ if(SQLITE2ORM_BUILD_TESTS)
                     NAME sqlite2orm_cli_db_json_exit_code
                     COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_db_json_exit_code.sh"
                             "$<TARGET_FILE:sqlite2orm_cli>" "${SQLITE2ORM_SQLITE3_EXECUTABLE}")
+                add_test(
+                    NAME sqlite2orm_cli_std
+                    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_std.sh" "$<TARGET_FILE:sqlite2orm_cli>"
+                            "${SQLITE2ORM_SQLITE3_EXECUTABLE}")
             endif()
             add_test(
                 NAME sqlite2orm_cli_stdin

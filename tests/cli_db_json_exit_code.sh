@@ -26,7 +26,7 @@ EOF
 diff "$dir/err.expected" "$dir/err.txt"
 
 cat > "$dir/out.expected" <<'EOF'
-{"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}]}
+{"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}],"targetCppStandard":20}
 EOF
 diff "$dir/out.expected" "$dir/out.json"
 
@@ -105,7 +105,7 @@ diff "$dir/view.expected" "$dir/view.txt"
 "$cli" --db "$dir/ok.db" --json > "$dir/ok.json" 2> "$dir/ok_err.txt"
 
 cat > "$dir/ok.expected" <<'EOF'
-{"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}]}
+{"statements":[{"comments":[],"decisionPoints":[],"name":"t","ok":true,"tableName":"t","type":"table"}],"targetCppStandard":20}
 EOF
 diff "$dir/ok.expected" "$dir/ok.json"
 test ! -s "$dir/ok_err.txt"

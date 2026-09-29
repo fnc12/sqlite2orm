@@ -3027,6 +3027,24 @@ TEST_CASE("codegen: a compound SELECT widens the result column in every arm") {
     REQUIRE(generate("SELECT CAST(a AS TEXT) UNION SELECT CAST(b AS TEXT);") ==
             "auto rows = storage.select(union_(select(as_optional(cast<std::string>(&User::a))), "
             "select(as_optional(cast<std::string>(&User::b)))));");
+    // A JSON arrow is generated as `json_extract<std::string>`, so it shares its type with a `||`;
+    // BETWEEN, IN, LIKE and GLOB are conditions typed `bool`, and so is a NOT. Over a NULL row
+    // sqlite3 3.51 answers NULL for every one of these compounds.
+    REQUIRE(generate("SELECT b -> '$.k' UNION SELECT b || 'x';") ==
+            "auto rows = storage.select(union_(select(as_optional(json_extract<std::string>(&User::b, \"$.k\"))), "
+            "select(as_optional(c(&User::b) || \"x\"))));");
+    REQUIRE(generate("SELECT b ->> '$.k' UNION SELECT b || 'x';") ==
+            "auto rows = storage.select(union_(select(as_optional(json_extract<std::string>(&User::b, \"$.k\"))), "
+            "select(as_optional(c(&User::b) || \"x\"))));");
+    REQUIRE(generate("SELECT a BETWEEN 1 AND 5 UNION SELECT b LIKE 'x%';") ==
+            "auto rows = storage.select(union_(select(as_optional(between(&User::a, 1, 5))), "
+            "select(as_optional(like(&User::b, \"x%\")))));");
+    REQUIRE(generate("SELECT a IN (1, 2) UNION SELECT b GLOB 'x*';") ==
+            "auto rows = storage.select(union_(select(as_optional(in(&User::a, {1, 2}))), "
+            "select(as_optional(glob(&User::b, \"x*\")))));");
+    REQUIRE(generate("SELECT NOT (a > 0) UNION SELECT a < 0;") ==
+            "auto rows = storage.select(union_(select(as_optional(not (c(&User::a) > 0))), "
+            "select(as_optional(c(&User::a) < 0))));");
     // The outer statement of a `WITH` is read back by the caller too, and is widened there.
     REQUIRE(generate("WITH q AS (SELECT 1 AS a) SELECT a + 1 FROM q UNION SELECT a * 2 FROM q;") ==
             "using namespace sqlite_orm::literals;\n"

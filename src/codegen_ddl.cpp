@@ -1980,8 +1980,9 @@ namespace sqlite2orm {
         // already collected for this key is left at the one it was collected at.
         const auto warnAboutKeySpelling =
             [](std::vector<std::string>& keyWarnings, const KeyColumn& keyColumn, std::string_view keyKind) {
-                const std::string where = std::string(" on column '") + keyColumn.name + "' of a table-level " +
-                                          std::string(keyKind) + " is not supported in sqlite_orm — ignored in codegen";
+                const std::string where = std::string(" on column '") + stripIdentifierQuotes(keyColumn.name) +
+                                          "' of a table-level " + std::string(keyKind) +
+                                          " is not supported in sqlite_orm — ignored in codegen";
                 const auto tellOnce = [&keyWarnings](std::string message) {
                     if (std::find(keyWarnings.begin(), keyWarnings.end(), message) == keyWarnings.end()) {
                         keyWarnings.push_back(std::move(message));

@@ -2795,7 +2795,8 @@ namespace sqlite2orm {
          *  argument is NULL. Checked against libsqlite3 3.45.1 over a NULL argument: `hex(NULL)` is
          *  the empty text, `quote(NULL)` the text 'NULL', `typeof(NULL)` 'null', `char(NULL)` the
          *  empty text, `json_object('k', NULL)` '{"k":null}', `json_quote(NULL)` 'null',
-         *  `randomblob(NULL)` and `zeroblob(NULL)` a blob; the ones taking no argument have nothing
+         *  `randomblob(NULL)` and `zeroblob(NULL)` a blob, `soundex(NULL)` the text '?000' (in a
+         *  build with SQLITE_SOUNDEX, as Debian's is); the ones taking no argument have nothing
          *  to propagate. The aggregates here answer a value over an empty rowset too: `count` 0,
          *  `total` 0.0, `json_group_array` '[]' and `json_group_object` '{}'. The names 3.45.1 has
          *  no function for were checked against sqlite3 3.51.0: `concat(NULL)` is the empty text
@@ -2817,6 +2818,7 @@ namespace sqlite2orm {
                                      "quote",
                                      "random",
                                      "randomblob",
+                                     "soundex",
                                      "sqlite_source_id",
                                      "sqlite_version",
                                      "total",
@@ -2869,7 +2871,6 @@ namespace sqlite2orm {
                                      "replace",
                                      "round",
                                      "rtrim",
-                                     "soundex",
                                      "sqlite_compileoption_used",
                                      "trim",
                                      "unistr",

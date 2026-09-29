@@ -2454,80 +2454,6 @@ namespace sqlite2orm {
         };
 
         /**
-         *  The width a value read back as a number is read back at, ordered by what carries what.
-         *  A `bool` is carried by an `int`, and an `int` by both an `int64_t` and a `double` —
-         *  every 32-bit integer is exact in one. `int64_t` and `double` are SIBLINGS and carry
-         *  nothing of each other: a double loses every integer past 2^53 (9007199254740993 read
-         *  through one comes back as 9007199254740992) and an int64_t loses the fractional part
-         *  of a REAL. The pair reduces to `noNumber`, the same answer the widening of a CASE
-         *  gives the same pair, and a call whose arguments reduce to that is read back as text
-         *  instead — which renders both an INTEGER and a REAL the way SQLite prints them.
-         */
-        enum class NumberWidth { boolean, integer32, integer64, real, noNumber };
-
-        /** The width a generated C++ type is read back at, and `noNumber` for every other type. */
-        NumberWidth numberWidthOf(std::string_view cppType) {
-            if (cppType == "bool") {
-                return NumberWidth::boolean;
-            }
-            if (cppType == "int") {
-                return NumberWidth::integer32;
-            }
-            if (cppType == "int64_t") {
-                return NumberWidth::integer64;
-            }
-            if (cppType == "double") {
-                return NumberWidth::real;
-            }
-            return NumberWidth::noNumber;
-        }
-
-        /** How such a width is spelled, and an empty view for `noNumber`, which spells no number. */
-        std::string_view numberWidthType(NumberWidth width) {
-            switch (width) {
-                case NumberWidth::boolean:
-                    return "bool";
-                case NumberWidth::integer32:
-                    return "int";
-                case NumberWidth::integer64:
-                    return "int64_t";
-                case NumberWidth::real:
-                    return "double";
-                case NumberWidth::noNumber:
-                    return {};
-            }
-            return {};
-        }
-
-        /**
-         *  The width two of them reduce to. Total, commutative and associative — `noNumber` takes
-         *  everything in — so folding it over a call's arguments answers the same whatever order
-         *  they are written in and whatever types they have.
-         */
-        NumberWidth widerNumberWidth(NumberWidth first, NumberWidth second) {
-            if (first == second) {
-                return first;
-            }
-            if (first == NumberWidth::noNumber || second == NumberWidth::noNumber) {
-                return NumberWidth::noNumber;
-            }
-            if (first == NumberWidth::boolean) {
-                return second;
-            }
-            if (second == NumberWidth::boolean) {
-                return first;
-            }
-            if (first == NumberWidth::integer32) {
-                return second;
-            }
-            if (second == NumberWidth::integer32) {
-                return first;
-            }
-            // An `int64_t` next to a `double`, the one pair with nothing above it.
-            return NumberWidth::noNumber;
-        }
-
-        /**
          *  The kind of a C++ type a generated struct declares a field as. The spellings answered
          *  for are the closed set `sqliteTypeToCpp` and `CodeGeneratorContext::inferTypeFromNode`
          *  produce; any other one is a type this file does not know and says nothing about.
@@ -2733,17 +2659,29 @@ namespace sqlite2orm {
             // answers one of those numbers, and that is what the row holds and what the code reads
             // it back as. Arguments that are all NULL fold to nothing, and they have a common type
             // anyway.
-            std::optional<NumberWidth> narrowed;
+            // The widening is the one a CASE folds its branches with: an `int64_t` next to a
+            // `double` has no number over it, and neither does a text or a BLOB.
+            std::string widest;
             for (const ArgumentCppType& type: types) {
-                if (type.kind == ArgumentTypeKind::null) {
-                    // A NULL is no value of its own: SQLite answers with one of the others.
-                    continue;
+                std::string_view valueType;
+                switch (type.kind) {
+                    case ArgumentTypeKind::null:
+                        // A NULL is no value of its own: SQLite answers with one of the others.
+                        continue;
+                    case ArgumentTypeKind::arithmetic:
+                        valueType = type.arithmeticType;
+                        break;
+                    case ArgumentTypeKind::text:
+                        valueType = "std::string";
+                        break;
+                    case ArgumentTypeKind::blob:
+                        valueType = "std::vector<char>";
+                        break;
                 }
-                const NumberWidth width = numberWidthOf(type.arithmeticType);
-                narrowed = narrowed ? widerNumberWidth(*narrowed, width) : width;
+                widest = widest.empty() ? std::string(valueType) : widerInferredCppType(widest, valueType);
             }
-            if (narrowed) {
-                clash->narrowedResultType = std::string(numberWidthType(*narrowed));
+            if (widest == "bool" || widest == "int" || widest == "int64_t" || widest == "double") {
+                clash->narrowedResultType = std::move(widest);
             }
             return clash;
         }

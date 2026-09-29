@@ -127,10 +127,11 @@ namespace sqlite2orm {
      *  number — a `double` drops every integer past 2^53, an `int64_t` the fractional part of a
      *  REAL — so the type over that pair is the `std::string` that keeps both. SQLite types a
      *  value rather than an expression, so a CASE answers with whichever branch matched and the
-     *  single C++ type it is read through has to hold all of them. The `std::vector<char>` of a
-     *  BLOB column sits over `std::string`: it reads every storage class whole, bytes and all,
-     *  where an `std::string` stops at a NUL byte. A type the order does not name
-     *  never reaches here; `left` comes back unchanged so that a fold over one stays total.
+     *  single C++ type it is read through has to hold all of them. The arguments of a
+     *  `coalesce`/`ifnull`/`nullif`/`iif` without a common C++ type fold through the same order.
+     *  The `std::vector<char>` of a BLOB column sits over `std::string`: it reads every storage
+     *  class whole, bytes and all, where an `std::string` stops at a NUL byte. A type the order
+     *  does not name never reaches here; `left` comes back unchanged so that a fold over one stays total.
      */
     std::string widerInferredCppType(std::string_view left, std::string_view right);
 

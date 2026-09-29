@@ -2148,6 +2148,12 @@ TEST_CASE("codegen: CASE result type widens over every branch and the ELSE") {
     // An `int` widens into the `double` that holds every int32 exactly.
     REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 1.5 END") ==
             "case_<double>().when(c(&User::a) < 0, then(1)).else_(1.5).end()");
+    // A `bool` widens into the `int` SQLite spells TRUE and FALSE with, in either order: SQLite
+    // answers the ELSE of `CASE WHEN a < 0 THEN TRUE ELSE 2 END` with 2, which a `bool` reads as 1.
+    REQUIRE(generate("CASE WHEN a < 0 THEN TRUE ELSE 2 END") ==
+            "case_<int>().when(c(&User::a) < 0, then(true)).else_(2).end()");
+    REQUIRE(generate("CASE WHEN a < 0 THEN 2 ELSE FALSE END") ==
+            "case_<int>().when(c(&User::a) < 0, then(2)).else_(false).end()");
     REQUIRE(generate("CASE WHEN a < 0 THEN 1 ELSE 'x' END") ==
             "case_<std::string>().when(c(&User::a) < 0, then(1)).else_(\"x\").end()");
     REQUIRE(generate("CASE WHEN a < 0 THEN 'x' ELSE 1 END") ==

@@ -63,23 +63,24 @@ namespace {
 }  // namespace
 
 // `--json` used to swallow every diagnostic and exit 0, so a script driving the CLI could not tell a
-// schema that generated from one that did not without parsing the JSON itself.
+// schema that generated from one that did not without parsing the JSON itself. The generated column
+// is what fails codegen: SQLite refuses a hex literal too big for 64 bits inside CREATE TABLE, but
+// stores it as written when ALTER TABLE adds the column, and refuses only the statements reading it.
 TEST_CASE("reportSqliteSchema: --json reports a codegen error and exits 1") {
     TempDbFile file{makeTempDbPath()};
-    execSql(file.path, "CREATE TABLE q (a INTEGER CHECK (a IS NOT 1));");
+    execSql(file.path, "CREATE TABLE q (a INTEGER); ALTER TABLE q ADD COLUMN b INTEGER AS (0x10000000000000000);");
     const SchemaReport result = report(file.path, true);
     REQUIRE(
         result.out ==
         R"({"statements":[{"comments":[],"decisionPoints":[],"name":"q","ok":false,"tableName":"q","type":"table"}]})"
         "\n");
-    REQUIRE(result.err == "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not "
-                          "supported in sqlite_orm\n");
+    REQUIRE(result.err == "codegen error [table q]: hex literal too big: 0x10000000000000000\n");
     REQUIRE(result.exitCode == 1);
 }
 
 TEST_CASE("reportSqliteSchema: a codegen error reads the same without --json") {
     TempDbFile file{makeTempDbPath()};
-    execSql(file.path, "CREATE TABLE q (a INTEGER CHECK (a IS NOT 1));");
+    execSql(file.path, "CREATE TABLE q (a INTEGER); ALTER TABLE q ADD COLUMN b INTEGER AS (0x10000000000000000);");
     const SchemaReport result = report(file.path, false);
     // The statement that did not generate is left out of `make_storage()` rather than swallowing
     // the header, so the only table of this schema leaves an empty storage behind.
@@ -98,8 +99,7 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 }
 )");
     REQUIRE(result.err == "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
-                          "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not "
-                          "supported in sqlite_orm\n");
+                          "codegen error [table q]: hex literal too big: 0x10000000000000000\n");
     REQUIRE(result.exitCode == 1);
 }
 
@@ -218,7 +218,8 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 TEST_CASE("reportSqliteSchema: a view on a table that did not generate goes with it") {
     TempDbFile file{makeTempDbPath()};
     execSql(file.path,
-            "CREATE TABLE q (a INTEGER CHECK (a IS NOT 1));"
+            "CREATE TABLE q (a INTEGER);"
+            "ALTER TABLE q ADD COLUMN b INTEGER AS (0x10000000000000000);"
             "CREATE TABLE t (id INTEGER PRIMARY KEY);"
             "CREATE VIEW vq AS SELECT a FROM q;");
     const SchemaReport result = report(file.path, false);
@@ -248,8 +249,7 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
                           "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
                           "warning: `vq` rests on a table that is not generated and is not merged into "
                           "make_storage()\n"
-                          "codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not supported in "
-                          "sqlite_orm\n");
+                          "codegen error [table q]: hex literal too big: 0x10000000000000000\n");
     REQUIRE(result.exitCode == 1);
 }
 

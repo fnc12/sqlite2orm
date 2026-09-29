@@ -146,6 +146,8 @@ namespace sqlite2orm {
     extern const std::string kCommentBitwiseResultCast;
     extern const std::string kCommentOrTokenCallSpelling;
     extern const std::string kCommentOrMatchLiteralKept;
+    extern const std::string kCommentDistinctFromSqliteVersion;
+    extern const std::string kCommentIsTruthTest;
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
@@ -732,6 +734,15 @@ namespace sqlite2orm {
      *  but not through a COLLATE, which is why `negationFormFor` takes the operand as written.
      */
     const AstNode& generatedOperandNode(const AstNode& astNode);
+    /**
+     *  The TRUE or FALSE keyword an operator of the IS family tests the truth of its left operand
+     *  against, or null where it compares its operands as usual. SQLite reads such a keyword on the
+     *  right as a truth test rather than as the value 1 or 0: sqlite3 3.51 answers `2 IS TRUE` with
+     *  1 and `2 IS 1` with 0. It steps through parentheses and a COLLATE to find the keyword, but
+     *  not through a sign, and never looks at the left operand — `2 IS +TRUE` and `TRUE IS 2` are
+     *  both 0.
+     */
+    const BoolLiteralNode* isFamilyTruthKeyword(const BinaryOperatorNode& binaryOp);
     /** True for an integer or real literal, the two kinds a minus sign is folded into. */
     bool isNumericLiteral(const AstNode& astNode);
     /**

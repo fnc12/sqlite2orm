@@ -2,10 +2,15 @@
 
 #include "codegen_context.h"
 
+#include <utility>
+
 namespace sqlite2orm {
 
-    SelectScopeColumns::SelectScopeColumns(const SelectNode& selectNode, const CodeGeneratorContext& context) :
-        context(context) {
+    SelectScopeColumns::SelectScopeColumns(const SelectNode& selectNode,
+                                           const CodeGeneratorContext& context,
+                                           ReferencedColumnResolver enclosingResolver) :
+        context(context), enclosingResolver(std::move(enclosingResolver)),
+        columnNameScope{{}, {}, {}, {}, std::vector<std::string>()} {
         bool firstItem = true;
         for (const FromClauseItem& fromItem: selectNode.fromClause) {
             // A derived table and a table-valued function name no table of the schema, and a CTE
@@ -24,6 +29,7 @@ namespace sqlite2orm {
                     this->sourceByAlias[aliasKey] = sourceName;
                 }
             }
+            this->columnNameScope.sourceTables->push_back(opaque ? std::string() : sourceName);
             if (opaque) {
                 if (!sourceKey.empty()) {
                     this->opaqueNames.insert(sourceKey);
@@ -67,6 +73,10 @@ namespace sqlite2orm {
             return this->findQualified(qualifiedRef->tableName, qualifiedRef->columnName);
         }
         if (auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
+            if (this->enclosingResolver &&
+                this->context.scopeDeclaresColumn(this->columnNameScope, columnRef->columnName) == false) {
+                return this->enclosingResolver(node);
+            }
             if (!this->implicitSource) {
                 return nullptr;
             }

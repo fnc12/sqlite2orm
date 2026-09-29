@@ -252,10 +252,7 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
         make_column("id", &T::id, primary_key())));
 }
 )");
-    REQUIRE(result.err == "warning: CREATE VIEW vq: sqlite_orm views use C++26 reflection (make_view + "
-                          "[[= \"…\"_orm_name]]); this code requires C++26 and will not compile under the selected "
-                          "C++ standard\n"
-                          "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
+    REQUIRE(result.err == "warning: CREATE TABLE `q` did not generate and is not merged into make_storage()\n"
                           "warning: `vq` rests on a table that is not generated and is not merged into "
                           "make_storage()\n"
                           "codegen error [table q]: hex literal too big: 0x10000000000000000\n");
@@ -430,12 +427,11 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
         make_view<V>(select(&T::id)));
 }
 )";
-    // Printed twice as things stand: once for the view statement and once again for the header.
     const std::string viewWarning =
         "warning: CREATE VIEW v: sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this "
         "code requires C++26 and will not compile under the selected C++ standard\n";
-    REQUIRE(reportForStandard(file.path, false, 17) == SchemaReport{header, viewWarning + viewWarning, 0});
-    REQUIRE(report(file.path, false) == SchemaReport{header, viewWarning + viewWarning, 0});
+    REQUIRE(reportForStandard(file.path, false, 17) == SchemaReport{header, viewWarning, 0});
+    REQUIRE(report(file.path, false) == SchemaReport{header, viewWarning, 0});
     REQUIRE(reportForStandard(file.path, false, 26) == SchemaReport{R"(#pragma once
 
 #include <sqlite_orm/sqlite_orm.h>
@@ -464,4 +460,27 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 )",
                                                                     "",
                                                                     0});
+}
+
+// The header generates every statement over again, so a statement's warning is reported once, not
+// once for the statement and again for the header — and the same once in `--json` mode.
+TEST_CASE("reportSqliteSchema: a warning is reported once in either mode") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path, "CREATE TABLE t (id INTEGER, v TEXT, PRIMARY KEY(id DESC));");
+    const std::string warning = "warning: DESC on column 'id' of a table-level PRIMARY KEY is not supported in "
+                                "sqlite_orm — ignored in codegen\n";
+    REQUIRE(report(file.path, false).err == warning);
+    REQUIRE(report(file.path, true).err == warning);
+}
+
+// Two tables warning in the same words are two warnings: one per table, whatever the text says.
+TEST_CASE("reportSqliteSchema: the same warning from two tables is reported for each") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE p (a TEXT, UNIQUE(a COLLATE NOCASE));"
+            "CREATE TABLE q (a TEXT, UNIQUE(a COLLATE NOCASE));");
+    const std::string warning = "warning: COLLATE NOCASE on column 'a' of a table-level UNIQUE is not supported in "
+                                "sqlite_orm — ignored in codegen\n";
+    REQUIRE(report(file.path, false).err == warning + warning);
+    REQUIRE(report(file.path, true).err == warning + warning);
 }

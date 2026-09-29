@@ -277,6 +277,12 @@ if(SQLITE2ORM_BUILD_TESTS)
             NAME sqlite2orm_cli_pragma_value_error_exit_code
             COMMAND $<TARGET_FILE:sqlite2orm_cli> -e "PRAGMA recursive_triggers = NULL;")
         set_tests_properties(sqlite2orm_cli_pragma_value_error_exit_code PROPERTIES WILL_FAIL TRUE)
+        add_test(
+            NAME sqlite2orm_cli_long_union_chain
+            COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:sqlite2orm_cli>"
+                    "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli_long_union_chain" -DARMS=400000
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_long_union_chain.cmake")
+        set_tests_properties(sqlite2orm_cli_long_union_chain PROPERTIES TIMEOUT 30)
         if(UNIX)
             find_program(SQLITE2ORM_SQLITE3_EXECUTABLE sqlite3)
             if(SQLITE2ORM_SQLITE3_EXECUTABLE)

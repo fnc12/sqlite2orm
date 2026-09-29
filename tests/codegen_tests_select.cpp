@@ -1155,6 +1155,11 @@ TEST_CASE("codegen: a result column typed by a predicate, a CAST or a function c
             "auto rows = storage.select(as_optional(like(&Users::a, \"x\")));");
     REQUIRE(generate("SELECT a GLOB 'x' FROM users;") ==
             "auto rows = storage.select(as_optional(glob(&Users::a, \"x\")));");
+    // A NULL escape character answers NULL too: `'x' LIKE 'y' ESCAPE NULL` is NULL, not an error.
+    REQUIRE(generate("SELECT 'x' LIKE 'y' ESCAPE a FROM users;") ==
+            "auto rows = storage.select(as_optional(like(\"x\", \"y\", &Users::a)));");
+    REQUIRE(generate("SELECT 'x' LIKE 'y' ESCAPE '!' FROM users;") ==
+            "auto rows = storage.select(like(\"x\", \"y\", \"!\"), from<Users>());");
     REQUIRE(generate("SELECT CAST(a AS TEXT) FROM users;") ==
             "auto rows = storage.select(as_optional(cast<std::string>(&Users::a)));");
     REQUIRE(generate("SELECT CAST(a AS INTEGER) FROM users;") ==
@@ -1705,6 +1710,7 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT pi();") == "auto rows = storage.select(pi());");
     REQUIRE(generate("SELECT hex(a) FROM users;") == "auto rows = storage.select(hex(&Users::a));");
     REQUIRE(generate("SELECT quote(a) FROM users;") == "auto rows = storage.select(quote(&Users::a));");
+    REQUIRE(generate("SELECT soundex(a) FROM users;") == "auto rows = storage.select(soundex(&Users::a));");
     REQUIRE(generate("SELECT count(a) FROM users;") == "auto rows = storage.select(count(&Users::a));");
     REQUIRE(generate("SELECT total(a) FROM users;") == "auto rows = storage.select(total(&Users::a));");
     REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");

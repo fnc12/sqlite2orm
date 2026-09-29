@@ -2574,13 +2574,15 @@ TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy cannot revive a
     CodeGenPolicy policy;
     policy.targetCppStandard = 26;
     policy.chosenAlternativeValueByCategory["table_mapping_style"] = "reflection";
-    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER CHECK(a > 0));", policy);
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER, b INTEGER AS (a + 1));", policy);
     const std::string classicalCode = "struct T {\n"
                                       "    std::optional<int64_t> a;\n"
+                                      "    std::optional<int64_t> b;\n"
                                       "};\n"
                                       "\n"
                                       "make_table(\"t\",\n"
-                                      "        make_column(\"a\", &T::a, check(c(&T::a) > 0)))";
+                                      "        make_column(\"a\", &T::a),\n"
+                                      "        make_column(\"b\", &T::b, as(c(&T::a) + 1)))";
     REQUIRE(result.decisionPoints ==
             std::vector<DecisionPoint>{
                 DecisionPoint{3,
@@ -2588,9 +2590,9 @@ TEST_CASE("codegen: CREATE TABLE - an explicit reflection policy cannot revive a
                               "make_table",
                               classicalCode,
                               {classicalOnlyOption(classicalCode,
-                                                   "CHECK on column `a` names members of the struct being declared, "
+                                                   "generated column `b` names members of the struct being declared, "
                                                    "which an annotation cannot",
-                                                   SourceLocation{1, 17},
+                                                   SourceLocation{1, 28},
                                                    1)}}});
 }
 
@@ -2812,10 +2814,11 @@ TEST_CASE("codegen: CREATE TABLE - a column UNIQUE annotates the member of the r
                                                               "        make_column(\"a\", &T::a, unique()))");
 }
 
-// A column CHECK and a generated column both name the struct's own members, and a member annotation
-// is parsed inside the class, before the members it names are all declared — upstream sqlite_orm
-// states such annotations are not expressible in C++26.
-TEST_CASE("codegen: CREATE TABLE - a column CHECK keeps the classical mapping under C++26") {
+// A column CHECK names the struct's own members, which a member annotation cannot, but SQLite
+// checks it exactly as it checks a table CHECK and `check_t` is one of sqlite_orm's table
+// constraints — so the reflected form passes it to `make_table<T>(…)` and the classical one keeps
+// it in `make_column()`.
+TEST_CASE("codegen: CREATE TABLE - a column CHECK becomes a check() argument of the reflected make_table") {
     const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER CHECK(a > 0));");
     const std::string classicalCode = "struct T {\n"
                                       "    std::optional<int64_t> a;\n"
@@ -2823,19 +2826,118 @@ TEST_CASE("codegen: CREATE TABLE - a column CHECK keeps the classical mapping un
                                       "\n"
                                       "make_table(\"t\",\n"
                                       "        make_column(\"a\", &T::a, check(c(&T::a) > 0)))";
-    REQUIRE(result.decisionPoints ==
-            std::vector<DecisionPoint>{
-                DecisionPoint{3,
-                              "table_mapping_style",
-                              "make_table",
-                              classicalCode,
-                              {classicalOnlyOption(classicalCode,
-                                                   "CHECK on column `a` names members of the struct being declared, "
-                                                   "which an annotation cannot",
-                                                   SourceLocation{1, 17},
-                                                   1)}}});
+    const std::string reflectedCode = "struct [[= \"t\"_orm_name]] T {\n"
+                                      "    std::optional<int64_t> a;\n"
+                                      "};\n"
+                                      "\n"
+                                      "make_table<T>(\n"
+                                      "        check(c(&T::a) > 0))";
+    Option reflectedOption{"reflection", reflectedCode, kReflectionOptionDescription};
+    reflectedOption.comments.push_back(CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12});
+    reflectedOption.minCppStandard = 26;
+    REQUIRE(result == CodeGenResult{"struct [[= \"t\"_orm_name]] T {\n"
+                                    "    std::optional<int64_t> a;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table<T>(\n"
+                                    "        check(c(&T::a) > 0)));",
+                                    {DecisionPoint{3,
+                                                   "table_mapping_style",
+                                                   "reflection",
+                                                   reflectedCode,
+                                                   {Option{"make_table", classicalCode, kClassicalOptionDescription},
+                                                    reflectedOption}}},
+                                    {},
+                                    {},
+                                    {CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12}}});
 }
 
+// The column CHECKs come first, in column order, the way SQLite reads them before the table's own
+// constraints; those follow in the order the classical form spells them, and `.without_rowid()`
+// still closes the call. Neither form loses or gains a constraint.
+TEST_CASE("codegen: CREATE TABLE - column CHECKs precede the table constraints of the reflected make_table") {
+    const auto result = generateTargetingCpp26(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER CHECK(a > 0) UNIQUE, b TEXT, c INTEGER CHECK(c < a) "
+        "REFERENCES t(id), CHECK(a < b), UNIQUE(a, b)) WITHOUT ROWID;");
+    REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
+                           "    [[= primary_key()]] int64_t id = 0;\n"
+                           "    [[= unique()]] std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "    std::optional<int64_t> c;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<T>(\n"
+                           "        check(c(&T::a) > 0),\n"
+                           "        check(c(&T::c) < &T::a),\n"
+                           "        foreign_key(&T::c).references(&T::id),\n"
+                           "        sqlite_orm::unique(&T::a, &T::b),\n"
+                           "        check(c(&T::a) < &T::b)).without_rowid());");
+    REQUIRE(result.decisionPoints.size() == 1);
+    REQUIRE(result.decisionPoints.at(0).chosenValue == "reflection");
+    REQUIRE(result.decisionPoints.at(0).options.at(0).code ==
+            "struct T {\n"
+            "    int64_t id = 0;\n"
+            "    std::optional<int64_t> a;\n"
+            "    std::optional<std::string> b;\n"
+            "    std::optional<int64_t> c;\n"
+            "};\n"
+            "\n"
+            "make_table(\"t\",\n"
+            "        make_column(\"id\", &T::id, primary_key()),\n"
+            "        make_column(\"a\", &T::a, unique(), check(c(&T::a) > 0)),\n"
+            "        make_column(\"b\", &T::b),\n"
+            "        make_column(\"c\", &T::c, check(c(&T::c) < &T::a)),\n"
+            "        foreign_key(&T::c).references(&T::id),\n"
+            "        sqlite_orm::unique(&T::a, &T::b),\n"
+            "        check(c(&T::a) < &T::b)).without_rowid()");
+}
+
+// Asked for the classical mapping, a C++26 target gets the column CHECK where it always was.
+TEST_CASE("codegen: CREATE TABLE - an explicit make_table policy keeps a column CHECK inside make_column") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 26;
+    policy.chosenAlternativeValueByCategory["table_mapping_style"] = "make_table";
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER CHECK(a > 0), b INTEGER, CHECK(b > a));", policy);
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, check(c(&T::a) > 0)),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        check(c(&T::b) > &T::a)));");
+    REQUIRE(result.decisionPoints.size() == 1);
+    REQUIRE(result.decisionPoints.at(0).chosenValue == "make_table");
+    REQUIRE(result.decisionPoints.at(0).options.at(1).code == "struct [[= \"t\"_orm_name]] T {\n"
+                                                              "    std::optional<int64_t> a;\n"
+                                                              "    std::optional<int64_t> b;\n"
+                                                              "};\n"
+                                                              "\n"
+                                                              "make_table<T>(\n"
+                                                              "        check(c(&T::a) > 0),\n"
+                                                              "        check(c(&T::b) > &T::a))");
+}
+
+// Below C++26 there is no reflected form to move the CHECK to: the output is the classical one.
+TEST_CASE("codegen: CREATE TABLE - a column CHECK stays inside make_column below C++26") {
+    CodeGenPolicy policy;
+    policy.targetCppStandard = 20;
+    const auto result = generateWithPolicy("CREATE TABLE t (a INTEGER CHECK(a > 0));", policy);
+    REQUIRE(result == CodeGenResult{"struct T {\n"
+                                    "    std::optional<int64_t> a;\n"
+                                    "};\n"
+                                    "\n"
+                                    "auto storage = make_storage(\"\",\n"
+                                    "    make_table(\"t\",\n"
+                                    "        make_column(\"a\", &T::a, check(c(&T::a) > 0))));"});
+}
+
+// A generated column names the struct's own members too, but it belongs to the column: sqlite_orm
+// has no table constraint to pass it to `make_table<T>(…)` as.
 TEST_CASE("codegen: CREATE TABLE - a generated column keeps the classical mapping under C++26") {
     const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER, b INTEGER AS (a + 1));");
     const std::string classicalCode = "struct T {\n"
@@ -2869,12 +2971,12 @@ TEST_CASE("codegen: CREATE TABLE - a mapping hint is anchored at what it names")
     // starts with.
     const auto blocked = generateTargetingCpp26("CREATE TABLE users (\n"
                                                 "  id INTEGER PRIMARY KEY,\n"
-                                                "  age INTEGER CHECK (age > 0),\n"
+                                                "  age INTEGER AS (id + 1),\n"
                                                 "  name TEXT\n"
                                                 ");");
     REQUIRE(blocked.decisionPoints.at(0).options.at(0).comments ==
             std::vector<CodegenComment>{
-                CodegenComment{"the C++26 reflection alternative is not offered for this table: CHECK on column "
+                CodegenComment{"the C++26 reflection alternative is not offered for this table: generated column "
                                "`age` names members of the struct being declared, which an annotation cannot",
                                SourceLocation{3, 3},
                                3}});

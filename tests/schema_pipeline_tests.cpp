@@ -724,6 +724,107 @@ TEST_CASE("generateSqliteSchemaHeader: a table-level foreign key into a table th
     requireCompiles(header.code);
 }
 
+// The set of names a foreign key may point at is not only tables: sqlite_master lists a view
+// under type 'view', and a key into it is kept. SQLite stores `REFERENCES v(x)` on a view and
+// only refuses it once enforcement is on — `PRAGMA foreign_keys=ON; INSERT INTO t VALUES(1)`
+// fails with `foreign key mismatch - "t" referencing "v"` (checked against sqlite3 3.51.0). This
+// pins that views stay in the set, so dropping them from it cannot pass unnoticed.
+TEST_CASE("generateSqliteSchemaHeader: a foreign key into a view the schema creates is kept") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE b (x INTEGER);"
+            "CREATE VIEW v AS SELECT x FROM b;"
+            "CREATE TABLE t (a INTEGER REFERENCES v(x));");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "using namespace sqlite_orm;\n\n"
+                           "struct B {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "};\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n"
+                           "struct [[= \"v\"_orm_name]] V {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"b\",\n"
+                           "        make_column(\"x\", &B::x)),\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        foreign_key(&T::a).references(&V::x)),\n"
+                           "        make_view<V>(select(&B::x)));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE VIEW v: sqlite_orm views use C++26 reflection (make_view + [[= \"…\"_orm_name]]); this code "
+                 "requires C++26 and will not compile under the selected C++ standard",
+                 SourceLocation{1, 1},
+                 11}});
+    REQUIRE(header.errors.empty());
+}
+
+// A virtual table is listed under type 'table', so it is in the set too — its key is left out
+// only because the virtual table itself is not merged into make_storage(), and the warning says
+// so rather than claiming the schema does not create it. SQLite stores the key and refuses it
+// under enforcement just as for a view (checked against sqlite3 3.51.0).
+TEST_CASE("generateSqliteSchemaHeader: a foreign key into a virtual table the schema creates is not generated") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE VIRTUAL TABLE ft USING fts5(body);"
+            "CREATE TABLE t (a INTEGER REFERENCES ft(body));");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a)));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE TABLE `ft_config` is an internal FTS5 table of virtual table `ft` and is not merged into "
+                 "make_storage()"},
+                {"CREATE TABLE `ft_content` is an internal FTS5 table of virtual table `ft` and is not merged into "
+                 "make_storage()"},
+                {"CREATE TABLE `ft_data` is an internal FTS5 table of virtual table `ft` and is not merged into "
+                 "make_storage()"},
+                {"CREATE TABLE `ft_docsize` is an internal FTS5 table of virtual table `ft` and is not merged into "
+                 "make_storage()"},
+                {"CREATE TABLE `ft_idx` is an internal FTS5 table of virtual table `ft` and is not merged into "
+                 "make_storage()"},
+                {"foreign key on column 'a' references ft, which is not generated, so the generated table has no "
+                 "foreign_key()"},
+                {"CREATE VIRTUAL TABLE `ft` is not merged into make_storage(); run sqlite2orm on its SQL "
+                 "separately"}});
+    REQUIRE(header.errors.empty());
+}
+
 // A parent the schema does create keeps its key, whichever order the two tables are stored in and
 // however either name is spelled: SQLite matches a foreign key parent case-insensitively, and so
 // does the lookup that decides whether the name is in the schema at all.
@@ -1858,6 +1959,51 @@ TEST_CASE("processMultiSql: the snippet of a batch with a foreign key into a mis
                     "#include <vector>\n"
                     "using namespace sqlite_orm;\n" +
                     joinGeneratedCode(results));
+}
+
+// The snippet path builds the same set from the statements of the batch: a CREATE VIEW and a
+// CREATE VIRTUAL TABLE each create a name a foreign key may point at, so neither key is left out
+// with the "does not create" warning. Pinned so that dropping either statement from the set
+// cannot pass unnoticed.
+TEST_CASE("processMultiSql: a foreign key into a view or a virtual table of the batch is kept") {
+    const auto viewResults = processMultiSql("CREATE TABLE b (x INTEGER);\n"
+                                             "CREATE VIEW v AS SELECT x FROM b;\n"
+                                             "CREATE TABLE t (a INTEGER REFERENCES v(x));");
+    REQUIRE(viewResults.size() == 3);
+    REQUIRE(viewResults[2].codegen.warnings.empty());
+    REQUIRE(joinGeneratedCode(viewResults) == "struct B {\n"
+                                              "    std::optional<int64_t> x;\n"
+                                              "};\n\n"
+                                              "struct [[= \"v\"_orm_name]] V {\n"
+                                              "    std::optional<int64_t> x;\n"
+                                              "};\n\n"
+                                              "struct T {\n"
+                                              "    std::optional<int64_t> a;\n"
+                                              "};\n\n"
+                                              "auto storage = make_storage(\"\",\n"
+                                              "    make_table(\"b\",\n"
+                                              "        make_column(\"x\", &B::x)),\n"
+                                              "    make_view<V>(select(&B::x)),\n"
+                                              "    make_table(\"t\",\n"
+                                              "        make_column(\"a\", &T::a),\n"
+                                              "        foreign_key(&T::a).references(&V::x)));\n");
+
+    const auto virtualTableResults = processMultiSql("CREATE VIRTUAL TABLE ft USING fts5(body);\n"
+                                                     "CREATE TABLE t (a INTEGER REFERENCES ft(body));");
+    REQUIRE(virtualTableResults.size() == 2);
+    REQUIRE(virtualTableResults[1].codegen.warnings.empty());
+    REQUIRE(joinGeneratedCode(virtualTableResults) == "struct Ft {\n"
+                                                      "    std::string body;\n"
+                                                      "};\n\n"
+                                                      "auto vtab = make_virtual_table<Ft>(\"ft\", "
+                                                      "using_fts5(make_column(\"body\", &Ft::body)));\n\n"
+                                                      "struct T {\n"
+                                                      "    std::optional<int64_t> a;\n"
+                                                      "};\n\n"
+                                                      "auto storage = make_storage(\"\",\n"
+                                                      "    make_table(\"t\",\n"
+                                                      "        make_column(\"a\", &T::a),\n"
+                                                      "        foreign_key(&T::a).references(&Ft::body)));\n");
 }
 
 // A trigger's WHEN expression lives in an `optional_container`, which default-constructs it, so

@@ -3854,9 +3854,9 @@ namespace sqlite2orm {
                 // Where no type can be named here — a call, whose type the function and its
                 // arguments decide — an arm spelling the same expression over the same sources is
                 // generated as the same code, and so comes out as the same type whatever it is.
-                const bool sameType = cppType ? generatedResultColumnCppType(columnExpression) == cppType
-                                              : arm->fromClause == leadingArm.fromClause &&
-                                                    columnExpression == leadingExpression;
+                const bool sameType =
+                    cppType ? generatedResultColumnCppType(columnExpression) == cppType
+                            : arm->fromClause == leadingArm.fromClause && columnExpression == leadingExpression;
                 if (!sameType) {
                     sameTypeEverywhere = false;
                     break;

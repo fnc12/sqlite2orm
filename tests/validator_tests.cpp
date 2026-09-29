@@ -316,45 +316,24 @@ TEST_CASE("validator: IN single-quoted CTE table-name is valid") {
     REQUIRE(validate("WITH c AS (SELECT 1 AS a) SELECT * FROM t WHERE x IN 'c'").empty());
 }
 
-TEST_CASE("validator: IS expr gives validation error") {
-    REQUIRE(validate("SELECT a IS b FROM t") ==
-            std::vector<ValidationError>{{"binary IS / IS NOT is not supported in sqlite_orm "
-                                          "(only is_null / is_not_null for NULL checks)",
-                                          {1, 10},
-                                          "BinaryOperatorNode"}});
-}
-
-TEST_CASE("validator: IS NOT expr gives validation error") {
-    REQUIRE(validate("SELECT a IS NOT b FROM t") ==
-            std::vector<ValidationError>{{"binary IS / IS NOT is not supported in sqlite_orm "
-                                          "(only is_null / is_not_null for NULL checks)",
-                                          {1, 10},
-                                          "BinaryOperatorNode"}});
+// sqlite_orm spells the whole IS family — `is()`, `is_not()`, `is_distinct_from()` and
+// `is_not_distinct_from()` — so none of it is refused before codegen.
+TEST_CASE("validator: IS and IS NOT over any expression are valid") {
+    REQUIRE(validate("SELECT a IS b FROM t").empty());
+    REQUIRE(validate("SELECT a IS NOT b FROM t").empty());
 }
 
 // `a IS NULL - 1` is `a IS (NULL - 1)` in SQLite, i.e. a binary IS over an expression and not the
-// is_null predicate, so the same rule has to catch it. sqlite3 3.51 answers `SELECT 7 IS NULL - 1`
-// with 0 and `SELECT 7 IS NOT NULL - 1` with 1.
-TEST_CASE("validator: IS NULL over an expression gives validation error") {
-    REQUIRE(validate("SELECT a IS NULL - 1 FROM t") ==
-            std::vector<ValidationError>{{"binary IS / IS NOT is not supported in sqlite_orm "
-                                          "(only is_null / is_not_null for NULL checks)",
-                                          {1, 10},
-                                          "BinaryOperatorNode"}});
+// is_null predicate. sqlite3 3.51 answers `SELECT 7 IS NULL - 1` with 0 and
+// `SELECT 7 IS NOT NULL - 1` with 1.
+TEST_CASE("validator: IS NULL over an expression is valid") {
+    REQUIRE(validate("SELECT a IS NULL - 1 FROM t").empty());
+    REQUIRE(validate("SELECT a IS NOT NULL - 1 FROM t").empty());
 }
 
-TEST_CASE("validator: IS NOT NULL over an expression gives validation error") {
-    REQUIRE(validate("SELECT a IS NOT NULL - 1 FROM t") ==
-            std::vector<ValidationError>{{"binary IS / IS NOT is not supported in sqlite_orm "
-                                          "(only is_null / is_not_null for NULL checks)",
-                                          {1, 10},
-                                          "BinaryOperatorNode"}});
-}
-
-TEST_CASE("validator: IS DISTINCT FROM gives validation error") {
-    REQUIRE(validate("SELECT a IS DISTINCT FROM b FROM t") ==
-            std::vector<ValidationError>{
-                {"IS [NOT] DISTINCT FROM is not supported in sqlite_orm", {1, 10}, "BinaryOperatorNode"}});
+TEST_CASE("validator: IS [NOT] DISTINCT FROM is valid") {
+    REQUIRE(validate("SELECT a IS DISTINCT FROM b FROM t").empty());
+    REQUIRE(validate("SELECT a IS NOT DISTINCT FROM b FROM t").empty());
 }
 
 TEST_CASE("validator: STRICT table passes validation (codegen warns instead)") {

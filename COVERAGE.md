@@ -94,16 +94,16 @@ Statuses:
 
 ### IS operators
 - [x] `IS NULL` — `IS` is a binary operator on the `=` level and `NULL` an ordinary right operand,
-  so the operand keeps parsing: `a IS NULL - 1` is `a IS (NULL - 1)`, a binary IS, and gets the
-  validator error below. `is_null(a)` is generated for a right operand that is exactly `NULL`
+  so the operand keeps parsing: `a IS NULL - 1` is `a IS (NULL - 1)`, a binary IS, generated as
+  `is(&T::a, c(nullptr) - 1)`. `is_null(a)` is generated for a right operand that is exactly `NULL`
 - [x] `IS NOT NULL` — the same rule: `a IS NOT NULL - 1` is `a IS NOT (NULL - 1)`
 - [x] `ISNULL` (single keyword)
 - [x] `NOTNULL` (single keyword)
 - [x] `NOT NULL` (two keywords)
-- [!] `IS expr` — sqlite_orm has no binary IS; validator error (codegen fallback: `==` with warning)
-- [!] `IS NOT expr` — sqlite_orm has no binary IS NOT; validator error (codegen fallback: `!=` with warning)
-- [!] `IS DISTINCT FROM expr` — not supported in sqlite_orm; validator error
-- [!] `IS NOT DISTINCT FROM expr` — not supported in sqlite_orm; validator error
+- [x] `IS expr` — generated as `is(left, right)`, the only spelling sqlite_orm has: there is no C++ operator for it. The arguments go in as they are generated and never `c()`-quoted on their own, since sqlite_orm has no serializer for a bare `quoted_expression_t` (`is(&T::a, c(0))` does not compile, while an operator over a quoted leaf such as `c(0) - 1` unwraps the quote itself). `is_t` is a `binary_condition`: it counts as a condition for AND / OR, is parenthesized as an operand, and its result column is a `bool` that is never NULL, so no `as_optional()`. Like `=`, it does not compile as an operand of arithmetic or of `<` / `>` (no overload for a condition there). A TRUE or FALSE on the right — through parentheses and a COLLATE, not under a sign — makes every operator of the family a truth test of the left operand, as in SQLite (`2 IS TRUE` is 1 where `2 IS 1` is 0, `'x' IS FALSE` is 1): the left operand goes in as `and_(left, true)`, its truth as 1, 0 or NULL, so `a IS TRUE` is generated as `is(and_(&T::a, true), true)` and `a IS NOT FALSE` as `is_not(and_(&T::a, true), false)`. `a IS +TRUE` and `TRUE IS a` compare with 1 as SQLite does, and stay `is(&T::a, true)` / `is(true, &T::a)`
+- [x] `IS NOT expr` — generated as `is_not(left, right)`, the same rules
+- [x] `IS DISTINCT FROM expr` — generated as `is_distinct_from(left, right)`, which sqlite_orm declares only against SQLite 3.39.0+ headers (`SQLITE_VERSION_NUMBER >= 3039000`), the release that added the operator; a codegen comment names `is_not(left, right)` as the same comparison for older headers
+- [x] `IS NOT DISTINCT FROM expr` — generated as `is_not_distinct_from(left, right)`, the same version rule; `is(left, right)` for older headers
 
 ### Special operators
 - [~] `BETWEEN expr AND expr` — generated as `between(operand, low, high)`, and sqlite_orm declares it `between(A, T, T)`: both bounds have to reach C++ as one type. Integer bounds of two widths are given one by a `static_cast<int64_t>` on each of them (`x BETWEEN 1 AND 3000000000`, where C++ types the one constant `int` and the other `long`), which SQLite carries unchanged, TRUE and FALSE among them. Partial because bounds with nothing to widen to have no working form at all — an integer bound next to a real, a string, a blob, a NULL, a column or a nested expression — and the generated code does not compile: codegen warning. Silent where nothing here types both bounds: two columns, two expression nodes and a bind parameter the caller declares. Independent of the field the prefix infers for the column, which widens to the wider bound

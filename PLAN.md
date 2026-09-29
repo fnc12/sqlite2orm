@@ -395,9 +395,11 @@ reflection), #1492 (reflection-based `make_table`), #1488 (`from()` value form).
   one unless the category asks for
   `make_table` back — what a consumer targeting C++26 on a compiler without
   reflection does. NOT NULL needs no annotation: nullability is carried by the
-  member type. A table holding a construct with no annotation form — a column
+  member type. A column CHECK is passed to `make_table<T>(check(…), …)` ahead
+  of the table constraints, as SQLite checks it exactly like a table CHECK. A
+  table holding a construct with no annotation form — a column
   name that is not the C++ identifier generated for it, a DEFAULT that is no
-  constant expression, a column CHECK, a generated column — keeps `make_table`
+  constant expression, a generated column — keeps `make_table`
   chosen and is not offered the reflected variant, with the reason in that
   option's comments. Below C++26 no decision point is emitted and the output is
   unchanged. A header whose structs carry annotations declares

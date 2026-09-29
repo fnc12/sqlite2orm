@@ -1552,6 +1552,8 @@ namespace sqlite2orm {
         };
 
         std::vector<std::string> memberAnnotations(createTable.columns.size());
+        // The column CHECKs the classical form spells inside `make_column()`, in column order.
+        std::vector<std::string> reflectedColumnChecks;
 
         std::string makeExpression = "make_table(" + cppStringLiteral(rawTableName);
         for (size_t columnIndex = 0; columnIndex < createTable.columns.size(); ++columnIndex) {
@@ -1702,9 +1704,10 @@ namespace sqlite2orm {
                     // A column CHECK names the table's own members, and a member annotation is
                     // parsed inside the class, where the members it names are not all declared yet
                     // — upstream sqlite_orm states such annotations are not expressible in C++26.
-                    blockReflection("CHECK on column `" + rawColumnName +
-                                        "` names members of the struct being declared, which an annotation cannot",
-                                    column.nameSpan);
+                    // SQLite checks a column CHECK exactly as it checks a table one, though, and
+                    // `check_t` is one of sqlite_orm's table constraints, so the reflected form
+                    // passes it to `make_table<T>(…)` instead of annotating the member.
+                    reflectedColumnChecks.push_back("check(" + *checkClause.code + ")");
                 } else {
                     for (const std::string& literal: this->context.storedHexLiteralsTooBig) {
                         warnings.push_back("CHECK on column '" + rawColumnName + "' uses " + literal +
@@ -1780,7 +1783,9 @@ namespace sqlite2orm {
                                                "sync_schema() throws instead of creating table " + rawTableName +
                                                    " (\"no such column: inf\")"));
                     }
-                    // Same as a column CHECK: the expression names the struct's own members.
+                    // The expression names the struct's own members, which a member annotation
+                    // cannot, and unlike a CHECK it belongs to the column: there is no table
+                    // constraint of sqlite_orm to pass it to `make_table<T>(…)` as.
                     blockReflection("generated column `" + rawColumnName +
                                         "` names members of the struct being declared, which an annotation cannot",
                                     column.nameSpan);
@@ -2252,10 +2257,13 @@ namespace sqlite2orm {
             }
             reflectedStructDeclaration += "};\n";
 
+            // Column CHECKs go first, the way SQLite reads them before the table's own constraints.
+            std::vector<std::string> reflectedConstraints = std::move(reflectedColumnChecks);
+            reflectedConstraints.insert(reflectedConstraints.end(), tableConstraints.begin(), tableConstraints.end());
             std::string reflectedMakeExpression = "make_table<" + structName + ">(";
-            for (size_t constraintIndex = 0; constraintIndex < tableConstraints.size(); ++constraintIndex) {
+            for (size_t constraintIndex = 0; constraintIndex < reflectedConstraints.size(); ++constraintIndex) {
                 reflectedMakeExpression +=
-                    (constraintIndex == 0 ? "\n        " : ",\n        ") + tableConstraints.at(constraintIndex);
+                    (constraintIndex == 0 ? "\n        " : ",\n        ") + reflectedConstraints.at(constraintIndex);
             }
             reflectedMakeExpression += ")";
             if (createTable.withoutRowid) {

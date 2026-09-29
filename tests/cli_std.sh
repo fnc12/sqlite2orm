@@ -131,3 +131,69 @@ inline auto make_sqlite_schema_storage(const std::string& db_path) {
 EOT
 "$cli" --std 26 --db "$dir/t.db" > "$dir/header26.txt"
 diff "$dir/header26.expected" "$dir/header26.txt"
+
+# A column CHECK is checked by SQLite exactly as a table CHECK is, so the reflected form passes it
+# to `make_table<T>(…)` rather than giving the table up; the classical form keeps it in make_column().
+"$sqlite3" "$dir/c.db" 'CREATE TABLE c (id INTEGER PRIMARY KEY, qty INTEGER NOT NULL CHECK(qty > 0), CHECK(id < 100));'
+
+cat > "$dir/check20.expected" <<'EOT'
+#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct C {
+    std::optional<int64_t> id;
+    int64_t qty = 0;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table("c",
+        make_column("id", &C::id, primary_key()),
+        make_column("qty", &C::qty, check(c(&C::qty) > 0)),
+        check(c(&C::id) < 100)));
+}
+EOT
+"$cli" --db "$dir/c.db" > "$dir/check20.txt"
+diff "$dir/check20.expected" "$dir/check20.txt"
+
+cat > "$dir/check26.expected" <<'EOT'
+#pragma once
+
+#include <sqlite_orm/sqlite_orm.h>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace sqlite_orm;
+
+struct [[= "c"_orm_name]] C {
+    [[= primary_key()]] std::optional<int64_t> id;
+    int64_t qty = 0;
+};
+
+
+inline auto make_sqlite_schema_storage(const std::string& db_path) {
+    using namespace sqlite_orm;
+    return make_storage(db_path,
+        make_table<C>(
+        check(c(&C::qty) > 0),
+        check(c(&C::id) < 100)));
+}
+EOT
+"$cli" --std 26 --db "$dir/c.db" > "$dir/check26.txt"
+diff "$dir/check26.expected" "$dir/check26.txt"
+
+cat > "$dir/check26_json.expected" <<'EOT'
+{"statements":[{"comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"decisionPoints":[{"category":"table_mapping_style","chosenCode":"struct [[= \"c\"_orm_name]] C {\n    [[= primary_key()]] std::optional<int64_t> id;\n    int64_t qty = 0;\n};\n\nmake_table<C>(\n        check(c(&C::qty) > 0),\n        check(c(&C::id) < 100))","chosenValue":"reflection","id":5,"options":[{"code":"struct C {\n    std::optional<int64_t> id;\n    int64_t qty = 0;\n};\n\nmake_table(\"c\",\n        make_column(\"id\", &C::id, primary_key()),\n        make_column(\"qty\", &C::qty, check(c(&C::qty) > 0)),\n        check(c(&C::id) < 100))","comments":[],"description":"make_table(\"name\", make_column(…)) over a plain struct (wider compiler support)","hidden":false,"minCppStandard":14,"value":"make_table"},{"code":"struct [[= \"c\"_orm_name]] C {\n    [[= primary_key()]] std::optional<int64_t> id;\n    int64_t qty = 0;\n};\n\nmake_table<C>(\n        check(c(&C::qty) > 0),\n        check(c(&C::id) < 100))","comments":["The table is mapped by sqlite_orm's reflection-based `make_table<T>()`: the columns and their constraints are read off the struct's members and `[[= …]]` annotations, and the `[[= \"…\"_orm_name]]` annotation supplies the table name. This requires a C++26 compiler with reflection (P2996/P3394); sqlite_orm detects support automatically (SQLITE_ORM_REFLECTION_SUPPORTED). The `make_table` alternative of the `table_mapping_style` decision point is the classical form and compiles from C++14 on."],"description":"C++26 reflection: annotated struct + make_table<T>()","hidden":false,"minCppStandard":26,"value":"reflection"}]}],"name":"c","ok":true,"tableName":"c","type":"table"}],"targetCppStandard":26}
+EOT
+"$cli" --std 26 --db "$dir/c.db" --json > "$dir/check26_json.txt" 2> "$dir/check26_json_err.txt"
+diff "$dir/check26_json.expected" "$dir/check26_json.txt"
+test ! -s "$dir/check26_json_err.txt"

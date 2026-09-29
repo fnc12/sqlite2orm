@@ -107,11 +107,14 @@ TEST_CASE("parser: qualified column ref") {
 
 TEST_CASE("parser: CURRENT_TIME / CURRENT_DATE / CURRENT_TIMESTAMP") {
     REQUIRE(requireNode<CurrentDatetimeLiteralNode>(parse("CURRENT_TIME")) ==
-            CurrentDatetimeLiteralNode(CurrentDatetimeKind::time, {}));
+            CurrentDatetimeLiteralNode(CurrentDatetimeKind::time, "CURRENT_TIME", {}));
     REQUIRE(requireNode<CurrentDatetimeLiteralNode>(parse("CURRENT_DATE")) ==
-            CurrentDatetimeLiteralNode(CurrentDatetimeKind::date, {}));
+            CurrentDatetimeLiteralNode(CurrentDatetimeKind::date, "CURRENT_DATE", {}));
     REQUIRE(requireNode<CurrentDatetimeLiteralNode>(parse("CURRENT_TIMESTAMP")) ==
-            CurrentDatetimeLiteralNode(CurrentDatetimeKind::timestamp, {}));
+            CurrentDatetimeLiteralNode(CurrentDatetimeKind::timestamp, "CURRENT_TIMESTAMP", {}));
+    // The keyword keeps the case it was written in.
+    REQUIRE(requireNode<CurrentDatetimeLiteralNode>(parse("Current_Date")) ==
+            CurrentDatetimeLiteralNode(CurrentDatetimeKind::date, "Current_Date", {}));
 }
 
 TEST_CASE("parser: window function OVER") {

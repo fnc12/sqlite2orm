@@ -4109,14 +4109,7 @@ namespace sqlite2orm {
                 return std::string(boolLiteral->spelling);
             }
             if (const auto* currentDatetime = dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode)) {
-                switch (currentDatetime->kind) {
-                    case CurrentDatetimeKind::date:
-                        return std::string{"current_date"};
-                    case CurrentDatetimeKind::time:
-                        return std::string{"current_time"};
-                    default:
-                        return std::string{"current_timestamp"};
-                }
+                return currentDatetime->spelling;
             }
             return std::nullopt;
         }

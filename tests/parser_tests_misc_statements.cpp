@@ -421,3 +421,51 @@ TEST_CASE("parser: PRAGMA with a parenthesized keyword value") {
     expected.value = makeNode<ColumnRefNode>(std::string_view{"row"});
     REQUIRE(requireNode<PragmaNode>(result) == expected);
 }
+
+// A signed number is the one value of more than one token SQLite's grammar takes (`plus_num` and
+// `minus_num`), in either PRAGMA form and with a space after the sign.
+TEST_CASE("parser: PRAGMA with a signed number value") {
+    auto expected = PragmaNode({});
+    expected.pragmaName = "user_version";
+    expected.value = makeNode<UnaryOperatorNode>(UnaryOperator::minus, makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<PragmaNode>(parse("PRAGMA user_version = -1;")) == expected);
+    REQUIRE(requireNode<PragmaNode>(parse("PRAGMA user_version(- 1);")) == expected);
+    expected.pragmaName = "synchronous";
+    expected.value = makeNode<UnaryOperatorNode>(UnaryOperator::plus, makeNode<RealLiteralNode>("1.5"));
+    REQUIRE(requireNode<PragmaNode>(parse("PRAGMA synchronous = +1.5;")) == expected);
+}
+
+// A PRAGMA value is `nmnum`, not an expression: `sqlite3 :memory: 'PRAGMA user_version = (1);'`
+// is `near "(": syntax error`, and a second sign, an operator or a call is refused the same way.
+// Each error names the token sqlite3 3.51 names.
+TEST_CASE("parser: the PRAGMA values SQLite refuses as a syntax error") {
+    struct Case {
+        std::string_view sql;
+        std::string_view message;
+        size_t column;
+    };
+    const std::vector<Case> cases = {
+        {"PRAGMA user_version = (1);", "unexpected token: (", 23},
+        {"PRAGMA user_version(( 1 ));", "unexpected token: (", 21},
+        {"PRAGMA table_info((users));", "unexpected token: (", 19},
+        {"PRAGMA synchronous = (-1);", "unexpected token: (", 22},
+        {"PRAGMA synchronous = ++2;", "unexpected token: +", 23},
+        {"PRAGMA synchronous = - -2;", "unexpected token: -", 24},
+        {"PRAGMA synchronous = -+2;", "unexpected token: +", 23},
+        {"PRAGMA synchronous = -x;", "unexpected token: x", 23},
+        {"PRAGMA synchronous = 1 + 2;", "unexpected token: +", 24},
+        {"PRAGMA synchronous = 'a' || 'b';", "unexpected token: ||", 26},
+        {"PRAGMA synchronous = abs(1);", "unexpected token: (", 25},
+        {"PRAGMA synchronous = main.x;", "unexpected token: .", 26},
+        {"PRAGMA synchronous = not 1;", "unexpected token: not", 22},
+        {"PRAGMA synchronous = ~1;", "unexpected token: ~", 22},
+    };
+    for (const Case& testCase : cases) {
+        INFO(testCase.sql);
+        const auto parseResult = parse(testCase.sql);
+        REQUIRE(parseResult.astNodePointer == nullptr);
+        REQUIRE(parseResult.errors.size() == 1);
+        REQUIRE(parseResult.errors.front().message == testCase.message);
+        REQUIRE(parseResult.errors.front().location == SourceLocation{1, testCase.column});
+    }
+}

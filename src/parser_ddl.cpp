@@ -18,6 +18,13 @@ namespace sqlite2orm {
                                     static_cast<size_t>(last.value.data() + last.value.size() - first.value.data()));
         }
 
+        // A token SQLite's `nmnum` rule takes as the whole PRAGMA value: a number, a string or a name.
+        bool isPragmaValueToken(TokenType type) {
+            return type == TokenType::integerLiteral || type == TokenType::realLiteral ||
+                   type == TokenType::stringLiteral || type == TokenType::identifier || type == TokenType::kwOn ||
+                   type == TokenType::kwDelete || type == TokenType::kwDefault || isKeywordUsableAsName(type);
+        }
+
     }  // namespace
 
     std::string DdlParser::parseColumnTypeName() {
@@ -1138,8 +1145,28 @@ namespace sqlite2orm {
 
     AstNodePointer DdlParser::parsePragmaValue() {
         const size_t valueStart = this->tokenStream.currentPosition();
+        // The value is one token, or a single sign in front of a number (`plus_num`/`minus_num`),
+        // never an expression: `= (1)`, `= ++2` and `= 1 + 2` are all syntax errors to SQLite. The
+        // expression parser still builds the value's node, it just may not read past that extent.
+        const bool signedNumber = (check(TokenType::plus) || check(TokenType::minus)) &&
+                                  (peekToken(1).type == TokenType::integerLiteral ||
+                                   peekToken(1).type == TokenType::realLiteral);
+        const size_t valueEnd = valueStart + (signedNumber ? 2 : 1);
+        const TokenType firstType = current().type;
         if (auto expression = this->parser.parseExpression()) {
-            return expression;
+            if (this->tokenStream.currentPosition() == valueEnd)
+                return expression;
+            // Point the error where SQLite does: past a value that stands on its own (`= 1 + 2` at
+            // the `+`), at the second token after a sign that no number follows (`= ++2`), and at
+            // the value itself when nothing of it fits the rule (`= (1)` at the `(`).
+            size_t errorPosition = valueStart;
+            if (signedNumber || isPragmaValueToken(firstType)) {
+                errorPosition = valueEnd;
+            } else if (firstType == TokenType::plus || firstType == TokenType::minus) {
+                errorPosition = valueStart + 1;
+            }
+            this->tokenStream.setPosition(errorPosition);
+            return nullptr;
         }
         // SQLite never compiles a PRAGMA value, it reads the value's text, and its `nmnum` rule
         // takes a bare name: every keyword the parser falls back to an identifier for stands here,

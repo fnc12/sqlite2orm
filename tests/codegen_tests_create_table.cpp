@@ -1399,6 +1399,33 @@ TEST_CASE("codegen: CREATE TABLE - a DESC in a table-level UNIQUE is not generat
                                         "— ignored in codegen"});
 }
 
+// A key column spelled quoted is named in the message the way every other message names it: by
+// the name, not by the quotes it was written with.
+TEST_CASE("codegen: CREATE TABLE - a quoted table-level key column is named without its quotes") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER, b TEXT, PRIMARY KEY (\"a\" DESC, `b` COLLATE NOCASE), "
+                                     "UNIQUE ([a] COLLATE NOCASE, \"b\" DESC))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::string> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a, &T::b),\n"
+                           "        sqlite_orm::unique(&T::a, &T::b)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{"DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
+                                        "sqlite_orm — ignored in codegen",
+                                        "COLLATE NOCASE on column 'b' of a table-level PRIMARY KEY is not supported "
+                                        "in sqlite_orm — ignored in codegen",
+                                        "COLLATE NOCASE on column 'a' of a table-level UNIQUE is not supported in "
+                                        "sqlite_orm — ignored in codegen",
+                                        "DESC on column 'b' of a table-level UNIQUE is not supported in sqlite_orm "
+                                        "— ignored in codegen"});
+}
+
 // A key naming a column the table declares nothing of is left out of the generated table whole, so
 // the DESC and the COLLATE spelled on it are worth no word of their own: telling that a direction
 // was ignored would describe a `primary_key(...)` the user never gets, right next to the line saying

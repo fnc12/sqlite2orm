@@ -24,4 +24,15 @@ namespace sqlite2orm::parser_test_helpers {
                                {}}};
     }
 
+    std::string repeated(size_t count, std::string_view separator, std::string_view item) {
+        std::string text;
+        for (size_t i = 0; i < count; ++i) {
+            if (i > 0) {
+                text += separator;
+            }
+            text += item;
+        }
+        return text;
+    }
+
 }  // namespace sqlite2orm::parser_test_helpers

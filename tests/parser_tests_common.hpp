@@ -19,6 +19,9 @@ namespace sqlite2orm::parser_test_helpers {
 
     std::vector<FromClauseItem> fromOne(std::string_view tableName);
 
+    /** `item` written `count` times, one after another with `separator` between each two. */
+    std::string repeated(size_t count, std::string_view separator, std::string_view item);
+
     template<typename NodeType>
     const NodeType& requireNode(const ParseResult& parseResult) {
         REQUIRE(parseResult);

@@ -45,7 +45,8 @@ namespace sqlite2orm {
 
     /**
      *  Generated code being assembled together with the map of which statement each stretch of it
-     *  came from. Text is appended either plainly — the punctuation the assembly writes itself,
+     *  came from, and with the finer map of which expression for the fragments that carry one.
+     *  Text is appended either plainly — the punctuation the assembly writes itself,
      *  which no statement is behind — or as a fragment, which records one span; spans therefore
      *  come out sorted, non-overlapping and in the order the code is written in, and nothing has
      *  to parse the assembled text to find out what belongs to whom.
@@ -64,6 +65,16 @@ namespace sqlite2orm {
          *  a gap a consumer sees, one pointing at the wrong statement is a lie it believes.
          */
         void appendFragment(std::string_view text, const std::optional<GeneratedFrom>& origin);
+        /**
+         *  Same as `appendFragment(text, origin)`, placing the expression spans of the fragment too:
+         *  `expressionSpans` count from the start of `text`, as `CodeGenResult::expressionSpans` do,
+         *  and are moved to where `text` lands and named by the statement `origin` names. With no
+         *  origin there is no statement to name them by, so none is placed; neither is a span
+         *  reaching past the end of `text`, which does not describe this text.
+         */
+        void appendFragment(std::string_view text,
+                            const std::optional<GeneratedFrom>& origin,
+                            const std::vector<GeneratedCodeSpan>& expressionSpans);
         /** Appends another piece of assembled code, its spans moved to where its text lands. */
         void appendBuilt(const CodeSpanBuilder& other);
         /** Puts text in front of everything, moving every span it pushes along. */
@@ -84,6 +95,9 @@ namespace sqlite2orm {
         [[nodiscard]] std::vector<GeneratedCodeSpan> takeSpans() {
             return std::move(this->recordedSpans);
         }
+        [[nodiscard]] std::vector<GeneratedCodeSpan> takeExpressionSpans() {
+            return std::move(this->recordedExpressionSpans);
+        }
         [[nodiscard]] bool empty() const {
             return this->text.empty();
         }
@@ -91,6 +105,7 @@ namespace sqlite2orm {
       private:
         std::string text;
         std::vector<GeneratedCodeSpan> recordedSpans;
+        std::vector<GeneratedCodeSpan> recordedExpressionSpans;
         /** Characters of `text`, i.e. the offset the next appended fragment starts at. */
         size_t characters = 0;
     };

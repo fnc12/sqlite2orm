@@ -1,8 +1,10 @@
 #!/bin/sh
 # `sqlite2orm --db <db> --json` must exit 1 and say why on stderr when a statement does not
 # generate, so a script can tell a failed schema from a good one without reading the JSON.
-# `IS NOT <expr>` is what makes the statement fail codegen; it is stored as written by every
-# sqlite3 shell this runs against (checked down to 3.38.5), so the fixture does not need a recent one.
+# A generated column over a hex literal too big for 64 bits is what makes the statement fail codegen:
+# SQLite refuses it inside CREATE TABLE, but stores it as written when ALTER TABLE adds it, and only
+# refuses the statements that read it. Every sqlite3 shell this runs against does so (checked on
+# 3.38.5 and 3.51.0), so the fixture does not need a recent one.
 set -e
 
 cli="$1"
@@ -11,7 +13,7 @@ sqlite3="$2"
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
 
-"$sqlite3" "$dir/v.db" 'CREATE TABLE q (a INTEGER CHECK (a IS NOT 1));'
+"$sqlite3" "$dir/v.db" 'CREATE TABLE q (a INTEGER); ALTER TABLE q ADD COLUMN b INTEGER AS (0x10000000000000000);'
 
 status=0
 "$cli" --db "$dir/v.db" --json > "$dir/out.json" 2> "$dir/err.txt" || status=$?
@@ -19,7 +21,7 @@ status=0
 test "$status" -eq 1
 
 cat > "$dir/err.expected" <<'EOF'
-codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not supported in sqlite_orm
+codegen error [table q]: hex literal too big: 0x10000000000000000
 EOF
 diff "$dir/err.expected" "$dir/err.txt"
 
@@ -38,7 +40,7 @@ test "$status" -eq 1
 
 cat > "$dir/plain_err.expected" <<'EOF'
 warning: CREATE TABLE `q` did not generate and is not merged into make_storage()
-codegen error [table q]: binary IS / IS NOT / IS [NOT] DISTINCT FROM is not supported in sqlite_orm
+codegen error [table q]: hex literal too big: 0x10000000000000000
 EOF
 diff "$dir/plain_err.expected" "$dir/plain_err.txt"
 

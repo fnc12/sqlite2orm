@@ -64,8 +64,14 @@ namespace sqlite2orm {
      *  `make_storage(...)` call the arguments sit in.
      *
      *  A list of these is statement level for good, and so is the promise that its spans never
-     *  overlap: a finer map — down to the expressions inside a statement — comes as a list of its
-     *  own and is never mixed into this one, so a consumer built on this list keeps working as is.
+     *  overlap: the finer map — down to the expressions inside a statement — comes as a list of its
+     *  own (`expressionSpans`) and is never mixed into this one, so a consumer built on this list
+     *  keeps working as is.
+     *
+     *  In that finer list a span stands for one expression of the SQL — `a + 1`, the `a` in it, the
+     *  `1` — and for the code generated from it, so spans there nest the way the expressions do:
+     *  `sqlLocation` and `sqlLength` name the text of the expression rather than of the whole
+     *  statement, and `statementIndex` still names the statement it stands in.
      */
     struct GeneratedCodeSpan {
         /**
@@ -183,6 +189,24 @@ namespace sqlite2orm {
          *  for it.
          */
         std::vector<GeneratedCodeSpan> spans;
+        /**
+         *  Which expression of the SQL each stretch of `code` was generated from, recorded only when
+         *  the policy asks for it (`CodeGenPolicy::recordExpressionSpans`). A consumer showing the
+         *  SQL next to the code highlights the code of `a + 1` from a click on it, and the SQL of
+         *  `c(&User::a) + 1` from a click on that, without parsing either.
+         *
+         *  Offsets count from the start of `code` here, and `statementIndex` is 0: the one
+         *  statement this result was generated from. Spans nest the way the expressions do — the
+         *  span of `a + 1` holds those of `a` and `1` — and never overlap otherwise; they stand in
+         *  the order the code is written in, an outer one before the ones inside it where both
+         *  start together. Two spans may cover the same code: a COLLATE is generated as its operand
+         *  alone, so the operand's code is the code of both.
+         *
+         *  An expression whose code a statement writes without its own span is a gap in the map
+         *  and never a span pointing elsewhere; `COVERAGE.md` names the statements and clauses the
+         *  map reaches into so far.
+         */
+        std::vector<GeneratedCodeSpan> expressionSpans;
 
         bool operator==(const CodeGenResult&) const = default;
     };

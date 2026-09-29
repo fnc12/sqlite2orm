@@ -50,9 +50,11 @@ add_library(sqlite2orm_lib
     src/codegen.cpp
     src/codegen_utils.cpp
     src/code_span_builder.cpp
+    src/spanned_code.cpp
     src/codegen_forms.cpp
     src/select_scope_columns.cpp
     src/expression_subquery_scope.cpp
+    src/correlated_column_scope.cpp
     src/codegen_context.cpp
     src/codegen_expression.cpp
     src/codegen_select.cpp
@@ -185,6 +187,8 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/validator_tests.cpp
         tests/process_tests.cpp
         tests/code_span_builder_tests.cpp
+        tests/spanned_code_tests.cpp
+        tests/expression_spans_tests.cpp
         tests/ast_lifetime_tests.cpp
         tests/schema_reader_tests.cpp
         tests/schema_pipeline_tests.cpp
@@ -273,6 +277,12 @@ if(SQLITE2ORM_BUILD_TESTS)
             NAME sqlite2orm_cli_pragma_value_error_exit_code
             COMMAND $<TARGET_FILE:sqlite2orm_cli> -e "PRAGMA recursive_triggers = NULL;")
         set_tests_properties(sqlite2orm_cli_pragma_value_error_exit_code PROPERTIES WILL_FAIL TRUE)
+        add_test(
+            NAME sqlite2orm_cli_long_union_chain
+            COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:sqlite2orm_cli>"
+                    "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli_long_union_chain" -DARMS=400000
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_long_union_chain.cmake")
+        set_tests_properties(sqlite2orm_cli_long_union_chain PROPERTIES TIMEOUT 30)
         if(UNIX)
             find_program(SQLITE2ORM_SQLITE3_EXECUTABLE sqlite3)
             if(SQLITE2ORM_SQLITE3_EXECUTABLE)

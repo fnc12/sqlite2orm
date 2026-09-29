@@ -81,35 +81,14 @@ TEST_CASE("codegen: a statement with no sqlite_orm form at all is placeheld and 
                 {CodegenWarning{"this statement is not mapped to sqlite_orm codegen", SourceLocation{1, 1}, 16}}});
 }
 
-// The IS branch raises a codegen error as well, and an error makes `generate` answer with the
-// errors alone — so this is the one placeholder a consumer never sees. It goes through the funnel
-// all the same: what the generators hand each other says where it came from.
-TEST_CASE("codegen: the IS placeholder is underlined on the operator's own expression") {
-    REQUIRE(generateNodeOnly("1 IS 2") == CodeGenResult{"/* unsupported IS expression */",
-                                                        {},
-                                                        {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                                                                        "is not supported in sqlite_orm",
-                                                                        SourceLocation{1, 1},
-                                                                        6}}});
-    REQUIRE(generateNodeOnly("SELECT a IS NOT DISTINCT FROM b FROM t") ==
-            CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */, from<T>());",
-                          {},
-                          {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                                          "is not supported in sqlite_orm",
-                                          SourceLocation{1, 8},
-                                          24}}});
-}
-
-// The span a placeholder underlines is measured in characters as well: `ключ IS b` is nine
-// characters written with thirteen bytes, and the warning carries the nine a consumer draws.
+// The span a placeholder underlines is measured in characters as well: `'ключ' IN t` is eleven
+// characters written with fifteen bytes, and the warning carries the eleven a consumer draws.
 TEST_CASE("codegen: a placeholder over non-ASCII SQL is underlined in characters") {
-    REQUIRE(generateNodeOnly("SELECT ключ IS b FROM t") ==
-            CodeGenResult{"auto rows = storage.select(/* unsupported IS expression */, from<T>());",
-                          {},
-                          {CodegenWarning{"binary IS / IS NOT / IS [NOT] DISTINCT FROM "
-                                          "is not supported in sqlite_orm",
-                                          SourceLocation{1, 8},
-                                          9}}});
+    REQUIRE(generateNodeOnly("SELECT 'ключ' IN t FROM t") ==
+            CodeGenResult{
+                "auto rows = storage.select(as_optional(/* \"ключ\" IN t */), from<T>());",
+                {},
+                {CodegenWarning{"IN table-name is not supported in sqlite_orm codegen", SourceLocation{1, 8}, 11}}});
 }
 
 TEST_CASE("codegen: an unmapped EXISTS subquery is underlined together with its keyword") {

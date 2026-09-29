@@ -39,6 +39,15 @@ namespace sqlite2orm {
          *  consumer targeting C++17 therefore never sees C++20-only variants. Defaults to C++20.
          */
         int targetCppStandard = 20;
+
+        /**
+         *  Whether to map the generated code back to the expressions of the SQL it came from, filling
+         *  `CodeGenResult::expressionSpans` (and `JoinedGeneratedCode::expressionSpans` for a batch).
+         *  Off by default: the map costs a span per expression generated, which only a consumer
+         *  highlighting one text from the other has any use for. The code generated is the same
+         *  either way.
+         */
+        bool recordExpressionSpans = false;
     };
 
 }  // namespace sqlite2orm

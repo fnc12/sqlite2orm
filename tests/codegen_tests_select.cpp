@@ -1479,12 +1479,13 @@ TEST_CASE("codegen: a call inside a scalar subquery is typed by the subquery's o
                 {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using "
                  "namespace sqlite_orm::literals` scope for `_ctealias`"}});
 
-    // A reference the nested scope does not name is not answered for at all: over `FROM u` the
-    // outer `t.a` of a correlated subquery comes out `&U::a`, a member of a struct that declares
-    // no such field, and a type taken from `t` would be read through a field the code never names.
+    // A name the nested FROM declares no column of is a correlated reference: SQLite reads `a` of
+    // the outer `t`, the emitter writes it `&T::a`, and so the call is typed from `t` — the clash
+    // with 'x' spells its type and widens the row around it, as when the nested scope clashes.
     result = generateLastOfBatch(
         "CREATE TABLE t(a INTEGER); CREATE TABLE u(b TEXT); SELECT (SELECT coalesce(a, 'x') FROM u) FROM t;");
-    REQUIRE(result.code == "auto rows = storage.select(select(coalesce(&U::a, \"x\")), from<T>());");
+    REQUIRE(result.code == "auto rows = storage.select(as_optional(select(coalesce<std::string>(&T::a, \"x\"), "
+                           "from<U>())), from<T>());");
     REQUIRE(result.warnings.empty());
 }
 
@@ -2222,6 +2223,30 @@ TEST_CASE("codegen: a compared unary plus reports the column affinity it takes a
                                "here",
                                SourceLocation{1, 33},
                                1}});
+    // The IS family compares with the affinity too: sqlite3 3.51 answers `a IS 1` with 1 and
+    // `+a IS 1` with 0, and `a IS DISTINCT FROM 1` with 0 and `+a IS DISTINCT FROM 1` with 1.
+    REQUIRE(generateFull("SELECT * FROM users WHERE +a IS 1;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
+                               SourceLocation{1, 27},
+                               1}});
+    REQUIRE(generateFull("SELECT * FROM users WHERE 1 IS DISTINCT FROM +a;").warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"unary plus over column `a` is dropped: it takes the column's affinity "
+                               "out of the comparison, and sqlite_orm has no form that does. Where that "
+                               "affinity carries — a TEXT column `t` holding '1' — SQLite answers "
+                               "`t = 1` with 1 and `+t = 1` with 0, while the generated comparison is "
+                               "the one without the plus either way. Whether this column is one of "
+                               "those depends on the affinity it was declared with, which is not read "
+                               "here",
+                               SourceLocation{1, 46},
+                               1}});
     // A table qualifier is a column reference all the same, and the affinity it loses is the
     // same one: sqlite3 3.51 answers `+t.a = 1` the way it answers `+a = 1`.
     REQUIRE(generateFull("SELECT * FROM users WHERE +users.a >= 1;").warnings ==
@@ -2325,6 +2350,95 @@ TEST_CASE("codegen: a correlated EXISTS subquery pins both FROM clauses down") {
     REQUIRE(generate("SELECT name FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.uid = users.id);") ==
             "auto rows = storage.select(&Users::name, from<Users>(), where(exists(select(1, from<Orders>(), "
             "where(c(&Orders::uid) == &Users::id)))));");
+}
+
+// SQLite resolves a name that names no table in the innermost query whose FROM declares it, so a
+// name the subquery's own FROM does not declare is a correlated reference to the enclosing query,
+// and it is written the way that query writes it: `TId = Id` under `FROM u` used to come out
+// `&U::Id`, a field `U` does not declare. sqlite3 3.51 reads `Id` of the row of `t` at hand — the
+// values are pinned in "runtime: a correlated name the subquery's FROM does not declare reads the
+// enclosing row".
+TEST_CASE("codegen: a name the subquery's FROM does not declare is a correlated reference to the enclosing query") {
+    const std::string schema = "CREATE TABLE t (\"Id\" INTEGER, [Name] TEXT, PRIMARY KEY(ID)); "
+                               "CREATE TABLE u (uid INTEGER, \"TId\" INTEGER, Name TEXT); "
+                               "CREATE TABLE v (vid INTEGER, vt INTEGER); ";
+    REQUIRE(generateLastOfBatch(schema + "UPDATE t SET Name = (SELECT uid FROM u WHERE TId = Id);").code ==
+            "storage.update_all(set(c(&T::Name) = select(&U::uid, from<U>(), where(c(&U::TId) == &T::Id))));");
+    REQUIRE(generateLastOfBatch(schema + "DELETE FROM t WHERE NOT EXISTS (SELECT 1 FROM u WHERE TId = Id);").code ==
+            "storage.remove_all<T>(where(not (exists(select(1, from<U>(), where(c(&U::TId) == &T::Id))))));");
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t WHERE EXISTS (SELECT 1 FROM u WHERE TId = Id);").code ==
+            "auto rows = storage.select(&T::Name, from<T>(), where(exists(select(1, from<U>(), "
+            "where(c(&U::TId) == &T::Id)))));");
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name, (SELECT uid FROM u WHERE TId = Id) FROM t;").code ==
+            "auto rows = storage.select(columns(&T::Name, select(&U::uid, from<U>(), where(c(&U::TId) == &T::Id))), "
+            "from<T>());");
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t WHERE Id IN (SELECT TId FROM u WHERE uid > Id);").code ==
+            "auto rows = storage.select(&T::Name, from<T>(), where(in(&T::Id, select(&U::TId, from<U>(), "
+            "where(c(&U::uid) > &T::Id)))));");
+
+    // An aliased enclosing source answers to its alias, as any name of that query does.
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t a WHERE EXISTS (SELECT 1 FROM u WHERE TId = Id);").code ==
+            "auto rows = storage.select(alias_column<alias_a<T>>(&T::Name), from<alias_a<T>>(), "
+            "where(exists(select(1, from<U>(), where(c(&U::TId) == alias_column<alias_a<T>>(&T::Id))))));");
+
+    // Two levels down, each name resolves in the nearest query declaring it: `uid` in `u`, `Id` in `t`.
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t WHERE EXISTS (SELECT 1 FROM u WHERE EXISTS "
+                                         "(SELECT 1 FROM v WHERE vid = uid AND TId = Id));")
+                .code == "auto rows = storage.select(&T::Name, from<T>(), where(exists(select(1, from<U>(), "
+                         "where(exists(select(1, from<V>(), where(c(&V::vid) == &U::uid and c(&U::TId) == "
+                         "&T::Id))))))));");
+
+    // A name both queries declare is the subquery's own: `Name` here is `u.Name`.
+    REQUIRE(
+        generateLastOfBatch(schema + "SELECT Name FROM t WHERE EXISTS (SELECT 1 FROM u WHERE TId = Id AND Name = 'x');")
+            .code == "auto rows = storage.select(&T::Name, from<T>(), where(exists(select(1, from<U>(), "
+                     "where(c(&U::TId) == &T::Id and c(&U::Name) == \"x\")))));");
+
+    // An enclosing query over a CTE: no table declares the CTE's columns, but no other query around
+    // the subquery declares `Id`, so the CTE is where SQLite resolves it.
+    REQUIRE(generateLastOfBatch(schema + "WITH c AS (SELECT Id FROM t) SELECT Id FROM c WHERE EXISTS "
+                                         "(SELECT 1 FROM u WHERE TId = Id);")
+                .code == "using namespace sqlite_orm::literals;\n"
+                         "using cte_0 = decltype(1_ctealias);\n"
+                         "auto rows = storage.with(cte<cte_0>().as(select(&T::Id)), select(column<cte_0>(&T::Id), "
+                         "from<cte_0>(), where(exists(select(1, from<U>(), where(c(&U::TId) == "
+                         "column<cte_0>(&T::Id)))))));");
+}
+
+// SQLite resolves a name the subquery's FROM does not declare against the subquery's own result
+// aliases before any enclosing query, everywhere but in the result list itself, and reads the
+// aliased expression in its place: sqlite3 3.51 compares `uid` in `WHERE Id > 150` and orders by
+// `uid`. Read as a correlated `&T::Id`, those compiled and returned other rows; the values are
+// pinned in "runtime: a subquery's own result alias answers for a name before the enclosing row".
+TEST_CASE("codegen: a subquery's own result alias answers for a name before the enclosing query") {
+    const std::string schema = "CREATE TABLE t (\"Id\" INTEGER, [Name] TEXT, PRIMARY KEY(ID)); "
+                               "CREATE TABLE u (uid INTEGER, \"TId\" INTEGER); ";
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u WHERE Id > 150) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, where(c(&U::uid) > 150)), from<T>());");
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid AS Id FROM u ORDER BY Id DESC) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, order_by(&U::uid).desc()), from<T>());");
+
+    // The ORDER BY, the LIMIT and the OFFSET of a subquery see no enclosing query: sqlite3 3.51
+    // rejects `ORDER BY Id` and `OFFSET Id` here with "no such column: Id", so they are not written
+    // as the enclosing `&T::Id` — which would compile, and fail in SQLite only once prepared. The
+    // result list does see it, but `ORDER BY Id` naming the alias of `uid + Id` has no spelling
+    // outside the alias, since the text `"t"."Id"` in the ORDER BY is rejected all the same.
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid FROM u ORDER BY Id) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, order_by(&U::Id)), from<T>());");
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid FROM u LIMIT 1 OFFSET Id) FROM t;").code ==
+            "auto rows = storage.select(select(&U::uid, limit(1, offset(&U::Id))), from<T>());");
+    REQUIRE(generateLastOfBatch(schema + "SELECT (SELECT uid + Id AS Id FROM u ORDER BY Id DESC) FROM t;").code ==
+            "auto rows = storage.select(as_optional(select(c(&U::uid) + &T::Id, from<U>(), "
+            "order_by(c(&U::uid) + &U::Id).desc())), from<T>());");
+    // A subquery in the ORDER BY of the outermost query still reads that query's row.
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t ORDER BY (SELECT uid FROM u WHERE TId = Id);").code ==
+            "auto rows = storage.select(&T::Name, from<T>(), order_by(select(&U::uid, from<U>(), "
+            "where(c(&U::TId) == &T::Id))));");
+
+    // A column the FROM declares comes before an alias of the same name: `TId` is `u.TId`.
+    REQUIRE(generateLastOfBatch(schema + "SELECT Name FROM t WHERE EXISTS (SELECT uid AS TId FROM u WHERE TId = Id);")
+                .code == "auto rows = storage.select(&T::Name, from<T>(), where(exists(select(&U::uid, from<U>(), "
+                         "where(c(&U::TId) == &T::Id)))));");
 }
 
 TEST_CASE("codegen: a scalar subquery result column pins the outer FROM down") {
@@ -2864,6 +2978,16 @@ TEST_CASE("codegen: a select over a CTE naming no recordset carries its FROM") {
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
             "auto rows = storage.with(cte<cte_0>().as(select(&Users::id)), select(1, from<cte_0>()));");
+}
+
+// An IS is never NULL, but it is a `bool` like the comparison beside it, and the arms of a compound
+// are read back through one type: the `=` arm is widened, so the IS arm is widened with it. Over a
+// row with `a = 1` and `b` NULL, sqlite3 3.51 answers `SELECT a IS b … UNION ALL SELECT a = b …` with
+// 0 and NULL, which is what the generated select reads back.
+TEST_CASE("codegen: an IS arm of a compound SELECT is widened with a comparison arm") {
+    REQUIRE(generate("SELECT a IS b UNION ALL SELECT a = b;") ==
+            "auto rows = storage.select(union_all(select(as_optional(is(&User::a, &User::b))), "
+            "select(as_optional(c(&User::a) == &User::b))));");
 }
 
 // A compound SELECT hands its rows to the caller the way a plain one does, so its result columns

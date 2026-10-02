@@ -688,6 +688,9 @@ TEST_CASE("codegen: a name sqlite_orm spells otherwise is generated under the li
     // CHAR takes any number of arguments in the library and in SQLite alike — `SELECT char()` is
     // the empty text on sqlite3 3.51.0 — so the argument-less call is generated too.
     REQUIRE(generate("SELECT char();") == "auto rows = storage.select(char_());");
+    // `f(*)` is the argument-less call to SQLite (`quote(char(*))` is '' on sqlite3 3.51.0), and the
+    // star form is spelled the same way — a bare `char()` would compile as a zero char.
+    REQUIRE(generate("SELECT char(*) FROM users;") == "auto rows = storage.select(char_(), from<Users>());");
     REQUIRE(generate("SELECT typeof(name) FROM users WHERE typeof(id) = 'integer';") ==
             "auto rows = storage.select(typeof_(&Users::name), where(typeof_(&Users::id) == \"integer\"));");
 

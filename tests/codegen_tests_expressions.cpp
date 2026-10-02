@@ -130,6 +130,17 @@ namespace {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    // The hint attached to every predicate the generator delimits in the pattern or the ESCAPE of
+    // a LIKE, GLOB or MATCH; asserted on its own in "codegen: a predicate cast after the keyword
+    // of a LIKE carries its comment".
+    const std::string kPredicatePatternCastComment =
+        "A predicate in the pattern or the ESCAPE of a LIKE, GLOB or MATCH is generated as "
+        "`cast<int64_t>(…)`: sqlite_orm serializes those with no parentheses around their arguments, "
+        "and SQLite reads the predicates left-associatively at one rank, so `a LIKE (b IS NULL)` "
+        "would be read back as `(a LIKE b) IS NULL`. The CAST delimits the predicate and leaves what "
+        "it stands for alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, "
+        "typeof included.";
+
     // The hint attached to every bitwise result column; asserted with its anchor in
     // "codegen: a hint is anchored at the SQL it explains".
     const std::string kBitwiseResultCastComment =
@@ -1171,6 +1182,49 @@ TEST_CASE("codegen: an AND or an OR in a predicate argument is cast to stay one 
         // not have the type of a number — but the SQL it stands for needs no CAST.
         REQUIRE(generate("a IN (1 OR 0, 2)") == "in(&User::a, {or_(1, 0), 2})");
     }
+}
+
+TEST_CASE("codegen: a predicate after the keyword of a LIKE, GLOB or MATCH is cast to stay one SQL term") {
+    SECTION("the pattern and the ESCAPE take a predicate in") {
+        // SQLite reads the predicates and `=` left-associatively at one rank, so a bare one here
+        // hands its left operand to the predicate before it: `"a" LIKE "b" IS NULL` is
+        // `("a" LIKE "b") IS NULL`.
+        REQUIRE(generate("a LIKE (b IS NULL)") == "like(&User::a, cast<int64_t>(is_null(&User::b)))");
+        REQUIRE(generate("a LIKE (b NOT NULL)") == "like(&User::a, cast<int64_t>(is_not_null(&User::b)))");
+        REQUIRE(generate("a LIKE (b = 1)") == "like(&User::a, cast<int64_t>(c(&User::b) == 1))");
+        REQUIRE(generate("a LIKE (b IS 1)") == "like(&User::a, cast<int64_t>(is(&User::b, 1)))");
+        REQUIRE(generate("a LIKE (b IN (1, 2))") == "like(&User::a, cast<int64_t>(in(&User::b, {1, 2})))");
+        REQUIRE(generate("a LIKE (b BETWEEN 1 AND 2)") == "like(&User::a, cast<int64_t>(between(&User::b, 1, 2)))");
+        REQUIRE(generate("a LIKE (b LIKE 'x')") == R"(like(&User::a, cast<int64_t>(like(&User::b, "x"))))");
+        REQUIRE(generate("a NOT LIKE (b IS NULL)") == "!like(&User::a, cast<int64_t>(is_null(&User::b)))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b IS NULL)") ==
+                R"(like(&User::a, "x", cast<int64_t>(is_null(&User::b))))");
+        REQUIRE(generate("a GLOB (b IS NULL)") == "glob(&User::a, cast<int64_t>(is_null(&User::b)))");
+        REQUIRE(generate("a NOT GLOB (b = 1)") == "!glob(&User::a, cast<int64_t>(c(&User::b) == 1))");
+        REQUIRE(generate("a MATCH (b IS NULL)") == "match(&User::a, cast<int64_t>(is_null(&User::b)))");
+    }
+    SECTION("a NOT there takes what follows the predicate into itself") {
+        REQUIRE(generate("a LIKE (NOT b)") == "like(&User::a, cast<int64_t>(not column<User>(&User::b)))");
+    }
+    SECTION("an operand SQLite binds tighter than the predicates is left bare") {
+        REQUIRE(generate("a LIKE (b < 1)") == "like(&User::a, c(&User::b) < 1)");
+        REQUIRE(generate("a LIKE (b || 'x')") == R"(like(&User::a, c(&User::b) || "x"))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b || 'y')") == R"(like(&User::a, "x", c(&User::b) || "y"))");
+    }
+    SECTION("the operand before the keyword is left bare") {
+        // The predicate before it already groups left-associatively there.
+        REQUIRE(generate("(a IS NULL) LIKE b") == "like(is_null(&User::a), &User::b)");
+        REQUIRE(generate("(a = 1) GLOB b") == "glob(c(&User::a) == 1, &User::b)");
+    }
+}
+
+TEST_CASE("codegen: a predicate cast after the keyword of a LIKE carries its comment") {
+    REQUIRE(generateFull("SELECT 'x' LIKE (a IS NULL) FROM users;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kPredicatePatternCastComment, SourceLocation{1, 17}, 11}});
+    REQUIRE(generateFull("SELECT 'x' LIKE (a OR b) FROM users;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 17}, 8},
+                                        CodegenComment{kAndOrPredicateArgumentCastComment, SourceLocation{1, 17}, 8}});
+    REQUIRE(generateFull("SELECT 'x' LIKE (a < 1) FROM users;").comments.empty());
 }
 
 TEST_CASE("codegen: an AND or an OR cast in a predicate argument carries its comment") {

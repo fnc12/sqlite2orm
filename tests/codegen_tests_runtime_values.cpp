@@ -1313,6 +1313,41 @@ TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQ
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
 }
 
+// The same bare argument regroups after the keyword of a LIKE or a GLOB with a predicate too:
+// SQLite reads the predicates and `=` left-associatively at one rank, so `like(7, is_null(&User::a))`
+// ran as `SELECT 7 LIKE "a" IS NULL`, that is `(7 LIKE "a") IS NULL`, and answered 1 over a NULL
+// row where SQLite answers 0 for the source. A bare comparison in the ESCAPE was read as
+// `("x" LIKE "x" ESCAPE 'ab') = 'b'` and threw `ESCAPE expression must be a single character`.
+// Expected values checked against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL first
+// and 7 second; without the CAST the 7 row answers 0, 0, 0, 0, 0, 0, 1 for the first seven.
+TEST_CASE("runtime: a predicate after the keyword of a LIKE or a GLOB returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT 7 LIKE (a IS NULL);"),
+        generate("SELECT '1' LIKE (a = 7);"),
+        generate("SELECT '0' GLOB (a IS NULL);"),
+        generate("SELECT '1' LIKE (a IN (7));"),
+        generate("SELECT '1' LIKE (a BETWEEN 1 AND 9);"),
+        generate("SELECT '1' LIKE ('x' LIKE 'x');"),
+        generate("SELECT ('1' LIKE (NOT a)) IS NULL;"),
+        generate("SELECT 'x' LIKE 'x' ESCAPE ('ab' = 'b');"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(like(7, cast<int64_t>(is_null(&User::a))));",
+                "auto rows = storage.select(as_optional(like(\"1\", cast<int64_t>(c(&User::a) == 7))));",
+                "auto rows = storage.select(glob(\"0\", cast<int64_t>(is_null(&User::a))));",
+                "auto rows = storage.select(as_optional(like(\"1\", cast<int64_t>(in(&User::a, {7})))));",
+                "auto rows = storage.select(as_optional(like(\"1\", cast<int64_t>(between(&User::a, 1, 9)))));",
+                "auto rows = storage.select(like(\"1\", cast<int64_t>(like(\"x\", \"x\"))));",
+                "auto rows = storage.select(is_null(like(\"1\", cast<int64_t>(not column<User>(&User::a)))));",
+                "auto rows = storage.select(like(\"x\", \"x\", cast<int64_t>(c(\"ab\") == \"b\")));",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"0", "NULL", "0", "NULL", "NULL", "1", "1", "1"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"0", "1", "1", "1", "1", "1", "0", "1"});
+}
+
 // sqlite_orm spells `or` and the concatenation with the same `operator||`, and picks between them
 // by the operands, so an OR over operands that are no conditions is generated as the `or_(…)` call
 // — an `or_condition_t` either way, which sqlite_orm negates. The `conc_t` the operator spelling

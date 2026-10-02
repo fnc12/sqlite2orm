@@ -2186,6 +2186,24 @@ TEST_CASE("runtime: a CASE result column that can be NULL reads the NULL back") 
             std::vector<std::string>{"NULL", "NULL", "NULL", "7", "1", "2", "4"});
 }
 
+// An ELSE NULL written out is the third NULL a CASE has (card 1867492510641686193): no branch
+// matching lands on it, while a matching branch still answers with its own value. Expected rows
+// checked against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL first and 7 second.
+TEST_CASE("runtime: a CASE result column with ELSE NULL reads the NULL back") {
+    const std::vector<std::string> statements{
+        generate("SELECT CASE WHEN 0 THEN 1 ELSE NULL END;"),
+        generate("SELECT CASE WHEN a THEN 1 ELSE NULL END;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(case_<int>().when(0, then(1)).else_(nullptr).end()));",
+                "auto rows = storage.select(as_optional(case_<int>().when(&User::a, then(1)).else_(nullptr).end()));",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"NULL", "1"});
+}
+
 // Code that names no recordset leaves sqlite_orm nothing to build a FROM out of, so the table was
 // dropped and every statement below answered with a single row — code that compiles, runs and is
 // silently wrong (card 1868386485619656482). Expected rows checked against sqlite3 3.51 over

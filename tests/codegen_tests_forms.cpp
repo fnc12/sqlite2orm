@@ -1,10 +1,12 @@
 #include "codegen_tests_common.hpp"
 #include "source_file_text.hpp"
+#include "temp_build_dir.hpp"
 
 #include <sqlite2orm/validator.h>
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <map>
 #include <regex>
 #include <sstream>
@@ -734,6 +736,93 @@ TEST_CASE("codegen: a name sqlite_orm spells otherwise is generated under the li
                 {kStatementNotGenerated}});
 }
 
+// The generated code is read under `using namespace sqlite_orm;`, and the C library declares a
+// function in the global namespace under some of the names sqlite_orm declares a built-in under. A
+// bare call of one of them is looked up in both: `random()` is ambiguous with POSIX `::random()`
+// and does not compile, while `abs(-5)`, and `round(1.5)` or `log(100.0)` once <cmath> is
+// included, resolve to the C function and are evaluated in C++ before SQLite sees the query — C's
+// `log` being the natural logarithm, where SQLite's is the decimal one. Each of them is written
+// qualified, every argument list alike, and every other name is not.
+TEST_CASE("codegen: a built-in the C library declares a function under is generated qualified") {
+    REQUIRE(
+        generate("SELECT abs(id), acos(size), acosh(size), asin(size), asinh(size), atan(size), atan2(size, 1.0), "
+                 "atanh(size), ceil(size), cos(size), cosh(size), exp(size), floor(size), log(size), log10(size), "
+                 "log2(size), pow(size, 2), printf('%d', id), random(), round(size), sin(size), sinh(size), "
+                 "sqrt(size), strftime('%Y', 'now'), tan(size), tanh(size), time(), trunc(size) FROM users;") ==
+        "auto rows = storage.select(columns(sqlite_orm::abs(&Users::id), as_optional(sqlite_orm::acos(&Users::size)), "
+        "as_optional(sqlite_orm::acosh(&Users::size)), as_optional(sqlite_orm::asin(&Users::size)), "
+        "as_optional(sqlite_orm::asinh(&Users::size)), as_optional(sqlite_orm::atan(&Users::size)), "
+        "as_optional(sqlite_orm::atan2(&Users::size, 1.0)), as_optional(sqlite_orm::atanh(&Users::size)), "
+        "as_optional(sqlite_orm::ceil(&Users::size)), as_optional(sqlite_orm::cos(&Users::size)), "
+        "as_optional(sqlite_orm::cosh(&Users::size)), as_optional(sqlite_orm::exp(&Users::size)), "
+        "as_optional(sqlite_orm::floor(&Users::size)), as_optional(sqlite_orm::log(&Users::size)), "
+        "as_optional(sqlite_orm::log10(&Users::size)), as_optional(sqlite_orm::log2(&Users::size)), "
+        "as_optional(sqlite_orm::pow(&Users::size, 2)), as_optional(sqlite_orm::printf(\"%d\", &Users::id)), "
+        "sqlite_orm::random(), as_optional(sqlite_orm::round(&Users::size)), "
+        "as_optional(sqlite_orm::sin(&Users::size)), "
+        "as_optional(sqlite_orm::sinh(&Users::size)), as_optional(sqlite_orm::sqrt(&Users::size)), "
+        "as_optional(sqlite_orm::strftime(\"%Y\", \"now\")), as_optional(sqlite_orm::tan(&Users::size)), "
+        "as_optional(sqlite_orm::tanh(&Users::size)), as_optional(sqlite_orm::time()), "
+        "as_optional(sqlite_orm::trunc(&Users::size))));");
+    REQUIRE(generate("SELECT random();") == "auto rows = storage.select(sqlite_orm::random());");
+    REQUIRE(generate("SELECT log(100.0), abs(-5);") ==
+            "auto rows = storage.select(columns(as_optional(sqlite_orm::log(100.0)), sqlite_orm::abs(-5)));");
+    // A name the library spells otherwise is spelled the library's way and needs no qualifier, and
+    // a name the C library does not declare is written bare as before.
+    REQUIRE(generate("SELECT typeof(id), length(name), max(id, 1) FROM users;") ==
+            "auto rows = storage.select(columns(typeof_(&Users::id), as_optional(length(&Users::name)), "
+            "max(&Users::id, 1)));");
+}
+
+// The list of qualified names is held to the C library the tests are built with: every name of the
+// registry that the C headers declare in the global namespace has to be on it, so a name that
+// becomes ambiguous on some platform shows up here rather than in a consumer's build. Which names a
+// C library declares differs between platforms, so the list may carry more than one of them
+// declares, but never fewer — and never a name the registry does not carry.
+TEST_CASE("codegen: every registry name the C library declares is one codegen qualifies") {
+    const std::string registry = readSourceFile("src/codegen_forms.cpp");
+    const std::vector<std::string> recorded = namesMatching(initializerBodyAfter(registry, "kFunctionForms"),
+                                                            std::regex{"\\{\"([a-z0-9_]+)\",\\s*SqliteOrmFormKind::"});
+    const std::vector<std::string> qualified =
+        namesMatching(initializerBodyAfter(registry, "kNamesTheCLibraryDeclares"), std::regex{"\"([a-z0-9_]+)\""});
+    REQUIRE(recorded.size() == 131);
+    REQUIRE(qualified.size() == 28);
+
+    std::vector<std::string> notInRegistry;
+    for (const std::string& name: qualified) {
+        if (!std::binary_search(recorded.begin(), recorded.end(), name)) {
+            notInRegistry.push_back(name);
+        }
+    }
+    REQUIRE(notInRegistry == std::vector<std::string>{});
+
+    const codegen_test_helpers::TempBuildDir dir;
+    std::vector<std::string> declaredByCLibrary;
+    std::vector<std::string> declaredButBare;
+    for (const std::string& name: recorded) {
+        const std::filesystem::path probe = dir.write("probe.cpp",
+                                                      "#include <cmath>\n"
+                                                      "#include <cstdio>\n"
+                                                      "#include <cstdlib>\n"
+                                                      "#include <cstring>\n"
+                                                      "#include <ctime>\n"
+                                                      "using ::" +
+                                                          name + ";\n");
+        const std::string command = codegen_test_helpers::TempBuildDir::compilerCommand() + " -fsyntax-only " +
+                                    probe.string() + " > " + dir.file("probe.out").string() + " 2>&1";
+        if (codegen_test_helpers::TempBuildDir::run(command) != 0) {
+            continue;
+        }
+        declaredByCLibrary.push_back(name);
+        if (!std::binary_search(qualified.begin(), qualified.end(), name)) {
+            declaredButBare.push_back(name);
+        }
+    }
+    // A probe that never compiled would agree with anything; `abs` is declared by every C library.
+    REQUIRE(std::binary_search(declaredByCLibrary.begin(), declaredByCLibrary.end(), std::string("abs")));
+    REQUIRE(declaredButBare == std::vector<std::string>{});
+}
+
 // A name the library has no call of at all is the quietest of the lot, because what it generates
 // is not even a call. The two names it merely spells otherwise are generated under that spelling;
 // what is left here is a name it has no form for under any spelling.
@@ -814,7 +903,8 @@ TEST_CASE("codegen: a call the registry has a form for is generated unchanged") 
     REQUIRE(generate("SELECT substr(name, 1, 2) FROM users;") ==
             "auto rows = storage.select(as_optional(substr(&Users::name, 1, 2)));");
     REQUIRE(generate("SELECT round(1.5), log(2, 8), coalesce(id, 1), max(id, size) FROM users;") ==
-            "auto rows = storage.select(columns(round(1.5), as_optional(log(2, 8)), coalesce(&Users::id, 1), "
+            "auto rows = storage.select(columns(sqlite_orm::round(1.5), as_optional(sqlite_orm::log(2, 8)), "
+            "coalesce(&Users::id, 1), "
             "max(&Users::id, &Users::size)));");
 }
 

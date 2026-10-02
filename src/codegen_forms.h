@@ -151,9 +151,12 @@ namespace sqlite2orm {
      *  the same text: `typeof(x)` is a compiler extension in C++ and `char(65)` a cast, so a
      *  generated `typeof(&T::x)` builds nowhere and a generated `char(65)` builds into a `char`
      *  nobody asked for, while a generated `mod(a, b)` builds into the `%` operator, which is a
-     *  different function.
+     *  different function. A name the C library declares a function under as well, such as
+     *  `random` or `abs`, is written qualified as `sqlite_orm::random`, because the generated code
+     *  is read under `using namespace sqlite_orm;` and a bare call there is ambiguous with the C
+     *  function or resolves to it.
      */
-    std::string_view sqliteOrmCallSpelling(std::string_view lowerFunctionName);
+    std::string sqliteOrmCallSpelling(std::string_view lowerFunctionName);
 
     /**
      *  The form a written call resolves to: the single place where a call is matched against the

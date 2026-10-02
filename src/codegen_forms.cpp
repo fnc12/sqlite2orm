@@ -478,6 +478,25 @@ namespace sqlite2orm {
                              "would not be";
         }
 
+        /**
+         *  The names sqlite_orm declares a builtin under that the C library declares a function
+         *  under too, in the global namespace: <stdlib.h> declares `abs` and the POSIX `random`,
+         *  <math.h> the math functions, <stdio.h> `printf` and <time.h> `strftime` and `time`.
+         *  The generated code is read under `using namespace sqlite_orm;`, so a bare call of one
+         *  of them is looked up in both, and how that ends depends on the arguments and on which
+         *  C headers the consumer's translation unit happens to pull in: `random()` is ambiguous
+         *  and does not compile, while `abs(-5)` — and, once <cmath> is in, `log(100.0)` — resolve
+         *  to the C function, which is evaluated in C++ and leaves SQLite a constant (C's `log` is
+         *  the natural logarithm and SQLite's the decimal one). Each is the intersection of the
+         *  registry with the global functions glibc declares once the sqlite_orm header and
+         *  <cmath>, <cstdlib>, <cstdio>, <ctime> and <cstring> are included.
+         */
+        constexpr std::array<std::string_view, 28> kNamesTheCLibraryDeclares{{
+            "abs",  "acos", "acosh", "asin",     "asinh", "atan", "atan2", "atanh",  "ceil",   "cos",
+            "cosh", "exp",  "floor", "log",      "log10", "log2", "pow",   "printf", "random", "round",
+            "sin",  "sinh", "sqrt",  "strftime", "tan",   "tanh", "time",  "trunc",
+        }};
+
     }  // namespace
 
     const SqliteOrmFunctionForm* sqliteOrmFunctionForm(std::string_view lowerFunctionName) {
@@ -489,12 +508,19 @@ namespace sqlite2orm {
         return found == kFunctionForms.end() ? nullptr : &*found;
     }
 
-    std::string_view sqliteOrmCallSpelling(std::string_view lowerFunctionName) {
+    std::string sqliteOrmCallSpelling(std::string_view lowerFunctionName) {
         const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(lowerFunctionName);
-        if (form == nullptr || form->ormSpelling.empty()) {
-            return lowerFunctionName;
+        if (form == nullptr) {
+            return std::string(lowerFunctionName);
         }
-        return form->ormSpelling;
+        if (!form->ormSpelling.empty()) {
+            return std::string(form->ormSpelling);
+        }
+        if (std::find(kNamesTheCLibraryDeclares.begin(), kNamesTheCLibraryDeclares.end(), lowerFunctionName) !=
+            kNamesTheCLibraryDeclares.end()) {
+            return "sqlite_orm::" + std::string(lowerFunctionName);
+        }
+        return std::string(lowerFunctionName);
     }
 
     std::optional<SqliteOrmFunctionForm> resolveFunctionCallForm(std::string_view lowerFunctionName,

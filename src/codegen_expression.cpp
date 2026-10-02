@@ -1790,7 +1790,7 @@ namespace sqlite2orm {
                     this->context.recordEmittedTableType(countRowType);
                     generatedAsCountAsterisk = true;
                 } else {
-                    baseCode = std::string(sqliteOrmCallSpelling(funcName)) + "()";
+                    baseCode = sqliteOrmCallSpelling(funcName) + "()";
                 }
             } else {
                 CustomFunctionUse customUse;
@@ -1833,9 +1833,10 @@ namespace sqlite2orm {
                     // A builtin whose result type sqlite_orm cannot deduce is generated with the
                     // one it is read back through spelled out; every other call names none. The
                     // name itself is the library's spelling of it, which is the SQL name but for
-                    // the three the library spells otherwise.
-                    const std::string callName = std::string(sqliteOrmCallSpelling(funcName)) +
-                                                 functionCallResultTypeArgument(*funcCall, this->context);
+                    // the three the library spells otherwise, qualified where the C library
+                    // declares the same name.
+                    const std::string callName =
+                        sqliteOrmCallSpelling(funcName) + functionCallResultTypeArgument(*funcCall, this->context);
                     if (funcCall->distinct && !argList.empty()) {
                         baseCode = callName + "(distinct(" + argList + "))";
                     } else {

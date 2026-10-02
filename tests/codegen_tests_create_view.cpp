@@ -650,6 +650,6 @@ TEST_CASE("codegen: CREATE VIEW - a field over a built-in call is typed by the r
             "\n"
             "auto storage = make_storage(\"\",\n"
             "    make_view<V>(select(columns(concat(&T::b, &T::i), unixepoch(), octet_length(&T::b), unhex(&T::b), "
-            "median(&T::i), if_(&T::i, &T::b, \"x\"), acosh(&T::i)))));");
+            "median(&T::i), if_(&T::i, &T::b, \"x\"), sqlite_orm::acosh(&T::i)))));");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{cpp26ViewWarning("v", 2)});
 }

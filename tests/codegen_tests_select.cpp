@@ -1050,6 +1050,10 @@ TEST_CASE("codegen: a scalar subquery that needs no widening keeps the type sqli
             "auto rows = storage.select(select(&Users::a), from<Users>());");
     REQUIRE(generate("SELECT a FROM users WHERE (SELECT 1 / 0);") ==
             "auto rows = storage.select(&Users::a, where(select(c(1) / 0)));");
+    // A subquery of more than one column carries no single result column to widen: sqlite3 3.51
+    // rejects it ("sub-select returns 2 columns - expected 1"), and `as_optional` over the
+    // `columns(...)` tuple would not compile.
+    REQUIRE(generate("SELECT (SELECT 1 / 0, 2);") == "auto rows = storage.select(select(columns(c(1) / 0, 2)));");
 }
 
 // A NaN is the one value SQLite has no storage class for, so it stores one as NULL: `+`, `-` and

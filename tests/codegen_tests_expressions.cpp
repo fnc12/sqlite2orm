@@ -130,6 +130,17 @@ namespace {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    // The hint attached to every NOT the generator delimits in a predicate's argument slot; asserted
+    // on its own in "codegen: a NOT cast in a predicate argument carries its comment".
+    const std::string kNotPredicateArgumentCastComment =
+        "A NOT in the argument of a predicate is generated as `cast<int64_t>(…)`: sqlite_orm "
+        "serializes a negation as a prefix `NOT` — `!between(…)`, `!like(…)` and `not x` alike — and "
+        "IN, BETWEEN, LIKE, GLOB, MATCH and IS [NOT] NULL with no parentheses around their "
+        "arguments, and SQLite binds NOT looser than every predicate, so `is_null(!between(b, 1, 2))` "
+        "would be read back as `NOT (b BETWEEN 1 AND 2 IS NULL)`. The CAST delimits the argument and "
+        "leaves what it stands for alone — a NOT is 0, 1 or NULL, and a CAST to INTEGER keeps all "
+        "three, typeof included.";
+
     // The hint attached to every predicate the generator delimits in the pattern or the ESCAPE of
     // a LIKE, GLOB or MATCH; asserted on its own in "codegen: a predicate cast after the keyword
     // of a LIKE carries its comment".
@@ -1246,6 +1257,67 @@ TEST_CASE("codegen: an AND or an OR cast in a predicate argument carries its com
     REQUIRE(generateFull("SELECT (1 AND 0) IS NULL;").comments ==
             std::vector<CodegenComment>{CodegenComment{kAndOrPredicateArgumentCastComment, SourceLocation{1, 8}, 9}});
     REQUIRE(generateFull("SELECT (a = 1) IS NULL;").comments.empty());
+}
+
+// A negation sqlite_orm serializes as a prefix `NOT` — `not x`, and every negated predicate
+// generated as `!pred` — binds looser than the predicates too, so a bare one in a predicate
+// argument takes the rest of the predicate into itself: `is_null(!between(&User::b, 1, 2))` comes
+// out `NOT "b" BETWEEN 1 AND 2 IS NULL`, which SQLite reads as `NOT ("b" BETWEEN 1 AND 2 IS NULL)`.
+TEST_CASE("codegen: a NOT in a predicate argument is cast to stay one SQL term") {
+    SECTION("a negated predicate generated as `!pred`") {
+        REQUIRE(generate("(b NOT BETWEEN 'x' AND 'x') IS NULL") ==
+                R"(is_null(cast<int64_t>(!between(&User::b, "x", "x"))))");
+        REQUIRE(generate("(b NOT LIKE 'x') IS NOT NULL") == R"(is_not_null(cast<int64_t>(!like(&User::b, "x"))))");
+        REQUIRE(generate("(b NOT GLOB 'x') IN (0, 1)") == R"(in(cast<int64_t>(!glob(&User::b, "x")), {0, 1}))");
+        REQUIRE(generate("(a NOT MATCH 'x') IS NULL") == R"(is_null(cast<int64_t>(!match(&User::a, "x"))))");
+        REQUIRE(generate("(b NOT LIKE 'x') BETWEEN 0 AND 1") ==
+                R"(between(cast<int64_t>(!like(&User::b, "x")), 0, 1))");
+        REQUIRE(generate("(b NOT LIKE 'x') LIKE 'y'") == R"(like(cast<int64_t>(!like(&User::b, "x")), "y"))");
+        REQUIRE(generate("(b NOT LIKE 'x') GLOB 'y'") == R"(glob(cast<int64_t>(!like(&User::b, "x")), "y"))");
+    }
+    SECTION("a NOT operator") {
+        REQUIRE(generate("(NOT b) IS NULL") == "is_null(cast<int64_t>(not column<User>(&User::b)))");
+        REQUIRE(generate("(NOT b) NOT IN (0, 1)") == "not_in(cast<int64_t>(not column<User>(&User::b)), {0, 1})");
+        REQUIRE(generate("'x' LIKE 'y' ESCAPE (NOT b)") ==
+                R"(like("x", "y", cast<int64_t>(not column<User>(&User::b))))");
+        // `between(A, T, T)` deduces one type for both bounds, so this does not compile, cast or
+        // not, and is warned about; the bound runs into whatever follows the BETWEEN all the same.
+        REQUIRE(generate("1 BETWEEN 0 AND (NOT b)") == "between(1, 0, cast<int64_t>(not column<User>(&User::b)))");
+    }
+    SECTION("the sweep case: a NOT over predicates over a negated BETWEEN") {
+        REQUIRE(generate("NOT (b) NOT BETWEEN 'x' AND 'x' IS NULL ISNULL") ==
+                R"(not (is_null(is_null(cast<int64_t>(!between(&User::b, "x", "x"))))))");
+    }
+    SECTION("a NOT IN generated as `not_in(…)` is a predicate of its own and left bare") {
+        REQUIRE(generate("(b NOT IN (1, 2)) IS NULL") == "is_null(not_in(&User::b, {1, 2}))");
+    }
+    SECTION("a negated predicate under a binary operator ranks as a NOT too") {
+        // `NOT "b" LIKE 'x' = 2` is `NOT ("b" LIKE 'x' = 2)`, where the left operand of `=` alone
+        // regrouped nothing at the rank of a predicate.
+        REQUIRE(generate("(b NOT LIKE 'x') = 2") == R"(cast<int64_t>(!like(&User::b, "x")) == 2)");
+        REQUIRE(generate("(b LIKE 'x') = 2") == R"(like(&User::b, "x") == 2)");
+    }
+    SECTION("the operand of an AND or an OR is left bare") {
+        REQUIRE(generate("(b NOT LIKE 'x') AND 1") == R"(!like(&User::b, "x") and 1)");
+    }
+}
+
+// `!in(…)` is a `negated_condition_t` as well, serialized as `NOT "b" IN (1, 2)`, so the policy
+// that picks it over `not_in(…)` picks the CAST with it.
+TEST_CASE("codegen: a NOT IN generated as `!in(…)` is cast in a predicate argument") {
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["negation_style"] = "operator_excl";
+    REQUIRE(generateWithPolicy("SELECT (b NOT IN (1, 2)) IS NULL FROM users;", policy).code ==
+            "auto rows = storage.select(is_null(cast<int64_t>(!in(&Users::b, {1, 2}))));");
+}
+
+TEST_CASE("codegen: a NOT cast in a predicate argument carries its comment") {
+    REQUIRE(generateFull("SELECT (b NOT LIKE 'x') IS NULL FROM users;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kNotPredicateArgumentCastComment, SourceLocation{1, 8}, 16}});
+    REQUIRE(generateFull("SELECT (NOT b) IS NULL FROM users;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kNotColumnPointerComment, SourceLocation{1, 13}, 1},
+                                        CodegenComment{kNotPredicateArgumentCastComment, SourceLocation{1, 8}, 7}});
+    REQUIRE(generateFull("SELECT (b NOT IN (1)) IS NULL FROM users;").comments.empty());
 }
 
 // sqlite_orm reads the operand types to decide what an AND or an OR may build at all. `operator&&`

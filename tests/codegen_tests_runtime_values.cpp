@@ -1313,6 +1313,36 @@ TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQ
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
 }
 
+// A negation sqlite_orm serializes as a prefix `NOT` — `not x` and every `!pred` — binds looser
+// than the predicates as well, so bare in a predicate argument it took the rest of the predicate
+// into itself: `is_null(!like(&User::a, "x"))` ran as `SELECT NOT "a" LIKE 'x' IS NULL`, that is
+// `NOT ("a" LIKE 'x' IS NULL)`. Expected values checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding one row, NULL first and 7 second; without the CAST the NULL row
+// answers 0, 0, 0, 1, NULL, NULL and the 7 row 0, 1, 1, 0, 1, 1.
+TEST_CASE("runtime: a NOT in a predicate argument returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a) NOT BETWEEN 1 AND 1 IS NULL ISNULL;"),
+        generate("SELECT (NOT a) IS NULL;"),
+        generate("SELECT (a NOT LIKE 'x') IS NULL;"),
+        generate("SELECT (a NOT GLOB 'x') IS NOT NULL;"),
+        generate("SELECT (a NOT BETWEEN 1 AND 2) IN (2);"),
+        generate("SELECT (a NOT LIKE 'x') = 2;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(not (is_null(is_null(cast<int64_t>(!between(&User::a, 1, 1))))));",
+                "auto rows = storage.select(is_null(cast<int64_t>(not column<User>(&User::a))));",
+                "auto rows = storage.select(is_null(cast<int64_t>(!like(&User::a, \"x\"))));",
+                "auto rows = storage.select(is_not_null(cast<int64_t>(!glob(&User::a, \"x\"))));",
+                "auto rows = storage.select(as_optional(in(cast<int64_t>(!between(&User::a, 1, 2)), {2})));",
+                "auto rows = storage.select(as_optional(cast<int64_t>(!like(&User::a, \"x\")) == 2));",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"1", "1", "1", "0", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"1", "0", "0", "1", "0", "0"});
+}
+
 // The same bare argument regroups after the keyword of a LIKE or a GLOB with a predicate too:
 // SQLite reads the predicates and `=` left-associatively at one rank, so `like(7, is_null(&User::a))`
 // ran as `SELECT 7 LIKE "a" IS NULL`, that is `(7 LIKE "a") IS NULL`, and answered 1 over a NULL

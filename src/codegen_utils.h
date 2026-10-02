@@ -151,6 +151,7 @@ namespace sqlite2orm {
     extern const std::string kCommentIsTruthTest;
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
+    extern const std::string kCommentPredicatePatternCast;
     extern const std::string kCommentBetweenBoundsWidened;
     extern const std::string kCommentInValuesWidened;
     extern const std::string kCommentAliasedFromSources;
@@ -442,6 +443,15 @@ namespace sqlite2orm {
      *  NULL, and a CAST to INTEGER keeps all three.
      */
     bool predicateArgumentNeedsGroupingCast(const AstNode& astNode);
+    /**
+     *  True when the node, standing after the keyword of a LIKE, GLOB or MATCH — the pattern, or
+     *  the ESCAPE of a LIKE — serializes as SQL SQLite binds no tighter than that predicate. SQLite
+     *  reads the predicates and `=` left-associatively at one rank, so such an argument hands its
+     *  own left operand to the predicate before it: `like("a", is_null(&User::b))` comes out
+     *  `"a" LIKE "b" IS NULL`, which SQLite reads as `("a" LIKE "b") IS NULL`. A NOT there takes
+     *  whatever follows the predicate into itself. Checked against sqlite3 3.51.0.
+     */
+    bool predicatePatternNeedsGroupingCast(const AstNode& astNode);
 
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 

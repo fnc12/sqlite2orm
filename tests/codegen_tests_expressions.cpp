@@ -141,6 +141,18 @@ namespace {
         "it stands for alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, "
         "typeof included.";
 
+    // The hint attached to every BETWEEN whose bounds the generator widens to one C++ type;
+    // asserted on its own in "codegen: widened BETWEEN bounds carry their comment".
+    const std::string kBetweenBoundsWidenedComment =
+        "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
+        "constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a "
+        "64-bit constant and does not compile. The cast goes on every bound that is not already "
+        "an `int64_t`, rather than on the narrower one: the type a 64-bit constant is given is "
+        "`long` where an `int64_t` is a `long long`, and the two are distinct types even where "
+        "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
+        "signed 64-bit number anyway, TRUE and FALSE among them.";
+
     // The hint attached to every bitwise result column; asserted with its anchor in
     // "codegen: a hint is anchored at the SQL it explains".
     const std::string kBitwiseResultCastComment =
@@ -1476,6 +1488,15 @@ TEST_CASE("codegen: BETWEEN bounds of two integer widths are widened to one") {
             "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), static_cast<int64_t>(0xFFFFFFFF))");
 }
 
+TEST_CASE("codegen: widened BETWEEN bounds carry their comment") {
+    REQUIRE(generateFull("a BETWEEN 1 AND 3000000000").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBetweenBoundsWidenedComment, SourceLocation{1, 1}, 26}});
+    REQUIRE(generateFull("a NOT BETWEEN 1 AND 3000000000").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBetweenBoundsWidenedComment, SourceLocation{1, 1}, 30}});
+    REQUIRE(generateFull("a BETWEEN 1 AND 10").comments.empty());
+    REQUIRE(generateFull("a BETWEEN 3000000000 AND 4000000000").comments.empty());
+}
+
 // Two bounds with no C++ type to widen to have no working form at all: `between(A, T, T)` takes
 // one type, and an integer next to a text, a real, a NULL, a blob, a column pointer or an
 // expression node is two. SQLite takes every one of these (`SELECT 1 BETWEEN 1 AND 'x'` answers 1
@@ -2761,6 +2782,10 @@ TEST_CASE("codegen: a JSON arrow expands the path it is written with") {
     REQUIRE(generate("SELECT data ->> '[]' FROM users;") == prefix + "\"$.\\\"[]\\\"\")));");
     REQUIRE(generate("SELECT data ->> '[' FROM users;") == prefix + "\"$.\\\"[\\\"\")));");
     REQUIRE(generate("SELECT data ->> '[0' FROM users;") == prefix + "\"$.\\\"[0\\\"\")));");
+    // Both brackets are needed, the opening one first and the closing one last: SQLite reads
+    // `{"ab]":1,"[ab":2}` as 1 for `->> 'ab]'` and as 2 for `->> '[ab'`.
+    REQUIRE(generate("SELECT data ->> 'ab]' FROM users;") == prefix + "\"$.\\\"ab]\\\"\")));");
+    REQUIRE(generate("SELECT data ->> '[ab' FROM users;") == prefix + "\"$.\\\"[ab\\\"\")));");
     // A NULL path needs no expansion: SQLite answers NULL for it, and so does the generated call.
     REQUIRE(generate("SELECT data ->> NULL FROM users;") == prefix + "nullptr)));");
 }
@@ -3016,6 +3041,21 @@ TEST_CASE("codegen: an expression at the depth limit still generates") {
         expected += " + 1";
     }
     REQUIRE(generate(sql) == expected);
+}
+
+// Each of these expressions is well under the depth limit and together they are far past it; the
+// limit is per expression, as in SQLite, so the statement still generates.
+TEST_CASE("codegen: sibling expressions under the depth limit do not add up their depth") {
+    std::string chain = "1";
+    std::string expectedChain = "c(1)";
+    for (size_t i = 1; i < 600; ++i) {
+        chain += " + 1";
+        expectedChain += " + 1";
+    }
+    REQUIRE(generate("SELECT " + chain + ", " + chain + ";") ==
+            "auto rows = storage.select(columns(" + expectedChain + ", " + expectedChain + "));");
+    REQUIRE(generate("SELECT max(" + chain + ", " + chain + ");") ==
+            "auto rows = storage.select(max(" + expectedChain + ", " + expectedChain + "));");
 }
 
 // A comment explains why the generator picked the form it did, and a consumer reads it from the

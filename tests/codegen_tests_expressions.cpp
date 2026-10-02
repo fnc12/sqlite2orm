@@ -2964,6 +2964,21 @@ TEST_CASE("codegen: an expression at the depth limit still generates") {
     REQUIRE(generate(sql) == expected);
 }
 
+// Each of these expressions is well under the depth limit and together they are far past it; the
+// limit is per expression, as in SQLite, so the statement still generates.
+TEST_CASE("codegen: sibling expressions under the depth limit do not add up their depth") {
+    std::string chain = "1";
+    std::string expectedChain = "c(1)";
+    for (size_t i = 1; i < 600; ++i) {
+        chain += " + 1";
+        expectedChain += " + 1";
+    }
+    REQUIRE(generate("SELECT " + chain + ", " + chain + ";") ==
+            "auto rows = storage.select(columns(" + expectedChain + ", " + expectedChain + "));");
+    REQUIRE(generate("SELECT max(" + chain + ", " + chain + ");") ==
+            "auto rows = storage.select(max(" + expectedChain + ", " + expectedChain + "));");
+}
+
 // A comment explains why the generator picked the form it did, and a consumer reads it from the
 // statement it belongs to — `statements[].comments` of `--db --json`, `comments` of the generated
 // header. Every clause there is generates expressions, not only a SELECT's result column, so a

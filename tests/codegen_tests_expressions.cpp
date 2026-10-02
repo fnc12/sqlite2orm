@@ -2728,6 +2728,10 @@ TEST_CASE("codegen: a JSON arrow expands the path it is written with") {
     REQUIRE(generate("SELECT data ->> '[]' FROM users;") == prefix + "\"$.\\\"[]\\\"\")));");
     REQUIRE(generate("SELECT data ->> '[' FROM users;") == prefix + "\"$.\\\"[\\\"\")));");
     REQUIRE(generate("SELECT data ->> '[0' FROM users;") == prefix + "\"$.\\\"[0\\\"\")));");
+    // Both brackets are needed, the opening one first and the closing one last: SQLite reads
+    // `{"ab]":1,"[ab":2}` as 1 for `->> 'ab]'` and as 2 for `->> '[ab'`.
+    REQUIRE(generate("SELECT data ->> 'ab]' FROM users;") == prefix + "\"$.\\\"ab]\\\"\")));");
+    REQUIRE(generate("SELECT data ->> '[ab' FROM users;") == prefix + "\"$.\\\"[ab\\\"\")));");
     // A NULL path needs no expansion: SQLite answers NULL for it, and so does the generated call.
     REQUIRE(generate("SELECT data ->> NULL FROM users;") == prefix + "nullptr)));");
 }

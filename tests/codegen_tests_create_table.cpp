@@ -3070,12 +3070,16 @@ TEST_CASE("codegen: CREATE TABLE - a column name that is not valid UTF-8 at all"
 // Each of these is a lead byte followed by what could pass for its continuation, and none of them is
 // a character: `C0 AF` and `E0 80 80` are overlong spellings of `/` and of U+0000, `ED A0 80` is
 // the surrogate half U+D800, `F5 80 80 80` would be U+140000, past the last code point, and
-// `F0 9F 99` stops one byte short of `🙂`. SQLite takes every one of them as a column name, so
+// `F0 9F 99` stops one byte short of `🙂`. `F0 8F BF BF` is an overlong U+FFFF and `F4 90 80 80`
+// would be U+110000, and in `E2 82 41` and `E2 82 C0` the third byte is no continuation, so the `A`
+// after `E2 82` stays a letter of its own. SQLite takes every one of them as a column name, so
 // each is spelled byte by byte — and all of its bytes, so that two names differing only after the
 // lead byte do not end up as one member.
 TEST_CASE("codegen: CREATE TABLE - column names that only look like UTF-8 are spelled byte by byte") {
     const std::string sql = "CREATE TABLE t (\xC0\xAF INTEGER, \xE0\x80\x80 INTEGER, \xED\xA0\x80 INTEGER, "
-                            "\xF5\x80\x80\x80 INTEGER, \xF0\x9F\x99 INTEGER)";
+                            "\xF5\x80\x80\x80 INTEGER, \xF0\x9F\x99 INTEGER, \xF0\x8F\xBF\xBF INTEGER, "
+                            "\xF4\x90\x80\x80 INTEGER, \xE2\x82"
+                            "A INTEGER, \xE2\x82\xC0 INTEGER)";
     const auto result = generateFull(sql);
     REQUIRE(result.code == "struct T {\n"
                            "    std::optional<int64_t> xC0xAF;\n"
@@ -3083,6 +3087,10 @@ TEST_CASE("codegen: CREATE TABLE - column names that only look like UTF-8 are sp
                            "    std::optional<int64_t> xEDxA0x80;\n"
                            "    std::optional<int64_t> xF5x80x80x80;\n"
                            "    std::optional<int64_t> xF0x9Fx99;\n"
+                           "    std::optional<int64_t> xF0x8FxBFxBF;\n"
+                           "    std::optional<int64_t> xF4x90x80x80;\n"
+                           "    std::optional<int64_t> xE2x82A;\n"
+                           "    std::optional<int64_t> xE2x82xC0;\n"
                            "};\n"
                            "\n"
                            "auto storage = make_storage(\"\",\n"
@@ -3091,7 +3099,11 @@ TEST_CASE("codegen: CREATE TABLE - column names that only look like UTF-8 are sp
                            "        make_column(\"\\340\\200\\200\", &T::xE0x80x80),\n"
                            "        make_column(\"\\355\\240\\200\", &T::xEDxA0x80),\n"
                            "        make_column(\"\\365\\200\\200\\200\", &T::xF5x80x80x80),\n"
-                           "        make_column(\"\\360\\237\\231\", &T::xF0x9Fx99)));");
+                           "        make_column(\"\\360\\237\\231\", &T::xF0x9Fx99),\n"
+                           "        make_column(\"\\360\\217\\277\\277\", &T::xF0x8FxBFxBF),\n"
+                           "        make_column(\"\\364\\220\\200\\200\", &T::xF4x90x80x80),\n"
+                           "        make_column(\"\\342\\202A\", &T::xE2x82A),\n"
+                           "        make_column(\"\\342\\202\\300\", &T::xE2x82xC0)));");
 }
 
 // SQLite takes a quoted name that starts with a digit, and C++ takes no identifier that does, so

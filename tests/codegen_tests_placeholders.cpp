@@ -841,7 +841,7 @@ TEST_CASE("codegen: a subquery as a whole column of a CTE leaves the statement o
     REQUIRE(generate("WITH c AS (SELECT abs((SELECT b FROM u)) AS y FROM t) SELECT * FROM c") ==
             "using namespace sqlite_orm::literals;\n"
             "using cte_0 = decltype(1_ctealias);\n"
-            "auto rows = storage.with(cte<cte_0>().as(select(abs(select(&U::b)), from<T>())), "
+            "auto rows = storage.with(cte<cte_0>().as(select(sqlite_orm::abs(select(&U::b)), from<T>())), "
             "select(asterisk<cte_0>()));");
     REQUIRE(generate("WITH c AS (SELECT CAST((SELECT b FROM u) AS TEXT) AS y FROM t) SELECT * FROM c") ==
             "using namespace sqlite_orm::literals;\n"

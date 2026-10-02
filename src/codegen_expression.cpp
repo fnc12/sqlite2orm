@@ -32,6 +32,24 @@ namespace sqlite2orm {
         }
 
         /**
+         *  `code` for an argument standing after the keyword of a LIKE, GLOB or MATCH — the pattern
+         *  or the ESCAPE — where SQLite regroups a predicate as well as an AND or an OR: the
+         *  predicate before it is read left-associatively at the same rank. A NOT, an AND or an OR
+         *  keeps the comment `groupPredicateArgument` gives it.
+         */
+        SpannedCode
+        groupPredicatePattern(SpannedCode code, const AstNode& argumentNode, CodeGeneratorContext& context) {
+            if (predicateArgumentNeedsGroupingCast(argumentNode, context.codeGenPolicy)) {
+                return groupPredicateArgument(std::move(code), argumentNode, context);
+            }
+            if (!predicatePatternNeedsGroupingCast(argumentNode, context.codeGenPolicy)) {
+                return code;
+            }
+            context.recordComment(sourceSpanComment(kCommentPredicatePatternCast, argumentNode));
+            return "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
+        }
+
+        /**
          *  Marks the field operand of a MATCH while it is generated: everything named under it is
          *  invisible to the FROM sqlite_orm infers, nested selects included, because its
          *  `ast_iterator` never descends into that operand. The previous value is restored rather
@@ -1547,7 +1565,7 @@ namespace sqlite2orm {
             SpannedCode operandCode =
                 groupPredicateArgument(SpannedCode::takenFrom(operandResult), *likeNode->operand, this->context);
             SpannedCode patternCode =
-                groupPredicateArgument(SpannedCode::takenFrom(patternResult), *likeNode->pattern, this->context);
+                groupPredicatePattern(SpannedCode::takenFrom(patternResult), *likeNode->pattern, this->context);
 
             this->context.recordFormWithoutDefaultConstructor("LIKE");
             SpannedCode likeCode = "like(" + operandCode + ", " + patternCode;
@@ -1558,7 +1576,7 @@ namespace sqlite2orm {
                                       std::make_move_iterator(escapeResult.decisionPoints.end()));
                 likeCode +=
                     ", " +
-                    groupPredicateArgument(SpannedCode::takenFrom(escapeResult), *likeNode->escape, this->context);
+                    groupPredicatePattern(SpannedCode::takenFrom(escapeResult), *likeNode->escape, this->context);
             }
             likeCode += ")";
 
@@ -1580,7 +1598,7 @@ namespace sqlite2orm {
             SpannedCode operandCode =
                 groupPredicateArgument(SpannedCode::takenFrom(operandResult), *globNode->operand, this->context);
             SpannedCode patternCode =
-                groupPredicateArgument(SpannedCode::takenFrom(patternResult), *globNode->pattern, this->context);
+                groupPredicatePattern(SpannedCode::takenFrom(patternResult), *globNode->pattern, this->context);
 
             this->context.recordFormWithoutDefaultConstructor("GLOB");
             SpannedCode globCode = "glob(" + operandCode + ", " + patternCode + ")";
@@ -1655,7 +1673,7 @@ namespace sqlite2orm {
                                   std::make_move_iterator(patternResult.decisionPoints.begin()),
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
             SpannedCode patternCode =
-                groupPredicateArgument(SpannedCode::takenFrom(patternResult), *matchNode->pattern, this->context);
+                groupPredicatePattern(SpannedCode::takenFrom(patternResult), *matchNode->pattern, this->context);
 
             // `match_t` is an aggregate holding its two operands, so unlike the other predicates it
             // default-constructs with them and can stand in a trigger's WHEN clause. A negated MATCH

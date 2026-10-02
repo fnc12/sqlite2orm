@@ -141,6 +141,29 @@ namespace {
         "leaves what it stands for alone — a NOT is 0, 1 or NULL, and a CAST to INTEGER keeps all "
         "three, typeof included.";
 
+    // The hint attached to every predicate the generator delimits in the pattern or the ESCAPE of
+    // a LIKE, GLOB or MATCH; asserted on its own in "codegen: a predicate cast after the keyword
+    // of a LIKE carries its comment".
+    const std::string kPredicatePatternCastComment =
+        "A predicate in the pattern or the ESCAPE of a LIKE, GLOB or MATCH is generated as "
+        "`cast<int64_t>(…)`: sqlite_orm serializes those with no parentheses around their arguments, "
+        "and SQLite reads the predicates left-associatively at one rank, so `a LIKE (b IS NULL)` "
+        "would be read back as `(a LIKE b) IS NULL`. The CAST delimits the predicate and leaves what "
+        "it stands for alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, "
+        "typeof included.";
+
+    // The hint attached to every BETWEEN whose bounds the generator widens to one C++ type;
+    // asserted on its own in "codegen: widened BETWEEN bounds carry their comment".
+    const std::string kBetweenBoundsWidenedComment =
+        "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
+        "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
+        "constant by its magnitude, so `between(&User::a, 1, 3000000000)` is an `int` next to a "
+        "64-bit constant and does not compile. The cast goes on every bound that is not already "
+        "an `int64_t`, rather than on the narrower one: the type a 64-bit constant is given is "
+        "`long` where an `int64_t` is a `long long`, and the two are distinct types even where "
+        "both are 64 bits wide. It leaves the values alone — SQLite carries every INTEGER as a "
+        "signed 64-bit number anyway, TRUE and FALSE among them.";
+
     // The hint attached to every bitwise result column; asserted with its anchor in
     // "codegen: a hint is anchored at the SQL it explains".
     const std::string kBitwiseResultCastComment =
@@ -1184,6 +1207,49 @@ TEST_CASE("codegen: an AND or an OR in a predicate argument is cast to stay one 
     }
 }
 
+TEST_CASE("codegen: a predicate after the keyword of a LIKE, GLOB or MATCH is cast to stay one SQL term") {
+    SECTION("the pattern and the ESCAPE take a predicate in") {
+        // SQLite reads the predicates and `=` left-associatively at one rank, so a bare one here
+        // hands its left operand to the predicate before it: `"a" LIKE "b" IS NULL` is
+        // `("a" LIKE "b") IS NULL`.
+        REQUIRE(generate("a LIKE (b IS NULL)") == "like(&User::a, cast<int64_t>(is_null(&User::b)))");
+        REQUIRE(generate("a LIKE (b NOT NULL)") == "like(&User::a, cast<int64_t>(is_not_null(&User::b)))");
+        REQUIRE(generate("a LIKE (b = 1)") == "like(&User::a, cast<int64_t>(c(&User::b) == 1))");
+        REQUIRE(generate("a LIKE (b IS 1)") == "like(&User::a, cast<int64_t>(is(&User::b, 1)))");
+        REQUIRE(generate("a LIKE (b IN (1, 2))") == "like(&User::a, cast<int64_t>(in(&User::b, {1, 2})))");
+        REQUIRE(generate("a LIKE (b BETWEEN 1 AND 2)") == "like(&User::a, cast<int64_t>(between(&User::b, 1, 2)))");
+        REQUIRE(generate("a LIKE (b LIKE 'x')") == R"(like(&User::a, cast<int64_t>(like(&User::b, "x"))))");
+        REQUIRE(generate("a NOT LIKE (b IS NULL)") == "!like(&User::a, cast<int64_t>(is_null(&User::b)))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b IS NULL)") ==
+                R"(like(&User::a, "x", cast<int64_t>(is_null(&User::b))))");
+        REQUIRE(generate("a GLOB (b IS NULL)") == "glob(&User::a, cast<int64_t>(is_null(&User::b)))");
+        REQUIRE(generate("a NOT GLOB (b = 1)") == "!glob(&User::a, cast<int64_t>(c(&User::b) == 1))");
+        REQUIRE(generate("a MATCH (b IS NULL)") == "match(&User::a, cast<int64_t>(is_null(&User::b)))");
+    }
+    SECTION("a NOT there takes what follows the predicate into itself") {
+        REQUIRE(generate("a LIKE (NOT b)") == "like(&User::a, cast<int64_t>(not column<User>(&User::b)))");
+    }
+    SECTION("an operand SQLite binds tighter than the predicates is left bare") {
+        REQUIRE(generate("a LIKE (b < 1)") == "like(&User::a, c(&User::b) < 1)");
+        REQUIRE(generate("a LIKE (b || 'x')") == R"(like(&User::a, c(&User::b) || "x"))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b || 'y')") == R"(like(&User::a, "x", c(&User::b) || "y"))");
+    }
+    SECTION("the operand before the keyword is left bare") {
+        // The predicate before it already groups left-associatively there.
+        REQUIRE(generate("(a IS NULL) LIKE b") == "like(is_null(&User::a), &User::b)");
+        REQUIRE(generate("(a = 1) GLOB b") == "glob(c(&User::a) == 1, &User::b)");
+    }
+}
+
+TEST_CASE("codegen: a predicate cast after the keyword of a LIKE carries its comment") {
+    REQUIRE(generateFull("SELECT 'x' LIKE (a IS NULL) FROM users;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kPredicatePatternCastComment, SourceLocation{1, 17}, 11}});
+    REQUIRE(generateFull("SELECT 'x' LIKE (a OR b) FROM users;").comments ==
+            std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 17}, 8},
+                                        CodegenComment{kAndOrPredicateArgumentCastComment, SourceLocation{1, 17}, 8}});
+    REQUIRE(generateFull("SELECT 'x' LIKE (a < 1) FROM users;").comments.empty());
+}
+
 TEST_CASE("codegen: an AND or an OR cast in a predicate argument carries its comment") {
     REQUIRE(generateFull("SELECT (1 OR 0) IS NULL;").comments ==
             std::vector<CodegenComment>{CodegenComment{kOrTokenCallSpellingComment, SourceLocation{1, 8}, 8},
@@ -1492,6 +1558,15 @@ TEST_CASE("codegen: BETWEEN bounds of two integer widths are widened to one") {
     REQUIRE(generate("a BETWEEN 3000000000 AND 4000000000") == "between(&User::a, 3000000000, 4000000000)");
     REQUIRE(generate("a BETWEEN 0xFFFFFFFF AND 0xFFFFFFFF") ==
             "between(&User::a, static_cast<int64_t>(0xFFFFFFFF), static_cast<int64_t>(0xFFFFFFFF))");
+}
+
+TEST_CASE("codegen: widened BETWEEN bounds carry their comment") {
+    REQUIRE(generateFull("a BETWEEN 1 AND 3000000000").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBetweenBoundsWidenedComment, SourceLocation{1, 1}, 26}});
+    REQUIRE(generateFull("a NOT BETWEEN 1 AND 3000000000").comments ==
+            std::vector<CodegenComment>{CodegenComment{kBetweenBoundsWidenedComment, SourceLocation{1, 1}, 30}});
+    REQUIRE(generateFull("a BETWEEN 1 AND 10").comments.empty());
+    REQUIRE(generateFull("a BETWEEN 3000000000 AND 4000000000").comments.empty());
 }
 
 // Two bounds with no C++ type to widen to have no working form at all: `between(A, T, T)` takes
@@ -2779,6 +2854,10 @@ TEST_CASE("codegen: a JSON arrow expands the path it is written with") {
     REQUIRE(generate("SELECT data ->> '[]' FROM users;") == prefix + "\"$.\\\"[]\\\"\")));");
     REQUIRE(generate("SELECT data ->> '[' FROM users;") == prefix + "\"$.\\\"[\\\"\")));");
     REQUIRE(generate("SELECT data ->> '[0' FROM users;") == prefix + "\"$.\\\"[0\\\"\")));");
+    // Both brackets are needed, the opening one first and the closing one last: SQLite reads
+    // `{"ab]":1,"[ab":2}` as 1 for `->> 'ab]'` and as 2 for `->> '[ab'`.
+    REQUIRE(generate("SELECT data ->> 'ab]' FROM users;") == prefix + "\"$.\\\"ab]\\\"\")));");
+    REQUIRE(generate("SELECT data ->> '[ab' FROM users;") == prefix + "\"$.\\\"[ab\\\"\")));");
     // A NULL path needs no expansion: SQLite answers NULL for it, and so does the generated call.
     REQUIRE(generate("SELECT data ->> NULL FROM users;") == prefix + "nullptr)));");
 }
@@ -3034,6 +3113,21 @@ TEST_CASE("codegen: an expression at the depth limit still generates") {
         expected += " + 1";
     }
     REQUIRE(generate(sql) == expected);
+}
+
+// Each of these expressions is well under the depth limit and together they are far past it; the
+// limit is per expression, as in SQLite, so the statement still generates.
+TEST_CASE("codegen: sibling expressions under the depth limit do not add up their depth") {
+    std::string chain = "1";
+    std::string expectedChain = "c(1)";
+    for (size_t i = 1; i < 600; ++i) {
+        chain += " + 1";
+        expectedChain += " + 1";
+    }
+    REQUIRE(generate("SELECT " + chain + ", " + chain + ";") ==
+            "auto rows = storage.select(columns(" + expectedChain + ", " + expectedChain + "));");
+    REQUIRE(generate("SELECT max(" + chain + ", " + chain + ");") ==
+            "auto rows = storage.select(max(" + expectedChain + ", " + expectedChain + "));");
 }
 
 // A comment explains why the generator picked the form it did, and a consumer reads it from the

@@ -751,6 +751,14 @@ namespace sqlite2orm {
         "leaves what it stands for alone — a NOT is 0, 1 or NULL, and a CAST to INTEGER keeps all "
         "three, typeof included.";
 
+    const std::string kCommentPredicatePatternCast =
+        "A predicate in the pattern or the ESCAPE of a LIKE, GLOB or MATCH is generated as "
+        "`cast<int64_t>(…)`: sqlite_orm serializes those with no parentheses around their arguments, "
+        "and SQLite reads the predicates left-associatively at one rank, so `a LIKE (b IS NULL)` "
+        "would be read back as `(a LIKE b) IS NULL`. The CAST delimits the predicate and leaves what "
+        "it stands for alone — a predicate is 0, 1 or NULL, and a CAST to INTEGER keeps all three, "
+        "typeof included.";
+
     const std::string kCommentAndOrQuotedOperand =
         "An operand of an AND or an OR that sqlite_orm does not recognize is generated as "
         "`c(operand)`: `or_()` and `and_()` assert that both arguments are bindable values or "
@@ -1304,6 +1312,10 @@ namespace sqlite2orm {
 
     bool predicateArgumentNeedsGroupingCast(const AstNode& astNode, const CodeGenPolicy* policy) {
         return serializedSqlPrecedence(astNode, policy) >= kSqlPrecedenceNot;
+    }
+
+    bool predicatePatternNeedsGroupingCast(const AstNode& astNode, const CodeGenPolicy* policy) {
+        return serializedSqlPrecedence(astNode, policy) >= kSqlPrecedencePredicate;
     }
 
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {

@@ -151,6 +151,7 @@ namespace sqlite2orm {
     extern const std::string kCommentIsTruthTest;
     extern const std::string kCommentAndOrQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
+    extern const std::string kCommentNotPredicateArgumentCast;
     extern const std::string kCommentBetweenBoundsWidened;
     extern const std::string kCommentInValuesWidened;
     extern const std::string kCommentAliasedFromSources;
@@ -411,9 +412,11 @@ namespace sqlite2orm {
      *  Precedence of the SQL sqlite_orm serializes the node's generated code into, as that SQL
      *  stands by itself — what the node *serializes as*, before any parentheses the enclosing
      *  serializer puts around it. `kSqlPrecedenceTerm` is for SQL that reads as one term: a
-     *  literal, a column, a call, CAST, CASE, a parenthesized subquery.
+     *  literal, a column, a call, CAST, CASE, a parenthesized subquery. A negated predicate
+     *  generated as `!pred` serializes as a prefix `NOT`, so it ranks as `kSqlPrecedenceNot`; the
+     *  policy decides whether a NOT IN is one of them (`!in(…)`) or the `not_in(…)` call.
      */
-    int serializedSqlPrecedence(const AstNode& astNode);
+    int serializedSqlPrecedence(const AstNode& astNode, const CodeGenPolicy* policy = nullptr);
     /**
      *  The same precedence seen from a binary operator or condition around the node — what that
      *  parent *parenthesizes*. sqlite_orm's binary serializer puts parentheses around an operand
@@ -421,7 +424,7 @@ namespace sqlite2orm {
      *  however loosely SQLite binds it; everything else it leaves bare. The predicate serializers
      *  parenthesize no argument at all, which is why their slots ask `serializedSqlPrecedence`.
      */
-    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode);
+    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode, const CodeGenPolicy* policy = nullptr);
     /**
      *  Whether a COLLATE written after the SQL sqlite_orm serializes the node as applies to the
      *  whole of it. SQLite binds COLLATE tighter than every binary operator and than `NOT`, so a
@@ -433,15 +436,17 @@ namespace sqlite2orm {
      */
     bool trailingCollateBindsWholeExpression(const AstNode& astNode);
     /**
-     *  True when the node stands for an AND or an OR, the two operators SQLite binds looser than
-     *  every predicate. A predicate serializer leaves its argument bare, so such an argument takes
-     *  the predicate into itself: `is_null(or_(1, 0))` comes out `1 OR 0 IS NULL`, which SQLite
-     *  reads as `1 OR (0 IS NULL)`, and `between(1, or_(1, 0), 3)` comes out
-     *  `1 BETWEEN 1 OR 0 AND 3`, which SQLite refuses as a syntax error. The `cast<int64_t>`
-     *  wrapper delimits it and leaves what it stands for alone — an AND and an OR are 0, 1 or
-     *  NULL, and a CAST to INTEGER keeps all three.
+     *  True when the node serializes as a NOT, an AND or an OR, the operators SQLite binds looser
+     *  than every predicate. A predicate serializer leaves its argument bare, so such an argument
+     *  takes the predicate into itself: `is_null(or_(1, 0))` comes out `1 OR 0 IS NULL`, which
+     *  SQLite reads as `1 OR (0 IS NULL)`, `between(1, or_(1, 0), 3)` comes out
+     *  `1 BETWEEN 1 OR 0 AND 3`, which SQLite refuses as a syntax error, and
+     *  `is_null(!between(&User::b, 1, 2))` comes out `NOT "b" BETWEEN 1 AND 2 IS NULL`, which SQLite
+     *  reads as `NOT ("b" BETWEEN 1 AND 2 IS NULL)`. The `cast<int64_t>` wrapper delimits it and
+     *  leaves what it stands for alone — a NOT, an AND and an OR are 0, 1 or NULL, and a CAST to
+     *  INTEGER keeps all three.
      */
-    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode);
+    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode, const CodeGenPolicy* policy);
 
     std::string normalizeSqlIdentifier(std::string_view sqlIdentifier);
 

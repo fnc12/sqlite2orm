@@ -742,6 +742,15 @@ namespace sqlite2orm {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentNotPredicateArgumentCast =
+        "A NOT in the argument of a predicate is generated as `cast<int64_t>(…)`: sqlite_orm "
+        "serializes a negation as a prefix `NOT` — `!between(…)`, `!like(…)` and `not x` alike — and "
+        "IN, BETWEEN, LIKE, GLOB, MATCH and IS [NOT] NULL with no parentheses around their "
+        "arguments, and SQLite binds NOT looser than every predicate, so `is_null(!between(b, 1, 2))` "
+        "would be read back as `NOT (b BETWEEN 1 AND 2 IS NULL)`. The CAST delimits the argument and "
+        "leaves what it stands for alone — a NOT is 0, 1 or NULL, and a CAST to INTEGER keeps all "
+        "three, typeof included.";
+
     const std::string kCommentAndOrQuotedOperand =
         "An operand of an AND or an OR that sqlite_orm does not recognize is generated as "
         "`c(operand)`: `or_()` and `and_()` assert that both arguments are bindable values or "
@@ -1191,7 +1200,7 @@ namespace sqlite2orm {
         return kSqlPrecedencePredicate;
     }
 
-    int serializedSqlPrecedence(const AstNode& astNode) {
+    int serializedSqlPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
         // A COLLATE and a unary plus emit their operand and nothing else, so the SQL this node is
         // serialized as is the one its operand is serialized as.
         const AstNode& generatedNode = generatedOperandNode(astNode);
@@ -1204,7 +1213,7 @@ namespace sqlite2orm {
                 // them terms. The exception is the one over a predicate, which keeps a bare unary
                 // minus SQLite reads inside the predicate: `- "a" IS NULL` is `(- "a") IS NULL`.
                 return negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate
-                           ? serializedSqlPrecedence(*unaryOp->operand)
+                           ? serializedSqlPrecedence(*unaryOp->operand, policy)
                            : kSqlPrecedenceTerm;
             }
             return kSqlPrecedenceTerm;
@@ -1219,19 +1228,36 @@ namespace sqlite2orm {
             }
             return sqlOperatorPrecedence(binaryOp->binaryOperator);
         }
+        // A negated predicate generated as `!pred` is a `negated_condition_t`, which sqlite_orm
+        // serializes as a prefix `NOT` over the bare predicate: `NOT "b" BETWEEN 1 AND 2`.
+        auto negated = [](const auto* predicate) {
+            return predicate && predicate->negated;
+        };
+        if (negated(dynamic_cast<const BetweenNode*>(&generatedNode)) ||
+            negated(dynamic_cast<const LikeNode*>(&generatedNode)) ||
+            negated(dynamic_cast<const GlobNode*>(&generatedNode)) ||
+            negated(dynamic_cast<const MatchNode*>(&generatedNode))) {
+            return kSqlPrecedenceNot;
+        }
+        // A NOT IN is that only when the policy asks for `!in(…)`; `not_in(…)` serializes as the
+        // `NOT IN` predicate itself.
+        if (negated(dynamic_cast<const InNode*>(&generatedNode)) &&
+            policyEquals(policy, "negation_style", "operator_excl")) {
+            return kSqlPrecedenceNot;
+        }
         // Everything else is a term of its own in the serialized SQL: a literal, a column, a call,
         // CAST, CASE, a parenthesized subquery.
         return sqlPredicateLooserThanMinus(generatedNode).empty() ? kSqlPrecedenceTerm : kSqlPrecedencePredicate;
     }
 
-    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode) {
+    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode, const CodeGenPolicy* policy) {
         // sqlite_orm's binary operator and binary condition serializer parenthesizes an operand
         // that is itself a binary operator or condition — everything a `BinaryOperatorNode`
         // generates — so however loosely SQLite binds it, it comes back as one term there.
         if (dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(astNode))) {
             return kSqlPrecedenceTerm;
         }
-        return serializedSqlPrecedence(astNode);
+        return serializedSqlPrecedence(astNode, policy);
     }
 
     bool trailingCollateBindsWholeExpression(const AstNode& astNode) {
@@ -1276,8 +1302,8 @@ namespace sqlite2orm {
         return sqlPredicateLooserThanMinus(generatedNode).empty();
     }
 
-    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode) {
-        return serializedSqlPrecedence(astNode) >= kSqlPrecedenceAnd;
+    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode, const CodeGenPolicy* policy) {
+        return serializedSqlPrecedence(astNode, policy) >= kSqlPrecedenceNot;
     }
 
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {

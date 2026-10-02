@@ -13,17 +13,21 @@ namespace sqlite2orm {
 
     namespace {
         /**
-         *  `code`, delimited with a CAST to INTEGER when the argument it was generated from stands
-         *  for an AND or an OR, and the comment that explains the CAST recorded in `context`. A
-         *  predicate serializer parenthesizes no argument of its own, and SQLite binds AND and OR
-         *  looser than every predicate, so a bare one there would take the predicate into itself.
+         *  `code`, delimited with a CAST to INTEGER when the argument it was generated from
+         *  serializes as a NOT, an AND or an OR, and the comment that explains the CAST recorded in
+         *  `context`. A predicate serializer parenthesizes no argument of its own, and SQLite binds
+         *  those looser than every predicate, so a bare one there would take the predicate into
+         *  itself.
          */
         SpannedCode
         groupPredicateArgument(SpannedCode code, const AstNode& argumentNode, CodeGeneratorContext& context) {
-            if (!predicateArgumentNeedsGroupingCast(argumentNode)) {
+            if (!predicateArgumentNeedsGroupingCast(argumentNode, context.codeGenPolicy)) {
                 return code;
             }
-            context.recordComment(sourceSpanComment(kCommentAndOrPredicateArgumentCast, argumentNode));
+            const bool andOr = serializedSqlPrecedence(argumentNode, context.codeGenPolicy) >= kSqlPrecedenceAnd;
+            context.recordComment(
+                sourceSpanComment(andOr ? kCommentAndOrPredicateArgumentCast : kCommentNotPredicateArgumentCast,
+                                  argumentNode));
             return "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
         }
 
@@ -628,7 +632,8 @@ namespace sqlite2orm {
             auto castPredicate = [&](SpannedCode& code, const AstNode& operandNode, bool rightOperand) {
                 if (operandsBecomeCallArguments)
                     return;
-                const int operandPrecedence = serializedSqlPrecedenceAsBinaryOperand(operandNode);
+                const int operandPrecedence =
+                    serializedSqlPrecedenceAsBinaryOperand(operandNode, this->context.codeGenPolicy);
                 // SQL reads these operators left-associatively too, so the right operand regroups at
                 // equal precedence as well: `1 = (a IS NULL)` comes back as `(1 = "a") IS NULL`.
                 const bool regroups =

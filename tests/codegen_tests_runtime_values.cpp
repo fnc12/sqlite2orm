@@ -1414,6 +1414,45 @@ TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function c
             std::vector<std::string>{"1", "0", "1", "0", "0", "7", "1", "7", "7", "37"});
 }
 
+// sqlite_orm types `lag`, `lead`, `first_value`, `last_value` and `nth_value` as their value argument
+// and `avg` as `double`, so where the window answers NULL over a NOT NULL column the row reached the
+// caller as 0. Expected values checked against sqlite3 3.51 over `user(a INTEGER NOT NULL)` holding
+// the one row 7: a window of one row reaches no row before or after it, an explicit frame of the row
+// before it is empty, and a frame of one row has no second one; before the widening the six NULL
+// rows read back as 0. The last two columns are the counter-check: `lag(a, 1, 0)` answers its default
+// and `first_value(a)` over the default frame the row itself, so neither is widened.
+TEST_CASE("runtime: a window function over a NOT NULL column reads the NULL back") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lead(a) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a + 1) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT first_value(a) OVER (ROWS BETWEEN 1 "
+                            "PRECEDING AND 1 PRECEDING) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT nth_value(a, 2) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT avg(a) OVER (ROWS BETWEEN 1 PRECEDING AND 1 "
+                            "PRECEDING) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a, 1, 0) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT first_value(a) OVER () FROM user;").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(lag(&User::a).over()));",
+                "auto rows = storage.select(as_optional(lead(&User::a).over()));",
+                "auto rows = storage.select(as_optional(lag(c(&User::a) + 1).over()));",
+                "auto rows = storage.select(as_optional(first_value(&User::a).over(sqlite_orm::rows(preceding(1), "
+                "preceding(1)))));",
+                "auto rows = storage.select(as_optional(nth_value(&User::a, 2).over()));",
+                "auto rows = storage.select(as_optional(avg(&User::a).over(sqlite_orm::rows(preceding(1), "
+                "preceding(1)))));",
+                "auto rows = storage.select(lag(&User::a, 1, 0).over());",
+                "auto rows = storage.select(first_value(&User::a).over());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "0", "7"});
+}
+
 // Most built-ins answer NULL over arguments that hold none, and sqlite_orm types the call by the
 // return type the function declares, so the row reached the caller as 0 / "" — and an operator over
 // such a call is typed by the operator alone and lost the NULL the same way. Every value here is

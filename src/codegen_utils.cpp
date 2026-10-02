@@ -3596,6 +3596,83 @@ namespace sqlite2orm {
     namespace {
 
         /**
+         *  Whether the C++ type sqlite_orm gives `argument` is known to hold no NULL. A constant
+         *  other than NULL, a column of a NOT NULL field, an operator, a predicate, a CAST, a CASE
+         *  and a call sqlite_orm does not already type nullably all answer yes; a column the scope
+         *  does not resolve, a bind parameter and a subquery answer no, the type they are read
+         *  back as being one this layer does not know.
+         */
+        bool generatedArgumentTypeHoldsNoNull(const AstNode& argument, const ReferencedColumnResolver& resolveColumn) {
+            const AstNode& generatedNode = generatedOperandNode(argument);
+            if (const std::optional<GeneratedValueCppType> valueType = generatedValueCppType(generatedNode)) {
+                return *valueType != GeneratedValueCppType::null;
+            }
+            if (dynamic_cast<const ColumnRefNode*>(&generatedNode) ||
+                dynamic_cast<const QualifiedColumnRefNode*>(&generatedNode)) {
+                const SourceTableColumn* column = resolveColumn(generatedNode);
+                return column != nullptr && !column->nullable;
+            }
+            if (generatedResultColumnCppType(generatedNode) || dynamic_cast<const CaseNode*>(&generatedNode)) {
+                return true;
+            }
+            if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+                // SQLite refuses a window call nested in the argument of another one.
+                return !functionCall->over && !generatedFunctionResultIsAlreadyNullable(*functionCall, resolveColumn);
+            }
+            return false;
+        }
+
+        /**
+         *  `expressionMayBeNull` with the schema asked where it answers: a column the scope resolves
+         *  holds a NULL exactly when it is not declared NOT NULL, while `expressionMayBeNull`, which
+         *  sees no schema, takes every column for one that may.
+         */
+        bool operandMayBeNull(const AstNode& operand, const ReferencedColumnResolver& resolveColumn) {
+            const AstNode& generatedNode = generatedOperandNode(operand);
+            if (dynamic_cast<const ColumnRefNode*>(&generatedNode) ||
+                dynamic_cast<const QualifiedColumnRefNode*>(&generatedNode)) {
+                if (const SourceTableColumn* column = resolveColumn(generatedNode)) {
+                    return column->nullable;
+                }
+            }
+            return expressionMayBeNull(operand);
+        }
+
+        /**
+         *  Whether a call of `lag`, `lead`, `first_value`, `last_value` or `nth_value` can answer
+         *  NULL over a value argument that holds none. Checked against sqlite3 3.51 over a NOT NULL
+         *  column: `lag(b)` and `lead(b)` are NULL where the row they reach lies outside the
+         *  partition, and `lag(b, 1, 0)` answers its default there instead — NULL only where the
+         *  default is one, `lag(b, NULL, 0)` included. `first_value(b)` and `last_value(b)` are NULL
+         *  over an empty frame, which only a frame spelled out can be — `ROWS BETWEEN 2 PRECEDING
+         *  AND 1 PRECEDING` on the first row, `EXCLUDE CURRENT ROW` — while the default frame always
+         *  holds the current row. A named window may carry a frame of its own, so it is not taken
+         *  for the default one. `nth_value(b, N)` is NULL where the frame holds fewer than N rows,
+         *  so only `nth_value(b, 1)` over the default frame answers a value always.
+         */
+        bool windowValueCallMayAnswerNull(const FunctionCallNode& functionCall,
+                                          std::string_view functionLower,
+                                          const ReferencedColumnResolver& resolveColumn) {
+            if (functionLower == "lag" || functionLower == "lead") {
+                if (functionCall.arguments.size() < 3 || !functionCall.arguments.at(2)) {
+                    return true;
+                }
+                return operandMayBeNull(*functionCall.arguments.at(2), resolveColumn);
+            }
+            const bool frameHoldsTheCurrentRow = !functionCall.over->namedWindow && !functionCall.over->frame;
+            if (!frameHoldsTheCurrentRow) {
+                return true;
+            }
+            if (functionLower == "nth_value") {
+                const AstNode* position =
+                    functionCall.arguments.size() >= 2 ? functionCall.arguments.at(1).get() : nullptr;
+                auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(position);
+                return integerLiteral == nullptr || integerLiteral->value != "1";
+            }
+            return false;
+        }
+
+        /**
          *  `selectResultNeedsAsOptional` over one scope: `resolveColumn` answers what the emitter
          *  writes a reference of the select the column belongs to as, which is the select this
          *  stands in and not always the one the context holds — a scalar subquery carries a scope
@@ -3697,14 +3774,36 @@ namespace sqlite2orm {
             }
             if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
                 if (functionCall->over) {
-                    // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
-                    // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
-                    // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
-                    // nullable argument carries its nullability through on its own. What this arm does
-                    // not cover is the NULL the window itself answers: over a NOT NULL column the
-                    // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
-                    // first row, and that NULL still reads back as 0. A known hole, carded separately.
-                    return false;
+                    const std::string functionLower = toLowerAscii(functionCall->name);
+                    if (isOneOfFunctions(functionLower, {"first_value", "lag", "last_value", "lead", "nth_value"})) {
+                        // sqlite_orm types these as their value argument, so a nullable argument —
+                        // a column of an `std::optional` field — carries a NULL through on its own.
+                        // An argument typed without one does not: over a NOT NULL column
+                        // `lag(b) OVER (ORDER BY b)` is NULL on the first row and was read back as
+                        // 0, and so was `lag(b + 1)`, typed `double` by the operator whatever
+                        // NULL `b` holds.
+                        if (functionCall->arguments.empty() || !functionCall->arguments.front()) {
+                            return false;
+                        }
+                        const AstNode& value = *functionCall->arguments.front();
+                        if (!generatedArgumentTypeHoldsNoNull(value, resolveColumn)) {
+                            return false;
+                        }
+                        return windowValueCallMayAnswerNull(*functionCall, functionLower, resolveColumn) ||
+                               operandMayBeNull(value, resolveColumn);
+                    }
+                    const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(functionLower);
+                    if (form != nullptr && form->kind == SqliteOrmFormKind::windowFunction) {
+                        // `row_number`, `rank`, `dense_rank`, `percent_rank`, `cume_dist` and `ntile`
+                        // are never NULL.
+                        return false;
+                    }
+                    // An aggregate run as a window answers over its frame what it answers over a
+                    // group, so it is widened by the rule a plain call is: `avg(a)` and
+                    // `group_concat(a)` are NULL over an empty frame — `ROWS BETWEEN 2 PRECEDING
+                    // AND 1 PRECEDING` on the first row — and are typed `double` and `std::string`,
+                    // `sum`, `max` and `min` are typed `std::unique_ptr` already, and `count` and
+                    // `total` are never NULL.
                 }
                 if (generatedFunctionResultIsAlreadyNullable(*functionCall, resolveColumn)) {
                     return false;

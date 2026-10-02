@@ -2394,6 +2394,46 @@ TEST_CASE("generateSqliteSchemaHeader: a table that only looks like FTS5 storage
     requireCompiles(header.code);
 }
 
+// The suffixes belong to FTS5, not to every module: `sqlite3ShadowTableName()` asks the module
+// behind the name, and `fts5vocab` - the module that reads another FTS5 table's terms - keeps no
+// storage of its own. sqlite3 3.51 creates `uv_data` next to `CREATE VIRTUAL TABLE uv USING
+// fts5vocab(u, row)` without a word, so a table behind such a name is a user's own.
+TEST_CASE("generateSqliteSchemaHeader: a table behind a virtual table of another module is merged as it is") {
+    ProcessSqliteSchemaResult schema;
+    schema.statements.push_back(masterRow("table", "u", "CREATE VIRTUAL TABLE u USING fts5(w)"));
+    schema.statements.push_back(masterRow("table", "uv", "CREATE VIRTUAL TABLE uv USING fts5vocab(u, row)"));
+    schema.statements.push_back(masterRow("table", "uv_data", "CREATE TABLE uv_data(x INTEGER PRIMARY KEY)"));
+    schema.statements.push_back(masterRow("table", "uv_content", "CREATE TABLE uv_content(y TEXT)"));
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct UvContent {\n"
+                           "    std::optional<std::string> y;\n"
+                           "};\n\n"
+                           "struct UvData {\n"
+                           "    std::optional<int64_t> x;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"uv_content\",\n"
+                           "        make_column(\"y\", &UvContent::y)),\n"
+                           "        make_table(\"uv_data\",\n"
+                           "        make_column(\"x\", &UvData::x, primary_key())));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CREATE VIRTUAL TABLE `uv` did not generate and is not merged into make_storage()"},
+                {"CREATE VIRTUAL TABLE `u` is not merged into make_storage(); run sqlite2orm on its SQL separately"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
 // The module reads the names without regard to case, so `My_FTS_data` is `My_FTS`'s storage. A view
 // over it is a name resting on a table that gets no C++ type, and goes the same way — SQLite stores
 // and runs such a view, so it is reachable from an ordinary database.

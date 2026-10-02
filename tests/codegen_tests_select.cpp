@@ -1003,7 +1003,7 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
     REQUIRE(generate("SELECT 'a' || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
     REQUIRE(generate("SELECT a FROM users;") == "auto rows = storage.select(&Users::a);");
     REQUIRE(generate("SELECT NULL;") == "auto rows = storage.select(nullptr);");
-    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");
+    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(sqlite_orm::abs(&Users::a));");
     REQUIRE(generate("SELECT a IS NULL FROM users;") == "auto rows = storage.select(is_null(&Users::a));");
 }
 
@@ -1041,7 +1041,7 @@ TEST_CASE("codegen: a scalar subquery that needs no widening keeps the type sqli
     REQUIRE(generate("SELECT (SELECT max(a) FROM users) FROM users;") ==
             "auto rows = storage.select(select(max(&Users::a)), from<Users>());");
     REQUIRE(generate("SELECT (SELECT abs(a) FROM users) FROM users;") ==
-            "auto rows = storage.select(select(abs(&Users::a)), from<Users>());");
+            "auto rows = storage.select(select(sqlite_orm::abs(&Users::a)), from<Users>());");
     // The NULL SQLite answers a scalar subquery over an empty rowset with is a hole of its own:
     // `(SELECT a FROM users)` is NULL on an empty table however the column is declared, and
     // whether the field it is read into already holds an optional is the table's to answer, which
@@ -1649,18 +1649,19 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
             "auto rows = storage.select(as_optional(date(\"bogus\") || \"x\"));");
     REQUIRE(generate("SELECT julianday('bogus');") == "auto rows = storage.select(as_optional(julianday(\"bogus\")));");
     REQUIRE(generate("SELECT strftime('%Y', 'bogus');") ==
-            "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));");
+            "auto rows = storage.select(as_optional(sqlite_orm::strftime(\"%Y\", \"bogus\")));");
     REQUIRE(generate("SELECT unicode('');") == "auto rows = storage.select(as_optional(unicode(\"\")));");
     REQUIRE(generate("SELECT unicode('') + 1;") == "auto rows = storage.select(as_optional(unicode(\"\") + 1));");
     REQUIRE(generate("SELECT sign('abc');") == "auto rows = storage.select(as_optional(sign(\"abc\")));");
     REQUIRE(generate("SELECT json_extract('{}', '$.a');") ==
             "auto rows = storage.select(as_optional(json_extract<std::string>(\"{}\", \"$.a\")));");
-    REQUIRE(generate("SELECT sqrt(-1);") == "auto rows = storage.select(as_optional(sqrt(-1)));");
+    REQUIRE(generate("SELECT sqrt(-1);") == "auto rows = storage.select(as_optional(sqlite_orm::sqrt(-1)));");
     // `substr(x'', 1)` is NULL rather than an empty blob, and `printf('')` NULL rather than an
     // empty string, so neither is a function that only propagates a NULL argument.
     REQUIRE(generate("SELECT substr('abc', 1, 1);") ==
             "auto rows = storage.select(as_optional(substr(\"abc\", 1, 1)));");
-    REQUIRE(generate("SELECT printf('') || 'x';") == "auto rows = storage.select(as_optional(printf(\"\") || \"x\"));");
+    REQUIRE(generate("SELECT printf('') || 'x';") ==
+            "auto rows = storage.select(as_optional(sqlite_orm::printf(\"\") || \"x\"));");
     // An aggregate is NULL over an empty rowset whatever its argument holds. `sum`, `max` and `min`
     // are left plain as a result column — sqlite_orm declares them `std::unique_ptr` — but an
     // operator over one is typed by the operator alone and has to carry the NULL itself.
@@ -1710,14 +1711,14 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT upper('a') || 'x';") == "auto rows = storage.select(upper(\"a\") || \"x\");");
     REQUIRE(generate("SELECT instr('abc', 'b');") == "auto rows = storage.select(instr(\"abc\", \"b\"));");
     REQUIRE(generate("SELECT json_valid('{}');") == "auto rows = storage.select(json_valid(\"{}\"));");
-    REQUIRE(generate("SELECT round(1.5);") == "auto rows = storage.select(round(1.5));");
+    REQUIRE(generate("SELECT round(1.5);") == "auto rows = storage.select(sqlite_orm::round(1.5));");
     REQUIRE(generate("SELECT pi();") == "auto rows = storage.select(pi());");
     REQUIRE(generate("SELECT hex(a) FROM users;") == "auto rows = storage.select(hex(&Users::a));");
     REQUIRE(generate("SELECT quote(a) FROM users;") == "auto rows = storage.select(quote(&Users::a));");
     REQUIRE(generate("SELECT soundex(a) FROM users;") == "auto rows = storage.select(soundex(&Users::a));");
     REQUIRE(generate("SELECT count(a) FROM users;") == "auto rows = storage.select(count(&Users::a));");
     REQUIRE(generate("SELECT total(a) FROM users;") == "auto rows = storage.select(total(&Users::a));");
-    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");
+    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(sqlite_orm::abs(&Users::a));");
     REQUIRE(generate("SELECT max(a) FROM users;") == "auto rows = storage.select(max(&Users::a));");
     REQUIRE(generate("SELECT sum(a) FROM users;") == "auto rows = storage.select(sum(&Users::a));");
     REQUIRE(generate("SELECT coalesce(a, 1) FROM users;") == "auto rows = storage.select(coalesce(&Users::a, 1));");
@@ -2833,7 +2834,8 @@ TEST_CASE("codegen: a select naming no recordset carries its FROM") {
     REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
             "auto rows = storage.select(row_number().over(), from<Users>());");
     REQUIRE(generate("SELECT 1 FROM users;") == "auto rows = storage.select(1, from<Users>());");
-    REQUIRE(generate("SELECT random() FROM users;") == "auto rows = storage.select(random(), from<Users>());");
+    REQUIRE(generate("SELECT random() FROM users;") ==
+            "auto rows = storage.select(sqlite_orm::random(), from<Users>());");
 }
 
 // The FROM still names only the sources sqlite_orm has to infer: a joined table arrives through its
@@ -3113,8 +3115,9 @@ TEST_CASE("codegen: a compound SELECT widens a call every arm spells alike") {
             "select(columns(as_optional(length(&Users::a)), &Users::b), where(c(&Users::a) > 1)), "
             "select(columns(as_optional(length(&Users::a)), &Users::b))));");
     // A call sqlite_orm already reads back nullably is left alone, as a plain SELECT leaves it.
-    REQUIRE(generate("SELECT abs(a) UNION SELECT abs(a);") ==
-            "auto rows = storage.select(union_(select(abs(&User::a)), select(abs(&User::a))));");
+    REQUIRE(
+        generate("SELECT abs(a) UNION SELECT abs(a);") ==
+        "auto rows = storage.select(union_(select(sqlite_orm::abs(&User::a)), select(sqlite_orm::abs(&User::a))));");
     // Arms that differ — in an argument, in the expression around the call, in the FROM clause the
     // arguments are read over — may come out as types with no common optional, and are left alone.
     REQUIRE(generate("SELECT length(a) UNION SELECT length(b);") ==

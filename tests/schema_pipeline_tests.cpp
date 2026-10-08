@@ -4,6 +4,7 @@
 #include <sqlite2orm/schema_process.h>
 #include <sqlite2orm/schema_reader.h>
 
+#include "codegen_tests_common.hpp"
 #include "temp_build_dir.hpp"
 
 #include <catch2/catch_all.hpp>
@@ -459,7 +460,14 @@ TEST_CASE("generateSqliteSchemaHeader: a DEFAULT SQLite stores but cannot compil
         {},
         {CodegenWarning{"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite "
                         "stores it but refuses every use of the default, and C++ has no literal for it, so the "
-                        "generated column has no default_value()"}},
+                        "generated column has no default_value()"},
+         CodegenWarning{"table weird declares a DEFAULT on column 'x' that the generated code leaves out, and "
+                        "sync_schema() tells a column with a default from one without: run against a database "
+                        "holding table weird as declared, it drops the table and creates it again from the "
+                        "generated code, so sync_schema() loses every row in it and sync_schema(true) copies the "
+                        "rows over but leaves the table without that DEFAULT",
+                        SourceLocation{1, 1},
+                        12}},
         {},
         {},
         {{125, 46, 0, SourceLocation{1, 1}, 28},
@@ -3173,6 +3181,79 @@ TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a key whose repeat tak
                       "SELECT (SELECT count(*) FROM gap_pk) || ',' || (SELECT count(*) FROM gap_pk_middle) || ',' || "
                       "(SELECT count(*) FROM gap_pk_spelled) || ',' || (SELECT count(*) FROM gap_pk_twice) || ',' || "
                       "(SELECT count(*) FROM gap_pk_wr) || ',' || (SELECT count(*) FROM tail_pk);") == "0,0,0,0,2,2");
+}
+
+// A DEFAULT SQLite stores but the generated column leaves out — a hex literal no int64 holds, a
+// BLOB literal sqlite_orm cannot write back — is a column sqlite_orm reads as having no default,
+// and `sync_schema()` compares whether a column has one: the table is dropped and created again,
+// and without preserve every row in it is gone. With preserve the rows are copied over and the
+// DEFAULT is what is lost. A CHECK left out is not compared, and its table is left alone. This is
+// what the warning the header carries for such a table says, pinned on a live database.
+TEST_CASE("generateSqliteSchemaHeader: sync_schema() over a DEFAULT left out rebuilds the table") {
+    TempDbFile file{makeTempDbPath()};
+    TempDbFile preserved{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE blob_default (a INTEGER, b BLOB DEFAULT x'0102');"
+            "CREATE TABLE blob_check (a INTEGER, b BLOB CHECK (b <> x'0102'));"
+            "CREATE TABLE hex_default (a INTEGER DEFAULT 0x10000000000000000);");
+    execSql(file.path,
+            "INSERT INTO blob_default VALUES (1, x'03'), (2, x'04');"
+            "INSERT INTO blob_check VALUES (1, x'03'), (2, x'04');"
+            "INSERT INTO hex_default VALUES (1), (2);");
+    std::filesystem::copy_file(file.path, preserved.path, std::filesystem::copy_options::overwrite_existing);
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"CHECK on column 'b' uses " + codegen_test_helpers::kDdlBlobLiteralReason("x'0102'") +
+                 ", so the generated column has no check()"},
+                {"the DEFAULT of column 'b' of table blob_default uses " +
+                 codegen_test_helpers::kDdlBlobLiteralReason("x'0102'") +
+                 ", so the generated column has no default_value()"},
+                CodegenWarning{"table blob_default declares a DEFAULT on column 'b' that the generated code leaves "
+                               "out, and sync_schema() tells a column with a default from one without: run against a "
+                               "database holding table blob_default as declared, it drops the table and creates it "
+                               "again from the generated code, so sync_schema() loses every row in it and "
+                               "sync_schema(true) copies the rows over but leaves the table without that DEFAULT",
+                               SourceLocation{1, 1},
+                               12},
+                {"DEFAULT 0x10000000000000000 on column 'a' is too big for a signed 64-bit integer: SQLite stores it "
+                 "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
+                 "default_value()"},
+                CodegenWarning{"table hex_default declares a DEFAULT on column 'a' that the generated code leaves "
+                               "out, and sync_schema() tells a column with a default from one without: run against a "
+                               "database holding table hex_default as declared, it drops the table and creates it "
+                               "again from the generated code, so sync_schema() loses every row in it and "
+                               "sync_schema(true) copies the rows over but leaves the table without that DEFAULT",
+                               SourceLocation{1, 1},
+                               12}});
+
+    const std::string preserveSync = "    auto kept = make_sqlite_schema_storage(R\"__(" +
+                                     preserved.path.generic_string() +
+                                     ")__\");\n"
+                                     "    for (const auto& outcome: kept.sync_schema(true)) {\n"
+                                     "        std::cout << \"preserve \" << outcome.first << \"=\" << "
+                                     "outcomeName(outcome.second) << \"\\n\";\n"
+                                     "    }\n";
+    REQUIRE(syncSchemaProbeOutput(header.code, file.path, preserveSync) ==
+            "blob_check=already_in_sync\n"
+            "blob_default=dropped_and_recreated\n"
+            "hex_default=dropped_and_recreated\n"
+            "preserve blob_check=already_in_sync\n"
+            "preserve blob_default=dropped_and_recreated\n"
+            "preserve hex_default=dropped_and_recreated\n");
+
+    REQUIRE(queryText(file.path,
+                      "SELECT (SELECT count(*) FROM blob_default) || ',' || (SELECT count(*) FROM blob_check) || ',' "
+                      "|| (SELECT count(*) FROM hex_default);") == "0,2,0");
+    REQUIRE(queryText(preserved.path,
+                      "SELECT (SELECT count(*) FROM blob_default) || ',' || (SELECT count(*) FROM blob_check) || ',' "
+                      "|| (SELECT count(*) FROM hex_default) || ',' || (SELECT count(*) FROM pragma_table_info("
+                      "'blob_default') WHERE dflt_value IS NOT NULL) || ',' || (SELECT count(*) FROM "
+                      "pragma_table_info('hex_default') WHERE dflt_value IS NOT NULL);") == "2,2,2,0,0");
 }
 
 // The other table option SQLite makes a key implicitly NOT NULL for is STRICT — with one exception

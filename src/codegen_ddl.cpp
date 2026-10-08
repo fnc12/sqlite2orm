@@ -1396,6 +1396,11 @@ namespace sqlite2orm {
         // supported for sqlite_orm */` says the opposite of what the statement says. It is the
         // same artefact the comments and placeholders of a clause are discarded for below.
         std::vector<CodegenWarning> ddlInfinityWarnings;
+        // Columns whose DEFAULT SQLite stores but the generated column leaves out. sync_schema()
+        // compares whether a column has a default at all, so a database holding this table is one
+        // it drops the table in; that is said once for the table, after the reasons, and only
+        // when the table is generated — a table left out has no sync_schema() to drop it.
+        std::vector<std::string> columnsWithDroppedDefault;
         bool tableIsGeneratable = true;
         // Whether the table ends up with a primary key at all, and whether one it declares was left
         // out for naming a column the table does not declare: a WITHOUT ROWID table needs its key.
@@ -1624,6 +1629,7 @@ namespace sqlite2orm {
                                            " uses " + ddlBlobLiteralReason(literal) +
                                            ", so the generated column has no default_value()");
                     }
+                    columnsWithDroppedDefault.push_back(rawColumnName);
                 } else if (this->context.storedHexLiteralsTooBig.empty()) {
                     const std::string& defaultCode = *defaultClause.code;
                     makeExpression += ", default_value(" + defaultCode + ")";
@@ -1668,6 +1674,7 @@ namespace sqlite2orm {
                                            "refuses every use of the default, and C++ has no literal for it, so "
                                            "the generated column has no default_value()");
                     }
+                    columnsWithDroppedDefault.push_back(rawColumnName);
                 }
             }
             if (column.unique) {
@@ -2241,6 +2248,28 @@ namespace sqlite2orm {
         warnings.insert(warnings.end(),
                         std::make_move_iterator(ddlInfinityWarnings.begin()),
                         std::make_move_iterator(ddlInfinityWarnings.end()));
+        if (!columnsWithDroppedDefault.empty()) {
+            // A DEFAULT naming a column is not counted: SQLite refuses such a table at CREATE TABLE
+            // time, so no database holds it. A CHECK left out is not counted either: sync_schema()
+            // does not compare it and leaves the table alone, which is pinned beside the DEFAULT
+            // it drops the table over in tests/schema_pipeline_tests.cpp.
+            std::string columnList;
+            for (size_t index = 0; index < columnsWithDroppedDefault.size(); ++index) {
+                columnList += (index == 0 ? "'" : ", '") + columnsWithDroppedDefault.at(index) + "'";
+            }
+            const bool oneColumn = columnsWithDroppedDefault.size() == 1;
+            warnings.push_back(sourceSpanWarning(
+                "table " + rawTableName + " declares " + (oneColumn ? "a DEFAULT on column " : "DEFAULTs on columns ") +
+                    columnList +
+                    " that the generated code leaves out, and sync_schema() tells a column with a "
+                    "default from one without: run against a database holding table " +
+                    rawTableName +
+                    " as declared, it drops the table and creates it again from the generated code, so "
+                    "sync_schema() loses every row in it and sync_schema(true) copies the rows over but leaves "
+                    "the table without " +
+                    (oneColumn ? "that DEFAULT" : "those DEFAULTs"),
+                SourceSpan{createTable.location, createTable.headerText}));
+        }
 
         CreateTableParts parts;
         // A CREATE TABLE is a whole statement, so this is where the comments its clauses recorded —

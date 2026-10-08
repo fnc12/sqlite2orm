@@ -155,13 +155,10 @@ namespace sqlite2orm {
         /**
          *  The module behind a `sqlite_master` row when that row is a `CREATE VIRTUAL TABLE`, and
          *  nothing for any other statement. It is read off the tokens rather than off the AST
-         *  because an AST is only there for a statement the whole pipeline carried through, and
-         *  ordinary FTS5 DDL does not get that far: `CREATE VIRTUAL TABLE mail USING fts5(subject,
-         *  sender UNINDEXED)` names a column option FTS5 documents, SQLite hands module arguments
-         *  to the module verbatim instead of parsing them, and this parser reads them as
-         *  expressions, so the statement fails to parse — as another one fails to validate or to
-         *  generate. Losing the module name there would lose the shadow tables behind it with it,
-         *  which is the whole of the symptom. Only the tokenizer ever cuts the text.
+         *  because an AST is only there for a statement the whole pipeline carried through, and a
+         *  virtual table SQLite took need not get that far: it can fail to parse, to validate or to
+         *  generate here. Losing the module name there would lose the shadow tables behind it with
+         *  it. Only the tokenizer ever cuts the text.
          */
         [[nodiscard]] std::optional<std::string> virtualTableModuleName(std::string_view sql) {
             std::vector<Token> tokens;

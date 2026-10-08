@@ -742,6 +742,15 @@ namespace sqlite2orm {
         "leaves what it stands for alone — an AND and an OR are 0, 1 or NULL, and a CAST to "
         "INTEGER keeps all three, typeof included.";
 
+    const std::string kCommentNotPredicateArgumentCast =
+        "A NOT in the argument of a predicate is generated as `cast<int64_t>(…)`: sqlite_orm "
+        "serializes a negation as a prefix `NOT` — `!between(…)`, `!like(…)` and `not x` alike — and "
+        "IN, BETWEEN, LIKE, GLOB, MATCH and IS [NOT] NULL with no parentheses around their "
+        "arguments, and SQLite binds NOT looser than every predicate, so `is_null(!between(b, 1, 2))` "
+        "would be read back as `NOT (b BETWEEN 1 AND 2 IS NULL)`. The CAST delimits the argument and "
+        "leaves what it stands for alone — a NOT is 0, 1 or NULL, and a CAST to INTEGER keeps all "
+        "three, typeof included.";
+
     const std::string kCommentPredicatePatternCast =
         "A predicate in the pattern or the ESCAPE of a LIKE, GLOB or MATCH is generated as "
         "`cast<int64_t>(…)`: sqlite_orm serializes those with no parentheses around their arguments, "
@@ -1199,7 +1208,7 @@ namespace sqlite2orm {
         return kSqlPrecedencePredicate;
     }
 
-    int serializedSqlPrecedence(const AstNode& astNode) {
+    int serializedSqlPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
         // A COLLATE and a unary plus emit their operand and nothing else, so the SQL this node is
         // serialized as is the one its operand is serialized as.
         const AstNode& generatedNode = generatedOperandNode(astNode);
@@ -1212,7 +1221,7 @@ namespace sqlite2orm {
                 // them terms. The exception is the one over a predicate, which keeps a bare unary
                 // minus SQLite reads inside the predicate: `- "a" IS NULL` is `(- "a") IS NULL`.
                 return negationFormFor(*unaryOp->operand) == NegationForm::unaryOverPredicate
-                           ? serializedSqlPrecedence(*unaryOp->operand)
+                           ? serializedSqlPrecedence(*unaryOp->operand, policy)
                            : kSqlPrecedenceTerm;
             }
             return kSqlPrecedenceTerm;
@@ -1227,19 +1236,36 @@ namespace sqlite2orm {
             }
             return sqlOperatorPrecedence(binaryOp->binaryOperator);
         }
+        // A negated predicate generated as `!pred` is a `negated_condition_t`, which sqlite_orm
+        // serializes as a prefix `NOT` over the bare predicate: `NOT "b" BETWEEN 1 AND 2`.
+        auto negated = [](const auto* predicate) {
+            return predicate && predicate->negated;
+        };
+        if (negated(dynamic_cast<const BetweenNode*>(&generatedNode)) ||
+            negated(dynamic_cast<const LikeNode*>(&generatedNode)) ||
+            negated(dynamic_cast<const GlobNode*>(&generatedNode)) ||
+            negated(dynamic_cast<const MatchNode*>(&generatedNode))) {
+            return kSqlPrecedenceNot;
+        }
+        // A NOT IN is that only when the policy asks for `!in(…)`; `not_in(…)` serializes as the
+        // `NOT IN` predicate itself.
+        if (negated(dynamic_cast<const InNode*>(&generatedNode)) &&
+            policyEquals(policy, "negation_style", "operator_excl")) {
+            return kSqlPrecedenceNot;
+        }
         // Everything else is a term of its own in the serialized SQL: a literal, a column, a call,
         // CAST, CASE, a parenthesized subquery.
         return sqlPredicateLooserThanMinus(generatedNode).empty() ? kSqlPrecedenceTerm : kSqlPrecedencePredicate;
     }
 
-    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode) {
+    int serializedSqlPrecedenceAsBinaryOperand(const AstNode& astNode, const CodeGenPolicy* policy) {
         // sqlite_orm's binary operator and binary condition serializer parenthesizes an operand
         // that is itself a binary operator or condition — everything a `BinaryOperatorNode`
         // generates — so however loosely SQLite binds it, it comes back as one term there.
         if (dynamic_cast<const BinaryOperatorNode*>(&generatedOperandNode(astNode))) {
             return kSqlPrecedenceTerm;
         }
-        return serializedSqlPrecedence(astNode);
+        return serializedSqlPrecedence(astNode, policy);
     }
 
     bool trailingCollateBindsWholeExpression(const AstNode& astNode) {
@@ -1284,12 +1310,12 @@ namespace sqlite2orm {
         return sqlPredicateLooserThanMinus(generatedNode).empty();
     }
 
-    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode) {
-        return serializedSqlPrecedence(astNode) >= kSqlPrecedenceAnd;
+    bool predicateArgumentNeedsGroupingCast(const AstNode& astNode, const CodeGenPolicy* policy) {
+        return serializedSqlPrecedence(astNode, policy) >= kSqlPrecedenceNot;
     }
 
-    bool predicatePatternNeedsGroupingCast(const AstNode& astNode) {
-        return serializedSqlPrecedence(astNode) >= kSqlPrecedencePredicate;
+    bool predicatePatternNeedsGroupingCast(const AstNode& astNode, const CodeGenPolicy* policy) {
+        return serializedSqlPrecedence(astNode, policy) >= kSqlPrecedencePredicate;
     }
 
     int generatedCppPrecedence(const AstNode& astNode, const CodeGenPolicy* policy) {
@@ -3608,6 +3634,83 @@ namespace sqlite2orm {
     namespace {
 
         /**
+         *  Whether the C++ type sqlite_orm gives `argument` is known to hold no NULL. A constant
+         *  other than NULL, a column of a NOT NULL field, an operator, a predicate, a CAST, a CASE
+         *  and a call sqlite_orm does not already type nullably all answer yes; a column the scope
+         *  does not resolve, a bind parameter and a subquery answer no, the type they are read
+         *  back as being one this layer does not know.
+         */
+        bool generatedArgumentTypeHoldsNoNull(const AstNode& argument, const ReferencedColumnResolver& resolveColumn) {
+            const AstNode& generatedNode = generatedOperandNode(argument);
+            if (const std::optional<GeneratedValueCppType> valueType = generatedValueCppType(generatedNode)) {
+                return *valueType != GeneratedValueCppType::null;
+            }
+            if (dynamic_cast<const ColumnRefNode*>(&generatedNode) ||
+                dynamic_cast<const QualifiedColumnRefNode*>(&generatedNode)) {
+                const SourceTableColumn* column = resolveColumn(generatedNode);
+                return column != nullptr && !column->nullable;
+            }
+            if (generatedResultColumnCppType(generatedNode) || dynamic_cast<const CaseNode*>(&generatedNode)) {
+                return true;
+            }
+            if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+                // SQLite refuses a window call nested in the argument of another one.
+                return !functionCall->over && !generatedFunctionResultIsAlreadyNullable(*functionCall, resolveColumn);
+            }
+            return false;
+        }
+
+        /**
+         *  `expressionMayBeNull` with the schema asked where it answers: a column the scope resolves
+         *  holds a NULL exactly when it is not declared NOT NULL, while `expressionMayBeNull`, which
+         *  sees no schema, takes every column for one that may.
+         */
+        bool operandMayBeNull(const AstNode& operand, const ReferencedColumnResolver& resolveColumn) {
+            const AstNode& generatedNode = generatedOperandNode(operand);
+            if (dynamic_cast<const ColumnRefNode*>(&generatedNode) ||
+                dynamic_cast<const QualifiedColumnRefNode*>(&generatedNode)) {
+                if (const SourceTableColumn* column = resolveColumn(generatedNode)) {
+                    return column->nullable;
+                }
+            }
+            return expressionMayBeNull(operand);
+        }
+
+        /**
+         *  Whether a call of `lag`, `lead`, `first_value`, `last_value` or `nth_value` can answer
+         *  NULL over a value argument that holds none. Checked against sqlite3 3.51 over a NOT NULL
+         *  column: `lag(b)` and `lead(b)` are NULL where the row they reach lies outside the
+         *  partition, and `lag(b, 1, 0)` answers its default there instead — NULL only where the
+         *  default is one, `lag(b, NULL, 0)` included. `first_value(b)` and `last_value(b)` are NULL
+         *  over an empty frame, which only a frame spelled out can be — `ROWS BETWEEN 2 PRECEDING
+         *  AND 1 PRECEDING` on the first row, `EXCLUDE CURRENT ROW` — while the default frame always
+         *  holds the current row. A named window may carry a frame of its own, so it is not taken
+         *  for the default one. `nth_value(b, N)` is NULL where the frame holds fewer than N rows,
+         *  so only `nth_value(b, 1)` over the default frame answers a value always.
+         */
+        bool windowValueCallMayAnswerNull(const FunctionCallNode& functionCall,
+                                          std::string_view functionLower,
+                                          const ReferencedColumnResolver& resolveColumn) {
+            if (functionLower == "lag" || functionLower == "lead") {
+                if (functionCall.arguments.size() < 3 || !functionCall.arguments.at(2)) {
+                    return true;
+                }
+                return operandMayBeNull(*functionCall.arguments.at(2), resolveColumn);
+            }
+            const bool frameHoldsTheCurrentRow = !functionCall.over->namedWindow && !functionCall.over->frame;
+            if (!frameHoldsTheCurrentRow) {
+                return true;
+            }
+            if (functionLower == "nth_value") {
+                const AstNode* position =
+                    functionCall.arguments.size() >= 2 ? functionCall.arguments.at(1).get() : nullptr;
+                auto* integerLiteral = dynamic_cast<const IntegerLiteralNode*>(position);
+                return integerLiteral == nullptr || integerLiteral->value != "1";
+            }
+            return false;
+        }
+
+        /**
          *  `selectResultNeedsAsOptional` over one scope: `resolveColumn` answers what the emitter
          *  writes a reference of the select the column belongs to as, which is the select this
          *  stands in and not always the one the context holds — a scalar subquery carries a scope
@@ -3709,14 +3812,36 @@ namespace sqlite2orm {
             }
             if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
                 if (functionCall->over) {
-                    // A window call is left as it is generated. `row_number`, `rank`, `dense_rank`,
-                    // `percent_rank`, `cume_dist` and `ntile` are never NULL, and `lag`, `lead`,
-                    // `first_value`, `last_value` and `nth_value` are typed as their argument, so a
-                    // nullable argument carries its nullability through on its own. What this arm does
-                    // not cover is the NULL the window itself answers: over a NOT NULL column the
-                    // argument is a plain `int64_t`, while `lag(b) OVER (ORDER BY b)` is NULL on the
-                    // first row, and that NULL still reads back as 0. A known hole, carded separately.
-                    return false;
+                    const std::string functionLower = toLowerAscii(functionCall->name);
+                    if (isOneOfFunctions(functionLower, {"first_value", "lag", "last_value", "lead", "nth_value"})) {
+                        // sqlite_orm types these as their value argument, so a nullable argument —
+                        // a column of an `std::optional` field — carries a NULL through on its own.
+                        // An argument typed without one does not: over a NOT NULL column
+                        // `lag(b) OVER (ORDER BY b)` is NULL on the first row and was read back as
+                        // 0, and so was `lag(b + 1)`, typed `double` by the operator whatever
+                        // NULL `b` holds.
+                        if (functionCall->arguments.empty() || !functionCall->arguments.front()) {
+                            return false;
+                        }
+                        const AstNode& value = *functionCall->arguments.front();
+                        if (!generatedArgumentTypeHoldsNoNull(value, resolveColumn)) {
+                            return false;
+                        }
+                        return windowValueCallMayAnswerNull(*functionCall, functionLower, resolveColumn) ||
+                               operandMayBeNull(value, resolveColumn);
+                    }
+                    const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(functionLower);
+                    if (form != nullptr && form->kind == SqliteOrmFormKind::windowFunction) {
+                        // `row_number`, `rank`, `dense_rank`, `percent_rank`, `cume_dist` and `ntile`
+                        // are never NULL.
+                        return false;
+                    }
+                    // An aggregate run as a window answers over its frame what it answers over a
+                    // group, so it is widened by the rule a plain call is: `avg(a)` and
+                    // `group_concat(a)` are NULL over an empty frame — `ROWS BETWEEN 2 PRECEDING
+                    // AND 1 PRECEDING` on the first row — and are typed `double` and `std::string`,
+                    // `sum`, `max` and `min` are typed `std::unique_ptr` already, and `count` and
+                    // `total` are never NULL.
                 }
                 if (generatedFunctionResultIsAlreadyNullable(*functionCall, resolveColumn)) {
                     return false;

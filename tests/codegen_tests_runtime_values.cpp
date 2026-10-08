@@ -1404,6 +1404,36 @@ TEST_CASE("runtime: an AND or an OR in a predicate argument returns the value SQ
     REQUIRE(selectedValues(statements) == std::vector<std::string>{"0", "1", "1", "0", "1", "0", "1", "1", "0", "1"});
 }
 
+// A negation sqlite_orm serializes as a prefix `NOT` — `not x` and every `!pred` — binds looser
+// than the predicates as well, so bare in a predicate argument it took the rest of the predicate
+// into itself: `is_null(!like(&User::a, "x"))` ran as `SELECT NOT "a" LIKE 'x' IS NULL`, that is
+// `NOT ("a" LIKE 'x' IS NULL)`. Expected values checked against sqlite3 3.51 over
+// `users(a INTEGER)` holding one row, NULL first and 7 second; without the CAST the NULL row
+// answers 0, 0, 0, 1, NULL, NULL and the 7 row 0, 1, 1, 0, 1, 1.
+TEST_CASE("runtime: a NOT in a predicate argument returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT NOT (a) NOT BETWEEN 1 AND 1 IS NULL ISNULL;"),
+        generate("SELECT (NOT a) IS NULL;"),
+        generate("SELECT (a NOT LIKE 'x') IS NULL;"),
+        generate("SELECT (a NOT GLOB 'x') IS NOT NULL;"),
+        generate("SELECT (a NOT BETWEEN 1 AND 2) IN (2);"),
+        generate("SELECT (a NOT LIKE 'x') = 2;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(not (is_null(is_null(cast<int64_t>(!between(&User::a, 1, 1))))));",
+                "auto rows = storage.select(is_null(cast<int64_t>(not column<User>(&User::a))));",
+                "auto rows = storage.select(is_null(cast<int64_t>(!like(&User::a, \"x\"))));",
+                "auto rows = storage.select(is_not_null(cast<int64_t>(!glob(&User::a, \"x\"))));",
+                "auto rows = storage.select(as_optional(in(cast<int64_t>(!between(&User::a, 1, 2)), {2})));",
+                "auto rows = storage.select(as_optional(cast<int64_t>(!like(&User::a, \"x\")) == 2));",
+            });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"1", "1", "1", "0", "NULL", "NULL"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"1", "0", "0", "1", "0", "0"});
+}
+
 // The same bare argument regroups after the keyword of a LIKE or a GLOB with a predicate too:
 // SQLite reads the predicates and `=` left-associatively at one rank, so `like(7, is_null(&User::a))`
 // ran as `SELECT 7 LIKE "a" IS NULL`, that is `(7 LIKE "a") IS NULL`, and answered 1 over a NULL
@@ -1538,6 +1568,45 @@ TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function c
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", ""});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
             std::vector<std::string>{"1", "0", "1", "0", "0", "7", "1", "7", "7", "37"});
+}
+
+// sqlite_orm types `lag`, `lead`, `first_value`, `last_value` and `nth_value` as their value argument
+// and `avg` as `double`, so where the window answers NULL over a NOT NULL column the row reached the
+// caller as 0. Expected values checked against sqlite3 3.51 over `user(a INTEGER NOT NULL)` holding
+// the one row 7: a window of one row reaches no row before or after it, an explicit frame of the row
+// before it is empty, and a frame of one row has no second one; before the widening the six NULL
+// rows read back as 0. The last two columns are the counter-check: `lag(a, 1, 0)` answers its default
+// and `first_value(a)` over the default frame the row itself, so neither is widened.
+TEST_CASE("runtime: a window function over a NOT NULL column reads the NULL back") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lead(a) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a + 1) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT first_value(a) OVER (ROWS BETWEEN 1 "
+                            "PRECEDING AND 1 PRECEDING) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT nth_value(a, 2) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT avg(a) OVER (ROWS BETWEEN 1 PRECEDING AND 1 "
+                            "PRECEDING) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a, 1, 0) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT first_value(a) OVER () FROM user;").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(lag(&User::a).over()));",
+                "auto rows = storage.select(as_optional(lead(&User::a).over()));",
+                "auto rows = storage.select(as_optional(lag(c(&User::a) + 1).over()));",
+                "auto rows = storage.select(as_optional(first_value(&User::a).over(sqlite_orm::rows(preceding(1), "
+                "preceding(1)))));",
+                "auto rows = storage.select(as_optional(nth_value(&User::a, 2).over()));",
+                "auto rows = storage.select(as_optional(avg(&User::a).over(sqlite_orm::rows(preceding(1), "
+                "preceding(1)))));",
+                "auto rows = storage.select(lag(&User::a, 1, 0).over());",
+                "auto rows = storage.select(first_value(&User::a).over());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "0", "7"});
 }
 
 // Most built-ins answer NULL over arguments that hold none, and sqlite_orm types the call by the

@@ -13,32 +13,36 @@ namespace sqlite2orm {
 
     namespace {
         /**
-         *  `code`, delimited with a CAST to INTEGER when the argument it was generated from stands
-         *  for an AND or an OR, and the comment that explains the CAST recorded in `context`. A
-         *  predicate serializer parenthesizes no argument of its own, and SQLite binds AND and OR
-         *  looser than every predicate, so a bare one there would take the predicate into itself.
+         *  `code`, delimited with a CAST to INTEGER when the argument it was generated from
+         *  serializes as a NOT, an AND or an OR, and the comment that explains the CAST recorded in
+         *  `context`. A predicate serializer parenthesizes no argument of its own, and SQLite binds
+         *  those looser than every predicate, so a bare one there would take the predicate into
+         *  itself.
          */
         SpannedCode
         groupPredicateArgument(SpannedCode code, const AstNode& argumentNode, CodeGeneratorContext& context) {
-            if (!predicateArgumentNeedsGroupingCast(argumentNode)) {
+            if (!predicateArgumentNeedsGroupingCast(argumentNode, context.codeGenPolicy)) {
                 return code;
             }
-            context.recordComment(sourceSpanComment(kCommentAndOrPredicateArgumentCast, argumentNode));
+            const bool andOr = serializedSqlPrecedence(argumentNode, context.codeGenPolicy) >= kSqlPrecedenceAnd;
+            context.recordComment(
+                sourceSpanComment(andOr ? kCommentAndOrPredicateArgumentCast : kCommentNotPredicateArgumentCast,
+                                  argumentNode));
             return "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
         }
 
         /**
          *  `code` for an argument standing after the keyword of a LIKE, GLOB or MATCH — the pattern
          *  or the ESCAPE — where SQLite regroups a predicate as well as an AND or an OR: the
-         *  predicate before it is read left-associatively at the same rank. An AND or an OR keeps
-         *  the comment `groupPredicateArgument` gives it.
+         *  predicate before it is read left-associatively at the same rank. A NOT, an AND or an OR
+         *  keeps the comment `groupPredicateArgument` gives it.
          */
         SpannedCode
         groupPredicatePattern(SpannedCode code, const AstNode& argumentNode, CodeGeneratorContext& context) {
-            if (predicateArgumentNeedsGroupingCast(argumentNode)) {
+            if (predicateArgumentNeedsGroupingCast(argumentNode, context.codeGenPolicy)) {
                 return groupPredicateArgument(std::move(code), argumentNode, context);
             }
-            if (!predicatePatternNeedsGroupingCast(argumentNode)) {
+            if (!predicatePatternNeedsGroupingCast(argumentNode, context.codeGenPolicy)) {
                 return code;
             }
             context.recordComment(sourceSpanComment(kCommentPredicatePatternCast, argumentNode));
@@ -646,7 +650,8 @@ namespace sqlite2orm {
             auto castPredicate = [&](SpannedCode& code, const AstNode& operandNode, bool rightOperand) {
                 if (operandsBecomeCallArguments)
                     return;
-                const int operandPrecedence = serializedSqlPrecedenceAsBinaryOperand(operandNode);
+                const int operandPrecedence =
+                    serializedSqlPrecedenceAsBinaryOperand(operandNode, this->context.codeGenPolicy);
                 // SQL reads these operators left-associatively too, so the right operand regroups at
                 // equal precedence as well: `1 = (a IS NULL)` comes back as `(1 = "a") IS NULL`.
                 const bool regroups =

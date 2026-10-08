@@ -1693,11 +1693,11 @@ TEST_CASE("codegen: an iif in its three-argument form is not widened") {
 // nullable around the first. That answer is given over the name alone, and the two `length(a)`
 // cases are what it leaves behind: `length` is typed `int` however NULL the row is, so
 // `iif(1, length(a), 2)` and `likely(length(a))` are typed `int` too and still read a NULL back as
-// 0 — a known hole with a card of its own, not one this widening reaches. A window function is
-// left alone as well: `row_number` and the other ranks are never NULL, and `lag`, `lead`,
-// `first_value`, `last_value` and `nth_value` are typed as their argument, which leaves the NULL
-// an empty window answers over a NOT NULL argument — `lag(b) OVER (ORDER BY b)` is NULL on the
-// first row — also carded. A MATCH has no widening either: SQLite refuses `a MATCH 'x'` as a
+// 0 — a known hole with a card of its own, not one this widening reaches. `row_number` and the
+// other ranks are never NULL, and a `lag` over a column no schema declares is typed as whatever
+// field the caller declares for it, which this layer does not know — the window widening is
+// pinned over a schema in "codegen: a window value function over an argument typed without a NULL
+// is generated as as_optional". A MATCH has no widening either: SQLite refuses `a MATCH 'x'` as a
 // result column outside an FTS table, and sqlite_orm has no result type for `match_t`.
 // A user-defined function is left alone too — it is called through the generated struct's
 // `operator()`, and the row carries back the type that operator declares — which
@@ -1735,6 +1735,95 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT a MATCH 'x' FROM users;") ==
             "auto rows = storage.select(match(&Users::a, \"x\"), from<Users>());");
     REQUIRE(generate("SELECT count(*) FROM users;") == "auto rows = storage.select(count<Users>());");
+}
+
+// sqlite_orm types `lag`, `lead`, `first_value`, `last_value` and `nth_value` as their value argument,
+// so only an argument typed nullably carries a NULL through. Over a NOT NULL column, a constant or an
+// operator the argument is typed without one, while the window answers NULL on its own: checked
+// against sqlite3 3.51 over `t(b INTEGER NOT NULL, a INTEGER)` holding (1, NULL), (2, 5), (3, NULL),
+// `lag(b) OVER (ORDER BY b)` is NULL on the first row and `lead(b)` on the last, `lag(b, 1, a)`
+// answers its NULL default there, `first_value` and `last_value` are NULL over an empty frame — one
+// spelled out, or a named window that may carry one — and `nth_value(b, 2)` over a frame of one row.
+// An aggregate run as a window is widened by the rule a plain call is: `avg` and `group_concat` are
+// NULL over an empty frame. Values read back in "runtime: a window function over a NOT NULL column
+// reads the NULL back".
+TEST_CASE("codegen: a window value function over an argument typed without a NULL is generated as as_optional") {
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(as_optional(lag(&T::b).over(order_by(&T::b))));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lead(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(as_optional(lead(&T::b).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b + 1) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(lag(c(&T::b) + 1).over(order_by(&T::b))));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(1) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(as_optional(lag(1).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b, 1, a) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(lag(&T::b, 1, &T::a).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT first_value(b) OVER (ORDER BY b "
+                                "ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) FROM t;")
+                .code == "auto rows = storage.select(as_optional(first_value(&T::b).over(order_by(&T::b), "
+                         "sqlite_orm::rows(preceding(2), preceding(1)))));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT last_value(b) OVER (ORDER BY b "
+                                "ROWS CURRENT ROW EXCLUDE CURRENT ROW) FROM t;")
+                .code == "auto rows = storage.select(as_optional(last_value(&T::b).over(order_by(&T::b), "
+                         "sqlite_orm::rows(current_row(), current_row()).exclude_current_row())));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT first_value(b) OVER w FROM t "
+                                "WINDOW w AS (ORDER BY b);")
+                .code == "auto rows = storage.select(as_optional(first_value(&T::b).over(window_ref(\"w\"))), "
+                         "window(\"w\", order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT nth_value(b, 2) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(nth_value(&T::b, 2).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT avg(b) OVER (ORDER BY b ROWS "
+                                "BETWEEN 2 PRECEDING AND 1 PRECEDING) FROM t;")
+                .code == "auto rows = storage.select(as_optional(avg(&T::b).over(order_by(&T::b), "
+                         "sqlite_orm::rows(preceding(2), preceding(1)))));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT group_concat(b) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(group_concat(&T::b).over(order_by(&T::b))));");
+}
+
+// The counter-checks, against the same sqlite3 3.51 table: a nullable column argument is typed
+// `std::optional` by sqlite_orm already and `abs` `std::unique_ptr`, so widening either would nest a
+// second nullable around the first; `lag(b, 1, 0)` answers its default 0 where no row is reached;
+// the default frame always holds the current row, so `first_value(b)`, `last_value(b)` and
+// `nth_value(b, 1)` over it answer a value of `b`; the ranks are never NULL, `sum` is typed
+// `std::unique_ptr` and `count` is never NULL.
+TEST_CASE("codegen: a window function that cannot answer NULL or is typed nullably keeps its type") {
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(a) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(lag(&T::a).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(abs(b)) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(lag(abs(&T::b)).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b, 1, 0) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(lag(&T::b, 1, 0).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT first_value(b) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(first_value(&T::b).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT last_value(b) OVER (PARTITION BY a) FROM t;")
+                .code == "auto rows = storage.select(last_value(&T::b).over(partition_by(&T::a)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT nth_value(b, 1) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(nth_value(&T::b, 1).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT row_number() OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(row_number().over(order_by(&T::b)));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT ntile(2) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(ntile(2).over(order_by(&T::b)));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT sum(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(sum(&T::b).over(order_by(&T::b)));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT count(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(count(&T::b).over(order_by(&T::b)));");
 }
 
 // sqlite_orm types `case_t<R, …>` as R, and R is the type inferred for the first branch's result —

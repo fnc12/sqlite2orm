@@ -1646,7 +1646,7 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
     REQUIRE(generate("SELECT nullif(1, 1) + 1;") == "auto rows = storage.select(as_optional(nullif(1, 1) + 1));");
     REQUIRE(generate("SELECT date('bogus');") == "auto rows = storage.select(as_optional(date(\"bogus\")));");
     REQUIRE(generate("SELECT date('bogus') || 'x';") ==
-            "auto rows = storage.select(as_optional(date(\"bogus\") || \"x\"));");
+            "auto rows = storage.select(as_optional(c(date(\"bogus\")) || \"x\"));");
     REQUIRE(generate("SELECT julianday('bogus');") == "auto rows = storage.select(as_optional(julianday(\"bogus\")));");
     REQUIRE(generate("SELECT strftime('%Y', 'bogus');") ==
             "auto rows = storage.select(as_optional(sqlite_orm::strftime(\"%Y\", \"bogus\")));");
@@ -1661,7 +1661,7 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
     REQUIRE(generate("SELECT substr('abc', 1, 1);") ==
             "auto rows = storage.select(as_optional(substr(\"abc\", 1, 1)));");
     REQUIRE(generate("SELECT printf('') || 'x';") ==
-            "auto rows = storage.select(as_optional(sqlite_orm::printf(\"\") || \"x\"));");
+            "auto rows = storage.select(as_optional(c(sqlite_orm::printf(\"\")) || \"x\"));");
     // An aggregate is NULL over an empty rowset whatever its argument holds. `sum`, `max` and `min`
     // are left plain as a result column — sqlite_orm declares them `std::unique_ptr` — but an
     // operator over one is typed by the operator alone and has to carry the NULL itself.
@@ -1708,7 +1708,7 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
             "auto rows = storage.select(in(&Users::a, std::vector<int64_t>{}));");
     REQUIRE(generate("SELECT CAST(1 AS TEXT);") == "auto rows = storage.select(cast<std::string>(1));");
     REQUIRE(generate("SELECT length('x');") == "auto rows = storage.select(length(\"x\"));");
-    REQUIRE(generate("SELECT upper('a') || 'x';") == "auto rows = storage.select(upper(\"a\") || \"x\");");
+    REQUIRE(generate("SELECT upper('a') || 'x';") == "auto rows = storage.select(c(upper(\"a\")) || \"x\");");
     REQUIRE(generate("SELECT instr('abc', 'b');") == "auto rows = storage.select(instr(\"abc\", \"b\"));");
     REQUIRE(generate("SELECT json_valid('{}');") == "auto rows = storage.select(json_valid(\"{}\"));");
     REQUIRE(generate("SELECT round(1.5);") == "auto rows = storage.select(sqlite_orm::round(1.5));");

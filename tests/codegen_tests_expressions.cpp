@@ -104,6 +104,19 @@ namespace {
         "requested context`. The `literal_holder` is serialized into the SQL as written, and `c()` "
         "hands it to `or_()`, which is the only spelling that keeps it.";
 
+    // The hint attached to every operand a concatenation quotes because sqlite_orm does not
+    // recognize it; asserted on its own in "codegen: a concatenation with a quoted operand carries
+    // its comment".
+    const std::string kConcatenationQuotedOperandComment =
+        "An operand of a `||` concatenation that sqlite_orm does not recognize is generated as "
+        "`c(operand)`: the concatenation `operator||` is declared only where one of the operands is "
+        "a concatenation or an operator argument. An arithmetic operator is neither, and a built-in "
+        "function call is one only where the headers take their C++20 path — g++ does, Apple clang "
+        "does not — so `upper(t) || 'x'` would compile on one compiler and not on the other. `c()` "
+        "hands the expression over as it stands: `operator||` unwraps the `quoted_expression_t` back "
+        "to the expression it holds, so the SQL it serializes to is the one the bare operand would "
+        "have given.";
+
     // The hint attached to every AND and OR operand the generator hands over `c()`-wrapped;
     // asserted on its own in "codegen: an AND or an OR with a quoted operand carries its comment".
     const std::string kAndOrQuotedOperandComment =
@@ -1147,8 +1160,59 @@ TEST_CASE("codegen: an operator no looser than the predicate leaves it bare") {
 TEST_CASE("codegen: the JSON arrows read a whole concatenation") {
     REQUIRE(generate("a || b ->> 'x'") == "json_extract<std::string>(c(&User::a) || &User::b, \"$.x\")");
     REQUIRE(generate("a || b -> 'x'") == "json_extract<std::string>(c(&User::a) || &User::b, \"$.x\")");
-    REQUIRE(generate("a ->> 'x' || b") == "json_extract<std::string>(&User::a, \"$.x\") || &User::b");
+    REQUIRE(generate("a ->> 'x' || b") == "c(json_extract<std::string>(&User::a, \"$.x\")) || &User::b");
     REQUIRE(generate("a * b ->> 'x'") == "c(&User::a) * json_extract<std::string>(&User::b, \"$.x\")");
+}
+
+// The concatenation `operator||` is declared only where one of its operands is a concatenation or
+// an operator argument. sqlite_orm declares the built-in functions twice, and only the C++20 path —
+// `consteval` included, which Apple clang lacks — builds an operator argument; the legacy
+// `builtin_function_t` it builds elsewhere is an arithmetic operand and nothing more, so
+// `date("bogus") || "x"` compiled with g++ and failed on macOS. An arithmetic operator finds no
+// overload on any compiler. The operand that has to carry the pair is handed over `c()`-wrapped,
+// which `operator||` unwraps right back. What the generated code answers is pinned in "runtime: a
+// concatenation over a built-in call or an arithmetic operand returns the values SQLite computes".
+TEST_CASE("codegen: a concatenation quotes an operand sqlite_orm does not recognize") {
+    SECTION("a built-in function call") {
+        REQUIRE(generate("date('bogus') || 'x'") == R"(c(date("bogus")) || "x")");
+        REQUIRE(generate("upper(a) || 'x'") == R"(c(upper(&User::a)) || "x")");
+        REQUIRE(generate("upper(a) || lower(b)") == "c(upper(&User::a)) || lower(&User::b)");
+        REQUIRE(generate("upper(a) || lower(b) || 'x'") == R"(c(upper(&User::a)) || lower(&User::b) || "x")");
+        REQUIRE(generate("sum(a) || 'x'") == R"(c(sum(&User::a)) || "x")");
+        REQUIRE(generate("a ->> 'x' || b") == R"(c(json_extract<std::string>(&User::a, "$.x")) || &User::b)");
+    }
+    SECTION("an arithmetic operator") {
+        REQUIRE(generate("(a + 1) || 'x'") == R"(c(c(&User::a) + 1) || "x")");
+    }
+    SECTION("an operand beside a concatenation or an operator argument is left as it was written") {
+        REQUIRE(generate("'x' || upper(a)") == R"(c("x") || upper(&User::a))");
+        REQUIRE(generate("a || upper(b)") == "c(&User::a) || upper(&User::b)");
+        REQUIRE(generate("CAST(a AS TEXT) || upper(b)") == "cast<std::string>(&User::a) || upper(&User::b)");
+        REQUIRE(generate("(a IS NULL) || upper(b)") == "cast<int64_t>(is_null(&User::a)) || upper(&User::b)");
+    }
+    SECTION("every variant the decision point offers is quoted the way its own spelling needs") {
+        const std::vector<Option> options = generateFull("upper(a) || lower(b)").decisionPoints.back().options;
+        REQUIRE(options.size() == 4);
+        REQUIRE(options[0].code == "c(upper(&User::a)) || lower(&User::b)");
+        REQUIRE(options[1].code == "upper(&User::a) || c(lower(&User::b))");
+        REQUIRE(options[2].code == "conc(upper(&User::a), lower(&User::b))");
+        REQUIRE(options[3].code == "c(upper(&User::a)) || c(lower(&User::b))");
+    }
+}
+
+TEST_CASE("codegen: a concatenation with a quoted operand carries its comment") {
+    REQUIRE(generateFull("SELECT upper('a') || 'x';").comments ==
+            std::vector<CodegenComment>{CodegenComment{kConcatenationQuotedOperandComment, SourceLocation{1, 8}, 10}});
+    REQUIRE(generateFull("SELECT (1 + 2) || 'x';").comments ==
+            std::vector<CodegenComment>{CodegenComment{kConcatenationQuotedOperandComment, SourceLocation{1, 8}, 7}});
+    // The quote the wrapping variant puts on a leaf operand speaks for itself.
+    REQUIRE(generateFull("SELECT 'x' || upper('a');").comments.empty());
+    // The call spelling quotes nothing.
+    CodeGenPolicy policy;
+    policy.chosenAlternativeValueByCategory["expr_style"] = "functional";
+    const CodeGenResult functional = generateWithPolicy("SELECT upper('a') || 'x';", policy);
+    REQUIRE(functional.code == R"(auto rows = storage.select(conc(upper("a"), "x"));)");
+    REQUIRE(functional.comments.empty());
 }
 
 // The functional spelling changes the C++ and not the SQL — `sub(1, is_null(&User::a))` serializes
@@ -1357,11 +1421,16 @@ TEST_CASE("codegen: an AND or an OR quotes an operand sqlite_orm does not recogn
         REQUIRE(generate("~a AND -a") == "c(~c(&User::a)) and (c(0) - c(&User::a))");
         REQUIRE(generate("(SELECT 1) AND a") == "c(select(1)) and &User::a");
     }
+    SECTION("a built-in function call, an operator argument only on the C++20 path of the headers") {
+        // Apple clang lacks `consteval`, so the headers hand a built-in back there as the legacy
+        // `builtin_function_t`, which no `operator&&` takes; a JSON arrow is generated as one too.
+        REQUIRE(generate("abs(a) AND a + 1") == "c(sqlite_orm::abs(&User::a)) and c(&User::a) + 1");
+        REQUIRE(generate("(a ->> '$.x') AND a") == R"(c(json_extract<std::string>(&User::a, "$.x")) and &User::a)");
+    }
     SECTION("an operand beside a condition or an operator argument is left as it was written") {
         REQUIRE(generate("a MATCH 'x' OR b = 1") == R"(match(&User::a, "x") or c(&User::b) == 1)");
         REQUIRE(generate("b = 1 AND a MATCH 'x'") == R"(c(&User::b) == 1 and match(&User::a, "x"))");
         REQUIRE(generate("CURRENT_DATE AND abs(a)") == "c(current_date()) and sqlite_orm::abs(&User::a)");
-        REQUIRE(generate("abs(a) AND a + 1") == "sqlite_orm::abs(&User::a) and c(&User::a) + 1");
         REQUIRE(generate("CAST(a AS INTEGER) AND a + 1") == "cast<int64_t>(&User::a) and c(&User::a) + 1");
         REQUIRE(generate("a AND b") == "c(&User::a) and &User::b");
         REQUIRE(generate("a = 1 AND b = 2") == "c(&User::a) == 1 and c(&User::b) == 2");
@@ -1390,12 +1459,12 @@ TEST_CASE("codegen: an AND or an OR quotes an operand sqlite_orm does not recogn
 }
 
 TEST_CASE("codegen: an AND or an OR leaves an operator argument beside an unrecognized operand bare") {
+    SECTION("a `count(*)`, built the same on every path of the headers") {
+        REQUIRE(generate("count(*) AND a") == "count() and &User::a");
+    }
     SECTION("a CASE") {
         REQUIRE(generate("(CASE WHEN a THEN 1 ELSE 2 END) AND a") ==
                 "case_<int>().when(&User::a, then(1)).else_(2).end() and &User::a");
-    }
-    SECTION("a JSON arrow, generated as a `json_extract()` call") {
-        REQUIRE(generate("(a ->> '$.x') AND a") == R"(json_extract<std::string>(&User::a, "$.x") and &User::a)");
     }
     SECTION("a NEW, an OLD and an EXCLUDED reference") {
         REQUIRE(generate("CREATE TRIGGER tr AFTER UPDATE ON t BEGIN UPDATE t SET b = NEW.a + 1 AND OLD.b; END;") ==

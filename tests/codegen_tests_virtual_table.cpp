@@ -71,6 +71,18 @@ TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 non-column args stub") {
     REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS f USING fts5(lower(title))") == expected);
 }
 
+TEST_CASE("codegen: CREATE VIRTUAL TABLE fts5 UNINDEXED column stub") {
+    const CodeGenResult expected{
+        "/* CREATE VIRTUAL TABLE: fts5 (unmapped arguments) */",
+        {},
+        {CodegenWarning{
+            "FTS5 module arguments that are not plain column names cannot be mapped to sqlite_orm::using_fts5()",
+            SourceLocation{1, 67},
+            16}}};
+    REQUIRE(generateFull("CREATE VIRTUAL TABLE IF NOT EXISTS mail USING fts5(subject, body, sender UNINDEXED)") ==
+            expected);
+}
+
 TEST_CASE("codegen: unknown virtual table module") {
     const CodeGenResult expected{
         "/* CREATE VIRTUAL TABLE: unknown module */",

@@ -260,12 +260,32 @@ namespace sqlite2orm {
         }
     };
 
+    /**
+     *  A CREATE VIRTUAL TABLE module argument that is not a single name or literal. SQLite does not
+     *  parse module arguments: it hands each one to the module as the text it was written as, so
+     *  that text is all this node keeps (`UNINDEXED` options, `key=value` settings, `content=`).
+     */
+    struct ModuleArgumentNode : AstNode {
+        std::string text;
+
+        ModuleArgumentNode(std::string_view text, SourceLocation location) : AstNode(location), text(text) {}
+
+        bool operator==(const AstNode& other) const override {
+            auto* o = dynamic_cast<const ModuleArgumentNode*>(&other);
+            return o && this->text == o->text;
+        }
+    };
+
     struct CreateVirtualTableNode : AstNode {
         bool temporary = false;
         bool ifNotExists = false;
         std::optional<std::string> tableSchemaName;
         std::string tableName;
         std::string moduleName;
+        /**
+         *  One node per non-empty argument: a lone name is a ColumnRefNode, a lone literal its literal
+         *  node, and anything else a ModuleArgumentNode carrying the argument's text.
+         */
         std::vector<AstNodePointer> moduleArguments;
 
         explicit CreateVirtualTableNode(SourceLocation location) : AstNode(location) {}

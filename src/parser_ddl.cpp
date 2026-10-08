@@ -925,15 +925,25 @@ namespace sqlite2orm {
 
         std::vector<AstNodePointer> moduleArguments;
         if (match(TokenType::leftParen)) {
-            if (!check(TokenType::rightParen)) {
-                while (true) {
-                    auto arg = this->parser.parseExpression();
-                    if (!arg)
-                        return nullptr;
-                    moduleArguments.push_back(std::move(arg));
-                    if (match(TokenType::comma)) {
-                        continue;
+            // SQLite does not parse module arguments: an argument is whatever tokens come before the
+            // next comma or the closing parenthesis outside nested parentheses, and an empty one is
+            // not passed to the module at all.
+            while (true) {
+                const size_t firstTokenIndex = this->tokenStream.currentPosition();
+                int parenDepth = 0;
+                while (!this->tokenStream.atEnd() && !check(TokenType::semicolon) &&
+                       !(parenDepth == 0 && (check(TokenType::comma) || check(TokenType::rightParen)))) {
+                    if (check(TokenType::leftParen)) {
+                        ++parenDepth;
+                    } else if (check(TokenType::rightParen)) {
+                        --parenDepth;
                     }
+                    advanceToken();
+                }
+                if (this->tokenStream.currentPosition() > firstTokenIndex) {
+                    moduleArguments.push_back(moduleArgumentFrom(firstTokenIndex));
+                }
+                if (!match(TokenType::comma)) {
                     break;
                 }
             }
@@ -949,6 +959,29 @@ namespace sqlite2orm {
         node->moduleName = std::move(moduleName);
         node->moduleArguments = std::move(moduleArguments);
         return node;
+    }
+
+    AstNodePointer DdlParser::moduleArgumentFrom(size_t firstTokenIndex) {
+        const size_t endTokenIndex = this->tokenStream.currentPosition();
+        const Token& firstToken = this->tokenStream.allTokens().at(firstTokenIndex);
+        SourceSpan span = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        AstNodePointer argument;
+        if (endTokenIndex - firstTokenIndex == 1) {
+            const TokenType type = firstToken.type;
+            if (type == TokenType::identifier || (type >= TokenType::kwAbort && type <= TokenType::kwWithout)) {
+                argument = std::make_unique<ColumnRefNode>(firstToken.value, firstToken.location);
+            } else if (type == TokenType::stringLiteral || type == TokenType::integerLiteral ||
+                       type == TokenType::realLiteral || type == TokenType::blobLiteral) {
+                this->tokenStream.setPosition(firstTokenIndex);
+                argument = this->parser.parsePrimary();
+                this->tokenStream.setPosition(endTokenIndex);
+            }
+        }
+        if (!argument) {
+            argument = std::make_unique<ModuleArgumentNode>(span.text, firstToken.location);
+        }
+        argument->sourceSpan = std::move(span);
+        return argument;
     }
 
     AstNodePointer DdlParser::parseTransactionControlStatement() {

@@ -2895,8 +2895,8 @@ TEST_CASE("generateSqliteSchemaHeader: a table behind a virtual table of another
                            "}\n");
     REQUIRE(header.warnings ==
             std::vector<CodegenWarning>{
-                {"CREATE VIRTUAL TABLE `uv` did not generate and is not merged into make_storage()"},
-                {"CREATE VIRTUAL TABLE `u` is not merged into make_storage(); run sqlite2orm on its SQL separately"}});
+                {"CREATE VIRTUAL TABLE `u` is not merged into make_storage(); run sqlite2orm on its SQL separately"},
+                {"CREATE VIRTUAL TABLE `uv` is not merged into make_storage(); run sqlite2orm on its SQL separately"}});
     REQUIRE(header.errors.empty());
     requireCompiles(header.code);
 }
@@ -3036,13 +3036,12 @@ TEST_CASE("generateSqliteSchemaHeader: a name that only begins like a reserved o
     requireCompiles(header.code);
 }
 
-// Which tables belong to a module is read off the tokens of the `CREATE VIRTUAL TABLE` row, not off
-// its AST, because everyday FTS5 DDL never reaches an AST here: `sender UNINDEXED` is a column
-// option FTS5 documents, SQLite hands module arguments to the module verbatim rather than parsing
-// them, and this parser reads them as expressions and gives up. Reading the module from the AST
-// left every shadow table of such a virtual table in the storage — the whole symptom, on a schema
-// sqlite3 3.51 creates without a word. The statement itself is left out either way.
-TEST_CASE("generateSqliteSchemaHeader: FTS5 tables are left out behind a virtual table that did not parse") {
+// `sender UNINDEXED` is a column option FTS5 documents, and SQLite hands module arguments to the
+// module verbatim rather than parsing them. Reading them as expressions refused the whole row, and
+// everyday FTS5 DDL then never reached an AST; the shadow tables behind it are left out all the
+// same, and the statement, which sqlite_orm's using_fts5() has no place for, generates a
+// placeholder and is left out with them. The rows below are what sqlite3 3.51 stored.
+TEST_CASE("generateSqliteSchemaHeader: FTS5 tables are left out behind a virtual table with column options") {
     ProcessSqliteSchemaResult schema;
     schema.statements.push_back(
         masterRow("table", "mail", "CREATE VIRTUAL TABLE mail USING fts5(subject, body, sender UNINDEXED)"));
@@ -3058,7 +3057,8 @@ TEST_CASE("generateSqliteSchemaHeader: FTS5 tables are left out behind a virtual
         masterRow("table", "mail_docsize", "CREATE TABLE 'mail_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"));
     schema.statements.push_back(
         masterRow("table", "mail_config", "CREATE TABLE 'mail_config'(k PRIMARY KEY, v) WITHOUT ROWID"));
-    REQUIRE_FALSE(schema.statements.front().pipeline.ok());
+    REQUIRE(schema.statements.front().pipeline.ok());
+    REQUIRE(schema.statements.front().pipeline.codegen.code == "/* CREATE VIRTUAL TABLE: fts5 (unmapped arguments) */");
     const CodeGenResult header = generateSqliteSchemaHeader(schema);
 
     REQUIRE(header.code == "#pragma once\n\n"
@@ -3073,8 +3073,6 @@ TEST_CASE("generateSqliteSchemaHeader: FTS5 tables are left out behind a virtual
                            "    return make_storage(db_path);\n"
                            "}\n");
     REQUIRE(header.warnings == std::vector<CodegenWarning>{
-                                   {"CREATE VIRTUAL TABLE `mail` did not generate and is not merged into "
-                                    "make_storage()"},
                                    {"CREATE TABLE `mail_data` is an internal FTS5 table of virtual table `mail` and is "
                                     "not merged into make_storage()"},
                                    {"CREATE TABLE `mail_idx` is an internal FTS5 table of virtual table `mail` and is "
@@ -3084,7 +3082,9 @@ TEST_CASE("generateSqliteSchemaHeader: FTS5 tables are left out behind a virtual
                                    {"CREATE TABLE `mail_docsize` is an internal FTS5 table of virtual table `mail` and "
                                     "is not merged into make_storage()"},
                                    {"CREATE TABLE `mail_config` is an internal FTS5 table of virtual table `mail` and "
-                                    "is not merged into make_storage()"}});
+                                    "is not merged into make_storage()"},
+                                   {"CREATE VIRTUAL TABLE `mail` is not merged into make_storage(); run sqlite2orm on "
+                                    "its SQL separately"}});
     REQUIRE(header.errors.empty());
     requireCompiles(header.code);
 }

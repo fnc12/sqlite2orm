@@ -50,6 +50,8 @@ namespace sqlite2orm {
 
       private:
         AstNodePointer parsePragmaValue();
+        /** The module argument whose tokens run from `firstTokenIndex` up to the current one. */
+        AstNodePointer moduleArgumentFrom(size_t firstTokenIndex);
 
         Parser& parser;
         TokenStream& tokenStream;

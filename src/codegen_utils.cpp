@@ -771,6 +771,16 @@ namespace sqlite2orm {
         "the condition built — and the SQL it serializes to — is the one the bare operand would "
         "have built.";
 
+    const std::string kCommentConcatenationQuotedOperand =
+        "An operand of a `||` concatenation that sqlite_orm does not recognize is generated as "
+        "`c(operand)`: the concatenation `operator||` is declared only where one of the operands is "
+        "a concatenation or an operator argument. An arithmetic operator is neither, and a built-in "
+        "function call is one only where the headers take their C++20 path — g++ does, Apple clang "
+        "does not — so `upper(t) || 'x'` would compile on one compiler and not on the other. `c()` "
+        "hands the expression over as it stands: `operator||` unwraps the `quoted_expression_t` back "
+        "to the expression it holds, so the SQL it serializes to is the one the bare operand would "
+        "have given.";
+
     const std::string kCommentBetweenBoundsWidened =
         "The bounds of a BETWEEN are generated as `static_cast<int64_t>(…)`: sqlite_orm's "
         "`between(A, T, T)` deduces one C++ type from the two of them, and C++ types an integer "
@@ -988,6 +998,22 @@ namespace sqlite2orm {
             const SqliteOrmFunctionForm* form = sqliteOrmFunctionForm(toLowerAscii(functionCall.name));
             return form != nullptr &&
                    (form->kind == SqliteOrmFormKind::windowFunction || form->kind == SqliteOrmFormKind::matchFunction);
+        }
+
+        /**
+         *  Whether the call generates a built-in function the way the headers spell it on every
+         *  compiler. sqlite_orm declares the built-ins twice: under `SQLITE_ORM_WITH_CPP20_ALIASES`
+         *  — consteval, concepts and class-type template arguments, which g++ has and Apple clang
+         *  lacks `consteval` for — a call builds a `builtin_function_call`, and everywhere else it
+         *  builds the legacy `builtin_function_t` / `built_in_aggregate_function_t`. Only the
+         *  former is an operator argument; the legacy ones are arithmetic operands and nothing
+         *  more. A `func<…>()` call, a `count(*)` and the argument-less `count()` are the same on
+         *  both paths and are operator arguments on both.
+         */
+        bool functionCallGeneratesBuiltinFunction(const FunctionCallNode& functionCall) {
+            const std::optional<SqliteOrmFunctionForm> form = resolveFunctionCallForm(functionCall, true);
+            return form && (form->kind == SqliteOrmFormKind::builtinScalar ||
+                            form->kind == SqliteOrmFormKind::builtinAggregate);
         }
     }
 
@@ -2082,14 +2108,13 @@ namespace sqlite2orm {
         // node standing here is the one the operand generates.
         const AstNode& generatedNode = generatedOperandNode(astNode);
         if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
-            return !functionCallGeneratesUnrecognizedOperand(*functionCall);
+            // A built-in is one only where the headers take their C++20 path, and the generated
+            // code has to compile on the compilers that do not.
+            return !functionCallGeneratesUnrecognizedOperand(*functionCall) &&
+                   !functionCallGeneratesBuiltinFunction(*functionCall);
         }
-        if (auto* binaryOperator = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
-            // The JSON arrows are generated as a `json_extract()` call, a built-in function like
-            // any other; every other operator builds a `binary_operator` or a `binary_condition`.
-            return binaryOperator->binaryOperator == BinaryOperator::jsonArrow ||
-                   binaryOperator->binaryOperator == BinaryOperator::jsonArrow2;
-        }
+        // The JSON arrows are generated as a `json_extract()` call, a built-in function like any
+        // other, and every other operator builds a `binary_operator` or a `binary_condition`.
         return dynamic_cast<const CastNode*>(&generatedNode) != nullptr ||
                dynamic_cast<const CaseNode*>(&generatedNode) != nullptr ||
                dynamic_cast<const NewRefNode*>(&generatedNode) != nullptr ||

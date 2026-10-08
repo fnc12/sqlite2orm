@@ -1616,11 +1616,8 @@ TEST_CASE("runtime: a window function over a NOT NULL column reads the NULL back
 // read back as 0, "", 0, "", 0, 0. The last two columns are the counter-check: `upper` and `length`
 // answer NULL for no reason other than a NULL argument, so a spelled-out argument leaves them plain
 // and they read back as they always did.
-// A `||` over a call is left to the codegen cases: sqlite_orm hands a built-in call back as a
-// `builtin_function_t` rather than a `builtin_function_call` on a compiler its C++20 built-in path
-// is off for, and that type is not an operator argument, so `date("bogus") || "x"` does not compile
-// with Apple clang whether it is widened or not. That gap is master's and has its own card; the
-// widening it would exercise is the same one `nullif(1, 1) + 1` and `unicode('') + 1` exercise here.
+// A `||` over a call is read back in "runtime: a concatenation over a built-in call or an
+// arithmetic operand returns the values SQLite computes".
 TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments reads the NULL back") {
     const std::vector<std::string> statements{
         generate("SELECT nullif(1, 1) + 1;"),
@@ -1799,6 +1796,42 @@ TEST_CASE("runtime: an AND or an OR over operands sqlite_orm does not recognize 
             });
     REQUIRE(selectedValues(statements, "int", "7") ==
             std::vector<std::string>{"1", "0", "1", "1", "1", "0", "NULL", "1", "1", "1", "1", "0", "1", "1", "1"});
+}
+
+// The concatenation `operator||` is declared only where one operand is a concatenation or an
+// operator argument, and a built-in call is an operator argument only on the C++20 path of the
+// sqlite_orm headers: Apple clang lacks `consteval`, gets the legacy `builtin_function_t` and
+// rejected `date("bogus") || "x"` — `invalid operands to binary expression` — while g++ built it.
+// An arithmetic operand finds no overload on any compiler. The operand that carries the pair is
+// handed over `c()`-wrapped now, and `operator||` unwraps it right back, so the SQL is the one the
+// bare operand would have given; an AND over a built-in call takes the same quote. Values checked
+// against sqlite3 3.51 over `users(a INTEGER)` holding one row with a = 7. Run with the headers
+// forced onto their legacy path (`-U__cpp_consteval`) as well as on the default one.
+TEST_CASE("runtime: a concatenation over a built-in call or an arithmetic operand returns the values SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT date('bogus') || 'x';"),
+        generate("SELECT upper('a') || 'x';"),
+        generate("SELECT upper(a) || lower(a) || 'x';"),
+        generate("SELECT (a + 1) || 'x';"),
+        generate("SELECT abs(a) || a;"),
+        generate("SELECT '{\"x\":5}' ->> 'x' || 'y';"),
+        generate("SELECT abs(a) AND 1;"),
+        generate("SELECT upper('a') AND 1;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(c(date(\"bogus\")) || \"x\"));",
+                "auto rows = storage.select(c(upper(\"a\")) || \"x\");",
+                "auto rows = storage.select(as_optional(c(upper(&User::a)) || lower(&User::a) || \"x\"));",
+                "auto rows = storage.select(as_optional(c(c(&User::a) + 1) || \"x\"));",
+                "auto rows = storage.select(as_optional(c(sqlite_orm::abs(&User::a)) || &User::a));",
+                "auto rows = storage.select(as_optional(c(json_extract<std::string>(\"{\\\"x\\\":5}\", \"$.x\")) || "
+                "\"y\"));",
+                "auto rows = storage.select(as_optional(c(sqlite_orm::abs(&User::a)) and 1));",
+                "auto rows = storage.select(c(upper(\"a\")) and 1);",
+            });
+    REQUIRE(selectedValues(statements, "int", "7") ==
+            std::vector<std::string>{"NULL", "Ax", "77x", "8x", "77", "5y", "1", "0"});
 }
 
 // A MATCH is the one of these forms that cannot be run here: sqlite_orm generates `match_t` for

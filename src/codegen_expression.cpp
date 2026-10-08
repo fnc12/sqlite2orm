@@ -647,6 +647,9 @@ namespace sqlite2orm {
             // The operand the CAST went around, for the hint below to underline: with both of them
             // cast the hint is one and stands at the first, as a warning met twice does.
             const AstNode* castPredicateOperand = nullptr;
+            // Which operands the CAST went around: a `cast_t` is an operator argument whatever it holds.
+            bool leftCastPredicate = false;
+            bool rightCastPredicate = false;
             auto castPredicate = [&](SpannedCode& code, const AstNode& operandNode, bool rightOperand) {
                 if (operandsBecomeCallArguments)
                     return;
@@ -659,6 +662,7 @@ namespace sqlite2orm {
                 if (!regroups)
                     return;
                 code = "cast<" + sqliteTypeToCpp("INTEGER") + ">(" + code + ")";
+                (rightOperand ? rightCastPredicate : leftCastPredicate) = true;
                 if (!castPredicateOperand) {
                     castPredicateOperand = &operandNode;
                 }
@@ -686,6 +690,11 @@ namespace sqlite2orm {
             // and the SQL it serializes to are the ones the bare operand would have given.
             const bool isAndOr = binaryOp->binaryOperator == BinaryOperator::logicalAnd ||
                                  binaryOp->binaryOperator == BinaryOperator::logicalOr;
+            // The concatenation `operator||` is declared only where one operand is a concatenation
+            // or an operator argument, so `upper(&User::t) || "x"` and `(c(&User::a) + 1) || "x"`
+            // find no overload, and a built-in call finds one only on compilers the headers take
+            // their C++20 path on. `c()` is unwrapped there just the same.
+            const bool isConcatenation = binaryOp->binaryOperator == BinaryOperator::concatenate;
             auto generatesOperatorArgument = [&](const AstNode& operandNode, bool noWrap) {
                 // A column reference generates an operator argument as a column pointer and as a
                 // C++20 alias moniker — an `alias_holder` — and a plain member pointer otherwise,
@@ -696,9 +705,14 @@ namespace sqlite2orm {
             const bool andOrHasRecognizedOperand =
                 generatesSqliteOrmCondition(leftNode) || generatesSqliteOrmCondition(rightNode) ||
                 generatesOperatorArgument(leftNode, leftNoWrap) || generatesOperatorArgument(rightNode, rightNoWrap);
+            const bool concatenationHasRecognizedOperand =
+                generatesConcatenation(leftNode) || generatesConcatenation(rightNode) || leftCastPredicate ||
+                rightCastPredicate || generatesOperatorArgument(leftNode, leftNoWrap) ||
+                generatesOperatorArgument(rightNode, rightNoWrap);
             // The operator spelling needs one recognized operand, and each of its variants quotes
             // a different side, so the side a variant quotes is the one that carries it.
-            const bool operatorSpellingQuotesOperand = isAndOr && !andOrHasRecognizedOperand;
+            const bool operatorSpellingQuotesOperand =
+                (isAndOr && !andOrHasRecognizedOperand) || (isConcatenation && !concatenationHasRecognizedOperand);
             // The call spelling needs both of its arguments recognized, each on its own.
             const bool quoteLeftCallArgument = isAndOr && !generatesSqliteOrmOperandOrBindable(leftNode);
             const bool quoteRightCallArgument = isAndOr && !generatesSqliteOrmOperandOrBindable(rightNode);
@@ -931,7 +945,9 @@ namespace sqlite2orm {
                 return leftLeaf ? nullptr : &leftNode;
             };
             if (const AstNode* quotedOperand = quotedUnrecognizedOperand(chosenExprVal)) {
-                this->context.recordComment(sourceSpanComment(kCommentAndOrQuotedOperand, *quotedOperand));
+                this->context.recordComment(
+                    sourceSpanComment(isConcatenation ? kCommentConcatenationQuotedOperand : kCommentAndOrQuotedOperand,
+                                      *quotedOperand));
             }
             return spannedResult(std::move(emittedExpr), std::move(decisionPoints), std::move(binWarnings));
         } else if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&astNode)) {

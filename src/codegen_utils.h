@@ -150,6 +150,7 @@ namespace sqlite2orm {
     extern const std::string kCommentDistinctFromSqliteVersion;
     extern const std::string kCommentIsTruthTest;
     extern const std::string kCommentAndOrQuotedOperand;
+    extern const std::string kCommentConcatenationQuotedOperand;
     extern const std::string kCommentAndOrPredicateArgumentCast;
     extern const std::string kCommentNotPredicateArgumentCast;
     extern const std::string kCommentPredicatePatternCast;
@@ -347,11 +348,13 @@ namespace sqlite2orm {
     bool generatesSqliteOrmCondition(const AstNode& astNode);
     /**
      *  True when the node generates a sqlite_orm operator argument, i.e. a type its
-     *  `is_operator_argument` recognizes: a built-in function call (aggregate and `func<>()`
-     *  included), a CAST, a CASE, a `json_extract()` — what the JSON arrows generate — and the
-     *  `new_()` / `old()` / `excluded()` references. A window function, a call carrying a FILTER
-     *  or an OVER and a MATCH in its function spelling are not: the window aggregates, `match_t`,
-     *  `filtered_aggregate_function_t` and `over_t` are recognized nowhere. Column references are
+     *  `is_operator_argument` recognizes on every compiler: a `func<>()` call, a `count(*)`, a
+     *  CAST, a CASE and the `new_()` / `old()` / `excluded()` references. A built-in function call
+     *  — and the `json_extract()` the JSON arrows generate — is one only where the headers take
+     *  their C++20 path, which Apple clang does not, so it is not counted. A window function, a
+     *  call carrying a FILTER or an OVER and a MATCH in its function spelling are not either: the
+     *  window aggregates, `match_t`, `filtered_aggregate_function_t` and `over_t` are recognized
+     *  nowhere. Column references are
      *  left out on purpose — whether one generates a column pointer or an alias, both operator
      *  arguments, or a plain member pointer, which is none, is the generator's business and not
      *  the node's.

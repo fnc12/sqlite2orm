@@ -522,6 +522,53 @@ TEST_CASE("generateSqliteSchemaHeader: a view and a trigger SQLite stores but ca
     REQUIRE(header.errors.empty());
 }
 
+// sqlite_orm's select(...) embeds no CTE, so a view or a trigger step whose SELECT has a WITH of
+// its own is not generated. Dropping the WITH clause instead left `select(&C::a)` in the trigger, a
+// struct the header never declares, at exit 0. sqlite3 3.51.0 stores both and runs them.
+TEST_CASE("generateSqliteSchemaHeader: a view and a trigger reading a CTE of their own are skipped") {
+    TempDbFile file{makeTempDbPath()};
+    execSql(file.path,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, a TEXT);"
+            "CREATE VIEW v AS WITH c AS (SELECT a FROM users) SELECT a FROM c;"
+            "CREATE TRIGGER tr AFTER INSERT ON users BEGIN INSERT INTO users (a) WITH c AS (SELECT a FROM users) "
+            "SELECT a FROM c; END;");
+
+    SqliteSchemaReader reader(file.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    REQUIRE(schema.allOk());
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+
+    REQUIRE(header.code == "#pragma once\n\n"
+                           "#include <sqlite_orm/sqlite_orm.h>\n"
+                           "#include <cstdint>\n"
+                           "#include <optional>\n"
+                           "#include <string>\n"
+                           "#include <vector>\n\n"
+                           "struct Users {\n"
+                           "    std::optional<int64_t> id;\n"
+                           "    std::optional<std::string> a;\n"
+                           "};\n\n\n"
+                           "inline auto make_sqlite_schema_storage(const std::string& db_path) {\n"
+                           "    using namespace sqlite_orm;\n"
+                           "    return make_storage(db_path,\n"
+                           "        make_table(\"users\",\n"
+                           "        make_column(\"id\", &Users::id, primary_key()),\n"
+                           "        make_column(\"a\", &Users::a)));\n"
+                           "}\n");
+    REQUIRE(header.warnings ==
+            std::vector<CodegenWarning>{
+                {"nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs, so the SELECT is not mapped"},
+                {"CREATE VIEW v: SELECT is not supported for sqlite_orm code generation"},
+                {"CREATE VIEW `v` is not merged into make_storage()"},
+                {"nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs, so the SELECT is not mapped"},
+                {"the SELECT an INSERT reads from is not mapped to sqlite_orm codegen", SourceLocation{1, 69}, 47},
+                {"a statement in the trigger body is not mapped to sqlite_orm codegen", SourceLocation{1, 47}, 69},
+                {"a construct in this statement is not mapped to sqlite_orm, so the statement is not generated"},
+                {"CREATE TRIGGER `tr` is not merged into make_storage()"}});
+    REQUIRE(header.errors.empty());
+    requireCompiles(header.code);
+}
+
 // A STORED generated column is stored text too: `sqlite3 blk.db "CREATE TABLE gen(x INTEGER,
 // y AS (x + 0x10000000000000000) STORED)"` succeeds and sqlite_master holds it, while every INSERT
 // into it fails. The table cannot be generated — dropping the as(...) would turn a generated

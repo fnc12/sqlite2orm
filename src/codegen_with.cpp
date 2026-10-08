@@ -217,18 +217,20 @@ namespace sqlite2orm {
                             std::make_move_iterator(part.warnings.begin()),
                             std::make_move_iterator(part.warnings.end()));
             if (part.code.empty()) {
-                warnings.push_back(
-                    "WITH: a CTE SELECT is not mapped to a sqlite_orm select(...) subexpression; emitted outer "
-                    "statement without storage.with()");
-                this->context.activeCteTypedefByTableKey.clear();
-                auto inner = this->coordinator.generateNode(*withQueryNode.statement);
-                warnings.insert(warnings.end(),
-                                std::make_move_iterator(inner.warnings.begin()),
-                                std::make_move_iterator(inner.warnings.end()));
-                allDecisionPoints.insert(allDecisionPoints.end(),
-                                         std::make_move_iterator(inner.decisionPoints.begin()),
-                                         std::make_move_iterator(inner.decisionPoints.end()));
-                return CodeGenResult{inner.code, std::move(allDecisionPoints), std::move(warnings)};
+                // Without storage.with() nothing declares the CTE, so the outer statement would read
+                // the CTE's name as a table: a struct no schema declares, or a table of the same name
+                // the CTE shadows. The statement stands as a placeholder of its own instead, and the
+                // decision points of the CTEs before it go with the code they were made for.
+                CodeGenResult carried;
+                carried.warnings = std::move(warnings);
+                return unsupportedStatementPlaceholder(
+                    this->context,
+                    "WITH: CTE SELECT not mapped to sqlite_orm",
+                    "the SELECT of CTE " + stripIdentifierQuotes(cte.cteName) +
+                        " is not mapped to a sqlite_orm select(...) subexpression, so the statement reading it "
+                        "is not generated",
+                    *cte.query,
+                    std::move(carried));
             }
             innerCodes.push_back(std::move(part.code));
         }

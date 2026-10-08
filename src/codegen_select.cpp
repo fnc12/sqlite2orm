@@ -833,13 +833,13 @@ namespace sqlite2orm {
         if (auto* compoundNode = dynamic_cast<const CompoundSelectNode*>(&node)) {
             return this->coordinator.tryCodegenCompoundSelectSubexpression(*compoundNode, {}, cteBodySelect);
         }
-        if (auto* withQueryNode = dynamic_cast<const WithQueryNode*>(&node)) {
-            auto inner = this->coordinator.tryCodegenSelectLikeSubquery(*withQueryNode->statement, cteBodySelect);
-            std::vector<CodegenWarning> subWarnings = std::move(inner.warnings);
-            subWarnings.insert(subWarnings.begin(),
-                               "nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs; generated code "
-                               "uses the inner SELECT only (WITH clause dropped)");
-            return CodeGenResult{std::move(inner.code), std::move(inner.decisionPoints), std::move(subWarnings)};
+        if (dynamic_cast<const WithQueryNode*>(&node)) {
+            // Dropping the WITH clause would leave the inner SELECT reading each CTE's name as a
+            // table: a struct no schema declares, or a table of the same name the CTE shadows.
+            return CodeGenResult{{},
+                                 {},
+                                 {"nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs, so the SELECT "
+                                  "is not mapped"}};
         }
         return CodeGenResult{{}, {}, {"subquery is not a SELECT or compound SELECT for sqlite_orm codegen"}};
     }

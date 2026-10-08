@@ -3054,3 +3054,31 @@ TEST_CASE("runtime: a built-in the C library declares too is the call SQLite run
                                                       "hi",
                                                   });
 }
+
+// With a single argument `printf("")` is an exact match for both the sqlite_orm template and the
+// C library's non-template `::printf(const char*, ...)`, and the non-template one won: the program
+// printed the format to stdout and handed SQLite the count it returned, so `printf('')`, which
+// SQLite answers NULL, came back 0. With a second argument `::printf` needs the ellipsis and the
+// template won all along; it is here as the form that never went wrong. The concatenation keeps
+// `printf` on its right: a built-in call on the left of `||` with a literal on the right does not
+// compile on the headers' legacy branch, which Apple clang takes, whatever the function.
+TEST_CASE("runtime: printf with only a format is the SQL printf and answers NULL for an empty one") {
+    const std::vector<std::string> statements{
+        generate("SELECT printf('');"),
+        generate("SELECT 'x' || printf('');"),
+        generate("SELECT printf('%d', 1);"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(as_optional(sqlite_orm::printf(\"\")));",
+                              "auto rows = storage.select(as_optional(c(\"x\") || sqlite_orm::printf(\"\")));",
+                              "auto rows = storage.select(as_optional(sqlite_orm::printf(\"%d\", 1)));",
+                          });
+    REQUIRE(executedQueriesAndRows(statements) == std::vector<std::string>{
+                                                      "SELECT PRINTF(?)",
+                                                      "NULL",
+                                                      "SELECT ? || PRINTF(?)",
+                                                      "NULL",
+                                                      "SELECT PRINTF(?, ?)",
+                                                      "1",
+                                                  });
+}

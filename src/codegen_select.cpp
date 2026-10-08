@@ -543,6 +543,11 @@ namespace sqlite2orm {
                                                        std::move(carried));
             }
         }
+        for (const auto& fromItem: selectNode.fromClause) {
+            if (auto hintWarning = tableIndexHintWarning(fromItem.table.indexHint)) {
+                selectWarnings.push_back(std::move(*hintWarning));
+            }
+        }
         // sqlite_orm spells a HAVING condition only as a tail of the GROUP BY clause
         // (`group_by(...).having(...)`), and there is no faithful stand-in for the form SQLite also
         // takes, HAVING with no GROUP BY: `group_by()` with no term is not SQL, and grouping by a
@@ -1304,6 +1309,11 @@ namespace sqlite2orm {
             if (fromItem.table.derivedSelect) {
                 subWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
                 return CodeGenResult{{}, {}, std::move(subWarnings)};
+            }
+        }
+        for (const auto& fromItem: selectNode.fromClause) {
+            if (auto hintWarning = tableIndexHintWarning(fromItem.table.indexHint)) {
+                subWarnings.push_back(std::move(*hintWarning));
             }
         }
 

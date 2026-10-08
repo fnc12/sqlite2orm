@@ -216,6 +216,8 @@ namespace sqlite2orm {
         }
         if (!parseDmlQualifiedTable(node->schemaName, node->tableName))
             return nullptr;
+        if (!this->parser.parseTableIndexHint(node->indexHint))
+            return nullptr;
         if (!match(TokenType::kwSet))
             return nullptr;
         if (!parseCommaSeparatedUpdateAssignments(node->assignments))
@@ -272,6 +274,8 @@ namespace sqlite2orm {
             return nullptr;
         auto node = std::make_unique<DeleteNode>(location);
         if (!parseDmlQualifiedTable(node->schemaName, node->tableName))
+            return nullptr;
+        if (!this->parser.parseTableIndexHint(node->indexHint))
             return nullptr;
         if (match(TokenType::kwWhere)) {
             node->whereClause = this->parser.parseExpression();

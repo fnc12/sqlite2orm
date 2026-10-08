@@ -64,6 +64,10 @@ add_library(sqlite2orm_lib
     src/correlated_column_scope.cpp
     src/codegen_context.cpp
     src/codegen_expression.cpp
+    src/codegen_expression_column_refs.cpp
+    src/codegen_expression_functions.cpp
+    src/codegen_expression_operators.cpp
+    src/codegen_expression_predicates.cpp
     src/codegen_select.cpp
     src/codegen_dml.cpp
     src/codegen_ddl.cpp

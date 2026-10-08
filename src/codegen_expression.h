@@ -41,6 +41,31 @@ namespace sqlite2orm {
          */
         CodeGenResult generateExpressionCode(const AstNode& astNode);
 
+        /**
+         *  Whether `node` is a column reference that is generated as a column pointer rather than
+         *  as a plain member pointer.
+         */
+        bool nodeGeneratesColumnPointer(const AstNode* node) const;
+
+        /**
+         *  The code of one kind of node, for `generateExpressionCode`. `astNode` is the column
+         *  reference itself, which a correlated reference generates once more in the enclosing
+         *  query's scope.
+         */
+        CodeGenResult generateColumnRef(const ColumnRefNode* columnRef, const AstNode& astNode);
+        CodeGenResult generateQualifiedColumnRef(const QualifiedColumnRefNode* qualifiedRef);
+        CodeGenResult generateQualifiedAsterisk(const QualifiedAsteriskNode* qualifiedAsterisk);
+        CodeGenResult generateBinaryOperator(const BinaryOperatorNode* binaryOp);
+        CodeGenResult generateUnaryOperator(const UnaryOperatorNode* unaryOp);
+        CodeGenResult generateIsNull(const IsNullNode* isNullNode);
+        CodeGenResult generateIsNotNull(const IsNotNullNode* isNotNullNode);
+        CodeGenResult generateBetween(const BetweenNode* betweenNode);
+        CodeGenResult generateIn(const InNode* inNode);
+        CodeGenResult generateLike(const LikeNode* likeNode);
+        CodeGenResult generateGlob(const GlobNode* globNode);
+        CodeGenResult generateMatch(const MatchNode* matchNode);
+        CodeGenResult generateFunctionCall(const FunctionCallNode* funcCall);
+
         std::string codegenWindowFrameBound(const WindowFrameBound& bound,
                                             std::vector<DecisionPoint>& decisionPoints,
                                             std::vector<CodegenWarning>& warnings);

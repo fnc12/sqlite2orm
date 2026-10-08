@@ -38,7 +38,11 @@ namespace sqlite2orm {
         std::shared_ptr<AstNode> defaultValue;
         bool unique = false;
         ConflictClause uniqueConflict = ConflictClause::none;
-        std::shared_ptr<AstNode> checkExpression;
+        /**
+         *  Every column-level `CHECK`, in source order. SQLite enforces each one a column spells,
+         *  so `a CHECK(a > 0) CHECK(a < 10)` keeps both rather than the last.
+         */
+        std::vector<std::shared_ptr<AstNode>> checkExpressions;
         std::string collation;
         std::optional<ForeignKeyClause> foreignKey;
         std::shared_ptr<AstNode> generatedExpression;
@@ -79,8 +83,13 @@ namespace sqlite2orm {
                     return false;
                 return *a == *b;
             };
+            if (this->checkExpressions.size() != other.checkExpressions.size())
+                return false;
+            for (std::size_t index = 0; index < this->checkExpressions.size(); ++index) {
+                if (!sharedEqual(this->checkExpressions[index], other.checkExpressions[index]))
+                    return false;
+            }
             return sharedEqual(this->defaultValue, other.defaultValue) &&
-                   sharedEqual(this->checkExpression, other.checkExpression) &&
                    sharedEqual(this->generatedExpression, other.generatedExpression);
         }
     };

@@ -322,8 +322,8 @@ namespace sqlite2orm {
                                        "' is not supported by sqlite_orm::unique()");
                 }
             }
-            if (column.checkExpression) {
-                const auto checkClause = clauseExpressionCode(*column.checkExpression, true, checkClauseRule);
+            for (const auto& checkExpression: column.checkExpressions) {
+                const auto checkClause = clauseExpressionCode(*checkExpression, true, checkClauseRule);
                 if (!checkClause.code) {
                     warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK on column '" + rawColumnName + "'",

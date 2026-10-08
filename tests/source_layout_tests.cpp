@@ -13,9 +13,7 @@
 // a file that newly grows past the limit shows up here as an extra name.
 TEST_CASE("source layout: no file under src/ grows past 1500 lines") {
     constexpr std::size_t kLineLimit = 1500;
-    const std::vector<std::string> expected{
-        "codegen_select.cpp",
-    };
+    const std::vector<std::string> expected{};
 
     std::vector<std::string> found;
     const std::filesystem::path sourceDirectory = std::filesystem::path{SQLITE2ORM_TEST_SOURCE_DIR} / "src";

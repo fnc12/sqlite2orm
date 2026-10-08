@@ -1195,13 +1195,17 @@ namespace sqlite2orm {
             SpannedCode operandCode =
                 groupPredicateArgument(SpannedCode::takenFrom(operandResult), *isNullNode->operand, this->context);
             this->context.recordFormWithoutDefaultConstructor("IS NULL");
-            return spannedResult("is_null(" + operandCode + ")", std::move(operandResult.decisionPoints));
+            return spannedResult("is_null(" + operandCode + ")",
+                                 std::move(operandResult.decisionPoints),
+                                 std::move(operandResult.warnings));
         } else if (auto* isNotNullNode = dynamic_cast<const IsNotNullNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*isNotNullNode->operand);
             SpannedCode operandCode =
                 groupPredicateArgument(SpannedCode::takenFrom(operandResult), *isNotNullNode->operand, this->context);
             this->context.recordFormWithoutDefaultConstructor("IS NOT NULL");
-            return spannedResult("is_not_null(" + operandCode + ")", std::move(operandResult.decisionPoints));
+            return spannedResult("is_not_null(" + operandCode + ")",
+                                 std::move(operandResult.decisionPoints),
+                                 std::move(operandResult.warnings));
         } else if (auto* betweenNode = dynamic_cast<const BetweenNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*betweenNode->operand);
             auto lowResult = this->coordinator.generateNode(*betweenNode->low);
@@ -1577,6 +1581,8 @@ namespace sqlite2orm {
             decisionPoints.insert(decisionPoints.end(),
                                   std::make_move_iterator(patternResult.decisionPoints.begin()),
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
+            auto warnings = std::move(operandResult.warnings);
+            appendUniqueWarnings(warnings, patternResult.warnings);
 
             SpannedCode operandCode =
                 groupPredicateArgument(SpannedCode::takenFrom(operandResult), *likeNode->operand, this->context);
@@ -1590,6 +1596,7 @@ namespace sqlite2orm {
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(escapeResult.decisionPoints.begin()),
                                       std::make_move_iterator(escapeResult.decisionPoints.end()));
+                appendUniqueWarnings(warnings, escapeResult.warnings);
                 likeCode +=
                     ", " +
                     groupPredicatePattern(SpannedCode::takenFrom(escapeResult), *likeNode->escape, this->context);
@@ -1597,7 +1604,7 @@ namespace sqlite2orm {
             likeCode += ")";
 
             SpannedCode code = likeNode->negated ? "!" + likeCode : likeCode;
-            return spannedResult(std::move(code), std::move(decisionPoints));
+            return spannedResult(std::move(code), std::move(decisionPoints), std::move(warnings));
         } else if (auto* globNode = dynamic_cast<const GlobNode*>(&astNode)) {
             auto operandResult = this->coordinator.generateNode(*globNode->operand);
             auto patternResult = this->coordinator.generateNode(*globNode->pattern);
@@ -1610,6 +1617,8 @@ namespace sqlite2orm {
             decisionPoints.insert(decisionPoints.end(),
                                   std::make_move_iterator(patternResult.decisionPoints.begin()),
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
+            auto warnings = std::move(operandResult.warnings);
+            appendUniqueWarnings(warnings, patternResult.warnings);
 
             SpannedCode operandCode =
                 groupPredicateArgument(SpannedCode::takenFrom(operandResult), *globNode->operand, this->context);
@@ -1619,7 +1628,7 @@ namespace sqlite2orm {
             this->context.recordFormWithoutDefaultConstructor("GLOB");
             SpannedCode globCode = "glob(" + operandCode + ", " + patternCode + ")";
             SpannedCode code = globNode->negated ? "!" + globCode : globCode;
-            return spannedResult(std::move(code), std::move(decisionPoints));
+            return spannedResult(std::move(code), std::move(decisionPoints), std::move(warnings));
         } else if (auto* matchNode = dynamic_cast<const MatchNode*>(&astNode)) {
             ++this->context.generatedMatchCount;
             std::vector<DecisionPoint> decisionPoints;
@@ -1680,6 +1689,7 @@ namespace sqlite2orm {
                     this->context.registerPrefixColumn(toCppIdentifier(col->columnName), "std::string");
                 }
                 decisionPoints = std::move(operandResult.decisionPoints);
+                appendUniqueWarnings(warnings, operandResult.warnings);
                 lhsCode =
                     groupPredicateArgument(SpannedCode::takenFrom(operandResult), *matchNode->operand, this->context);
             }
@@ -1688,6 +1698,7 @@ namespace sqlite2orm {
             decisionPoints.insert(decisionPoints.end(),
                                   std::make_move_iterator(patternResult.decisionPoints.begin()),
                                   std::make_move_iterator(patternResult.decisionPoints.end()));
+            appendUniqueWarnings(warnings, patternResult.warnings);
             SpannedCode patternCode =
                 groupPredicatePattern(SpannedCode::takenFrom(patternResult), *matchNode->pattern, this->context);
 
@@ -1706,9 +1717,11 @@ namespace sqlite2orm {
             auto operandResult = this->coordinator.generateNode(*castNode->operand);
             std::string cppType = castTypeToCpp(castNode->typeName);
             return spannedResult("cast<" + cppType + ">(" + SpannedCode::takenFrom(operandResult) + ")",
-                                 std::move(operandResult.decisionPoints));
+                                 std::move(operandResult.decisionPoints),
+                                 std::move(operandResult.warnings));
         } else if (auto* caseNode = dynamic_cast<const CaseNode*>(&astNode)) {
             std::vector<DecisionPoint> decisionPoints;
+            std::vector<CodegenWarning> warnings;
             // `case_<R>` reads every row of the column through the one `R`, while SQLite answers
             // the CASE with the value of whichever branch matched, so `R` is the widest type over
             // all the branch results and the ELSE. Taken from the first branch alone it truncated
@@ -1727,6 +1740,7 @@ namespace sqlite2orm {
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(operandResult.decisionPoints.begin()),
                                       std::make_move_iterator(operandResult.decisionPoints.end()));
+                appendUniqueWarnings(warnings, operandResult.warnings);
                 code += SpannedCode::takenFrom(operandResult);
             }
             code += ")";
@@ -1739,6 +1753,8 @@ namespace sqlite2orm {
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(resResult.decisionPoints.begin()),
                                       std::make_move_iterator(resResult.decisionPoints.end()));
+                appendUniqueWarnings(warnings, condResult.warnings);
+                appendUniqueWarnings(warnings, resResult.warnings);
                 code += ".when(" + SpannedCode::takenFrom(condResult) + ", then(" + SpannedCode::takenFrom(resResult) +
                         "))";
             }
@@ -1747,10 +1763,11 @@ namespace sqlite2orm {
                 decisionPoints.insert(decisionPoints.end(),
                                       std::make_move_iterator(elseResult.decisionPoints.begin()),
                                       std::make_move_iterator(elseResult.decisionPoints.end()));
+                appendUniqueWarnings(warnings, elseResult.warnings);
                 code += ".else_(" + SpannedCode::takenFrom(elseResult) + ")";
             }
             code += ".end()";
-            return spannedResult(std::move(code), std::move(decisionPoints));
+            return spannedResult(std::move(code), std::move(decisionPoints), std::move(warnings));
         } else if (auto* bindParam = dynamic_cast<const BindParameterNode*>(&astNode)) {
             std::string paramStr(bindParam->value);
             auto bindParameterMessage = [&paramStr](const std::string& variable) {

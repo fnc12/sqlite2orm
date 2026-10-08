@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
     /**
      *  What each of `tables` answers when a row is inserted without naming the key column `a`:
      *  `table=<value>` with what SQLite put in the column, or `table=refused` where the INSERT was
-     *  not taken at all. `kInsertWithoutKeyColumnProbe` prints the very same text for a database
+     *  not taken at all. `insertWithoutKeyColumnProbe` prints the very same text for a database
      *  built from a generated header, so the schema SQLite stores and the schema the header builds
      *  are compared as one string each.
      */
@@ -238,18 +238,24 @@ int main(int argc, char** argv) {
 
     /**
      *  Spliced into the probe after the sync: the INSERT and read-back `insertWithoutKeyColumnOutput`
-     *  runs, against the database `sync_schema()` has just built from the generated header. The
-     *  table names are written out because the probe is a program of its own — it sees the header,
-     *  not the test's variables.
+     *  runs over `tables`, against the database `sync_schema()` has just built from the generated
+     *  header. The table names are written into the probe because it is a program of its own — it
+     *  sees the header, not the test's variables.
      */
-    constexpr std::string_view kInsertWithoutKeyColumnProbe = R"probe(    sqlite3* db = nullptr;
+    [[nodiscard]] std::string insertWithoutKeyColumnProbe(const std::vector<std::string>& tables) {
+        std::string tableList;
+        for (const std::string& table: tables) {
+            if (!tableList.empty()) {
+                tableList += ", ";
+            }
+            tableList += "std::string(\"" + table + "\")";
+        }
+        return R"probe(    sqlite3* db = nullptr;
     if (sqlite3_open(argv[1], &db) != SQLITE_OK) {
         return 1;
     }
-    for (const std::string& table: {std::string("dup_int"),
-                                    std::string("dup_int_notnull"),
-                                    std::string("dup_text"),
-                                    std::string("dup_two")}) {
+    for (const std::string& table: {)probe" +
+               tableList + R"probe(}) {
         char* errMsg = nullptr;
         const int rc = sqlite3_exec(db, ("INSERT INTO " + table + "(b) VALUES (7)").c_str(), nullptr, nullptr, &errMsg);
         sqlite3_free(errMsg);
@@ -265,6 +271,7 @@ int main(int argc, char** argv) {
     }
     sqlite3_close(db);
 )probe";
+    }
 
     /** Text of the first column of the first row `sql` answers with. */
     [[nodiscard]] std::string queryText(const std::filesystem::path& dbPath, std::string_view sql) {
@@ -3391,7 +3398,9 @@ TEST_CASE("generateSqliteSchemaHeader: a key repeating its only column is a rowi
     // left with two columns are no aliases either way and stay as they were — the divergence is the
     // alias and nothing besides it.
     TempDbFile built{makeTempDbPath()};
-    REQUIRE(syncSchemaProbeOutput(header.code, built.path, kInsertWithoutKeyColumnProbe) ==
+    REQUIRE(syncSchemaProbeOutput(header.code,
+                                  built.path,
+                                  insertWithoutKeyColumnProbe({"dup_int", "dup_int_notnull", "dup_text", "dup_two"})) ==
             "dup_int=new_table_created\n"
             "dup_int_notnull=new_table_created\n"
             "dup_text=new_table_created\n"
@@ -3400,6 +3409,87 @@ TEST_CASE("generateSqliteSchemaHeader: a key repeating its only column is a rowi
             "dup_int_notnull=1\n"
             "dup_text=NULL\n"
             "dup_two=NULL\n");
+}
+
+// The same divergence without any repeat, from the type alone. SQLite aliases the rowid onto the
+// column of a single-column key only when its declared type is INTEGER exactly, while sqlite_orm
+// declares every column with an integral member INTEGER — and INT, BOOLEAN, BIGINT and INTEGER(10)
+// are all mapped to one. A database the header was generated from is left alone by `sync_schema()`,
+// but one built from it makes the key column the rowid alias, answers an INSERT that leaves it out
+// with the next rowid instead of NULL, and takes the INSERT STRICT refuses. A column-level DESC,
+// which sqlite_orm writes back, a key of two columns and a column declared INTEGER diverge nowhere.
+// The report the generator hands out for it is pinned in tests/codegen_tests_create_table.cpp.
+// Measured against sqlite3 3.51.0 and the pinned sqlite_orm.
+TEST_CASE("generateSqliteSchemaHeader: a single-column key over an integral non-INTEGER type is a rowid alias "
+          "in a new database") {
+    // In name order, the order `sync_schema()` reports tables in.
+    const std::vector<std::string> tables = {"bigint_key",
+                                             "bool_key",
+                                             "int_column_key",
+                                             "int_desc",
+                                             "int_key",
+                                             "int_pair",
+                                             "int_strict",
+                                             "integer_key",
+                                             "sized_key"};
+    TempDbFile source{makeTempDbPath()};
+    execSql(source.path,
+            "CREATE TABLE bigint_key (a BIGINT, b INTEGER, PRIMARY KEY(a));"
+            "CREATE TABLE bool_key (a BOOLEAN, b INTEGER, PRIMARY KEY(a));"
+            "CREATE TABLE int_column_key (a INT PRIMARY KEY, b INTEGER);"
+            "CREATE TABLE int_desc (a INT PRIMARY KEY DESC, b INTEGER);"
+            "CREATE TABLE int_key (a INT, b INTEGER, PRIMARY KEY(a));"
+            "CREATE TABLE int_pair (a INT, b INTEGER, PRIMARY KEY(a, b));"
+            "CREATE TABLE int_strict (a INT, b INTEGER, PRIMARY KEY(a)) STRICT;"
+            "CREATE TABLE integer_key (a INTEGER, b INTEGER, PRIMARY KEY(a));"
+            "CREATE TABLE sized_key (a INTEGER(10) PRIMARY KEY, b INTEGER);");
+
+    SqliteSchemaReader reader(source.path.string());
+    const ProcessSqliteSchemaResult schema = processSqliteSchema(reader);
+    const CodeGenResult header = generateSqliteSchemaHeader(schema);
+    REQUIRE(header.errors.empty());
+
+    REQUIRE(insertWithoutKeyColumnOutput(source.path, tables) == "bigint_key=NULL\n"
+                                                                 "bool_key=NULL\n"
+                                                                 "int_column_key=NULL\n"
+                                                                 "int_desc=NULL\n"
+                                                                 "int_key=NULL\n"
+                                                                 "int_pair=NULL\n"
+                                                                 "int_strict=refused\n"
+                                                                 "integer_key=1\n"
+                                                                 "sized_key=NULL\n");
+
+    // The database the header was generated from, rows and all, is one sqlite_orm leaves alone.
+    REQUIRE(syncSchemaProbeOutput(header.code, source.path, "") == "bigint_key=already_in_sync\n"
+                                                                   "bool_key=already_in_sync\n"
+                                                                   "int_column_key=already_in_sync\n"
+                                                                   "int_desc=already_in_sync\n"
+                                                                   "int_key=already_in_sync\n"
+                                                                   "int_pair=already_in_sync\n"
+                                                                   "int_strict=already_in_sync\n"
+                                                                   "integer_key=already_in_sync\n"
+                                                                   "sized_key=already_in_sync\n");
+
+    TempDbFile built{makeTempDbPath()};
+    REQUIRE(syncSchemaProbeOutput(header.code, built.path, insertWithoutKeyColumnProbe(tables)) ==
+            "bigint_key=new_table_created\n"
+            "bool_key=new_table_created\n"
+            "int_column_key=new_table_created\n"
+            "int_desc=new_table_created\n"
+            "int_key=new_table_created\n"
+            "int_pair=new_table_created\n"
+            "int_strict=new_table_created\n"
+            "integer_key=new_table_created\n"
+            "sized_key=new_table_created\n"
+            "bigint_key=1\n"
+            "bool_key=1\n"
+            "int_column_key=1\n"
+            "int_desc=NULL\n"
+            "int_key=1\n"
+            "int_pair=NULL\n"
+            "int_strict=1\n"
+            "integer_key=1\n"
+            "sized_key=1\n");
 }
 
 // The shape naming a repeated column once cannot carry over, and what it costs on a live database

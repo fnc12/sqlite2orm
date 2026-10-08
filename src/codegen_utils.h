@@ -222,6 +222,22 @@ namespace sqlite2orm {
      */
     bool columnAloneInTableKeyIsRowidAlias(const CreateTableNode& createTable, const ColumnDef& column);
 
+    /**
+     *  The report for a PRIMARY KEY the generated table writes over `column` alone, if the mapped
+     *  type turns it into a rowid alias the table does not have. SQLite aliases the rowid onto a
+     *  column of such a key only when the declared type is INTEGER exactly, while sqlite_orm
+     *  declares every column with an integral member INTEGER: an `INT`, `BIGINT`, `BOOLEAN` or
+     *  `INTEGER(10)` column — mapped to `int64_t` or `bool` — keyed alone is an ordinary column
+     *  here and the rowid alias in a database created from the generated code. A column declared
+     *  INTEGER is left alone, being the alias already or, under `PRIMARY KEY(a, a)`, reported by
+     *  the warning about the repeat. The caller asks only about a key that is written over this
+     *  column alone and without a column-level DESC, which sqlite_orm writes back and which keeps
+     *  the column an ordinary one. The span covers the type name, the spelling the difference
+     *  comes from. Checked against sqlite3 3.51.0 and the pinned sqlite_orm on a live database.
+     */
+    std::optional<CodegenWarning> mappedTypeRowidAliasWarning(const CreateTableNode& createTable,
+                                                              const ColumnDef& column);
+
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 

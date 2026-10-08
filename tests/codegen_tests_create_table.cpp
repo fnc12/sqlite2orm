@@ -49,6 +49,32 @@ namespace {
     }
 
     /**
+     *  What a key over one column is reported as when the column is declared with a type other
+     *  than INTEGER that maps to an integral member: sqlite_orm declares that member INTEGER, and
+     *  SQLite aliases the rowid onto such a key exactly then. The name, the declared type and the
+     *  member type vary.
+     */
+    [[nodiscard]] std::string kMappedTypeBecomesAliasWarning(std::string_view columnName,
+                                                             std::string_view declaredType,
+                                                             std::string_view cppType) {
+        const std::string column(columnName);
+        return "column '" + column + "' is declared " + std::string(declaredType) +
+               " and is the only column of the PRIMARY KEY, and SQLite makes such a column the rowid alias only "
+               "when its declared type is INTEGER exactly, so here it is an ordinary column. The generated member "
+               "is " +
+               std::string(cppType) +
+               ", which sqlite_orm declares INTEGER, so in a database created from the generated code the same key "
+               "makes '" +
+               column +
+               "' the rowid alias. A database the header was generated from is unaffected — `sync_schema()` leaves "
+               "it alone — but in a database created from the generated code an INSERT that leaves '" +
+               column +
+               "' out stores the next rowid in it instead of NULL, a NOT NULL that SQLite enforces on the column "
+               "here, whether declared or implied by STRICT, lets that INSERT through rather than refusing it, and "
+               "a value that is not an integer is refused (\"datatype mismatch\") rather than stored as it came";
+    }
+
+    /**
      *  What a table-level PRIMARY KEY that spells a column again before the key has named every
      *  column of it is reported as: SQLite leaves the rank the repeat sits at unused, and no
      *  `primary_key(...)` is read back with that gap in it. Only the name of the repeated column
@@ -1429,6 +1455,123 @@ TEST_CASE("codegen: CREATE TABLE - a spelling repeated on a repeated key column 
                                         "in sqlite_orm — ignored in codegen",
                                         "DESC on column 'a' of a table-level PRIMARY KEY is not supported in "
                                         "sqlite_orm — ignored in codegen"});
+}
+
+// SQLite makes the column of a single-column key the rowid alias only when its declared type is
+// INTEGER exactly, so an `INT` key column is an ordinary one, and an INSERT leaving it out stores
+// NULL there. The member is int64_t, which sqlite_orm declares INTEGER, so in a database created
+// from the generated code the same key is the alias and the INSERT stores the next rowid — see the
+// live database case in tests/schema_pipeline_tests.cpp. Nothing sqlite_orm offers writes the
+// type as declared, so the divergence is reported, anchored on the type it comes from.
+TEST_CASE("codegen: CREATE TABLE - a table-level key over an INT column is reported as a rowid alias once generated") {
+    const auto result = generateFull("CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kMappedTypeBecomesAliasWarning("a", "INT", "int64_t"), SourceLocation{1, 19}, 3},
+                               });
+}
+
+// The column-level key is the same key, and a BOOLEAN column maps to a bool, which sqlite_orm
+// declares INTEGER as well.
+TEST_CASE("codegen: CREATE TABLE - a column-level key over a BOOLEAN column is reported as a rowid alias") {
+    const auto result = generateFull("CREATE TABLE t (a BOOLEAN PRIMARY KEY, b INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<bool> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, primary_key()),\n"
+                           "        make_column(\"b\", &T::b)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kMappedTypeBecomesAliasWarning("a", "BOOLEAN", "bool"), SourceLocation{1, 19}, 7},
+                               });
+}
+
+// SQLite compares the whole declared type, so `INTEGER(10)` is no alias (sqlite3 3.51.0 stores NULL
+// for an INSERT leaving the column out), while the member it maps to is declared plain INTEGER.
+TEST_CASE("codegen: CREATE TABLE - a key over an INTEGER(10) column is reported as a rowid alias") {
+    const auto result = generateFull("CREATE TABLE t (a INTEGER(10) PRIMARY KEY, b INTEGER)");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {kMappedTypeBecomesAliasWarning("a", "INTEGER(10)", "int64_t"), SourceLocation{1, 19}, 11},
+            });
+}
+
+// STRICT makes the key column NOT NULL, so SQLite refuses the INSERT that leaves it out; the alias
+// in a created database takes it instead. The member is no optional, and the report is the same.
+TEST_CASE("codegen: CREATE TABLE - a key over an INT column of a STRICT table is reported as a rowid alias") {
+    const auto result = generateFull("CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a)) STRICT");
+    REQUIRE(result.code == "struct T {\n"
+                           "    int64_t a = 0;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        primary_key(&T::a)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"STRICT is not yet supported in sqlite_orm and was ignored for table t (converted as a regular "
+                 "table)"},
+                {kMappedTypeBecomesAliasWarning("a", "INT", "int64_t"), SourceLocation{1, 19}, 3},
+            });
+}
+
+// A key repeating an INT column is collapsed to one column as an INTEGER one is, but the reason the
+// generated key is an alias is the type, not the repeat — an INT key of one term is no alias in
+// SQLite either — so the type is what is reported, and the report about the repeat, which is about
+// a column declared INTEGER, is not.
+TEST_CASE("codegen: CREATE TABLE - a key repeating an INT column reports the type rather than the repeat") {
+    const auto result = generateFull("CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a, a))");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kMappedTypeBecomesAliasWarning("a", "INT", "int64_t"), SourceLocation{1, 19}, 3},
+                               });
+}
+
+// The keys that are the same in both databases: a column-level DESC, which sqlite_orm writes back
+// and which keeps even an INTEGER column an ordinary one; a key of two columns; a WITHOUT ROWID
+// table; a column declared INTEGER, in any quoting, which is the alias on both sides; and a column
+// whose member is not integral. Checked against sqlite3 3.51.0 and the pinned sqlite_orm.
+TEST_CASE("codegen: CREATE TABLE - a key that is the rowid alias on both sides or on neither reports nothing") {
+    for (const std::string_view sql: {
+             "CREATE TABLE t (a INT PRIMARY KEY DESC, b INTEGER)",
+             "CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a, b))",
+             "CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a)) WITHOUT ROWID",
+             "CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a))",
+             "CREATE TABLE t (a \"INTEGER\" PRIMARY KEY, b INTEGER)",
+             "CREATE TABLE t (a [integer], b INTEGER, PRIMARY KEY (a))",
+             "CREATE TABLE t (a TEXT PRIMARY KEY, b INTEGER)",
+             "CREATE TABLE t (a REAL, b INTEGER, PRIMARY KEY (a))",
+             "CREATE TABLE t (a, b INTEGER, PRIMARY KEY (a))",
+         }) {
+        CAPTURE(sql);
+        REQUIRE(generateFull(sql).warnings == std::vector<CodegenWarning>{});
+    }
+}
+
+// A table that is not generated has no database to be created from it, so there is no alias to
+// report beside the reason it was left out.
+TEST_CASE("codegen: CREATE TABLE - a key over an INT column of a table left out reports nothing about it") {
+    const auto result = generateFull("CREATE TABLE t (a INT PRIMARY KEY, y INTEGER AS (0x10000000000000000) STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE t — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                "STORED generated column 'y' uses 0x10000000000000000, too big for a signed 64-bit integer: "
+                "SQLite stores the table but refuses every row written to it, and C++ has no literal for it, "
+                "so the table is not generated"});
 }
 
 // Two columns spelled the same way are two places, and each is named: what is collapsed is the

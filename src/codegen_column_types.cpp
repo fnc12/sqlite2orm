@@ -115,6 +115,36 @@ namespace sqlite2orm {
         return createTable.primaryKeys.size() == 1;
     }
 
+    std::optional<CodegenWarning> mappedTypeRowidAliasWarning(const CreateTableNode& createTable,
+                                                              const ColumnDef& column) {
+        if (createTable.withoutRowid || normalizeSqlName(column.typeName) == "integer") {
+            return std::nullopt;
+        }
+        const std::string cppType = sqliteColumnTypeToCpp(createTable, column);
+        if (cppType != "int64_t" && cppType != "bool") {
+            return std::nullopt;
+        }
+        const std::string columnName = stripIdentifierQuotes(column.name);
+        std::string message =
+            "column '" + columnName + "' is declared " + column.typeName +
+            " and is the only column of the PRIMARY KEY, and SQLite makes such a column the rowid alias only when its "
+            "declared type is INTEGER exactly, so here it is an ordinary column. The generated member is " +
+            cppType +
+            ", which sqlite_orm declares INTEGER, so in a database created from the generated code the same key makes "
+            "'" +
+            columnName +
+            "' the rowid alias. A database the header was generated from is unaffected — `sync_schema()` leaves it "
+            "alone — but in a database created from the generated code an INSERT that leaves '" +
+            columnName +
+            "' out stores the next rowid in it instead of NULL, a NOT NULL that SQLite enforces on the column here, "
+            "whether declared or implied by STRICT, lets that INSERT through rather than refusing it, and a value "
+            "that is not an integer is refused (\"datatype mismatch\") rather than stored as it came";
+        if (!column.typeNameLocation) {
+            return CodegenWarning{std::move(message)};
+        }
+        return CodegenWarning{std::move(message), *column.typeNameLocation, underlineLengthOf(column.typeName)};
+    }
+
     std::string sqliteColumnTypeToCpp(const CreateTableNode& createTable, const ColumnDef& column) {
         if (createTable.strict && columnTypeIsAny(column)) {
             return "std::vector<char>";

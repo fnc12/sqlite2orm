@@ -406,6 +406,14 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
   the generated key ranks it second and the key written as spelled ranks `a` second. Codegen
   warning — `sync_schema()` rebuilds such a table and the rows in it are lost. A WITHOUT ROWID
   table drops the repeat out of the key itself and leaves no gap, so it is carried over as stored.
+- [!] A key over one column declared with a type other than INTEGER that maps to an integral member
+  (`INT`, `BIGINT`, `BOOLEAN`, `INTEGER(10)`, …), table-level or column-level: SQLite aliases the
+  rowid onto such a key only when the declared type is INTEGER exactly, while sqlite_orm declares
+  every integral member INTEGER, so a database created from the generated code makes the column
+  the rowid alias the source table does not have — an INSERT leaving it out stores the next rowid
+  instead of NULL, and one STRICT or NOT NULL refuses goes through. Codegen warning, anchored at the
+  type name; the database the header was generated from is left alone by `sync_schema()`. A
+  column-level DESC, which sqlite_orm writes back, keeps the column an ordinary one on both sides.
 - [x] CHECK(expr) → `check(expr)`
 - [x] FOREIGN KEY (column) REFERENCES table(column) + ON DELETE/UPDATE actions
 - [x] CONSTRAINT name prefix (parsed and skipped)

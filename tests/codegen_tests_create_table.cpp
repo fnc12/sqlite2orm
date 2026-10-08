@@ -1040,6 +1040,22 @@ TEST_CASE("codegen: CREATE TABLE - REFERENCES simple") {
                       "        foreign_key(&Posts::user_id).references(&Users::id)));");
 }
 
+// SQLite keeps every REFERENCES a column spells as a foreign key of its own, so each becomes its own
+// foreign_key(), in source order.
+TEST_CASE("codegen: CREATE TABLE - several REFERENCES on one column") {
+    auto result = generate("CREATE TABLE posts (user_id INTEGER REFERENCES users(id) REFERENCES admins(id) ON DELETE "
+                           "CASCADE)");
+    REQUIRE(result == "struct Posts {\n"
+                      "    std::optional<int64_t> user_id;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"posts\",\n"
+                      "        make_column(\"user_id\", &Posts::user_id),\n"
+                      "        foreign_key(&Posts::user_id).references(&Users::id),\n"
+                      "        foreign_key(&Posts::user_id).references(&Admins::id).on_delete.cascade()));");
+}
+
 TEST_CASE("codegen: CREATE TABLE - REFERENCES ON DELETE CASCADE") {
     auto result = generate("CREATE TABLE posts (user_id INTEGER REFERENCES users(id) ON DELETE CASCADE)");
     REQUIRE(result == "struct Posts {\n"

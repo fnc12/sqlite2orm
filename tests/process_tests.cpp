@@ -434,7 +434,7 @@ TEST_CASE("processMultiSql: CREATE TABLE org + INSERTs without column list") {
         ColumnDef bossCol;
         bossCol.name = "boss";
         bossCol.typeName = "TEXT";
-        bossCol.foreignKey = ForeignKeyClause{.table = "org", .column = ""};
+        bossCol.foreignKeys.push_back(ForeignKeyClause{.table = "org", .column = ""});
         auto node =
             std::make_unique<CreateTableNode>("org", std::vector<ColumnDef>{nameCol, bossCol}, false, SourceLocation{});
         node->withoutRowid = true;
@@ -514,7 +514,7 @@ TEST_CASE("processMultiSql: CREATE TABLE org + INSERTs with column list") {
         ColumnDef bossCol;
         bossCol.name = "boss";
         bossCol.typeName = "TEXT";
-        bossCol.foreignKey = ForeignKeyClause{.table = "org", .column = ""};
+        bossCol.foreignKeys.push_back(ForeignKeyClause{.table = "org", .column = ""});
         auto node =
             std::make_unique<CreateTableNode>("org", std::vector<ColumnDef>{nameCol, bossCol}, false, SourceLocation{});
         node->withoutRowid = true;

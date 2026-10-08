@@ -44,7 +44,11 @@ namespace sqlite2orm {
          */
         std::vector<std::shared_ptr<AstNode>> checkExpressions;
         std::string collation;
-        std::optional<ForeignKeyClause> foreignKey;
+        /**
+         *  Every column-level `REFERENCES`, in source order. SQLite keeps each one a column spells
+         *  as a foreign key of its own, so `a REFERENCES p(x) REFERENCES q(y)` keeps both.
+         */
+        std::vector<ForeignKeyClause> foreignKeys;
         std::shared_ptr<AstNode> generatedExpression;
         bool generatedAlways = false;
         enum class GeneratedStorage { none, stored, virtual_ };
@@ -73,7 +77,7 @@ namespace sqlite2orm {
                 this->primaryKeyConflict != other.primaryKeyConflict ||
                 this->primaryKeySortDirection != other.primaryKeySortDirection || this->unique != other.unique ||
                 this->uniqueConflict != other.uniqueConflict || this->collation != other.collation ||
-                this->foreignKey != other.foreignKey || this->generatedAlways != other.generatedAlways ||
+                this->foreignKeys != other.foreignKeys || this->generatedAlways != other.generatedAlways ||
                 this->generatedStorage != other.generatedStorage)
                 return false;
             auto sharedEqual = [](const std::shared_ptr<AstNode>& a, const std::shared_ptr<AstNode>& b) {

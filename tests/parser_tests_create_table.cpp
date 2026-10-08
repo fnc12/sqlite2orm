@@ -369,12 +369,24 @@ TEST_CASE("parser: CREATE TABLE - CHECK + COLLATE + NOT NULL combined") {
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
 }
 
+// sqlite3 3.51.0 lists two foreign keys for `a REFERENCES p(x) REFERENCES q(y)`.
+TEST_CASE("parser: CREATE TABLE - several REFERENCES on one column are all kept in source order") {
+    auto parseResult = parse("CREATE TABLE posts (user_id INTEGER REFERENCES users(id) REFERENCES admins(id) ON DELETE "
+                             "CASCADE)");
+    ColumnDef expected;
+    expected.name = "user_id";
+    expected.typeName = "INTEGER";
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id"});
+    expected.foreignKeys.push_back(ForeignKeyClause{"admins", "id", ForeignKeyAction::cascade, ForeignKeyAction::none});
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
+}
+
 TEST_CASE("parser: CREATE TABLE - REFERENCES simple") {
     auto parseResult = parse("CREATE TABLE posts (user_id INTEGER REFERENCES users(id))");
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id"};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id"});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -383,7 +395,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES without column") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", ""};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", ""});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -392,7 +404,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES ON DELETE CASCADE") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::none};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::none});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -401,7 +413,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES ON UPDATE SET NULL") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::none, ForeignKeyAction::setNull};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id", ForeignKeyAction::none, ForeignKeyAction::setNull});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -411,7 +423,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES both actions") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::setDefault};
+    expected.foreignKeys.push_back(
+        ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::setDefault});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -420,7 +433,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES NO ACTION") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::noAction, ForeignKeyAction::none};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id", ForeignKeyAction::noAction, ForeignKeyAction::none});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -429,7 +442,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES RESTRICT") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::restrict_, ForeignKeyAction::none};
+    expected.foreignKeys.push_back(
+        ForeignKeyClause{"users", "id", ForeignKeyAction::restrict_, ForeignKeyAction::none});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 

@@ -533,7 +533,14 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT hex literal too big for an int64") {
             std::vector<CodegenWarning>{
                 {"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite stores it "
                  "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
-                 "default_value()"}});
+                 "default_value()"},
+                CodegenWarning{"table weird declares a DEFAULT on column 'x' that the generated code leaves out, and "
+                               "sync_schema() tells a column with a default from one without: run against a "
+                               "database holding table weird as declared, it drops the table and creates it again "
+                               "from the generated code, so sync_schema() loses every row in it and "
+                               "sync_schema(true) copies the rows over but leaves the table without that DEFAULT",
+                               SourceLocation{1, 1},
+                               12}});
     REQUIRE(result.errors.empty());
 }
 
@@ -552,7 +559,14 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT expression holding a hex literal too 
             std::vector<CodegenWarning>{
                 {"DEFAULT 0x10000000000000000 on column 'x' is too big for a signed 64-bit integer: SQLite stores it "
                  "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
-                 "default_value()"}});
+                 "default_value()"},
+                CodegenWarning{"table t declares a DEFAULT on column 'x' that the generated code leaves out, and "
+                               "sync_schema() tells a column with a default from one without: run against a "
+                               "database holding table t as declared, it drops the table and creates it again "
+                               "from the generated code, so sync_schema() loses every row in it and "
+                               "sync_schema(true) copies the rows over but leaves the table without that DEFAULT",
+                               SourceLocation{1, 1},
+                               12}});
     REQUIRE(result.errors.empty());
 }
 
@@ -670,9 +684,17 @@ TEST_CASE("codegen: CREATE TABLE - DEFAULT holding a BLOB literal") {
                            "auto storage = make_storage(\"\",\n"
                            "    make_table(\"t\",\n"
                            "        make_column(\"a\", &T::a)));");
-    REQUIRE(result.warnings == std::vector<CodegenWarning>{{"the DEFAULT of column 'a' of table t uses " +
-                                                            kDdlBlobLiteralReason("x'0102'") +
-                                                            ", so the generated column has no default_value()"}});
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"the DEFAULT of column 'a' of table t uses " + kDdlBlobLiteralReason("x'0102'") +
+                 ", so the generated column has no default_value()"},
+                CodegenWarning{"table t declares a DEFAULT on column 'a' that the generated code leaves out, and "
+                               "sync_schema() tells a column with a default from one without: run against a "
+                               "database holding table t as declared, it drops the table and creates it again "
+                               "from the generated code, so sync_schema() loses every row in it and "
+                               "sync_schema(true) copies the rows over but leaves the table without that DEFAULT",
+                               SourceLocation{1, 1},
+                               12}});
     REQUIRE(result.errors.empty());
 }
 
@@ -739,6 +761,80 @@ TEST_CASE("codegen: CREATE TABLE - VIRTUAL generated column holding a BLOB liter
     REQUIRE(result.warnings ==
             std::vector<CodegenWarning>{
                 {"generated column 'b' uses " + kDdlBlobLiteralReason("x'0102'") + ", so the table is not generated"}});
+    REQUIRE(result.errors.empty());
+}
+
+// sync_schema() compares whether a column has a default at all, so a DEFAULT left out is a table it
+// drops and creates again over a database holding the table as declared — every row in it gone,
+// unless it is called with preserve. That is said once for the table, whatever the clauses were
+// left out for and however many literals gave them up; a CHECK left out is not compared and adds
+// nothing to it. The sync_schema() outcomes themselves are pinned in tests/schema_pipeline_tests.cpp.
+TEST_CASE("codegen: CREATE TABLE - DEFAULTs left out are told about once for the table") {
+    auto result =
+        generateFull("CREATE TABLE t (a INTEGER DEFAULT 0x10000000000000000, b BLOB DEFAULT (x'01' || x'02'), "
+                     "c INTEGER DEFAULT 1, d BLOB CHECK (d <> x'03'))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<std::vector<char>> b;\n"
+                           "    std::optional<int64_t> c;\n"
+                           "    std::optional<std::vector<char>> d;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"b\", &T::b),\n"
+                           "        make_column(\"c\", &T::c, default_value(1)),\n"
+                           "        make_column(\"d\", &T::d)));");
+    REQUIRE(
+        result.warnings ==
+        std::vector<CodegenWarning>{
+            {"DEFAULT 0x10000000000000000 on column 'a' is too big for a signed 64-bit integer: SQLite stores it "
+             "but refuses every use of the default, and C++ has no literal for it, so the generated column has no "
+             "default_value()"},
+            {"the DEFAULT of column 'b' of table t uses " + kDdlBlobLiteralReason("x'01'") +
+             ", so the generated column has no default_value()"},
+            {"the DEFAULT of column 'b' of table t uses " + kDdlBlobLiteralReason("x'02'") +
+             ", so the generated column has no default_value()"},
+            {"CHECK on column 'd' uses " + kDdlBlobLiteralReason("x'03'") + ", so the generated column has no check()"},
+            CodegenWarning{"table t declares DEFAULTs on columns 'a', 'b' that the generated code leaves out, and "
+                           "sync_schema() tells a column with a default from one without: run against a "
+                           "database holding table t as declared, it drops the table and creates it again from "
+                           "the generated code, so sync_schema() loses every row in it and sync_schema(true) "
+                           "copies the rows over but leaves the table without those DEFAULTs",
+                           SourceLocation{1, 1},
+                           12}});
+    REQUIRE(result.errors.empty());
+}
+
+// The warning is about the table, so it is anchored at the keywords opening its CREATE TABLE, as
+// written and on their own line, rather than at the column the DEFAULT stands on.
+TEST_CASE("codegen: CREATE TABLE - a DEFAULT left out is anchored at the opening keywords") {
+    auto result = generateFull("CREATE TEMP\nTABLE t (a INTEGER,\n  b BLOB DEFAULT x'0102')");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"the DEFAULT of column 'b' of table t uses " + kDdlBlobLiteralReason("x'0102'") +
+                 ", so the generated column has no default_value()"},
+                CodegenWarning{"table t declares a DEFAULT on column 'b' that the generated code leaves out, and "
+                               "sync_schema() tells a column with a default from one without: run against a "
+                               "database holding table t as declared, it drops the table and creates it again from "
+                               "the generated code, so sync_schema() loses every row in it and sync_schema(true) "
+                               "copies the rows over but leaves the table without that DEFAULT",
+                               SourceLocation{1, 1},
+                               11}});
+    REQUIRE(result.errors.empty());
+}
+
+// A table that is left out has no sync_schema() to drop it, so a DEFAULT left out of it says what
+// it is left out for and nothing about the table's rows.
+TEST_CASE("codegen: CREATE TABLE - a DEFAULT left out of a table that is not generated") {
+    auto result = generateFull("CREATE TABLE t (a BLOB DEFAULT x'0102', b AS (a || x'03') STORED)");
+    REQUIRE(result.code == "/* CREATE TABLE t — not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"the DEFAULT of column 'a' of table t uses " + kDdlBlobLiteralReason("x'0102'") +
+                 ", so the generated column has no default_value()"},
+                {"generated column 'b' uses " + kDdlBlobLiteralReason("x'03'") + ", so the table is not generated"}});
     REQUIRE(result.errors.empty());
 }
 

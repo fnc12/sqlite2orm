@@ -1911,7 +1911,7 @@ TEST_CASE("processMultiSql: a foreign key naming no column of its parent referen
                  keyInOtherCase,
                  {});
 
-    requireBatch("CREATE TABLE o (k INT PRIMARY KEY);\n"
+    requireBatch("CREATE TABLE o (k INTEGER PRIMARY KEY);\n"
                  "CREATE TABLE t (a INT REFERENCES o);",
                  "struct O {\n"
                  "    std::optional<int64_t> k;\n"

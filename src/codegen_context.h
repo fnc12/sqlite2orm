@@ -255,6 +255,14 @@ namespace sqlite2orm {
          *  as an ungeneratable table has none. Filled by whoever assembles a whole schema.
          */
         std::optional<std::set<std::string>> schemaObjectNames;
+        /**
+         *  The virtual tables of the batch being generated, normalized. A virtual table gets a
+         *  struct and a `make_virtual_table`, but no storage of a plain schema holds it, so
+         *  sqlite_orm cannot resolve a foreign key into it: for a foreign key it is a table that is
+         *  not generated. A schema read from a database marks its virtual tables ungeneratable
+         *  instead and leaves this empty.
+         */
+        std::set<std::string> virtualTableNames;
         std::map<std::string, std::string> columnTypes;
         std::map<std::string, std::string> fromTableAliasToStructName;
         std::map<std::string, TableAliasInfo> activeTableAliases;
@@ -612,6 +620,12 @@ namespace sqlite2orm {
 
         /** Whether `tableName` names a table of this batch that is left out of the generated storage. */
         bool isUngeneratableTable(std::string_view tableName) const;
+
+        /**
+         *  Whether a foreign key into `tableName` cannot be generated: the table is left out of the
+         *  generated storage, or it is a virtual table, which no storage holds either.
+         */
+        bool isUngeneratableForeignKeyParent(std::string_view tableName) const;
 
         /**
          *  Whether the schema creates nothing by this name. Answers false whenever the whole

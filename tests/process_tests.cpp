@@ -339,9 +339,10 @@ TEST_CASE("joinGeneratedCodeWithSpans: a span ends where the statement's code do
                                                            {112, 30, 1, SourceLocation{1, 39}, 8}});
 }
 
-// A virtual table stands outside make_storage(), yet a table or a view the storage maps may name
-// its struct, so the virtual table is written among the declarations before the storage.
-TEST_CASE("joinGeneratedCode: a virtual table is declared before the storage that names its struct") {
+// A virtual table stands outside make_storage(), yet it is written among the declarations before
+// the storage. A foreign key into it is left out: no storage holds the virtual table, so sqlite_orm
+// could not resolve `references(&Ft::a)`.
+TEST_CASE("joinGeneratedCode: a virtual table is declared before the storage") {
     const auto results = processMultiSql("CREATE VIRTUAL TABLE ft USING fts5(a); "
                                          "CREATE TABLE tv(id INTEGER PRIMARY KEY, r INTEGER REFERENCES ft(a));");
     REQUIRE(joinGeneratedCode(results) ==
@@ -359,8 +360,10 @@ TEST_CASE("joinGeneratedCode: a virtual table is declared before the storage tha
             "auto storage = make_storage(\"\",\n"
             "    make_table(\"tv\",\n"
             "        make_column(\"id\", &Tv::id, primary_key()),\n"
-            "        make_column(\"r\", &Tv::r),\n"
-            "        foreign_key(&Tv::r).references(&Ft::a)));\n");
+            "        make_column(\"r\", &Tv::r)));\n");
+    REQUIRE(results[1].codegen.warnings ==
+            std::vector<CodegenWarning>{{"foreign key on column 'r' references ft, which is not generated, so the "
+                                         "generated table has no foreign_key()"}});
 }
 
 TEST_CASE("joinGeneratedCodeWithSpans: a virtual table written before the storage keeps its span") {

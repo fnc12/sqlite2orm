@@ -88,7 +88,10 @@ namespace sqlite2orm {
             return out;
         }
 
-        if (!out.parseResult.astNodePointer) {
+        // A statement the parser stopped short of is not the input: what it built leaves out the
+        // rest, and generated code for it would run a different statement — a DELETE whose WHERE
+        // was left behind removes every row. It is reported and generates nothing.
+        if (!out.parseResult) {
             return out;
         }
 
@@ -154,7 +157,7 @@ namespace sqlite2orm {
             std::map<std::string, int> batchVariableUses;
             for (size_t index = 0; index < parseResults.size(); ++index) {
                 const AstNode* root = parseResults[index].astNodePointer.get();
-                if (!root || !validationErrors[index].empty()) {
+                if (!parseResults[index] || !validationErrors[index].empty()) {
                     continue;
                 }
                 CodeGenerator codeGenerator;
@@ -220,7 +223,9 @@ namespace sqlite2orm {
         const auto virtualTableNames = collectVirtualTableNames(parseResults);
         std::vector<std::vector<ValidationError>> validationErrors(parseResults.size());
         for (size_t index = 0; index < parseResults.size(); ++index) {
-            if (!parseResults[index].astNodePointer) {
+            // A statement the parser stopped short of is reported and generates nothing (see
+            // processSqlWithSourceTables): what it built is not the input.
+            if (!parseResults[index]) {
                 continue;
             }
             Validator validator;

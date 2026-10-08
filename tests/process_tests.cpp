@@ -425,6 +425,39 @@ TEST_CASE("processMultiSql: validation error does not block other statements") {
     REQUIRE(processMultiSql("INSERT INTO t VALUES (1); SELECT 42;") == expected);
 }
 
+// A statement the parser stopped short of generates nothing: what was built of it is not the
+// input. `DELETE FROM users u WHERE id > 1` (SQLite takes no alias without AS) used to print
+// remove_all<Users>() — the whole table — next to the parse error, and a playground or an IDE
+// shows the code, not the exit code.
+TEST_CASE("processSql: a statement with tokens left after it generates nothing") {
+    const ProcessSqlResult result = processSql("DELETE FROM users u WHERE id > 1;");
+    REQUIRE(result.parseResult.errors ==
+            std::vector<ParseError>{ParseError{"unexpected token after statement: u", {1, 19}}});
+    REQUIRE(result.validationErrors.empty());
+    REQUIRE(result.codegen == CodeGenResult{});
+    REQUIRE(result.ok() == false);
+}
+
+TEST_CASE("processMultiSql: a statement with tokens left after it generates nothing, the rest does") {
+    const auto results = processMultiSql("CREATE TABLE users (id INTEGER PRIMARY KEY);\n"
+                                         "DELETE FROM users u WHERE id > 1;\n"
+                                         "DELETE FROM users AS u WHERE id > 1;");
+    REQUIRE(results.size() == 3);
+    REQUIRE(results[1].parseResult.errors ==
+            std::vector<ParseError>{ParseError{"unexpected token after statement: u", {2, 19}}});
+    REQUIRE(results[1].codegen == CodeGenResult{});
+    REQUIRE(results[2].parseResult.errors.empty());
+    REQUIRE(joinGeneratedCode(results) == "struct Users {\n"
+                                          "    std::optional<int64_t> id;\n"
+                                          "};\n"
+                                          "\n"
+                                          "auto storage = make_storage(\"\",\n"
+                                          "    make_table(\"users\",\n"
+                                          "        make_column(\"id\", &Users::id, primary_key())));\n"
+                                          "\n"
+                                          "storage.remove_all<Users>(where(c(&Users::id) > 1));\n");
+}
+
 TEST_CASE("processMultiSql: CREATE TABLE org + INSERTs without column list") {
     auto makeCreateTableNode = [] {
         ColumnDef nameCol;

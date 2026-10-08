@@ -1799,7 +1799,7 @@ TEST_CASE("codegen: a window function that cannot answer NULL or is typed nullab
             .code == "auto rows = storage.select(lag(&T::a).over(order_by(&T::b)));");
     REQUIRE(generateLastOfBatch(
                 "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(abs(b)) OVER (ORDER BY b) FROM t;")
-                .code == "auto rows = storage.select(lag(abs(&T::b)).over(order_by(&T::b)));");
+                .code == "auto rows = storage.select(lag(sqlite_orm::abs(&T::b)).over(order_by(&T::b)));");
     REQUIRE(generateLastOfBatch(
                 "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b, 1, 0) OVER (ORDER BY b) FROM t;")
                 .code == "auto rows = storage.select(lag(&T::b, 1, 0).over(order_by(&T::b)));");

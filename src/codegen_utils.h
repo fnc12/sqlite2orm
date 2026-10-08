@@ -222,6 +222,31 @@ namespace sqlite2orm {
      */
     bool columnAloneInTableKeyIsRowidAlias(const CreateTableNode& createTable, const ColumnDef& column);
 
+    /**
+     *  What `insert()` does to the member of the column a generated key is over alone, for a
+     *  warning that names it. sqlite_orm takes the column of a key over one column with an integral
+     *  member for the rowid alias, by the C++ type alone, and leaves the member out of the INSERT:
+     *  where the column is no alias the row gets NULL, the DEFAULT or a NOT NULL refusal instead of
+     *  the value, and where `aliasInCreatedDatabase` the database built from the generated code
+     *  gets the next rowid. Checked against sqlite3 3.51.0 and the pinned sqlite_orm on a live
+     *  database, on both the database the header was generated from and one created from it.
+     */
+    std::string keyMemberLeftOutByInsertText(std::string_view columnName, bool aliasInCreatedDatabase);
+
+    /**
+     *  The report for a PRIMARY KEY the generated table writes over `column` alone, when the
+     *  column's member is integral (`int64_t` or `bool`) and the column is no rowid alias in the
+     *  source table: `insert()` leaves that member out (see `keyMemberLeftOutByInsertText`). On top
+     *  of that, a column declared with a type other than INTEGER — `INT`, `BIGINT`, `BOOLEAN`,
+     *  `INTEGER(10)` — and no column-level DESC becomes the rowid alias in a database created from
+     *  the generated code, because sqlite_orm declares an integral member INTEGER and SQLite
+     *  aliases the rowid onto such a key exactly then. A table-level key over an INTEGER column
+     *  that is no alias comes from `PRIMARY KEY(a, a)` and is reported by the warning about the
+     *  repeat instead. The span covers the type name. Checked against sqlite3 3.51.0 and the pinned
+     *  sqlite_orm on a live database.
+     */
+    std::optional<CodegenWarning> integralKeyMemberWarning(const CreateTableNode& createTable, const ColumnDef& column);
+
     struct SourceTableColumn;
     std::vector<SourceTableColumn> sourceTableColumnsFromCreateTable(const CreateTableNode& createTable);
 

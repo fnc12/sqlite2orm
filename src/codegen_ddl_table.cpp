@@ -40,6 +40,12 @@ namespace sqlite2orm {
         // out for naming a column the table does not declare: a WITHOUT ROWID table needs its key.
         bool primaryKeyGenerated = false;
         bool tablePrimaryKeyWasLeftOut = false;
+        // How many keys the generated table writes, and the column of the one written over a single
+        // column, if there is one: sqlite_orm's insert() leaves such a column out by the type of its
+        // member, which is told about once the table is known to generate. More keys than one is a
+        // table SQLite refuses.
+        size_t generatedPrimaryKeyCount = 0;
+        const ColumnDef* soleGeneratedKeyColumn = nullptr;
         // A DEFAULT / CHECK / generated-column expression is the one place an expression clause
         // reaches codegen without going through the validator, so its warnings are the only word a
         // user gets about it — `-0x8000000000000000` is refused by SQLite wherever it is used, and a
@@ -241,6 +247,8 @@ namespace sqlite2orm {
                 makeExpression += ", " + primaryKey;
                 annotate(primaryKey);
                 primaryKeyGenerated = true;
+                ++generatedPrimaryKeyCount;
+                soleGeneratedKeyColumn = &column;
             }
             if (column.defaultValue) {
                 // Only a parenthesized DEFAULT reaches here as an expression — an identifier written
@@ -766,19 +774,23 @@ namespace sqlite2orm {
                             "is the one place the column holds in the key SQLite reports. That makes the "
                             "generated key a rowid alias, which the key written here is not: SQLite aliases "
                             "the rowid onto a column when the key is over a single term of declared type "
-                            "INTEGER, and this key is written with more terms than one. A database the "
-                            "header was generated from is unaffected — `sync_schema()` leaves it alone — "
-                            "but in a database created from the generated code an INSERT that leaves '" +
-                            columnName +
-                            "' out stores the next rowid in it instead of NULL, and a NOT NULL that SQLite "
-                            "enforces on the column here, whether declared or implied by STRICT, lets that "
-                            "INSERT through rather than refusing it");
+                            "INTEGER, and this key is written with more terms than one. " +
+                            keyMemberLeftOutByInsertText(columnName, true));
                     }
                     break;
                 }
             }
             warnings.insert(warnings.end(), keySpellingWarnings.begin(), keySpellingWarnings.end());
             primaryKeyGenerated = true;
+            ++generatedPrimaryKeyCount;
+            if (spelledNormalizedNames.size() == 1) {
+                for (const ColumnDef& column: createTable.columns) {
+                    if (normalizeSqlIdentifier(column.name) == spelledNormalizedNames.front()) {
+                        soleGeneratedKeyColumn = &column;
+                        break;
+                    }
+                }
+            }
             tableConstraints.push_back(std::move(constraint));
         }
         for (const auto& tableUnique: createTable.uniques) {
@@ -893,7 +905,13 @@ namespace sqlite2orm {
             return parts;
         }
         // The table is generated, so there is a CREATE TABLE for sync_schema() to run and the
-        // infinities written in its clauses are worth naming.
+        // infinities written in its clauses are worth naming, as is the key column insert() leaves
+        // out of every row it writes.
+        if (generatedPrimaryKeyCount == 1 && soleGeneratedKeyColumn) {
+            if (auto keyWarning = integralKeyMemberWarning(createTable, *soleGeneratedKeyColumn)) {
+                warnings.push_back(std::move(*keyWarning));
+            }
+        }
         warnings.insert(warnings.end(),
                         std::make_move_iterator(ddlInfinityWarnings.begin()),
                         std::make_move_iterator(ddlInfinityWarnings.end()));

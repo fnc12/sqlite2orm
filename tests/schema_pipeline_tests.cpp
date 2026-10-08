@@ -1984,6 +1984,79 @@ TEST_CASE("processMultiSql: a foreign key naming no column of its parent referen
                    "table has no foreign_key()"}});
 }
 
+// `PRIMARY KEY(a, a)` is a key of two columns on a rowid table — sqlite3 3.51.0 reports `foreign key
+// mismatch` for a foreign key naming no column of it — while a WITHOUT ROWID table drops the repeat and
+// keys on `a` alone, enforcing such a foreign key as if `a` had been named. The WITHOUT ROWID parent,
+// whether another table or the one being declared, is referenced through `a`; the rowid one keeps the
+// warning.
+TEST_CASE("processMultiSql: a foreign key naming no column of a parent keyed on a repeated column") {
+    const auto withoutRowidParent =
+        processMultiSql("CREATE TABLE o (a INTEGER, b INTEGER, PRIMARY KEY(a, a)) WITHOUT ROWID;\n"
+                        "CREATE TABLE t (c INTEGER REFERENCES o);");
+    REQUIRE(withoutRowidParent.size() == 2);
+    REQUIRE(withoutRowidParent[0].codegen.warnings.empty());
+    REQUIRE(withoutRowidParent[1].codegen.warnings.empty());
+    REQUIRE(joinGeneratedCode(withoutRowidParent) == "struct O {\n"
+                                                     "    int64_t a = 0;\n"
+                                                     "    std::optional<int64_t> b;\n"
+                                                     "};\n"
+                                                     "\n"
+                                                     "struct T {\n"
+                                                     "    std::optional<int64_t> c;\n"
+                                                     "};\n"
+                                                     "\n"
+                                                     "auto storage = make_storage(\"\",\n"
+                                                     "    make_table(\"o\",\n"
+                                                     "        make_column(\"a\", &O::a),\n"
+                                                     "        make_column(\"b\", &O::b),\n"
+                                                     "        primary_key(&O::a)).without_rowid(),\n"
+                                                     "    make_table(\"t\",\n"
+                                                     "        make_column(\"c\", &T::c),\n"
+                                                     "        foreign_key(&T::c).references(&O::a)));\n");
+    requireCompiles(compiledPrologue + joinGeneratedCode(withoutRowidParent));
+
+    const auto selfReference =
+        processMultiSql("CREATE TABLE t (a INTEGER, b INTEGER REFERENCES t, PRIMARY KEY(a, a)) WITHOUT ROWID;");
+    REQUIRE(selfReference.size() == 1);
+    REQUIRE(selfReference[0].codegen.warnings.empty());
+    REQUIRE(joinGeneratedCode(selfReference) == "struct T {\n"
+                                                "    int64_t a = 0;\n"
+                                                "    std::optional<int64_t> b;\n"
+                                                "};\n"
+                                                "\n"
+                                                "auto storage = make_storage(\"\",\n"
+                                                "    make_table(\"t\",\n"
+                                                "        make_column(\"a\", &T::a),\n"
+                                                "        make_column(\"b\", &T::b),\n"
+                                                "        foreign_key(&T::b).references(&T::a),\n"
+                                                "        primary_key(&T::a)).without_rowid());\n");
+    requireCompiles(compiledPrologue + joinGeneratedCode(selfReference));
+
+    const auto rowidParent = processMultiSql("CREATE TABLE o (a INTEGER, b INTEGER, PRIMARY KEY(a, a));\n"
+                                             "CREATE TABLE t (c INTEGER REFERENCES o);");
+    REQUIRE(rowidParent.size() == 2);
+    REQUIRE(rowidParent[1].codegen.warnings ==
+            std::vector<CodegenWarning>{
+                {"foreign key on column 'c' references o without naming a column, and the PRIMARY KEY of o has "
+                 "2 columns (SQLite reports a foreign key mismatch), so the generated table has no foreign_key()"}});
+    REQUIRE(joinGeneratedCode(rowidParent) == "struct O {\n"
+                                              "    std::optional<int64_t> a;\n"
+                                              "    std::optional<int64_t> b;\n"
+                                              "};\n"
+                                              "\n"
+                                              "struct T {\n"
+                                              "    std::optional<int64_t> c;\n"
+                                              "};\n"
+                                              "\n"
+                                              "auto storage = make_storage(\"\",\n"
+                                              "    make_table(\"o\",\n"
+                                              "        make_column(\"a\", &O::a),\n"
+                                              "        make_column(\"b\", &O::b),\n"
+                                              "        primary_key(&O::a)),\n"
+                                              "    make_table(\"t\",\n"
+                                              "        make_column(\"c\", &T::c)));\n");
+}
+
 // A table-level UNIQUE over columns of one type. Every member pointer into a mapped struct has `std`
 // among its associated namespaces, so an unqualified `unique(&T::a, &T::b)` finds `std::unique(It, It)`
 // by ADL, and over two or three members of one type that template wins over `sqlite_orm::unique` —

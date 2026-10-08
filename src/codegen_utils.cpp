@@ -557,7 +557,12 @@ namespace sqlite2orm {
             return false;
         }
 
-        /** How many terms of the PRIMARY KEY of `createTable` name `column`. */
+        /**
+         *  How many terms of the PRIMARY KEY of `createTable` name `column`. A rowid table keeps
+         *  every term, so `PRIMARY KEY(a, a)` is a key of two columns there, while a WITHOUT ROWID
+         *  table drops the repeats and keys on `a` alone (checked against sqlite3 3.51.0 through a
+         *  foreign key naming no column of such a parent).
+         */
         int primaryKeyTermsOfColumn(const CreateTableNode& createTable, const ColumnDef& column) {
             if (column.primaryKey) {
                 return 1;
@@ -570,6 +575,9 @@ namespace sqlite2orm {
                         ++terms;
                     }
                 }
+            }
+            if (createTable.withoutRowid && terms > 1) {
+                return 1;
             }
             return terms;
         }

@@ -69,7 +69,8 @@ namespace sqlite2orm {
         /**
          *  How many terms of the table's PRIMARY KEY name this column: one for a key spelled on the
          *  column, and a table-level `PRIMARY KEY(a, a)` names `a` twice — SQLite counts that a key
-         *  of two columns.
+         *  of two columns on a rowid table, while a WITHOUT ROWID table drops the repeat and keys
+         *  on `a` alone.
          */
         int primaryKeyTerms = 0;
     };

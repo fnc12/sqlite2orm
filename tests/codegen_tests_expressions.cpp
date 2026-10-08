@@ -2022,7 +2022,7 @@ TEST_CASE("codegen: IN with empty list") {
     REQUIRE(generate("a IN ()") == "in(&User::a, std::vector<int64_t>{})");
     REQUIRE(generate("a NOT IN ()") == "not_in(&User::a, std::vector<int64_t>{})");
     REQUIRE(generate("NULL IN ()") == "in(nullptr, std::vector<int64_t>{})");
-    REQUIRE(generate("random() NOT IN ()") == "not_in(random(), std::vector<int64_t>{})");
+    REQUIRE(generate("random() NOT IN ()") == "not_in(sqlite_orm::random(), std::vector<int64_t>{})");
 }
 
 TEST_CASE("codegen: LIKE") {

@@ -1950,7 +1950,7 @@ TEST_CASE("runtime: IN list values of two integer widths read back as SQLite com
 // for `x NOT IN ()` over every `x`, a NULL one included — `NULL IN ()` is 0 and `NULL NOT IN ()`
 // is 1, not the NULL a non-empty list answers over a NULL operand. The operand is still spelled
 // out rather than the predicate folded to a constant, so an operand with a side effect is still
-// evaluated the way the SQL asks for. The empty vector names a type and serializes to the same
+// evaluated the way the SQL asks for — `random()` is that operand, and it answers 0 and 1 too. The empty vector names a type and serializes to the same
 // `IN ()`, so the values below are SQLite's own, in a select list and in a WHERE alike, over a
 // NULL row and a 7 one.
 TEST_CASE("runtime: an empty IN list is 0 and an empty NOT IN list 1 whatever the operand") {
@@ -1960,6 +1960,8 @@ TEST_CASE("runtime: an empty IN list is 0 and an empty NOT IN list 1 whatever th
         generate("SELECT NULL IN ();"),
         generate("SELECT NULL NOT IN ();"),
         generate("SELECT a + 1 NOT IN ();"),
+        generate("SELECT random() IN ();"),
+        generate("SELECT random() NOT IN ();"),
         generate("SELECT count(*) FROM user WHERE a IN ();"),
         generate("SELECT count(*) FROM user WHERE a NOT IN ();"),
     };
@@ -1969,15 +1971,17 @@ TEST_CASE("runtime: an empty IN list is 0 and an empty NOT IN list 1 whatever th
                               "auto rows = storage.select(in(nullptr, std::vector<int64_t>{}));",
                               "auto rows = storage.select(not_in(nullptr, std::vector<int64_t>{}));",
                               "auto rows = storage.select(not_in(c(&User::a) + 1, std::vector<int64_t>{}));",
+                              "auto rows = storage.select(in(sqlite_orm::random(), std::vector<int64_t>{}));",
+                              "auto rows = storage.select(not_in(sqlite_orm::random(), std::vector<int64_t>{}));",
                               "auto rows = storage.select(count<User>(), where(in(&User::a, "
                               "std::vector<int64_t>{})));",
                               "auto rows = storage.select(count<User>(), where(not_in(&User::a, "
                               "std::vector<int64_t>{})));",
                           });
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
-            std::vector<std::string>{"0", "1", "0", "1", "1", "0", "1"});
+            std::vector<std::string>{"0", "1", "0", "1", "1", "0", "1", "0", "1"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
-            std::vector<std::string>{"0", "1", "0", "1", "1", "0", "1"});
+            std::vector<std::string>{"0", "1", "0", "1", "1", "0", "1", "0", "1"});
     REQUIRE(compilesWithInt64Spelled(statements, "long") == 0);
     REQUIRE(compilesWithInt64Spelled(statements, "long long") == 0);
 }

@@ -1003,7 +1003,7 @@ TEST_CASE("codegen: a result column that cannot be NULL keeps the type sqlite_or
     REQUIRE(generate("SELECT 'a' || 'b';") == "auto rows = storage.select(c(\"a\") || \"b\");");
     REQUIRE(generate("SELECT a FROM users;") == "auto rows = storage.select(&Users::a);");
     REQUIRE(generate("SELECT NULL;") == "auto rows = storage.select(nullptr);");
-    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");
+    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(sqlite_orm::abs(&Users::a));");
     REQUIRE(generate("SELECT a IS NULL FROM users;") == "auto rows = storage.select(is_null(&Users::a));");
 }
 
@@ -1041,7 +1041,7 @@ TEST_CASE("codegen: a scalar subquery that needs no widening keeps the type sqli
     REQUIRE(generate("SELECT (SELECT max(a) FROM users) FROM users;") ==
             "auto rows = storage.select(select(max(&Users::a)), from<Users>());");
     REQUIRE(generate("SELECT (SELECT abs(a) FROM users) FROM users;") ==
-            "auto rows = storage.select(select(abs(&Users::a)), from<Users>());");
+            "auto rows = storage.select(select(sqlite_orm::abs(&Users::a)), from<Users>());");
     // The NULL SQLite answers a scalar subquery over an empty rowset with is a hole of its own:
     // `(SELECT a FROM users)` is NULL on an empty table however the column is declared, and
     // whether the field it is read into already holds an optional is the table's to answer, which
@@ -1649,18 +1649,19 @@ TEST_CASE("codegen: a call of a built-in SQLite answers NULL for over spelled-ou
             "auto rows = storage.select(as_optional(date(\"bogus\") || \"x\"));");
     REQUIRE(generate("SELECT julianday('bogus');") == "auto rows = storage.select(as_optional(julianday(\"bogus\")));");
     REQUIRE(generate("SELECT strftime('%Y', 'bogus');") ==
-            "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));");
+            "auto rows = storage.select(as_optional(sqlite_orm::strftime(\"%Y\", \"bogus\")));");
     REQUIRE(generate("SELECT unicode('');") == "auto rows = storage.select(as_optional(unicode(\"\")));");
     REQUIRE(generate("SELECT unicode('') + 1;") == "auto rows = storage.select(as_optional(unicode(\"\") + 1));");
     REQUIRE(generate("SELECT sign('abc');") == "auto rows = storage.select(as_optional(sign(\"abc\")));");
     REQUIRE(generate("SELECT json_extract('{}', '$.a');") ==
             "auto rows = storage.select(as_optional(json_extract<std::string>(\"{}\", \"$.a\")));");
-    REQUIRE(generate("SELECT sqrt(-1);") == "auto rows = storage.select(as_optional(sqrt(-1)));");
+    REQUIRE(generate("SELECT sqrt(-1);") == "auto rows = storage.select(as_optional(sqlite_orm::sqrt(-1)));");
     // `substr(x'', 1)` is NULL rather than an empty blob, and `printf('')` NULL rather than an
     // empty string, so neither is a function that only propagates a NULL argument.
     REQUIRE(generate("SELECT substr('abc', 1, 1);") ==
             "auto rows = storage.select(as_optional(substr(\"abc\", 1, 1)));");
-    REQUIRE(generate("SELECT printf('') || 'x';") == "auto rows = storage.select(as_optional(printf(\"\") || \"x\"));");
+    REQUIRE(generate("SELECT printf('') || 'x';") ==
+            "auto rows = storage.select(as_optional(sqlite_orm::printf(\"\") || \"x\"));");
     // An aggregate is NULL over an empty rowset whatever its argument holds. `sum`, `max` and `min`
     // are left plain as a result column — sqlite_orm declares them `std::unique_ptr` — but an
     // operator over one is typed by the operator alone and has to carry the NULL itself.
@@ -1692,11 +1693,11 @@ TEST_CASE("codegen: an iif in its three-argument form is not widened") {
 // nullable around the first. That answer is given over the name alone, and the two `length(a)`
 // cases are what it leaves behind: `length` is typed `int` however NULL the row is, so
 // `iif(1, length(a), 2)` and `likely(length(a))` are typed `int` too and still read a NULL back as
-// 0 — a known hole with a card of its own, not one this widening reaches. A window function is
-// left alone as well: `row_number` and the other ranks are never NULL, and `lag`, `lead`,
-// `first_value`, `last_value` and `nth_value` are typed as their argument, which leaves the NULL
-// an empty window answers over a NOT NULL argument — `lag(b) OVER (ORDER BY b)` is NULL on the
-// first row — also carded. A MATCH has no widening either: SQLite refuses `a MATCH 'x'` as a
+// 0 — a known hole with a card of its own, not one this widening reaches. `row_number` and the
+// other ranks are never NULL, and a `lag` over a column no schema declares is typed as whatever
+// field the caller declares for it, which this layer does not know — the window widening is
+// pinned over a schema in "codegen: a window value function over an argument typed without a NULL
+// is generated as as_optional". A MATCH has no widening either: SQLite refuses `a MATCH 'x'` as a
 // result column outside an FTS table, and sqlite_orm has no result type for `match_t`.
 // A user-defined function is left alone too — it is called through the generated struct's
 // `operator()`, and the row carries back the type that operator declares — which
@@ -1712,14 +1713,14 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT upper('a') || 'x';") == "auto rows = storage.select(upper(\"a\") || \"x\");");
     REQUIRE(generate("SELECT instr('abc', 'b');") == "auto rows = storage.select(instr(\"abc\", \"b\"));");
     REQUIRE(generate("SELECT json_valid('{}');") == "auto rows = storage.select(json_valid(\"{}\"));");
-    REQUIRE(generate("SELECT round(1.5);") == "auto rows = storage.select(round(1.5));");
+    REQUIRE(generate("SELECT round(1.5);") == "auto rows = storage.select(sqlite_orm::round(1.5));");
     REQUIRE(generate("SELECT pi();") == "auto rows = storage.select(pi());");
     REQUIRE(generate("SELECT hex(a) FROM users;") == "auto rows = storage.select(hex(&Users::a));");
     REQUIRE(generate("SELECT quote(a) FROM users;") == "auto rows = storage.select(quote(&Users::a));");
     REQUIRE(generate("SELECT soundex(a) FROM users;") == "auto rows = storage.select(soundex(&Users::a));");
     REQUIRE(generate("SELECT count(a) FROM users;") == "auto rows = storage.select(count(&Users::a));");
     REQUIRE(generate("SELECT total(a) FROM users;") == "auto rows = storage.select(total(&Users::a));");
-    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(abs(&Users::a));");
+    REQUIRE(generate("SELECT abs(a) FROM users;") == "auto rows = storage.select(sqlite_orm::abs(&Users::a));");
     REQUIRE(generate("SELECT max(a) FROM users;") == "auto rows = storage.select(max(&Users::a));");
     REQUIRE(generate("SELECT sum(a) FROM users;") == "auto rows = storage.select(sum(&Users::a));");
     REQUIRE(generate("SELECT coalesce(a, 1) FROM users;") == "auto rows = storage.select(coalesce(&Users::a, 1));");
@@ -1736,6 +1737,95 @@ TEST_CASE("codegen: a predicate, a CAST or a function call that cannot be NULL k
     REQUIRE(generate("SELECT a MATCH 'x' FROM users;") ==
             "auto rows = storage.select(match(&Users::a, \"x\"), from<Users>());");
     REQUIRE(generate("SELECT count(*) FROM users;") == "auto rows = storage.select(count<Users>());");
+}
+
+// sqlite_orm types `lag`, `lead`, `first_value`, `last_value` and `nth_value` as their value argument,
+// so only an argument typed nullably carries a NULL through. Over a NOT NULL column, a constant or an
+// operator the argument is typed without one, while the window answers NULL on its own: checked
+// against sqlite3 3.51 over `t(b INTEGER NOT NULL, a INTEGER)` holding (1, NULL), (2, 5), (3, NULL),
+// `lag(b) OVER (ORDER BY b)` is NULL on the first row and `lead(b)` on the last, `lag(b, 1, a)`
+// answers its NULL default there, `first_value` and `last_value` are NULL over an empty frame — one
+// spelled out, or a named window that may carry one — and `nth_value(b, 2)` over a frame of one row.
+// An aggregate run as a window is widened by the rule a plain call is: `avg` and `group_concat` are
+// NULL over an empty frame. Values read back in "runtime: a window function over a NOT NULL column
+// reads the NULL back".
+TEST_CASE("codegen: a window value function over an argument typed without a NULL is generated as as_optional") {
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(as_optional(lag(&T::b).over(order_by(&T::b))));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lead(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(as_optional(lead(&T::b).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b + 1) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(lag(c(&T::b) + 1).over(order_by(&T::b))));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(1) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(as_optional(lag(1).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b, 1, a) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(lag(&T::b, 1, &T::a).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT first_value(b) OVER (ORDER BY b "
+                                "ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) FROM t;")
+                .code == "auto rows = storage.select(as_optional(first_value(&T::b).over(order_by(&T::b), "
+                         "sqlite_orm::rows(preceding(2), preceding(1)))));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT last_value(b) OVER (ORDER BY b "
+                                "ROWS CURRENT ROW EXCLUDE CURRENT ROW) FROM t;")
+                .code == "auto rows = storage.select(as_optional(last_value(&T::b).over(order_by(&T::b), "
+                         "sqlite_orm::rows(current_row(), current_row()).exclude_current_row())));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT first_value(b) OVER w FROM t "
+                                "WINDOW w AS (ORDER BY b);")
+                .code == "auto rows = storage.select(as_optional(first_value(&T::b).over(window_ref(\"w\"))), "
+                         "window(\"w\", order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT nth_value(b, 2) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(nth_value(&T::b, 2).over(order_by(&T::b))));");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT avg(b) OVER (ORDER BY b ROWS "
+                                "BETWEEN 2 PRECEDING AND 1 PRECEDING) FROM t;")
+                .code == "auto rows = storage.select(as_optional(avg(&T::b).over(order_by(&T::b), "
+                         "sqlite_orm::rows(preceding(2), preceding(1)))));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT group_concat(b) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(as_optional(group_concat(&T::b).over(order_by(&T::b))));");
+}
+
+// The counter-checks, against the same sqlite3 3.51 table: a nullable column argument is typed
+// `std::optional` by sqlite_orm already and `abs` `std::unique_ptr`, so widening either would nest a
+// second nullable around the first; `lag(b, 1, 0)` answers its default 0 where no row is reached;
+// the default frame always holds the current row, so `first_value(b)`, `last_value(b)` and
+// `nth_value(b, 1)` over it answer a value of `b`; the ranks are never NULL, `sum` is typed
+// `std::unique_ptr` and `count` is never NULL.
+TEST_CASE("codegen: a window function that cannot answer NULL or is typed nullably keeps its type") {
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(a) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(lag(&T::a).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(abs(b)) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(lag(abs(&T::b)).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT lag(b, 1, 0) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(lag(&T::b, 1, 0).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT first_value(b) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(first_value(&T::b).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT last_value(b) OVER (PARTITION BY a) FROM t;")
+                .code == "auto rows = storage.select(last_value(&T::b).over(partition_by(&T::a)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT nth_value(b, 1) OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(nth_value(&T::b, 1).over(order_by(&T::b)));");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT row_number() OVER (ORDER BY b) FROM t;")
+                .code == "auto rows = storage.select(row_number().over(order_by(&T::b)));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT ntile(2) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(ntile(2).over(order_by(&T::b)));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT sum(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(sum(&T::b).over(order_by(&T::b)));");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(b INTEGER NOT NULL, a INTEGER); SELECT count(b) OVER (ORDER BY b) FROM t;")
+            .code == "auto rows = storage.select(count(&T::b).over(order_by(&T::b)));");
 }
 
 // sqlite_orm types `case_t<R, …>` as R, and R is the type inferred for the first branch's result —
@@ -2835,7 +2925,8 @@ TEST_CASE("codegen: a select naming no recordset carries its FROM") {
     REQUIRE(generate("SELECT row_number() OVER () FROM users;") ==
             "auto rows = storage.select(row_number().over(), from<Users>());");
     REQUIRE(generate("SELECT 1 FROM users;") == "auto rows = storage.select(1, from<Users>());");
-    REQUIRE(generate("SELECT random() FROM users;") == "auto rows = storage.select(random(), from<Users>());");
+    REQUIRE(generate("SELECT random() FROM users;") ==
+            "auto rows = storage.select(sqlite_orm::random(), from<Users>());");
 }
 
 // The FROM still names only the sources sqlite_orm has to infer: a joined table arrives through its
@@ -3115,8 +3206,9 @@ TEST_CASE("codegen: a compound SELECT widens a call every arm spells alike") {
             "select(columns(as_optional(length(&Users::a)), &Users::b), where(c(&Users::a) > 1)), "
             "select(columns(as_optional(length(&Users::a)), &Users::b))));");
     // A call sqlite_orm already reads back nullably is left alone, as a plain SELECT leaves it.
-    REQUIRE(generate("SELECT abs(a) UNION SELECT abs(a);") ==
-            "auto rows = storage.select(union_(select(abs(&User::a)), select(abs(&User::a))));");
+    REQUIRE(
+        generate("SELECT abs(a) UNION SELECT abs(a);") ==
+        "auto rows = storage.select(union_(select(sqlite_orm::abs(&User::a)), select(sqlite_orm::abs(&User::a))));");
     // Arms that differ — in an argument, in the expression around the call, in the FROM clause the
     // arguments are read over — may come out as types with no common optional, and are left alone.
     REQUIRE(generate("SELECT length(a) UNION SELECT length(b);") ==

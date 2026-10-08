@@ -601,6 +601,97 @@ namespace {
         return rows;
     }
 
+    /**
+     *  Builds a program around generated select statements that name no table, in a translation
+     *  unit that includes <cmath>, <cstdio> and <cstdlib> beside the sqlite_orm header the way a
+     *  consumer's often does, compiles and links it against sqlite_orm, runs it and returns, for
+     *  every statement, the SQL sqlite_orm hands SQLite followed by the rows it came back with,
+     *  comma separated, a NULL as `NULL` (`abs()` is read back through a `std::unique_ptr<double>`).
+     *  The SQL is what tells a call SQLite runs from a C
+     *  function of the same name that C++ ran before SQLite saw anything: both can answer the
+     *  same value, and only one of them is the query that was written.
+     */
+    std::vector<std::string> executedQueriesAndRows(const std::vector<std::string>& selectStatements) {
+        std::ostringstream program;
+        program << "#include <sqlite_orm/sqlite_orm.h>\n"
+                   "#include <cmath>\n"
+                   "#include <cstdio>\n"
+                   "#include <cstdlib>\n"
+                   "#include <iostream>\n"
+                   "#include <memory>\n"
+                   "#include <optional>\n"
+                   "#include <string_view>\n"
+                   "\n"
+                   "template<class V>\n"
+                   "void printValue(const V& value) {\n"
+                   "    std::cout << value;\n"
+                   "}\n"
+                   "\n"
+                   "template<class V>\n"
+                   "void printValue(const std::optional<V>& value) {\n"
+                   "    if(value) {\n"
+                   "        std::cout << *value;\n"
+                   "    } else {\n"
+                   "        std::cout << \"NULL\";\n"
+                   "    }\n"
+                   "}\n"
+                   "\n"
+                   "template<class V>\n"
+                   "void printValue(const std::unique_ptr<V>& value) {\n"
+                   "    if(value) {\n"
+                   "        std::cout << *value;\n"
+                   "    } else {\n"
+                   "        std::cout << \"NULL\";\n"
+                   "    }\n"
+                   "}\n"
+                   "\n"
+                   "int main() {\n"
+                   "    using namespace sqlite_orm;\n"
+                   "    auto storage = make_storage(\"\", will_run_query([](std::string_view sql) {\n"
+                   "        std::cout << sql << '\\n';\n"
+                   "    }));\n";
+        for (const auto& statement: selectStatements) {
+            program << "    {\n        " << statement
+                    << "\n        const char* separator = \"\";\n"
+                       "        for(const auto& row: rows) {\n"
+                       "            std::cout << separator;\n"
+                       "            printValue(row);\n"
+                       "            separator = \",\";\n"
+                       "        }\n"
+                       "        std::cout << '\\n';\n    }\n";
+        }
+        program << "    return 0;\n"
+                   "}\n";
+
+        const TempBuildDir dir;
+        const std::filesystem::path cpppath = dir.write("queries.cpp", program.str());
+        const std::filesystem::path binpath = dir.file("queries");
+        const std::filesystem::path outpath = dir.file("queries.out");
+
+        std::ostringstream cmd;
+        cmd << TempBuildDir::compilerCommand();
+        cmd << ' ' << cpppath.string();
+        cmd << ' ' << TempBuildDir::sqlite3LinkFlags() << " -o " << binpath.string();
+        cmd << " && " << binpath.string() << " > " << outpath.string();
+        cmd << " 2>&1";
+
+        const int exitCode = TempBuildDir::run(cmd.str());
+        std::vector<std::string> lines;
+        {
+            std::ifstream out(outpath);
+            for (std::string line; std::getline(out, line);) {
+                lines.push_back(line);
+            }
+        }
+        if (exitCode != 0) {
+            WARN("building the generated selects failed (exit " << exitCode
+                                                                << "); ensure c++, sqlite_orm headers and "
+                                                                   "libsqlite3 are usable");
+        }
+        REQUIRE(exitCode == 0);
+        return lines;
+    }
+
 }  // namespace
 
 // The generated code used to read every negative numeric literal back as 0: the SQL was right, but
@@ -1479,6 +1570,45 @@ TEST_CASE("runtime: a result column typed by a predicate, a CAST or a function c
             std::vector<std::string>{"1", "0", "1", "0", "0", "7", "1", "7", "7", "37"});
 }
 
+// sqlite_orm types `lag`, `lead`, `first_value`, `last_value` and `nth_value` as their value argument
+// and `avg` as `double`, so where the window answers NULL over a NOT NULL column the row reached the
+// caller as 0. Expected values checked against sqlite3 3.51 over `user(a INTEGER NOT NULL)` holding
+// the one row 7: a window of one row reaches no row before or after it, an explicit frame of the row
+// before it is empty, and a frame of one row has no second one; before the widening the six NULL
+// rows read back as 0. The last two columns are the counter-check: `lag(a, 1, 0)` answers its default
+// and `first_value(a)` over the default frame the row itself, so neither is widened.
+TEST_CASE("runtime: a window function over a NOT NULL column reads the NULL back") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lead(a) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a + 1) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT first_value(a) OVER (ROWS BETWEEN 1 "
+                            "PRECEDING AND 1 PRECEDING) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT nth_value(a, 2) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT avg(a) OVER (ROWS BETWEEN 1 PRECEDING AND 1 "
+                            "PRECEDING) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT lag(a, 1, 0) OVER () FROM user;").code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT first_value(a) OVER () FROM user;").code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(lag(&User::a).over()));",
+                "auto rows = storage.select(as_optional(lead(&User::a).over()));",
+                "auto rows = storage.select(as_optional(lag(c(&User::a) + 1).over()));",
+                "auto rows = storage.select(as_optional(first_value(&User::a).over(sqlite_orm::rows(preceding(1), "
+                "preceding(1)))));",
+                "auto rows = storage.select(as_optional(nth_value(&User::a, 2).over()));",
+                "auto rows = storage.select(as_optional(avg(&User::a).over(sqlite_orm::rows(preceding(1), "
+                "preceding(1)))));",
+                "auto rows = storage.select(lag(&User::a, 1, 0).over());",
+                "auto rows = storage.select(first_value(&User::a).over());",
+            });
+    REQUIRE(selectedValues(statements) ==
+            std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "0", "7"});
+}
+
 // Most built-ins answer NULL over arguments that hold none, and sqlite_orm types the call by the
 // return type the function declares, so the row reached the caller as 0 / "" — and an operator over
 // such a call is typed by the operator alone and lost the NULL the same way. Every value here is
@@ -1506,7 +1636,7 @@ TEST_CASE("runtime: a built-in that answers NULL over spelled-out arguments read
                               "auto rows = storage.select(as_optional(nullif(1, 1) + 1));",
                               "auto rows = storage.select(as_optional(date(\"bogus\")));",
                               "auto rows = storage.select(as_optional(julianday(\"bogus\")));",
-                              "auto rows = storage.select(as_optional(strftime(\"%Y\", \"bogus\")));",
+                              "auto rows = storage.select(as_optional(sqlite_orm::strftime(\"%Y\", \"bogus\")));",
                               "auto rows = storage.select(as_optional(unicode(\"\")));",
                               "auto rows = storage.select(as_optional(unicode(\"\") + 1));",
                               "auto rows = storage.select(upper(\"a\"));",
@@ -2909,4 +3039,36 @@ TEST_CASE("runtime: a built-in the validator did not know answers what SQLite do
     REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
             std::vector<std::string>{"0!", "1577836800"});
     REQUIRE(selectedValues(statements, "std::optional<int>", "7") == std::vector<std::string>{"7!", "1577836800"});
+}
+
+// sqlite_orm declares a builtin under some of the names the C library declares a function under —
+// `random`, `abs`, `round`, `printf` among them — and the generated code is read under `using
+// namespace sqlite_orm;`, so a bare call of one was looked up in both. `random()` did not compile
+// at all (`call of overloaded 'random()' is ambiguous`), and the rest compiled into the C
+// function: `abs(-5)` was `::abs(int)`, `round(1.5)` became `::round(double)` once <cmath> was in,
+// and `printf("hi")` printed `hi` from the program and handed SQLite the count it returned. The
+// value can come out the same either way, so what is compared is the SQL that reached SQLite.
+TEST_CASE("runtime: a built-in the C library declares too is the call SQLite runs") {
+    const std::vector<std::string> statements{
+        generate("SELECT typeof(random());"),
+        generate("SELECT abs(-5);"),
+        generate("SELECT round(1.5);"),
+        generate("SELECT printf('hi');"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(typeof_(sqlite_orm::random()));",
+                              "auto rows = storage.select(sqlite_orm::abs(-5));",
+                              "auto rows = storage.select(sqlite_orm::round(1.5));",
+                              "auto rows = storage.select(as_optional(sqlite_orm::printf(\"hi\")));",
+                          });
+    REQUIRE(executedQueriesAndRows(statements) == std::vector<std::string>{
+                                                      "SELECT TYPEOF(RANDOM())",
+                                                      "integer",
+                                                      "SELECT ABS(?)",
+                                                      "5",
+                                                      "SELECT ROUND(?)",
+                                                      "2",
+                                                      "SELECT PRINTF(?)",
+                                                      "hi",
+                                                  });
 }

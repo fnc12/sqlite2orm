@@ -1360,8 +1360,8 @@ TEST_CASE("codegen: an AND or an OR quotes an operand sqlite_orm does not recogn
     SECTION("an operand beside a condition or an operator argument is left as it was written") {
         REQUIRE(generate("a MATCH 'x' OR b = 1") == R"(match(&User::a, "x") or c(&User::b) == 1)");
         REQUIRE(generate("b = 1 AND a MATCH 'x'") == R"(c(&User::b) == 1 and match(&User::a, "x"))");
-        REQUIRE(generate("CURRENT_DATE AND abs(a)") == "c(current_date()) and abs(&User::a)");
-        REQUIRE(generate("abs(a) AND a + 1") == "abs(&User::a) and c(&User::a) + 1");
+        REQUIRE(generate("CURRENT_DATE AND abs(a)") == "c(current_date()) and sqlite_orm::abs(&User::a)");
+        REQUIRE(generate("abs(a) AND a + 1") == "sqlite_orm::abs(&User::a) and c(&User::a) + 1");
         REQUIRE(generate("CAST(a AS INTEGER) AND a + 1") == "cast<int64_t>(&User::a) and c(&User::a) + 1");
         REQUIRE(generate("a AND b") == "c(&User::a) and &User::b");
         REQUIRE(generate("a = 1 AND b = 2") == "c(&User::a) == 1 and c(&User::b) == 2");
@@ -1602,13 +1602,13 @@ TEST_CASE("codegen: BETWEEN bounds with no common C++ type warn") {
     REQUIRE(result.warnings == boundsWarning("a pointer to a column", "an `int`", 17));
 
     result = generateFull("a BETWEEN 1 AND abs(b)");
-    REQUIRE(result.code == "between(&User::a, 1, abs(&User::b))");
+    REQUIRE(result.code == "between(&User::a, 1, sqlite_orm::abs(&User::b))");
     REQUIRE(result.warnings == boundsWarning("an `int`", "a sqlite_orm expression", 22));
 
     // A pointer to a member is none of the node types sqlite_orm builds an expression out of,
     // whichever column and whichever expression the two bounds stand for.
     result = generateFull("a BETWEEN b AND abs(b)");
-    REQUIRE(result.code == "between(&User::a, &User::b, abs(&User::b))");
+    REQUIRE(result.code == "between(&User::a, &User::b, sqlite_orm::abs(&User::b))");
     REQUIRE(result.warnings == boundsWarning("a pointer to a column", "a sqlite_orm expression", 22));
 
     // A decimal literal past the int64 range is a REAL for SQLite and a `double` here, so it is
@@ -1822,13 +1822,13 @@ TEST_CASE("codegen: IN list values with no common C++ type warn") {
     REQUIRE(result.warnings == valuesWarning("a pointer to a column", "an `int`", 11));
 
     result = generateFull("a IN (1, abs(b))");
-    REQUIRE(result.code == "in(&User::a, {1, abs(&User::b)})");
+    REQUIRE(result.code == "in(&User::a, {1, sqlite_orm::abs(&User::b)})");
     REQUIRE(result.warnings == valuesWarning("an `int`", "a sqlite_orm expression", 16));
 
     // A pointer to a member is none of the node types sqlite_orm builds an expression out of,
     // whichever column and whichever expression the two values stand for.
     result = generateFull("a IN (b, abs(b))");
-    REQUIRE(result.code == "in(&User::a, {&User::b, abs(&User::b)})");
+    REQUIRE(result.code == "in(&User::a, {&User::b, sqlite_orm::abs(&User::b)})");
     REQUIRE(result.warnings == valuesWarning("a pointer to a column", "a sqlite_orm expression", 16));
 
     // The warning names the pair that proves the list has no one type, which in a longer list is
@@ -2059,11 +2059,11 @@ TEST_CASE("codegen: IS NULL in compound expression") {
 }
 
 TEST_CASE("codegen: function - no args") {
-    REQUIRE(generate("random()") == "random()");
+    REQUIRE(generate("random()") == "sqlite_orm::random()");
 }
 
 TEST_CASE("codegen: function - one arg") {
-    REQUIRE(generate("abs(a)") == "abs(&User::a)");
+    REQUIRE(generate("abs(a)") == "sqlite_orm::abs(&User::a)");
     REQUIRE(generate("length(name)") == "length(&User::name)");
     REQUIRE(generate("lower(name)") == "lower(&User::name)");
     REQUIRE(generate("upper(name)") == "upper(&User::name)");
@@ -2137,13 +2137,13 @@ TEST_CASE("codegen: a call typed by the common type of its arguments keeps a typ
 TEST_CASE("codegen: a call typed by the common type of its arguments leaves an untyped argument alone") {
     REQUIRE(generate("coalesce(a, 1)") == "coalesce(&User::a, 1)");
     REQUIRE(generate("coalesce(a, 'x')") == "coalesce(&User::a, \"x\")");
-    REQUIRE(generate("coalesce(abs(a), 'x')") == "coalesce(abs(&User::a), \"x\")");
+    REQUIRE(generate("coalesce(abs(a), 'x')") == "coalesce(sqlite_orm::abs(&User::a), \"x\")");
     REQUIRE(generate("coalesce(a + 1, 'x')") == "coalesce(c(&User::a) + 1, \"x\")");
     REQUIRE(generate("coalesce(:p, 'x')") == "coalesce(p, \"x\")");
 }
 
 TEST_CASE("codegen: function - case insensitive name") {
-    REQUIRE(generate("ABS(a)") == "abs(&User::a)");
+    REQUIRE(generate("ABS(a)") == "sqlite_orm::abs(&User::a)");
     REQUIRE(generate("COUNT(*)") == "count()");
     REQUIRE(generate("Length(name)") == "length(&User::name)");
 }
@@ -2157,12 +2157,12 @@ TEST_CASE("codegen: count(DISTINCT expr)") {
 }
 
 TEST_CASE("codegen: function - nested") {
-    REQUIRE(generate("abs(round(x, 2))") == "abs(round(&User::x, 2))");
+    REQUIRE(generate("abs(round(x, 2))") == "sqlite_orm::abs(sqlite_orm::round(&User::x, 2))");
 }
 
 TEST_CASE("codegen: function in expression") {
     auto result = generateFull("abs(a) + length(b)");
-    REQUIRE(result.code == "abs(&User::a) + length(&User::b)");
+    REQUIRE(result.code == "sqlite_orm::abs(&User::a) + length(&User::b)");
 }
 
 TEST_CASE("codegen: date/time functions") {

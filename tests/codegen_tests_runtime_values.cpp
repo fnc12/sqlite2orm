@@ -270,10 +270,22 @@ namespace {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <iostream>\n"
+                   "#include <optional>\n"
                    "\n"
                    "struct Users {\n"
                    "    int a = 0;\n"
                    "};\n"
+                   "\n"
+                   "template<class T>\n"
+                   "void printValue(const T& value) {\n"
+                   "    std::cout << value;\n"
+                   "}\n"
+                   "\n"
+                   // A scalar subquery that may answer no row is read back through an optional.
+                   "template<class T>\n"
+                   "void printValue(const std::optional<T>& value) {\n"
+                   "    value ? printValue(*value) : void(std::cout << \"NULL\");\n"
+                   "}\n"
                    "\n"
                    "int main() {\n"
                    "    using namespace sqlite_orm;\n"
@@ -286,7 +298,8 @@ namespace {
             program << "    {\n        " << statement
                     << "\n        const char* separator = \"\";\n"
                        "        for(const auto& row: rows) {\n"
-                       "            std::cout << separator << row;\n"
+                       "            std::cout << separator;\n"
+                       "            printValue(row);\n"
                        "            separator = \",\";\n"
                        "        }\n"
                        "        std::cout << '\\n';\n    }\n";
@@ -3022,7 +3035,7 @@ TEST_CASE("runtime: a select whose subquery names its own table returns the rows
     REQUIRE(statements ==
             std::vector<std::string>{
                 "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))));",
-                "auto rows = storage.select(select(1, from<Users>(), limit(1)), from<Users>());",
+                "auto rows = storage.select(as_optional(select(1, from<Users>(), limit(1))), from<Users>());",
                 "auto rows = storage.select(1, from<Users>(), where(select(1, from<Users>(), limit(1))));",
                 "auto rows = storage.select(1, from<Users>(), order_by(select(1, from<Users>(), limit(1))));",
                 "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))), limit(2));",

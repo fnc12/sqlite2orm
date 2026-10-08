@@ -3009,7 +3009,7 @@ TEST_CASE("codegen: a subquery naming no recordset carries its own FROM") {
     REQUIRE(generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM orders);") ==
             "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Orders>()))));");
     REQUIRE(generate("SELECT (SELECT 1 FROM orders) FROM users;") ==
-            "auto rows = storage.select(select(1, from<Orders>()), from<Users>());");
+            "auto rows = storage.select(as_optional(select(1, from<Orders>())), from<Users>());");
     REQUIRE(generate("SELECT 1 FROM users UNION SELECT 2 FROM orders;") ==
             "auto rows = storage.select(union_(select(1, from<Users>()), select(2, from<Orders>())));");
     REQUIRE(generate("INSERT INTO orders SELECT 1 FROM users;") ==
@@ -3084,7 +3084,7 @@ TEST_CASE("codegen: a select whose subquery names its own table carries its FROM
     REQUIRE(generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users);") ==
             "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))));");
     REQUIRE(generate("SELECT (SELECT 1 FROM users LIMIT 1) FROM users;") ==
-            "auto rows = storage.select(select(1, from<Users>(), limit(1)), from<Users>());");
+            "auto rows = storage.select(as_optional(select(1, from<Users>(), limit(1))), from<Users>());");
     REQUIRE(generate("SELECT 1 FROM users WHERE (SELECT 1 FROM users LIMIT 1);") ==
             "auto rows = storage.select(1, from<Users>(), where(select(1, from<Users>(), limit(1))));");
     REQUIRE(generate("SELECT 1 FROM users ORDER BY (SELECT 1 FROM users LIMIT 1);") ==

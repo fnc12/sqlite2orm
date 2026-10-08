@@ -205,6 +205,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/readme_tests.cpp
         tests/coverage_doc_tests.cpp
         tests/source_file_text.cpp
+        tests/source_layout_tests.cpp
         tests/sqlite_orm_revision_tests.cpp
         tests/temp_build_dir.cpp
     )

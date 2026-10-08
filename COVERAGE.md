@@ -399,21 +399,28 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
   `PRAGMA table_info` — what `sync_schema()` compares a mapped table against — reports no second
   one. Where the collapse leaves a lone INTEGER column of a rowid table, it also turns the key into
   a rowid alias, which the multi-term key it came from is not; that is reported as a codegen
-  warning, because sqlite_orm has no table-level key of two terms over one column to write instead.
+  warning, because sqlite_orm has no table-level key of two terms over one column to write instead,
+  together with the member `insert()` leaves out (see the integral key below).
 - [!] A repeat standing before a column the key has not named yet (`PRIMARY KEY(a, a, b)`) is a key
   no `primary_key(...)` is read back as: a rowid table ranks a key column by the term its name is
   first spelled at and leaves the rank the repeat sits at unused, so SQLite ranks `b` third while
   the generated key ranks it second and the key written as spelled ranks `a` second. Codegen
   warning — `sync_schema()` rebuilds such a table and the rows in it are lost. A WITHOUT ROWID
   table drops the repeat out of the key itself and leaves no gap, so it is carried over as stored.
-- [!] A key over one column declared with a type other than INTEGER that maps to an integral member
-  (`INT`, `BIGINT`, `BOOLEAN`, `INTEGER(10)`, …), table-level or column-level: SQLite aliases the
-  rowid onto such a key only when the declared type is INTEGER exactly, while sqlite_orm declares
-  every integral member INTEGER, so a database created from the generated code makes the column
-  the rowid alias the source table does not have — an INSERT leaving it out stores the next rowid
-  instead of NULL, and one STRICT or NOT NULL refuses goes through. Codegen warning, anchored at the
-  type name; the database the header was generated from is left alone by `sync_schema()`. A
-  column-level DESC, which sqlite_orm writes back, keeps the column an ordinary one on both sides.
+- [!] A key the generated table writes over one column with an integral member (`int64_t` or
+  `bool`) that is no rowid alias in the source table: sqlite_orm takes such a column for the rowid
+  alias by the member's type alone and `insert()` leaves the member out, so in the database the
+  header was generated from the row gets NULL (or the DEFAULT) instead of the value, or is refused
+  where the column is NOT NULL, declared or implied by STRICT. `replace()` and
+  `insert(into<T>(), columns(...), values(...))` write the value. When the column is declared with
+  a type other than INTEGER (`INT`, `BIGINT`, `BOOLEAN`, `INTEGER(10)`, …) and has no column-level
+  DESC, a database created from the generated code also makes it the rowid alias — SQLite aliases
+  the rowid onto such a key only when the declared type is INTEGER exactly, and sqlite_orm declares
+  every integral member INTEGER — so there `insert()` stores the next rowid, NOT NULL or not.
+  Codegen warning, anchored at the type name, table-level or column-level, including a column-level
+  DESC over INTEGER; an INTEGER key repeating its column (`PRIMARY KEY(a, a)`) is reported once, by
+  the warning about the repeat, which carries the same `insert()` part. `sync_schema()` leaves the
+  database the header was generated from alone either way.
 - [x] CHECK(expr) → `check(expr)`
 - [x] FOREIGN KEY (column) REFERENCES table(column) + ON DELETE/UPDATE actions
 - [x] CONSTRAINT name prefix (parsed and skipped)

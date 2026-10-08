@@ -30,6 +30,27 @@ namespace {
     }
 
     /**
+     *  What every report about a key over one column with an integral member ends with: what
+     *  `insert()` does to that member, in the database the header was generated from and in one
+     *  created from the generated code, where the key is the rowid alias or is not.
+     */
+    [[nodiscard]] std::string kKeyMemberLeftOutByInsert(std::string_view columnName, bool aliasInCreatedDatabase) {
+        const std::string column(columnName);
+        return "sqlite_orm takes the column of a key over one column with an integral member for the rowid alias, "
+               "so `insert()` leaves the member of '" +
+               column +
+               "' out of the row it writes: in the database the header was generated from, that INSERT stores what "
+               "SQLite gives a column left out — NULL, or the column's DEFAULT — rather than the member's value, or "
+               "is refused where SQLite enforces NOT NULL on the column, whether declared or implied by STRICT, " +
+               (aliasInCreatedDatabase ? "and in a database created from the generated code it stores the next rowid "
+                                         "in '" +
+                                             column + "' instead, NOT NULL or not. "
+                                       : std::string("and a database created from the generated code answers it the "
+                                                     "same way. ")) +
+               "`replace()` and `insert(into<T>(), columns(...), values(...))` write the member's value as given";
+    }
+
+    /**
      *  What a table-level PRIMARY KEY that names one column twice is reported as, once the
      *  generated key names it once and SQLite reads that single-term key as the rowid alias. Only
      *  the name of the column varies.
@@ -39,13 +60,8 @@ namespace {
                "' more than once, and the generated primary_key() names it once, because that is the one place "
                "the column holds in the key SQLite reports. That makes the generated key a rowid alias, which the "
                "key written here is not: SQLite aliases the rowid onto a column when the key is over a single term "
-               "of declared type INTEGER, and this key is written with more terms than one. A database the header "
-               "was generated from is unaffected — `sync_schema()` leaves it alone — but in a database created from "
-               "the generated code an INSERT that leaves '" +
-               std::string(columnName) +
-               "' out stores the next rowid in it instead of NULL, and a NOT NULL that SQLite enforces on the "
-               "column here, whether declared or implied by STRICT, lets that INSERT through rather than refusing "
-               "it";
+               "of declared type INTEGER, and this key is written with more terms than one. " +
+               kKeyMemberLeftOutByInsert(columnName, true);
     }
 
     /**
@@ -59,19 +75,29 @@ namespace {
                                                              std::string_view cppType) {
         const std::string column(columnName);
         return "column '" + column + "' is declared " + std::string(declaredType) +
-               " and is the only column of the PRIMARY KEY, and SQLite makes such a column the rowid alias only "
-               "when its declared type is INTEGER exactly, so here it is an ordinary column. The generated member "
-               "is " +
+               " and the generated key is over this column alone, and SQLite makes the column of such a key the "
+               "rowid alias only when its declared type is INTEGER exactly, so here it is an ordinary column. The "
+               "generated member is " +
                std::string(cppType) +
                ", which sqlite_orm declares INTEGER, so in a database created from the generated code the same key "
                "makes '" +
                column +
-               "' the rowid alias. A database the header was generated from is unaffected — `sync_schema()` leaves "
-               "it alone — but in a database created from the generated code an INSERT that leaves '" +
-               column +
-               "' out stores the next rowid in it instead of NULL, a NOT NULL that SQLite enforces on the column "
-               "here, whether declared or implied by STRICT, lets that INSERT through rather than refusing it, and "
-               "a value that is not an integer is refused (\"datatype mismatch\") rather than stored as it came";
+               "' the rowid alias, which refuses a value that is not an integer (\"datatype mismatch\") rather than "
+               "storing it as it came. " +
+               kKeyMemberLeftOutByInsert(columnName, true);
+    }
+
+    /**
+     *  What a key spelled DESC on a column with an integral member is reported as: the column is
+     *  no rowid alias in either database, and `insert()` leaves its member out all the same.
+     */
+    [[nodiscard]] std::string
+    kDescKeyMemberLeftOutWarning(std::string_view columnName, std::string_view declaredType, std::string_view cppType) {
+        return "column '" + std::string(columnName) + "' is declared " + std::string(declaredType) +
+               " and the generated key is over this column alone, spelled DESC on the column, which keeps it an "
+               "ordinary column rather than the rowid alias here and in a database created from the generated code "
+               "alike. The generated member is " +
+               std::string(cppType) + ". " + kKeyMemberLeftOutByInsert(columnName, false);
     }
 
     /**
@@ -1533,7 +1559,8 @@ TEST_CASE("codegen: CREATE TABLE - a key over an INT column of a STRICT table is
 // A key repeating an INT column is collapsed to one column as an INTEGER one is, but the reason the
 // generated key is an alias is the type, not the repeat — an INT key of one term is no alias in
 // SQLite either — so the type is what is reported, and the report about the repeat, which is about
-// a column declared INTEGER, is not.
+// a column declared INTEGER, is not. The report speaks of the generated key, which is over `a`
+// alone, rather than of the two-term key written here.
 TEST_CASE("codegen: CREATE TABLE - a key repeating an INT column reports the type rather than the repeat") {
     const auto result = generateFull("CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a, a))");
     REQUIRE(result.warnings == std::vector<CodegenWarning>{
@@ -1541,13 +1568,37 @@ TEST_CASE("codegen: CREATE TABLE - a key repeating an INT column reports the typ
                                });
 }
 
-// The keys that are the same in both databases: a column-level DESC, which sqlite_orm writes back
-// and which keeps even an INTEGER column an ordinary one; a key of two columns; a WITHOUT ROWID
-// table; a column declared INTEGER, in any quoting, which is the alias on both sides; and a column
-// whose member is not integral. Checked against sqlite3 3.51.0 and the pinned sqlite_orm.
+// A column-level DESC, which sqlite_orm writes back, keeps the column an ordinary one in both
+// databases, INTEGER or not — but sqlite_orm decides what insert() writes by the member's type
+// alone, so the member of the key is still left out of every row it inserts: the database the
+// header was generated from gets NULL there, and so does one created from the generated code.
+// Measured on a live database in tests/schema_pipeline_tests.cpp.
+TEST_CASE("codegen: CREATE TABLE - a DESC key over an integral column reports the member insert() leaves out") {
+    const auto result = generateFull("CREATE TABLE t (a INT PRIMARY KEY DESC, b INTEGER)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> b;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, primary_key().desc()),\n"
+                           "        make_column(\"b\", &T::b)));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{
+                                   {kDescKeyMemberLeftOutWarning("a", "INT", "int64_t"), SourceLocation{1, 19}, 3},
+                               });
+    REQUIRE(generateFull("CREATE TABLE t (a INTEGER PRIMARY KEY DESC, b INTEGER)").warnings ==
+            std::vector<CodegenWarning>{
+                {kDescKeyMemberLeftOutWarning("a", "INTEGER", "int64_t"), SourceLocation{1, 19}, 7},
+            });
+}
+
+// The keys insert() writes right in both databases: a key of two columns, which sqlite_orm writes
+// whole; a WITHOUT ROWID table, whose key insert() always writes; a column declared INTEGER, in any
+// quoting, which is the alias on both sides; and a column whose member is not integral, which
+// insert() refuses to compile for. Checked against sqlite3 3.51.0 and the pinned sqlite_orm.
 TEST_CASE("codegen: CREATE TABLE - a key that is the rowid alias on both sides or on neither reports nothing") {
     for (const std::string_view sql: {
-             "CREATE TABLE t (a INT PRIMARY KEY DESC, b INTEGER)",
              "CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a, b))",
              "CREATE TABLE t (a INT, b INTEGER, PRIMARY KEY (a)) WITHOUT ROWID",
              "CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a))",

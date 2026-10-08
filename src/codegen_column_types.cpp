@@ -115,9 +115,35 @@ namespace sqlite2orm {
         return createTable.primaryKeys.size() == 1;
     }
 
-    std::optional<CodegenWarning> mappedTypeRowidAliasWarning(const CreateTableNode& createTable,
-                                                              const ColumnDef& column) {
-        if (createTable.withoutRowid || normalizeSqlName(column.typeName) == "integer") {
+    std::string keyMemberLeftOutByInsertText(std::string_view columnName, bool aliasInCreatedDatabase) {
+        const std::string column(columnName);
+        std::string text =
+            "sqlite_orm takes the column of a key over one column with an integral member for the rowid alias, so "
+            "`insert()` leaves the member of '" +
+            column +
+            "' out of the row it writes: in the database the header was generated from, that INSERT stores what "
+            "SQLite gives a column left out — NULL, or the column's DEFAULT — rather than the member's value, or is "
+            "refused where SQLite enforces NOT NULL on the column, whether declared or implied by STRICT, ";
+        if (aliasInCreatedDatabase) {
+            text += "and in a database created from the generated code it stores the next rowid in '" + column +
+                    "' instead, NOT NULL or not. ";
+        } else {
+            text += "and a database created from the generated code answers it the same way. ";
+        }
+        text += "`replace()` and `insert(into<T>(), columns(...), values(...))` write the member's value as given";
+        return text;
+    }
+
+    std::optional<CodegenWarning> integralKeyMemberWarning(const CreateTableNode& createTable,
+                                                           const ColumnDef& column) {
+        if (createTable.withoutRowid || columnIsRowidAlias(createTable, column)) {
+            return std::nullopt;
+        }
+        const bool declaredInteger = normalizeSqlName(column.typeName) == "integer";
+        if (declaredInteger && !column.primaryKey) {
+            // A table-level key over one INTEGER column is the alias; one that is not reached the
+            // generated code over one column by naming it more than once, and that is reported by
+            // the warning about the repeat.
             return std::nullopt;
         }
         const std::string cppType = sqliteColumnTypeToCpp(createTable, column);
@@ -125,20 +151,25 @@ namespace sqlite2orm {
             return std::nullopt;
         }
         const std::string columnName = stripIdentifierQuotes(column.name);
-        std::string message =
-            "column '" + columnName + "' is declared " + column.typeName +
-            " and is the only column of the PRIMARY KEY, and SQLite makes such a column the rowid alias only when its "
-            "declared type is INTEGER exactly, so here it is an ordinary column. The generated member is " +
-            cppType +
-            ", which sqlite_orm declares INTEGER, so in a database created from the generated code the same key makes "
-            "'" +
-            columnName +
-            "' the rowid alias. A database the header was generated from is unaffected — `sync_schema()` leaves it "
-            "alone — but in a database created from the generated code an INSERT that leaves '" +
-            columnName +
-            "' out stores the next rowid in it instead of NULL, a NOT NULL that SQLite enforces on the column here, "
-            "whether declared or implied by STRICT, lets that INSERT through rather than refusing it, and a value "
-            "that is not an integer is refused (\"datatype mismatch\") rather than stored as it came";
+        const bool aliasInCreatedDatabase = !declaredInteger && column.primaryKeySortDirection != SortDirection::desc;
+        std::string message = "column '" + columnName + "' is declared " + column.typeName +
+                              " and the generated key is over this column alone";
+        if (aliasInCreatedDatabase) {
+            message +=
+                ", and SQLite makes the column of such a key the rowid alias only when its declared type is INTEGER "
+                "exactly, so here it is an ordinary column. The generated member is " +
+                cppType +
+                ", which sqlite_orm declares INTEGER, so in a database created from the generated code the same key "
+                "makes '" +
+                columnName +
+                "' the rowid alias, which refuses a value that is not an integer (\"datatype mismatch\") rather "
+                "than storing it as it came. ";
+        } else {
+            message += ", spelled DESC on the column, which keeps it an ordinary column rather than the rowid alias "
+                       "here and in a database created from the generated code alike. The generated member is " +
+                       cppType + ". ";
+        }
+        message += keyMemberLeftOutByInsertText(columnName, aliasInCreatedDatabase);
         if (!column.typeNameLocation) {
             return CodegenWarning{std::move(message)};
         }

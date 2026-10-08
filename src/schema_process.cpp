@@ -1,4 +1,5 @@
 #include <sqlite2orm/schema_process.h>
+#include <sqlite2orm/tokenizer.h>
 
 #include "codegen_utils.h"
 #include "process_internal.h"
@@ -58,8 +59,28 @@ namespace sqlite2orm {
             return compareNamesCaseInsensitive(leftRow.name, rightRow.name);
         });
 
-        ProcessSqliteSchemaResult out;
+        // Every table's columns are known before any of them is generated: a foreign key may name a
+        // parent sorted after its child, and one naming no column of the parent stands for that
+        // parent's PRIMARY KEY, which only its columns tell.
         std::map<std::string, std::vector<SourceTableColumn>> sourceTables;
+        for (const auto& row: rows) {
+            if (row.type != "table" || row.sql.empty()) {
+                continue;
+            }
+            try {
+                Tokenizer tokenizer;
+                Parser parser;
+                const ParseResult parseResult = parser.parse(tokenizer.tokenize(row.sql));
+                if (const auto* createTable = dynamic_cast<const CreateTableNode*>(parseResult.astNodePointer.get())) {
+                    sourceTables[normalizeSqlIdentifier(stripIdentifierQuotes(createTable->tableName))] =
+                        sourceTableColumnsFromCreateTable(*createTable);
+                }
+            } catch (const TokenizeError&) {
+                // The statement reports the error when it is generated below.
+            }
+        }
+
+        ProcessSqliteSchemaResult out;
         for (const auto& row: rows) {
             if (row.sql.empty()) {
                 continue;
@@ -70,11 +91,6 @@ namespace sqlite2orm {
             one.meta.tableName = row.tableName;
             one.meta.sql = row.sql;
             one.pipeline = processSqlWithSourceTables(one.meta.sql, policy, sourceTables);
-            if (const auto* createTable =
-                    dynamic_cast<const CreateTableNode*>(one.pipeline.parseResult.astNodePointer.get())) {
-                sourceTables[normalizeSqlIdentifier(stripIdentifierQuotes(createTable->tableName))] =
-                    sourceTableColumnsFromCreateTable(*createTable);
-            }
             out.statements.push_back(std::move(one));
         }
         return out;

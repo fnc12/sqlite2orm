@@ -1857,6 +1857,54 @@ TEST_CASE("codegen: CREATE TABLE - a FOREIGN KEY into a table key naming its col
     REQUIRE(columnLevel.warnings.empty());
 }
 
+// A key naming no column of its parent stands for the parent's PRIMARY KEY, which only the parent's
+// columns tell. A statement generated on its own knows nothing of a parent other than itself, and
+// the key used to be written into the member named after the child's own column —
+// `references(&Users::user_id)`, a member `Users` has no reason to declare.
+TEST_CASE("codegen: CREATE TABLE - a key naming no column of a parent whose columns are unknown") {
+    const std::string expected = "struct Posts {\n"
+                                 "    std::optional<int64_t> user_id;\n"
+                                 "};\n"
+                                 "\n"
+                                 "auto storage = make_storage(\"\",\n"
+                                 "    make_table(\"posts\",\n"
+                                 "        make_column(\"user_id\", &Posts::user_id)));";
+
+    auto columnLevel = generateFull("CREATE TABLE posts (user_id INTEGER REFERENCES users)");
+    REQUIRE(columnLevel.code == expected);
+    REQUIRE(columnLevel.warnings ==
+            std::vector<CodegenWarning>{{"foreign key on column 'user_id' references users without naming a "
+                                         "column, and the columns of users are not known, so the generated table "
+                                         "has no foreign_key()"}});
+
+    auto tableLevel = generateFull("CREATE TABLE posts (user_id INTEGER, FOREIGN KEY(user_id) REFERENCES users)");
+    REQUIRE(tableLevel.code == expected);
+    REQUIRE(tableLevel.warnings ==
+            std::vector<CodegenWarning>{{"table-level foreign key on column 'user_id' references users without "
+                                         "naming a column, and the columns of users are not known, so the "
+                                         "generated table has no foreign_key()"}});
+}
+
+// A key back into the table being declared names no column of a table with no PRIMARY KEY: sqlite3
+// 3.51.0 creates it and reports `foreign key mismatch` once the key is enforced. It used to come out
+// as `references(&T::p)`, the key's own column standing for a parent key the table does not have.
+TEST_CASE("codegen: CREATE TABLE - a key naming no column back into a table with no PRIMARY KEY") {
+    auto result = generateFull("CREATE TABLE t (a INTEGER, p INTEGER REFERENCES t)");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "    std::optional<int64_t> p;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a),\n"
+                           "        make_column(\"p\", &T::p)));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"foreign key on column 'p' references t without naming a column, and t "
+                                         "has no PRIMARY KEY for it to stand for (SQLite reports a foreign key "
+                                         "mismatch), so the generated table has no foreign_key()"}});
+}
+
 // `rowid`, `oid` and `_rowid_` are the implicit row id of a rowid table rather than a column it
 // declares, and what SQLite does with a constraint over one depends on the constraint and on the
 // table: sqlite3 3.51.0 takes `CHECK(rowid > 0)` on a rowid table, refuses it on a WITHOUT ROWID one

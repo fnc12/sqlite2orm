@@ -157,11 +157,18 @@ namespace sqlite2orm {
                 const size_t depthBeforeAttempt = this->expressionDepth;
                 if (!enterExpressionLevel())
                     return nullptr;
+                const size_t positionBeforeAttempt = this->tokenStream.currentPosition();
                 auto special = tryParseSpecialPostfix(left);
                 if (special) {
                     left = std::move(special);
                     left->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
                     continue;
+                }
+                // A postfix that read its keyword and then found no operand is not "no postfix":
+                // going on would leave the keyword behind unread, and `a GLOB;` would come back as
+                // a bare `a`.
+                if (this->tokenStream.currentPosition() != positionBeforeAttempt) {
+                    return nullptr;
                 }
                 this->expressionDepth = depthBeforeAttempt;
             }

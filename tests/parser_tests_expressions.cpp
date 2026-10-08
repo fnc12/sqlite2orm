@@ -687,6 +687,28 @@ TEST_CASE("parser: REGEXP binds on the comparison level, left to right") {
                 {}));
 }
 
+// What sqlite3 3.51.0 refuses with `near "…": syntax error`: a postfix keyword with no operand
+// after it. The keyword used to be read and dropped, so `a GLOB` parsed as a bare `a` and
+// `SELECT a glob FROM t` as `SELECT a FROM t`.
+TEST_CASE("parser: error on a postfix keyword with no operand after it") {
+    auto requireRefusedAt = [](std::string_view sql, std::string_view message, SourceLocation location) {
+        INFO(sql);
+        auto parseResult = parse(std::string(sql));
+        REQUIRE_FALSE(parseResult);
+        REQUIRE(parseResult.errors == std::vector<ParseError>{ParseError{std::string(message), location}});
+        REQUIRE(parseResult.errors.front().location == location);
+    };
+    requireRefusedAt("SELECT 1 REGEXP;", "unexpected token: ;", {1, 16});
+    requireRefusedAt("SELECT a FROM t WHERE a NOT REGEXP;", "unexpected token: ;", {1, 35});
+    requireRefusedAt("SELECT a regexp FROM t;", "unexpected token: FROM", {1, 17});
+    requireRefusedAt("SELECT a glob FROM t;", "unexpected token: FROM", {1, 15});
+    requireRefusedAt("SELECT a FROM t WHERE a GLOB;", "unexpected token: ;", {1, 29});
+    requireRefusedAt("DELETE FROM t WHERE a LIKE;", "unexpected token: ;", {1, 27});
+    requireRefusedAt("SELECT a FROM t WHERE a MATCH;", "unexpected token: ;", {1, 30});
+    requireRefusedAt("SELECT a FROM t WHERE a BETWEEN 1;", "unexpected token: ;", {1, 34});
+    requireRefusedAt("SELECT a FROM t WHERE a IS NOT;", "unexpected token: ;", {1, 31});
+}
+
 TEST_CASE("parser: MATCH") {
     auto parseResult = parse("body MATCH 'word'");
     REQUIRE(requireNode<MatchNode>(parseResult) ==

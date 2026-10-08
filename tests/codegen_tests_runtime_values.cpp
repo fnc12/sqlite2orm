@@ -1946,6 +1946,46 @@ TEST_CASE("runtime: IN list values of two integer widths read back as SQLite com
     REQUIRE(compilesWithInt64Spelled(statements, "long long") == 0);
 }
 
+// An empty list answers without looking at its operand: sqlite3 3.51 gives 0 for `x IN ()` and 1
+// for `x NOT IN ()` over every `x`, a NULL one included — `NULL IN ()` is 0 and `NULL NOT IN ()`
+// is 1, not the NULL a non-empty list answers over a NULL operand. The operand is still spelled
+// out rather than the predicate folded to a constant, so an operand with a side effect is still
+// evaluated the way the SQL asks for — `random()` is that operand, and it answers 0 and 1 too. The empty vector names a type and serializes to the same
+// `IN ()`, so the values below are SQLite's own, in a select list and in a WHERE alike, over a
+// NULL row and a 7 one.
+TEST_CASE("runtime: an empty IN list is 0 and an empty NOT IN list 1 whatever the operand") {
+    const std::vector<std::string> statements{
+        generate("SELECT a IN ();"),
+        generate("SELECT a NOT IN ();"),
+        generate("SELECT NULL IN ();"),
+        generate("SELECT NULL NOT IN ();"),
+        generate("SELECT a + 1 NOT IN ();"),
+        generate("SELECT random() IN ();"),
+        generate("SELECT random() NOT IN ();"),
+        generate("SELECT count(*) FROM user WHERE a IN ();"),
+        generate("SELECT count(*) FROM user WHERE a NOT IN ();"),
+    };
+    REQUIRE(statements == std::vector<std::string>{
+                              "auto rows = storage.select(in(&User::a, std::vector<int64_t>{}));",
+                              "auto rows = storage.select(not_in(&User::a, std::vector<int64_t>{}));",
+                              "auto rows = storage.select(in(nullptr, std::vector<int64_t>{}));",
+                              "auto rows = storage.select(not_in(nullptr, std::vector<int64_t>{}));",
+                              "auto rows = storage.select(not_in(c(&User::a) + 1, std::vector<int64_t>{}));",
+                              "auto rows = storage.select(in(sqlite_orm::random(), std::vector<int64_t>{}));",
+                              "auto rows = storage.select(not_in(sqlite_orm::random(), std::vector<int64_t>{}));",
+                              "auto rows = storage.select(count<User>(), where(in(&User::a, "
+                              "std::vector<int64_t>{})));",
+                              "auto rows = storage.select(count<User>(), where(not_in(&User::a, "
+                              "std::vector<int64_t>{})));",
+                          });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"0", "1", "0", "1", "1", "0", "1", "0", "1"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"0", "1", "0", "1", "1", "0", "1", "0", "1"});
+    REQUIRE(compilesWithInt64Spelled(statements, "long") == 0);
+    REQUIRE(compilesWithInt64Spelled(statements, "long long") == 0);
+}
+
 // A bind parameter carries no type of its own, and the values beside it are widened all the same.
 // It has to be that way for a list of `bool` values: `in(&User::a, {true, bindParam1})` has no
 // working declaration at all — `bool bindParam1` builds the `std::vector<bool>` a statement cannot

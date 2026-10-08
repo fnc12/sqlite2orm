@@ -756,10 +756,21 @@ namespace sqlite2orm {
         // SQLite takes the hint on a SELECT of a trigger body, and refuses it on the table an UPDATE
         // or a DELETE there writes, in these words on 3.51.0.
         const TableIndexHint* writtenTableHint = nullptr;
+        const SourceSpan* writtenTableAliasSpan = nullptr;
         if (auto* updateNode = dynamic_cast<const UpdateNode*>(statement.get())) {
             writtenTableHint = &updateNode->indexHint;
+            writtenTableAliasSpan = updateNode->alias ? &updateNode->aliasSpan : nullptr;
         } else if (auto* deleteNode = dynamic_cast<const DeleteNode*>(statement.get())) {
             writtenTableHint = &deleteNode->indexHint;
+            writtenTableAliasSpan = deleteNode->alias ? &deleteNode->aliasSpan : nullptr;
+        }
+        // Nor does a trigger body name that table with an alias: its grammar reads a bare table
+        // name there, and `DELETE FROM t AS x` in a body is `near "AS": syntax error` on 3.51.0.
+        if (writtenTableAliasSpan) {
+            this->parser.reportError(ParseError{"a table alias is not allowed on UPDATE or DELETE statements within "
+                                                "triggers",
+                                                writtenTableAliasSpan->location});
+            return nullptr;
         }
         if (writtenTableHint && writtenTableHint->kind != TableIndexHintKind::none) {
             const std::string_view clause =

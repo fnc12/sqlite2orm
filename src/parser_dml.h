@@ -18,6 +18,7 @@ namespace sqlite2orm {
 
         ConflictClause parseInsertOrConflictKeyword();
         bool parseDmlQualifiedTable(std::optional<std::string>& schemaOut, std::string& tableOut);
+        bool parseDmlTableAlias(std::optional<std::string>& aliasOut, SourceSpan& aliasSpanOut);
         AstNodePointer parseInsertStatement(bool replaceInto);
         AstNodePointer parseUpdateStatement();
         AstNodePointer parseValuesStatement();

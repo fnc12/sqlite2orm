@@ -355,6 +355,12 @@ namespace sqlite2orm {
         std::string tableStruct = this->context.structNameForTable(updateNode.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
+        // `x.col` under `AS x` is a column of the table itself: sqlite_orm takes no alias here, and
+        // with one table in the statement the member pointer of its struct means the same column.
+        const auto savedTableAliases = this->context.fromTableAliasToStructName;
+        if (updateNode.alias) {
+            this->context.fromTableAliasToStructName[*updateNode.alias] = tableStruct;
+        }
         std::vector<DecisionPoint> dps;
         SpannedCode setArgs;
         for (size_t assignmentIndex = 0; assignmentIndex < updateNode.assignments.size(); ++assignmentIndex) {
@@ -386,6 +392,7 @@ namespace sqlite2orm {
         }
         code += ");";
         this->context.structName = savedStruct;
+        this->context.fromTableAliasToStructName = savedTableAliases;
         return spannedResult(std::move(code), std::move(dps), std::move(warnings));
     }
 
@@ -400,6 +407,12 @@ namespace sqlite2orm {
         std::string tableStruct = this->context.structNameForTable(deleteNode.tableName);
         std::string savedStruct = this->context.structName;
         this->context.structName = tableStruct;
+        // `x.col` under `AS x` is a column of the table itself: sqlite_orm takes no alias here, and
+        // with one table in the statement the member pointer of its struct means the same column.
+        const auto savedTableAliases = this->context.fromTableAliasToStructName;
+        if (deleteNode.alias) {
+            this->context.fromTableAliasToStructName[*deleteNode.alias] = tableStruct;
+        }
         std::vector<DecisionPoint> dps;
         SpannedCode code = "storage.remove_all<" + tableStruct + ">()";
         if (deleteNode.whereClause) {
@@ -415,6 +428,7 @@ namespace sqlite2orm {
         }
         code += ";";
         this->context.structName = savedStruct;
+        this->context.fromTableAliasToStructName = savedTableAliases;
         return spannedResult(std::move(code), std::move(dps), std::move(warnings));
     }
 

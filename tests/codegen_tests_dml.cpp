@@ -93,6 +93,29 @@ TEST_CASE("codegen: DELETE WHERE") {
     REQUIRE(generate("DELETE FROM users WHERE id = 2") == "storage.remove_all<Users>(where(c(&Users::id) == 2));");
 }
 
+// `DELETE FROM users AS u WHERE id > 1` used to stop parsing at `AS` and come out as
+// remove_all<Users>() — every row instead of the ones the WHERE picks. The alias names the one
+// table of the statement, so a column it qualifies is that table's column.
+TEST_CASE("codegen: DELETE FROM a table AS an alias keeps its WHERE") {
+    REQUIRE(generate("DELETE FROM users AS u WHERE id > 1") == "storage.remove_all<Users>(where(c(&Users::id) > 1));");
+    REQUIRE(generate("DELETE FROM users AS u WHERE u.id > 1") ==
+            "storage.remove_all<Users>(where(c(&Users::id) > 1));");
+    REQUIRE(generate("DELETE FROM users AS u") == "storage.remove_all<Users>();");
+}
+
+TEST_CASE("codegen: UPDATE a table AS an alias keeps its SET and WHERE") {
+    REQUIRE(generate("UPDATE users AS u SET name = u.nick WHERE u.id = 1") ==
+            "storage.update_all(set(c(&Users::name) = &Users::nick), where(c(&Users::id) == 1));");
+}
+
+// The alias is the statement's own: a statement after it, or a subquery's FROM naming the same
+// letter for another table, does not read it.
+TEST_CASE("codegen: a DML table alias reaches no further than its statement") {
+    REQUIRE(
+        generate("DELETE FROM users AS u WHERE u.id IN (SELECT u.user_id FROM orders AS u)") ==
+        "storage.remove_all<Users>(where(in(&Users::id, select(alias_column<alias_a<Orders>>(&Orders::user_id)))));");
+}
+
 TEST_CASE("codegen: UPDATE OR IGNORE warns") {
     REQUIRE(generateFull("UPDATE OR IGNORE users SET a = 1") ==
             CodeGenResult{"storage.update_all(set(c(&Users::a) = 1));",

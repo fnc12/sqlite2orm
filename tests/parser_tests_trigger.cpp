@@ -137,3 +137,24 @@ TEST_CASE("parser: RAISE(IGNORE) expression in SELECT result column") {
     expected.columns = {SelectColumn{makeSharedNode<RaiseNode>(RaiseKind::ignore, nullptr), ""}};
     REQUIRE(requireNode<SelectNode>(parseResult) == expected);
 }
+
+// A trigger body names the table an UPDATE or a DELETE writes by its bare name: `DELETE FROM t AS
+// x` there is `near "AS": syntax error` on 3.51.0, though the same statement outside a trigger
+// is one SQLite runs.
+TEST_CASE("parser: error on a table alias on a trigger body UPDATE or DELETE") {
+    auto deleteStep = parse("CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM t AS x WHERE x.a > 1; END");
+    REQUIRE_FALSE(deleteStep);
+    REQUIRE(deleteStep.astNodePointer == nullptr);
+    REQUIRE(deleteStep.errors ==
+            std::vector<ParseError>{
+                ParseError{"a table alias is not allowed on UPDATE or DELETE statements within triggers", {1, 57}}});
+    REQUIRE(deleteStep.errors.front().location == SourceLocation{1, 57});
+
+    auto updateStep = parse("CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t AS x SET a = 1; END");
+    REQUIRE_FALSE(updateStep);
+    REQUIRE(updateStep.astNodePointer == nullptr);
+    REQUIRE(updateStep.errors ==
+            std::vector<ParseError>{
+                ParseError{"a table alias is not allowed on UPDATE or DELETE statements within triggers", {1, 52}}});
+    REQUIRE(updateStep.errors.front().location == SourceLocation{1, 52});
+}

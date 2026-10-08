@@ -327,6 +327,10 @@ namespace sqlite2orm {
         ConflictClause orConflict = ConflictClause::none;
         std::optional<std::string> schemaName;
         std::string tableName;
+        /** `UPDATE t AS x`: the name the statement refers to its table by; SQLite takes it with `AS` only. */
+        std::optional<std::string> alias;
+        /** `AS x` as written, for an error to point at; it takes no part in equality. */
+        SourceSpan aliasSpan;
         TableIndexHint indexHint;
         std::vector<UpdateAssignment> assignments;
         std::vector<FromClauseItem> fromClause;
@@ -338,7 +342,7 @@ namespace sqlite2orm {
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const UpdateNode*>(&other);
             if (!o || this->orConflict != o->orConflict || this->schemaName != o->schemaName ||
-                this->tableName != o->tableName || this->indexHint != o->indexHint ||
+                this->tableName != o->tableName || this->alias != o->alias || this->indexHint != o->indexHint ||
                 this->assignments != o->assignments || this->fromClause != o->fromClause ||
                 this->returning != o->returning) {
                 return false;
@@ -350,6 +354,10 @@ namespace sqlite2orm {
     struct DeleteNode : AstNode {
         std::optional<std::string> schemaName;
         std::string tableName;
+        /** `DELETE FROM t AS x`: the name the statement refers to its table by; SQLite takes it with `AS` only. */
+        std::optional<std::string> alias;
+        /** `AS x` as written, for an error to point at; it takes no part in equality. */
+        SourceSpan aliasSpan;
         TableIndexHint indexHint;
         AstNodePointer whereClause;
         std::vector<ReturningColumn> returning;
@@ -358,7 +366,7 @@ namespace sqlite2orm {
 
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const DeleteNode*>(&other);
-            if (!o || this->schemaName != o->schemaName || this->tableName != o->tableName ||
+            if (!o || this->schemaName != o->schemaName || this->tableName != o->tableName || this->alias != o->alias ||
                 this->indexHint != o->indexHint || this->returning != o->returning)
                 return false;
             return astNodesEqual(this->whereClause, o->whereClause);

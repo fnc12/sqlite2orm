@@ -37,6 +37,27 @@ namespace sqlite2orm {
         return true;
     }
 
+    bool DmlParser::parseDmlTableAlias(std::optional<std::string>& aliasOut, SourceSpan& aliasSpanOut) {
+        aliasOut.reset();
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
+        // UPDATE and DELETE name their table as SQLite's `xfullname`: the alias comes with `AS`
+        // only (`DELETE FROM t x` is a syntax error) and before any INDEXED BY / NOT INDEXED.
+        if (!match(TokenType::kwAs))
+            return true;
+        // The alias is `nm`: an identifier, a string, or a keyword SQLite folds back into one.
+        // `DELETE FROM t AS WHERE 1` is `near "WHERE": syntax error` on 3.51.0.
+        const TokenType nameType = current().type;
+        if (nameType != TokenType::identifier && nameType != TokenType::stringLiteral &&
+            !isKeywordUsableAsName(nameType)) {
+            this->parser.reportError(ParseError{"expected a table alias after AS", current().location});
+            return false;
+        }
+        aliasOut = std::string(current().value);
+        advanceToken();
+        aliasSpanOut = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        return true;
+    }
+
     bool DmlParser::parseCommaSeparatedUpdateAssignments(std::vector<UpdateAssignment>& out) {
         if (!isColumnNameToken())
             return false;
@@ -216,6 +237,8 @@ namespace sqlite2orm {
         }
         if (!parseDmlQualifiedTable(node->schemaName, node->tableName))
             return nullptr;
+        if (!parseDmlTableAlias(node->alias, node->aliasSpan))
+            return nullptr;
         if (!this->parser.parseTableIndexHint(node->indexHint))
             return nullptr;
         if (!match(TokenType::kwSet))
@@ -274,6 +297,8 @@ namespace sqlite2orm {
             return nullptr;
         auto node = std::make_unique<DeleteNode>(location);
         if (!parseDmlQualifiedTable(node->schemaName, node->tableName))
+            return nullptr;
+        if (!parseDmlTableAlias(node->alias, node->aliasSpan))
             return nullptr;
         if (!this->parser.parseTableIndexHint(node->indexHint))
             return nullptr;

@@ -119,6 +119,64 @@ TEST_CASE("parser: DELETE FROM without WHERE") {
     REQUIRE(requireNode<DeleteNode>(parseResult) == expected);
 }
 
+// SQLite names the table of an UPDATE or a DELETE as `xfullname`: `t AS x`, the alias with `AS`
+// only, ahead of any index hint. Before it was read, the parser stopped at `AS` with the WHERE
+// still in the stream, and `DELETE FROM users AS u WHERE id > 1` came out as remove_all<Users>().
+TEST_CASE("parser: DELETE FROM a table AS an alias keeps the WHERE after it") {
+    auto parseResult = parse("DELETE FROM main.users AS u NOT INDEXED WHERE u.id > 1");
+    REQUIRE(parseResult);
+    DeleteNode expected({});
+    expected.schemaName = "main";
+    expected.tableName = "users";
+    expected.alias = "u";
+    expected.indexHint.kind = TableIndexHintKind::notIndexed;
+    expected.whereClause = makeNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                        makeNode<QualifiedColumnRefNode>("u", "id"),
+                                                        makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<DeleteNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: UPDATE a table AS an alias keeps the SET and the WHERE after it") {
+    auto parseResult = parse("UPDATE OR IGNORE users AS u SET name = u.name WHERE u.id = 1");
+    REQUIRE(parseResult);
+    UpdateNode expected({});
+    expected.orConflict = ConflictClause::ignore;
+    expected.tableName = "users";
+    expected.alias = "u";
+    expected.assignments.push_back(UpdateAssignment{"name", makeNode<QualifiedColumnRefNode>("u", "name")});
+    expected.whereClause = makeNode<BinaryOperatorNode>(BinaryOperator::equals,
+                                                        makeNode<QualifiedColumnRefNode>("u", "id"),
+                                                        makeNode<IntegerLiteralNode>("1"));
+    REQUIRE(requireNode<UpdateNode>(parseResult) == expected);
+}
+
+TEST_CASE("parser: the alias is part of an UPDATE and a DELETE") {
+    REQUIRE_FALSE(requireNode<DeleteNode>(parse("DELETE FROM users AS u")) ==
+                  requireNode<DeleteNode>(parse("DELETE FROM users")));
+    REQUIRE_FALSE(requireNode<DeleteNode>(parse("DELETE FROM users AS u")) ==
+                  requireNode<DeleteNode>(parse("DELETE FROM users AS v")));
+    REQUIRE_FALSE(requireNode<UpdateNode>(parse("UPDATE users AS u SET a = 1")) ==
+                  requireNode<UpdateNode>(parse("UPDATE users SET a = 1")));
+}
+
+// What sqlite3 3.51.0 refuses with `near "…": syntax error`: an alias without `AS`, `AS` with no
+// name or a reserved word after it, and the alias after the index hint.
+TEST_CASE("parser: error on a DML table alias where SQLite reads none") {
+    auto requireRefusedAt = [](std::string_view sql, std::string_view message, SourceLocation location) {
+        INFO(sql);
+        auto parseResult = parse(std::string(sql));
+        REQUIRE_FALSE(parseResult);
+        REQUIRE(parseResult.errors == std::vector<ParseError>{ParseError{std::string(message), location}});
+        REQUIRE(parseResult.errors.front().location == location);
+    };
+    requireRefusedAt("DELETE FROM users u WHERE id > 1", "unexpected token after statement: u", {1, 19});
+    requireRefusedAt("DELETE FROM users AS", "expected a table alias after AS", {1, 21});
+    requireRefusedAt("DELETE FROM users AS WHERE 1", "expected a table alias after AS", {1, 22});
+    requireRefusedAt("DELETE FROM users INDEXED BY i AS u WHERE 1", "unexpected token after statement: AS", {1, 32});
+    requireRefusedAt("UPDATE users u SET name = 'x'", "unexpected token: u", {1, 14});
+    requireRefusedAt("UPDATE users AS u SET u.name = 'x'", "unexpected token: .", {1, 24});
+}
+
 TEST_CASE("parser: schema-qualified DML table") {
     auto parseResult = parse("INSERT INTO main.users (id) VALUES (1)");
     REQUIRE(parseResult);

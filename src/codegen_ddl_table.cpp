@@ -322,8 +322,8 @@ namespace sqlite2orm {
                                        "' is not supported by sqlite_orm::unique()");
                 }
             }
-            if (column.checkExpression) {
-                const auto checkClause = clauseExpressionCode(*column.checkExpression, true, checkClauseRule);
+            for (const auto& checkExpression: column.checkExpressions) {
+                const auto checkClause = clauseExpressionCode(*checkExpression, true, checkClauseRule);
                 if (!checkClause.code) {
                     warnUnresolvedConstraintColumns(checkClause.refusedColumns,
                                                     "the CHECK on column '" + rawColumnName + "'",
@@ -478,77 +478,75 @@ namespace sqlite2orm {
             return toCppIdentifier(keyColumns->front()->sqlName);
         };
         for (const auto& column: createTable.columns) {
-            if (!column.foreignKey) {
-                continue;
-            }
-            auto& foreignKey = *column.foreignKey;
             const auto cppName = toCppIdentifier(column.name);
-            // sqlite_orm resolves a foreign key against the table its storage maps for the
-            // referenced type, so a key into a table this batch cannot map, or into a virtual
-            // table no storage holds, would not compile at all.
-            if (this->context.isUngeneratableForeignKeyParent(foreignKey.table)) {
-                warnings.push_back("foreign key on column '" + stripIdentifierQuotes(column.name) + "' references " +
-                                   stripIdentifierQuotes(foreignKey.table) +
-                                   ", which is not generated, so the generated table has no foreign_key()");
-                continue;
-            }
-            // SQLite stores a foreign key into a table that does not exist — it resolves the
-            // parent only when enforcement is on — so a schema can name a parent nothing creates.
-            // That name gets no struct either, and `references(&O::x)` would not compile at all,
-            // so the key is left out exactly as a key into an ungenerated table is.
-            if (this->context.isNameOutsideSchema(foreignKey.table)) {
-                warnings.push_back("foreign key on column '" + stripIdentifierQuotes(column.name) + "' references " +
-                                   stripIdentifierQuotes(foreignKey.table) +
-                                   ", which this schema does not create, so the generated table has no "
-                                   "foreign_key()");
-                continue;
-            }
-            const auto referencedStructName = toStructName(foreignKey.table);
-            std::string referencedColumnName;
-            if (!foreignKey.column.empty()) {
-                referencedColumnName = this->context.sourceColumnMember(foreignKey.table, foreignKey.column);
-            } else if (const auto keyMember =
-                           implicitParentKeyMember("foreign key on column '" + stripIdentifierQuotes(column.name) + "'",
-                                                   foreignKey.table)) {
-                referencedColumnName = *keyMember;
-            } else {
-                continue;
-            }
-            std::string constraint = "foreign_key(&" + structName + "::" + cppName + ").references(&" +
-                                     referencedStructName + "::" + referencedColumnName + ")";
-            const auto actionString = [](ForeignKeyAction action) -> std::string {
-                switch (action) {
-                    case ForeignKeyAction::cascade:
-                        return ".cascade()";
-                    case ForeignKeyAction::restrict_:
-                        return ".restrict_()";
-                    case ForeignKeyAction::setNull:
-                        return ".set_null()";
-                    case ForeignKeyAction::setDefault:
-                        return ".set_default()";
-                    case ForeignKeyAction::noAction:
-                        return ".no_action()";
-                    case ForeignKeyAction::none:
-                        return "";
+            for (const auto& foreignKey: column.foreignKeys) {
+                // sqlite_orm resolves a foreign key against the table its storage maps for the
+                // referenced type, so a key into a table this batch cannot map, or into a virtual
+                // table no storage holds, would not compile at all.
+                if (this->context.isUngeneratableForeignKeyParent(foreignKey.table)) {
+                    warnings.push_back("foreign key on column '" + stripIdentifierQuotes(column.name) +
+                                       "' references " + stripIdentifierQuotes(foreignKey.table) +
+                                       ", which is not generated, so the generated table has no foreign_key()");
+                    continue;
                 }
-                return "";
-            };
-            if (foreignKey.onDelete != ForeignKeyAction::none) {
-                constraint += ".on_delete" + actionString(foreignKey.onDelete);
-            }
-            if (foreignKey.onUpdate != ForeignKeyAction::none) {
-                constraint += ".on_update" + actionString(foreignKey.onUpdate);
-            }
-            tableConstraints.push_back(std::move(constraint));
-            if (foreignKey.deferrability != Deferrability::none) {
-                std::string description =
-                    foreignKey.deferrability == Deferrability::deferrable ? "DEFERRABLE" : "NOT DEFERRABLE";
-                if (foreignKey.initially == InitialConstraintMode::deferred)
-                    description += " INITIALLY DEFERRED";
-                else if (foreignKey.initially == InitialConstraintMode::immediate)
-                    description += " INITIALLY IMMEDIATE";
-                warnings.push_back(description + " on foreign key for column '" + column.name +
-                                   "' is not supported in sqlite_orm — ignored in codegen");
+                // SQLite stores a foreign key into a table that does not exist — it resolves the
+                // parent only when enforcement is on — so a schema can name a parent nothing creates.
+                // That name gets no struct either, and `references(&O::x)` would not compile at all,
+                // so the key is left out exactly as a key into an ungenerated table is.
+                if (this->context.isNameOutsideSchema(foreignKey.table)) {
+                    warnings.push_back("foreign key on column '" + stripIdentifierQuotes(column.name) +
+                                       "' references " + stripIdentifierQuotes(foreignKey.table) +
+                                       ", which this schema does not create, so the generated table has no "
+                                       "foreign_key()");
+                    continue;
+                }
+                const auto referencedStructName = toStructName(foreignKey.table);
+                std::string referencedColumnName;
+                if (!foreignKey.column.empty()) {
+                    referencedColumnName = this->context.sourceColumnMember(foreignKey.table, foreignKey.column);
+                } else if (const auto keyMember = implicitParentKeyMember("foreign key on column '" +
+                                                                              stripIdentifierQuotes(column.name) + "'",
+                                                                          foreignKey.table)) {
+                    referencedColumnName = *keyMember;
+                } else {
+                    continue;
+                }
+                std::string constraint = "foreign_key(&" + structName + "::" + cppName + ").references(&" +
+                                         referencedStructName + "::" + referencedColumnName + ")";
+                const auto actionString = [](ForeignKeyAction action) -> std::string {
+                    switch (action) {
+                        case ForeignKeyAction::cascade:
+                            return ".cascade()";
+                        case ForeignKeyAction::restrict_:
+                            return ".restrict_()";
+                        case ForeignKeyAction::setNull:
+                            return ".set_null()";
+                        case ForeignKeyAction::setDefault:
+                            return ".set_default()";
+                        case ForeignKeyAction::noAction:
+                            return ".no_action()";
+                        case ForeignKeyAction::none:
+                            return "";
+                    }
+                    return "";
+                };
+                if (foreignKey.onDelete != ForeignKeyAction::none) {
+                    constraint += ".on_delete" + actionString(foreignKey.onDelete);
+                }
+                if (foreignKey.onUpdate != ForeignKeyAction::none) {
+                    constraint += ".on_update" + actionString(foreignKey.onUpdate);
+                }
+                tableConstraints.push_back(std::move(constraint));
+                if (foreignKey.deferrability != Deferrability::none) {
+                    std::string description =
+                        foreignKey.deferrability == Deferrability::deferrable ? "DEFERRABLE" : "NOT DEFERRABLE";
+                    if (foreignKey.initially == InitialConstraintMode::deferred)
+                        description += " INITIALLY DEFERRED";
+                    else if (foreignKey.initially == InitialConstraintMode::immediate)
+                        description += " INITIALLY IMMEDIATE";
+                    warnings.push_back(description + " on foreign key for column '" + column.name +
+                                       "' is not supported in sqlite_orm — ignored in codegen");
+                }
             }
         }
         for (const auto& tableForeignKey: createTable.foreignKeys) {

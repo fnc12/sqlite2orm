@@ -940,6 +940,36 @@ TEST_CASE("codegen: CREATE TABLE - CHECK constraint") {
                       "        make_column(\"age\", &T::age, check(c(&T::age) > 0))));");
 }
 
+// SQLite enforces every CHECK a column spells, so each becomes its own check(), in source order.
+TEST_CASE("codegen: CREATE TABLE - several CHECKs on one column") {
+    auto result = generateFull("CREATE TABLE t (a INTEGER CHECK(a > 0) CHECK(a < 10))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, check(c(&T::a) > 0), check(c(&T::a) < 10))));");
+    REQUIRE(result.warnings.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A CHECK that cannot be generated drops only itself; the other CHECKs of the column stay.
+TEST_CASE("codegen: CREATE TABLE - a refused CHECK keeps the other CHECKs of its column") {
+    auto result = generateFull("CREATE TABLE t (a BLOB CHECK (a <> x'0102') CHECK (a IS NOT NULL))");
+    REQUIRE(result.code == "struct T {\n"
+                           "    std::optional<std::vector<char>> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table(\"t\",\n"
+                           "        make_column(\"a\", &T::a, check(is_not_null(&T::a)))));");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"CHECK on column 'a' uses " + kDdlBlobLiteralReason("x'0102'") +
+                                         ", so the generated column has no check()"}});
+    REQUIRE(result.errors.empty());
+}
+
 TEST_CASE("codegen: CREATE TABLE - CHECK with function") {
     auto result = generate("CREATE TABLE t (name TEXT CHECK(length(name) > 0))");
     REQUIRE(result == "struct T {\n"
@@ -1008,6 +1038,22 @@ TEST_CASE("codegen: CREATE TABLE - REFERENCES simple") {
                       "    make_table(\"posts\",\n"
                       "        make_column(\"user_id\", &Posts::user_id),\n"
                       "        foreign_key(&Posts::user_id).references(&Users::id)));");
+}
+
+// SQLite keeps every REFERENCES a column spells as a foreign key of its own, so each becomes its own
+// foreign_key(), in source order.
+TEST_CASE("codegen: CREATE TABLE - several REFERENCES on one column") {
+    auto result = generate("CREATE TABLE posts (user_id INTEGER REFERENCES users(id) REFERENCES admins(id) ON DELETE "
+                           "CASCADE)");
+    REQUIRE(result == "struct Posts {\n"
+                      "    std::optional<int64_t> user_id;\n"
+                      "};\n"
+                      "\n"
+                      "auto storage = make_storage(\"\",\n"
+                      "    make_table(\"posts\",\n"
+                      "        make_column(\"user_id\", &Posts::user_id),\n"
+                      "        foreign_key(&Posts::user_id).references(&Users::id),\n"
+                      "        foreign_key(&Posts::user_id).references(&Admins::id).on_delete.cascade()));");
 }
 
 TEST_CASE("codegen: CREATE TABLE - REFERENCES ON DELETE CASCADE") {
@@ -2995,6 +3041,31 @@ TEST_CASE("codegen: CREATE TABLE - a column CHECK becomes a check() argument of 
                                     {},
                                     {},
                                     {CodegenComment{kTableReflectionComment, SourceLocation{1, 1}, 12}}});
+}
+
+// Every CHECK of a column moves to `make_table<T>(…)`, in source order, not only the last one.
+TEST_CASE(
+    "codegen: CREATE TABLE - several CHECKs on one column all become check() arguments of the reflected make_table") {
+    const auto result = generateTargetingCpp26("CREATE TABLE t (a INTEGER CHECK(a > 0) CHECK(a < 10), CHECK(a <> 5));");
+    REQUIRE(result.code == "struct [[= \"t\"_orm_name]] T {\n"
+                           "    std::optional<int64_t> a;\n"
+                           "};\n"
+                           "\n"
+                           "auto storage = make_storage(\"\",\n"
+                           "    make_table<T>(\n"
+                           "        check(c(&T::a) > 0),\n"
+                           "        check(c(&T::a) < 10),\n"
+                           "        check(c(&T::a) != 5)));");
+    REQUIRE(result.decisionPoints.size() == 1);
+    REQUIRE(result.decisionPoints.at(0).chosenValue == "reflection");
+    REQUIRE(result.decisionPoints.at(0).options.at(0).code ==
+            "struct T {\n"
+            "    std::optional<int64_t> a;\n"
+            "};\n"
+            "\n"
+            "make_table(\"t\",\n"
+            "        make_column(\"a\", &T::a, check(c(&T::a) > 0), check(c(&T::a) < 10)),\n"
+            "        check(c(&T::a) != 5))");
 }
 
 // The column CHECKs come first, in column order, the way SQLite reads them before the table's own

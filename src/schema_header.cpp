@@ -30,8 +30,8 @@ namespace sqlite2orm {
                               std::unordered_set<std::string>& out,
                               const std::unordered_set<std::string>& known) {
             for (const ColumnDef& column: tableNode.columns) {
-                if (column.foreignKey) {
-                    const std::string ref = normTableName(column.foreignKey->table);
+                for (const ForeignKeyClause& foreignKey: column.foreignKeys) {
+                    const std::string ref = normTableName(foreignKey.table);
                     if (known.count(ref)) {
                         out.insert(ref);
                     }

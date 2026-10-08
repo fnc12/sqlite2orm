@@ -242,9 +242,9 @@ TEST_CASE("parser: CREATE TABLE - CHECK constraint") {
     ColumnDef expected;
     expected.name = "age";
     expected.typeName = "INTEGER";
-    expected.checkExpression = makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                  makeNode<ColumnRefNode>("age"),
-                                                                  makeNode<IntegerLiteralNode>("0"));
+    expected.checkExpressions.push_back(makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                                           makeNode<ColumnRefNode>("age"),
+                                                                           makeNode<IntegerLiteralNode>("0")));
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
 }
 
@@ -261,10 +261,10 @@ TEST_CASE("parser: CREATE TABLE - CHECK with complex expression") {
                                                     makeNode<ColumnRefNode>("x"),
                                                     makeNode<IntegerLiteralNode>("100"),
                                                     SourceLocation{});
-    expected.checkExpression = std::make_shared<BinaryOperatorNode>(BinaryOperator::logicalAnd,
-                                                                    std::move(lhs),
-                                                                    std::move(rhs),
-                                                                    SourceLocation{});
+    expected.checkExpressions.push_back(std::make_shared<BinaryOperatorNode>(BinaryOperator::logicalAnd,
+                                                                             std::move(lhs),
+                                                                             std::move(rhs),
+                                                                             SourceLocation{}));
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
 }
 
@@ -283,10 +283,38 @@ TEST_CASE("parser: CREATE TABLE - CHECK with function") {
         false,
         false,
         SourceLocation{});
-    expected.checkExpression = std::make_shared<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                    std::move(lengthCall),
-                                                                    makeNode<IntegerLiteralNode>("0"),
-                                                                    SourceLocation{});
+    expected.checkExpressions.push_back(std::make_shared<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                                             std::move(lengthCall),
+                                                                             makeNode<IntegerLiteralNode>("0"),
+                                                                             SourceLocation{}));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+}
+
+// SQLite enforces every CHECK a column spells: with `a CHECK(a > 0) CHECK(a < 10)`, sqlite3 3.51.0
+// refuses -1 with "CHECK constraint failed: a > 0" and 20 with "CHECK constraint failed: a < 10".
+TEST_CASE("parser: CREATE TABLE - several CHECKs on one column are all kept in source order") {
+    auto parseResult = parse("CREATE TABLE t (a INTEGER CHECK(a > 0) CHECK(a < 10))");
+    ColumnDef expected;
+    expected.name = "a";
+    expected.typeName = "INTEGER";
+    expected.checkExpressions.push_back(makeSharedNode<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                                           makeNode<ColumnRefNode>("a"),
+                                                                           makeNode<IntegerLiteralNode>("0")));
+    expected.checkExpressions.push_back(makeSharedNode<BinaryOperatorNode>(BinaryOperator::lessThan,
+                                                                           makeNode<ColumnRefNode>("a"),
+                                                                           makeNode<IntegerLiteralNode>("10")));
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+}
+
+// A repeated DEFAULT or COLLATE is not accumulated: the last one wins. sqlite3 3.51.0 stores 2 for
+// `a DEFAULT 1 DEFAULT 2`, and `a TEXT COLLATE BINARY COLLATE NOCASE` matches 'A' = 'a'.
+TEST_CASE("parser: CREATE TABLE - a repeated DEFAULT or COLLATE keeps the last one") {
+    auto parseResult = parse("CREATE TABLE t (a TEXT DEFAULT 1 COLLATE BINARY DEFAULT 2 COLLATE NOCASE)");
+    ColumnDef expected;
+    expected.name = "a";
+    expected.typeName = "TEXT";
+    expected.defaultValue = makeSharedNode<IntegerLiteralNode>("2");
+    expected.collation = "NOCASE";
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
 }
 
@@ -333,12 +361,24 @@ TEST_CASE("parser: CREATE TABLE - CHECK + COLLATE + NOT NULL combined") {
         false,
         false,
         SourceLocation{});
-    expected.checkExpression = std::make_shared<BinaryOperatorNode>(BinaryOperator::greaterThan,
-                                                                    std::move(lengthCall),
-                                                                    makeNode<IntegerLiteralNode>("0"),
-                                                                    SourceLocation{});
+    expected.checkExpressions.push_back(std::make_shared<BinaryOperatorNode>(BinaryOperator::greaterThan,
+                                                                             std::move(lengthCall),
+                                                                             makeNode<IntegerLiteralNode>("0"),
+                                                                             SourceLocation{}));
     expected.collation = "NOCASE";
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("t", {std::move(expected)}, false, {}));
+}
+
+// sqlite3 3.51.0 lists two foreign keys for `a REFERENCES p(x) REFERENCES q(y)`.
+TEST_CASE("parser: CREATE TABLE - several REFERENCES on one column are all kept in source order") {
+    auto parseResult = parse("CREATE TABLE posts (user_id INTEGER REFERENCES users(id) REFERENCES admins(id) ON DELETE "
+                             "CASCADE)");
+    ColumnDef expected;
+    expected.name = "user_id";
+    expected.typeName = "INTEGER";
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id"});
+    expected.foreignKeys.push_back(ForeignKeyClause{"admins", "id", ForeignKeyAction::cascade, ForeignKeyAction::none});
+    REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
 TEST_CASE("parser: CREATE TABLE - REFERENCES simple") {
@@ -346,7 +386,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES simple") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id"};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id"});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -355,7 +395,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES without column") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", ""};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", ""});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -364,7 +404,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES ON DELETE CASCADE") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::none};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::none});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -373,7 +413,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES ON UPDATE SET NULL") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::none, ForeignKeyAction::setNull};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id", ForeignKeyAction::none, ForeignKeyAction::setNull});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -383,7 +423,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES both actions") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::setDefault};
+    expected.foreignKeys.push_back(
+        ForeignKeyClause{"users", "id", ForeignKeyAction::cascade, ForeignKeyAction::setDefault});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -392,7 +433,7 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES NO ACTION") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::noAction, ForeignKeyAction::none};
+    expected.foreignKeys.push_back(ForeignKeyClause{"users", "id", ForeignKeyAction::noAction, ForeignKeyAction::none});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 
@@ -401,7 +442,8 @@ TEST_CASE("parser: CREATE TABLE - REFERENCES RESTRICT") {
     ColumnDef expected;
     expected.name = "user_id";
     expected.typeName = "INTEGER";
-    expected.foreignKey = ForeignKeyClause{"users", "id", ForeignKeyAction::restrict_, ForeignKeyAction::none};
+    expected.foreignKeys.push_back(
+        ForeignKeyClause{"users", "id", ForeignKeyAction::restrict_, ForeignKeyAction::none});
     REQUIRE(requireNode<CreateTableNode>(parseResult) == CreateTableNode("posts", {std::move(expected)}, false, {}));
 }
 

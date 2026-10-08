@@ -217,12 +217,12 @@ namespace sqlite2orm {
             } else if (check(TokenType::kwCheck)) {
                 advanceToken();
                 if (match(TokenType::leftParen)) {
-                    columnDef.checkExpression = this->parser.parseExpression();
+                    columnDef.checkExpressions.push_back(this->parser.parseExpression());
                     match(TokenType::rightParen);
                 }
             } else if (check(TokenType::kwReferences)) {
                 advanceToken();
-                columnDef.foreignKey = parseForeignKeyClause();
+                columnDef.foreignKeys.push_back(parseForeignKeyClause());
             } else if (check(TokenType::kwCollate)) {
                 advanceToken();
                 if (!atEnd()) {

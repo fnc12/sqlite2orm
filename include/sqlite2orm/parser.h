@@ -94,6 +94,7 @@ namespace sqlite2orm {
         bool parseOverClauseParenContents(OverClause& over, bool allowSimpleNamedWindow);
         bool parseDmlQualifiedTable(std::optional<std::string>& schemaOut, std::string& tableOut);
         std::vector<FromClauseItem> parseFromClause();
+        bool parseTableIndexHint(TableIndexHint& out);
 
         /**
          *  Hands `parse` an error a recursive-descent helper hit. Those helpers answer with a null

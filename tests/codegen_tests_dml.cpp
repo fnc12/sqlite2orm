@@ -1358,3 +1358,30 @@ TEST_CASE("codegen: DELETE and UPDATE - a subquery with no FROM of its own that 
             "make_trigger(\"tr\", before().insert().on<T>().when(c(select(new_(&T::a))) > 0).begin(select("
             "raise_abort(\"x\"), where(c(new_(&T::a)) < 0))));");
 }
+
+// The table an UPDATE or a DELETE writes is a qualified table name too, and takes the same hint;
+// it is generated without it, as in a SELECT, rather than stopping the parse ahead of the WHERE.
+TEST_CASE("codegen: DELETE FROM a table NOT INDEXED keeps the WHERE after it") {
+    auto result = generateFull("DELETE FROM users NOT INDEXED WHERE id = 2");
+    REQUIRE(result.code == "storage.remove_all<Users>(where(c(&Users::id) == 2));");
+    REQUIRE(result.code == generate("DELETE FROM users WHERE id = 2"));
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{CodegenWarning{
+                                   "NOT INDEXED has no sqlite_orm form; the statement is generated without it and "
+                                   "answers the same rows, but SQLite may search the table with an index",
+                                   SourceLocation{1, 19},
+                                   11}});
+}
+
+TEST_CASE("codegen: UPDATE a table INDEXED BY an index keeps the SET and WHERE after it") {
+    auto result = generateFull("UPDATE users INDEXED BY users_id SET name = 'y' WHERE id = 1");
+    REQUIRE(result.code == "storage.update_all(set(c(&Users::name) = \"y\"), where(c(&Users::id) == 1));");
+    REQUIRE(result.code == generate("UPDATE users SET name = 'y' WHERE id = 1"));
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"INDEXED BY has no sqlite_orm form; the statement is generated without it and answers "
+                               "the same rows, but SQLite may plan it without index users_id, and the generated code "
+                               "runs where SQLite refuses the statement for an index the table lacks or cannot be "
+                               "planned with",
+                               SourceLocation{1, 14},
+                               19}});
+}

@@ -31,6 +31,34 @@ namespace sqlite2orm {
         }
     };
 
+    /** Which planner hint a qualified table name carries, if any. */
+    enum class TableIndexHintKind {
+        none,
+        /** `INDEXED BY <index>` */
+        indexedBy,
+        /** `NOT INDEXED` */
+        notIndexed,
+    };
+
+    /**
+     *  The `INDEXED BY <index>` or `NOT INDEXED` a qualified table name carries: a table of a
+     *  FROM (not a subquery, nor a table-valued function — SQLite refuses the hint after either),
+     *  and the table an UPDATE or a DELETE writes. It is a hint to the planner and changes no row
+     *  the statement answers, but SQLite refuses a statement whose INDEXED BY names no index of
+     *  the table, or one it cannot plan with that index.
+     */
+    struct TableIndexHint {
+        TableIndexHintKind kind = TableIndexHintKind::none;
+        /** The index an `INDEXED BY` names; empty otherwise. */
+        std::string indexName;
+        /** The clause as written, for a warning to underline; it takes no part in equality. */
+        SourceSpan sourceSpan;
+
+        bool operator==(const TableIndexHint& other) const {
+            return this->kind == other.kind && this->indexName == other.indexName;
+        }
+    };
+
     struct FromTableClause {
         std::optional<std::string> schemaName;
         std::string tableName;
@@ -39,10 +67,11 @@ namespace sqlite2orm {
         std::shared_ptr<AstNode> derivedSelect;
         /** For table-valued functions: `FROM func(arg1, arg2)` */
         std::vector<std::shared_ptr<AstNode>> tableFunctionArgs;
+        TableIndexHint indexHint;
 
         bool operator==(const FromTableClause& other) const {
             if (this->schemaName != other.schemaName || this->tableName != other.tableName ||
-                this->alias != other.alias) {
+                this->alias != other.alias || this->indexHint != other.indexHint) {
                 return false;
             }
             if (static_cast<bool>(this->derivedSelect) != static_cast<bool>(other.derivedSelect)) {
@@ -298,6 +327,7 @@ namespace sqlite2orm {
         ConflictClause orConflict = ConflictClause::none;
         std::optional<std::string> schemaName;
         std::string tableName;
+        TableIndexHint indexHint;
         std::vector<UpdateAssignment> assignments;
         std::vector<FromClauseItem> fromClause;
         AstNodePointer whereClause;
@@ -308,8 +338,9 @@ namespace sqlite2orm {
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const UpdateNode*>(&other);
             if (!o || this->orConflict != o->orConflict || this->schemaName != o->schemaName ||
-                this->tableName != o->tableName || this->assignments != o->assignments ||
-                this->fromClause != o->fromClause || this->returning != o->returning) {
+                this->tableName != o->tableName || this->indexHint != o->indexHint ||
+                this->assignments != o->assignments || this->fromClause != o->fromClause ||
+                this->returning != o->returning) {
                 return false;
             }
             return astNodesEqual(this->whereClause, o->whereClause);
@@ -319,6 +350,7 @@ namespace sqlite2orm {
     struct DeleteNode : AstNode {
         std::optional<std::string> schemaName;
         std::string tableName;
+        TableIndexHint indexHint;
         AstNodePointer whereClause;
         std::vector<ReturningColumn> returning;
 
@@ -327,7 +359,7 @@ namespace sqlite2orm {
         bool operator==(const AstNode& other) const override {
             auto* o = dynamic_cast<const DeleteNode*>(&other);
             if (!o || this->schemaName != o->schemaName || this->tableName != o->tableName ||
-                this->returning != o->returning)
+                this->indexHint != o->indexHint || this->returning != o->returning)
                 return false;
             return astNodesEqual(this->whereClause, o->whereClause);
         }

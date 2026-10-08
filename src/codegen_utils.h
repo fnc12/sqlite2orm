@@ -640,6 +640,12 @@ namespace sqlite2orm {
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
     /** The same for a span kept on its own, away from the node it was parsed into. */
     CodegenWarning sourceSpanWarning(std::string message, const SourceSpan& sourceSpan);
+    /**
+     *  The warning a table's `INDEXED BY` or `NOT INDEXED` leaves behind, anchored on the clause:
+     *  sqlite_orm has no form for either, and the statement is generated without it. Nothing for a
+     *  table carrying no hint.
+     */
+    std::optional<CodegenWarning> tableIndexHintWarning(const TableIndexHint& hint);
     /** A hint anchored the way `sourceSpanWarning` anchors a warning, at the span of `astNode`. */
     CodegenComment sourceSpanComment(std::string message, const AstNode& astNode);
     /** The same for a span kept on its own — the alias of a result column, a statement's opening keywords. */

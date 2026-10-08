@@ -3235,3 +3235,26 @@ TEST_CASE("runtime: printf with only a format is the SQL printf and answers NULL
                                                       "1",
                                                   });
 }
+
+// Over `users` holding 1, 2 and 3 with an index on `a`, sqlite3 3.51.0 answers
+// `SELECT a FROM users NOT INDEXED WHERE a > 1` and its INDEXED BY twin with 2,3, leaves
+// `UPDATE users INDEXED BY ua SET a = a * 10 WHERE a > 1` with 1,20,30 and then
+// `DELETE FROM users NOT INDEXED WHERE a > 1` with 1. The code generated before lost the WHERE
+// with the hint and answered 1,2,3; generated without the hint it answers what sqlite3 does.
+TEST_CASE("runtime: a statement over a table with an index hint answers the rows SQLite does") {
+    const std::vector<std::string> statements{
+        generate("SELECT a FROM users NOT INDEXED WHERE a > 1;"),
+        generate("SELECT a FROM users INDEXED BY ua WHERE a > 1;"),
+        generate("UPDATE users INDEXED BY ua SET a = a * 10 WHERE a > 1;") + " " + generate("SELECT a FROM users;"),
+        generate("DELETE FROM users NOT INDEXED WHERE a > 1;") + " " + generate("SELECT a FROM users;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(&Users::a, where(c(&Users::a) > 1));",
+                "auto rows = storage.select(&Users::a, where(c(&Users::a) > 1));",
+                "storage.update_all(set(c(&Users::a) = c(&Users::a) * 10), where(c(&Users::a) > 1)); auto rows = "
+                "storage.select(&Users::a);",
+                "storage.remove_all<Users>(where(c(&Users::a) > 1)); auto rows = storage.select(&Users::a);",
+            });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"2,3", "2,3", "1,20,30", "1"});
+}

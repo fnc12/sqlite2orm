@@ -167,6 +167,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/parser_tests_upsert.cpp
         tests/parser_tests_trigger.cpp
         tests/parser_tests_index.cpp
+        tests/parser_tests_index_hint.cpp
         tests/parser_tests_virtual_table.cpp
         tests/parser_tests_from_derived.cpp
         tests/parser_tests_create_view.cpp

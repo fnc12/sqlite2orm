@@ -3358,3 +3358,83 @@ TEST_CASE("codegen: SELECT column alias holding a backslash and a line break") {
                            "};\n"
                            "auto rows = storage.select(as<A_b_cAlias>(&Users::name));");
 }
+
+// `INDEXED BY` and `NOT INDEXED` pick the plan, never the rows, and sqlite_orm has no form for
+// either: the statement is generated as the one without the hint — the same code to the
+// character — and a warning underlines the clause. Before, the hint stopped the parse, and the
+// clauses after it, the WHERE among them, were missing from the code generated.
+TEST_CASE("codegen: SELECT FROM a table NOT INDEXED keeps the clauses after it") {
+    auto result = generateFull("SELECT name FROM users NOT INDEXED WHERE id > 1 ORDER BY name LIMIT 2");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(&Users::name, where(c(&Users::id) > 1), order_by(&Users::name), limit(2));");
+    REQUIRE(result.code == generate("SELECT name FROM users WHERE id > 1 ORDER BY name LIMIT 2"));
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{CodegenWarning{
+                                   "NOT INDEXED has no sqlite_orm form; the statement is generated without it and "
+                                   "answers the same rows, but SQLite may search the table with an index",
+                                   SourceLocation{1, 24},
+                                   11}});
+}
+
+TEST_CASE("codegen: SELECT FROM an aliased table INDEXED BY an index keeps the WHERE after it") {
+    auto result = generateFull("SELECT u.name FROM users AS u INDEXED BY users_id WHERE u.id > 1");
+    REQUIRE(result.code == "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+                           "where(alias_column<alias_a<Users>>(&Users::id) > 1));");
+    REQUIRE(result.code == generate("SELECT u.name FROM users AS u WHERE u.id > 1"));
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"INDEXED BY has no sqlite_orm form; the statement is generated without it and answers "
+                               "the same rows, but SQLite may plan it without index users_id, and the generated code "
+                               "runs where SQLite refuses the statement for an index the table lacks or cannot be "
+                               "planned with",
+                               SourceLocation{1, 31},
+                               19}});
+}
+
+TEST_CASE("codegen: an index hint on each side of a join warns once for each") {
+    auto result = generateFull(
+        "SELECT users.name FROM users NOT INDEXED JOIN posts INDEXED BY posts_user ON users.id = posts.user_id");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(&Users::name, join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+    REQUIRE(result.code == generate("SELECT users.name FROM users JOIN posts ON users.id = posts.user_id"));
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"NOT INDEXED has no sqlite_orm form; the statement is generated without it and "
+                               "answers the same rows, but SQLite may search the table with an index",
+                               SourceLocation{1, 30},
+                               11},
+                CodegenWarning{"INDEXED BY has no sqlite_orm form; the statement is generated without it and answers "
+                               "the same rows, but SQLite may plan it without index posts_user, and the generated "
+                               "code runs where SQLite refuses the statement for an index the table lacks or cannot "
+                               "be planned with",
+                               SourceLocation{1, 53},
+                               21}});
+}
+
+TEST_CASE("codegen: an index hint in a subquery keeps the subquery's WHERE") {
+    auto result = generateFull(
+        "SELECT name FROM users WHERE id IN (SELECT user_id FROM posts INDEXED BY posts_user WHERE user_id > 1)");
+    REQUIRE(result.code == "auto rows = storage.select(&Users::name, from<Users>(), where(in(&Users::id, "
+                           "select(&Posts::user_id, where(c(&Posts::user_id) > 1)))));");
+    REQUIRE(result.code ==
+            generate("SELECT name FROM users WHERE id IN (SELECT user_id FROM posts WHERE user_id > 1)"));
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"INDEXED BY has no sqlite_orm form; the statement is generated without it and answers "
+                               "the same rows, but SQLite may plan it without index posts_user, and the generated "
+                               "code runs where SQLite refuses the statement for an index the table lacks or cannot "
+                               "be planned with",
+                               SourceLocation{1, 63},
+                               21}});
+}
+
+TEST_CASE("codegen: an index hint on a trigger body SELECT keeps its WHERE") {
+    auto result = generateFull(
+        "CREATE TRIGGER tr AFTER INSERT ON users BEGIN SELECT id FROM posts NOT INDEXED WHERE user_id = NEW.id; END");
+    REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<Users>().begin(select(&Posts::id, "
+                           "where(c(&Posts::user_id) == new_(&Users::id)))));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{CodegenWarning{
+                                   "NOT INDEXED has no sqlite_orm form; the statement is generated without it and "
+                                   "answers the same rows, but SQLite may search the table with an index",
+                                   SourceLocation{1, 68},
+                                   11}});
+}

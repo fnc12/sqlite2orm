@@ -1661,6 +1661,30 @@ namespace sqlite2orm {
         return sourceSpanWarning(std::move(message), astNode.sourceSpan);
     }
 
+    std::optional<CodegenWarning> tableIndexHintWarning(const TableIndexHint& hint) {
+        // A hint picks the plan, never the rows, so the statement without it answers what the SQL
+        // does. What it loses is the plan itself, and, for INDEXED BY, the refusal: SQLite refuses
+        // the statement where the table has no such index (`no such index: i`) or where it cannot
+        // plan with it (`no query solution`, a partial index the WHERE does not imply), both on
+        // 3.51.0, while the generated code runs there.
+        switch (hint.kind) {
+            case TableIndexHintKind::none:
+                return std::nullopt;
+            case TableIndexHintKind::notIndexed:
+                return sourceSpanWarning("NOT INDEXED has no sqlite_orm form; the statement is generated without it "
+                                         "and answers the same rows, but SQLite may search the table with an index",
+                                         hint.sourceSpan);
+            case TableIndexHintKind::indexedBy:
+                return sourceSpanWarning("INDEXED BY has no sqlite_orm form; the statement is generated without it "
+                                         "and answers the same rows, but SQLite may plan it without index " +
+                                             hint.indexName +
+                                             ", and the generated code runs where SQLite refuses the statement "
+                                             "for an index the table lacks or cannot be planned with",
+                                         hint.sourceSpan);
+        }
+        return std::nullopt;
+    }
+
     CodegenComment sourceSpanComment(std::string message, const SourceSpan& sourceSpan) {
         if (sourceSpan.text.empty()) {
             return CodegenComment{std::move(message)};

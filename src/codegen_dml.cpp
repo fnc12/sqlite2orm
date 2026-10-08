@@ -1,6 +1,7 @@
 #include "codegen_dml.h"
 #include "codegen_context.h"
 #include "codegen_utils.h"
+#include "parenthesized_condition_scope.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 

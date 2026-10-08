@@ -935,7 +935,9 @@ namespace sqlite2orm {
      *  IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for, and a built-in function
      *  call the return type that function declares. None of those can hold a NULL, so such a row
      *  is read back as 0 / "" / false. A scalar subquery is typed from the result column of the
-     *  nested `select(...)`, so it needs the widening exactly when that column does. `as_optional`
+     *  nested `select(...)`, so it needs the widening when that column does, and also when the
+     *  nested select may answer no row — SQLite reads that as NULL — over a column whose type
+     *  holds none: a constant, an operator, or a column the schema declares NOT NULL. `as_optional`
      *  leaves the SQL untouched and yields `std::optional<T>` instead. Every other expression
      *  sqlite_orm already types nullably where it has to (a column carries its field's type,
      *  `abs(...)` is a `std::unique_ptr`, `max(...)` and `coalesce(...)` carry the type of an

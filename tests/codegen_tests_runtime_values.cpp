@@ -2461,6 +2461,34 @@ TEST_CASE("runtime: a scalar subquery result column reads the NULL back") {
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL"});
 }
 
+// SQLite reads a scalar subquery that answers no row as NULL, and sqlite_orm types the subquery as
+// its result column — the `int` of a NOT NULL field, the `int` of a constant — so that NULL reached
+// the caller as 0. Every value below is what sqlite3 3.51 answers over `users(a INTEGER NOT NULL)`
+// holding the one row 7; the last statement is an aggregate query, which answers one row however
+// many it reads, and keeps its plain type.
+TEST_CASE("runtime: a scalar subquery over no row reads the NULL back") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT (SELECT a FROM user WHERE a < 0) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT (SELECT a FROM user WHERE a > 0) FROM user;")
+            .code,
+        generate("SELECT (SELECT 1 WHERE 0);"),
+        generate("SELECT (SELECT 1 LIMIT 0);"),
+        generateLastOfBatch(
+            "CREATE TABLE user(a INTEGER NOT NULL); SELECT (SELECT count(*) FROM user WHERE a < 0) FROM user;")
+            .code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(select(&User::a, where(c(&User::a) < 0))), from<User>());",
+                "auto rows = storage.select(as_optional(select(&User::a, where(c(&User::a) > 0))), from<User>());",
+                "auto rows = storage.select(as_optional(select(1, where(0))));",
+                "auto rows = storage.select(as_optional(select(1, limit(0))));",
+                "auto rows = storage.select(select(count<User>(), where(c(&User::a) < 0)), from<User>());",
+            });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"NULL", "7", "NULL", "NULL", "0"});
+}
+
 // sqlite_orm types `case_<R>` as R, and the inference that picks R — the type of the first
 // branch's result — never names a nullable type, so a CASE that answers NULL reached the caller as
 // 0. Both NULLs a CASE has are run here: a branch result that is one, and no branch matching with

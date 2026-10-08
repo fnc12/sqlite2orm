@@ -3736,6 +3736,68 @@ namespace sqlite2orm {
         }
 
         /**
+         *  Whether `astNode` is computed over an aggregate call — `count(*)`, `max(a)`, `sum(a) + 1`,
+         *  `coalesce(max(a), 0)` — which makes the select it is a result column of an aggregate
+         *  query. Only the forms a result column is commonly spelled with are stepped into: an
+         *  aggregate under any other node answers no, and the select is taken for one that may
+         *  answer no row. A nested subquery is a select of its own, so it is not stepped into.
+         */
+        bool holdsAggregateCall(const AstNode& astNode) {
+            const AstNode& generatedNode = generatedOperandNode(astNode);
+            if (auto* binaryOp = dynamic_cast<const BinaryOperatorNode*>(&generatedNode)) {
+                return (binaryOp->lhs && holdsAggregateCall(*binaryOp->lhs)) ||
+                       (binaryOp->rhs && holdsAggregateCall(*binaryOp->rhs));
+            }
+            if (auto* unaryOp = dynamic_cast<const UnaryOperatorNode*>(&generatedNode)) {
+                return unaryOp->operand && holdsAggregateCall(*unaryOp->operand);
+            }
+            if (auto* castNode = dynamic_cast<const CastNode*>(&generatedNode)) {
+                return castNode->operand && holdsAggregateCall(*castNode->operand);
+            }
+            if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
+                // An aggregate run as a window answers one value per row, not one row per group.
+                if (functionCall->over) {
+                    return false;
+                }
+                if (const std::optional<SqliteOrmFunctionForm> form = resolveFunctionCallForm(*functionCall, false)) {
+                    if (form->kind == SqliteOrmFormKind::builtinAggregate ||
+                        form->kind == SqliteOrmFormKind::countAsterisk ||
+                        form->kind == SqliteOrmFormKind::countWithoutType) {
+                        return true;
+                    }
+                }
+                for (const auto& argument: functionCall->arguments) {
+                    if (argument && holdsAggregateCall(*argument)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /**
+         *  Whether a select used as a scalar subquery may answer no row at all, which SQLite reads as
+         *  NULL whatever the result column is: checked against sqlite3 3.51 over an empty
+         *  `t(a INTEGER NOT NULL)`, `(SELECT a FROM t)`, `(SELECT 1 WHERE 0)`, `(SELECT 1 LIMIT 0)`,
+         *  `(SELECT 1 LIMIT 1 OFFSET 1)`, `(SELECT count(*) FROM t GROUP BY a)` and
+         *  `(SELECT count(*) FROM t HAVING 0)` are all NULL. An aggregate query with no GROUP BY
+         *  answers exactly one row however many it reads — `(SELECT count(*) FROM t)` is 0 and
+         *  `(SELECT count(*) WHERE 0)` too — and so does a select with no FROM and no WHERE. Any
+         *  LIMIT, OFFSET, GROUP BY or HAVING is taken for one that may empty the rowset.
+         */
+        bool scalarSubqueryMayAnswerNoRow(const SelectNode& select) {
+            if (select.limitValue || select.offsetValue || select.groupBy || select.having) {
+                return true;
+            }
+            for (const auto& column: select.columns) {
+                if (column.expression && holdsAggregateCall(*column.expression)) {
+                    return false;
+                }
+            }
+            return !select.fromClause.empty() || select.whereClause != nullptr;
+        }
+
+        /**
          *  `selectResultNeedsAsOptional` over one scope: `resolveColumn` answers what the emitter
          *  writes a reference of the select the column belongs to as, which is the select this
          *  stands in and not always the one the context holds — a scalar subquery carries a scope
@@ -3814,11 +3876,19 @@ namespace sqlite2orm {
                 if (!nestedSelect || nestedSelect->columns.size() != 1u || !nestedSelect->columns.at(0).expression) {
                     return false;
                 }
-                // What this arm does not cover is the NULL the subquery itself answers: SQLite reads a
-                // scalar subquery over an empty rowset as NULL, so `(SELECT a FROM t)` over a NOT NULL
-                // column is NULL on an empty `t` and still reads back as 0. Whether the column the
-                // nested select names is already nullable is the table's to answer, and no schema
-                // reaches this layer. A known hole, carded separately.
+                const AstNode& nestedColumn = *nestedSelect->columns.at(0).expression;
+                // The subquery answers a NULL of its own too: SQLite reads a scalar subquery over an
+                // empty rowset as NULL, so `(SELECT a FROM t)` over a NOT NULL column is NULL on an
+                // empty `t` and was read back as 0. That NULL needs the widening only where the type
+                // the column comes out as holds none: a column of an `std::optional` field, a
+                // `max(...)` typed `std::unique_ptr` and a column no scope resolves are left alone.
+                const auto nestedResultNeedsAsOptional = [&](const ReferencedColumnResolver& nestedResolver) {
+                    if (resultNeedsAsOptional(nestedColumn, context, nestedResolver)) {
+                        return true;
+                    }
+                    return scalarSubqueryMayAnswerNoRow(*nestedSelect) &&
+                           generatedArgumentTypeHoldsNoNull(nestedColumn, nestedResolver);
+                };
                 // The nested select names its own sources, so what its column is read back through is
                 // answered over ITS FROM clause: asking the outer scope resolved a name of the inner
                 // select to a same-named column of an outer table and typed the call from a field the
@@ -3830,10 +3900,10 @@ namespace sqlite2orm {
                     // for every reference, so a spelled result type went unseen. Such a select is
                     // generated only where it names no table — one that does has no sqlite_orm
                     // form and leaves the statement out — so the answer matters for its constants.
-                    return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, resolveColumn);
+                    return nestedResultNeedsAsOptional(resolveColumn);
                 }
                 const SelectScopeColumns nestedScope(*nestedSelect, context, resolveColumn);
-                return resultNeedsAsOptional(*nestedSelect->columns.at(0).expression, context, nestedScope.resolver());
+                return nestedResultNeedsAsOptional(nestedScope.resolver());
             }
             if (auto* functionCall = dynamic_cast<const FunctionCallNode*>(&generatedNode)) {
                 if (functionCall->over) {

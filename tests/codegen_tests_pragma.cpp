@@ -525,20 +525,51 @@ TEST_CASE("codegen: PRAGMA table_info of a table named after a keyword") {
 // database instead.
 TEST_CASE("codegen: PRAGMA integrity_check of a table named after a keyword") {
     REQUIRE(generateFull("PRAGMA integrity_check(on);") ==
-            CodeGenResult{R"(storage.pragma.integrity_check("on");)", {}, {}, {}});
+            CodeGenResult{R"(storage.pragma.integrity_check("\"on\"");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA integrity_check(OFF);") ==
-            CodeGenResult{R"(storage.pragma.integrity_check("OFF");)", {}, {}, {}});
+            CodeGenResult{R"(storage.pragma.integrity_check("\"OFF\"");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA integrity_check(true);") ==
-            CodeGenResult{R"(storage.pragma.integrity_check("true");)", {}, {}, {}});
+            CodeGenResult{R"(storage.pragma.integrity_check("\"true\"");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA integrity_check(False);") ==
-            CodeGenResult{R"(storage.pragma.integrity_check("False");)", {}, {}, {}});
+            CodeGenResult{R"(storage.pragma.integrity_check("\"False\"");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA integrity_check = TRUE;") ==
-            CodeGenResult{R"(storage.pragma.integrity_check("TRUE");)", {}, {}, {}});
+            CodeGenResult{R"(storage.pragma.integrity_check("\"TRUE\"");)", {}, {}, {}});
     REQUIRE(generateFull("PRAGMA integrity_check(current_date);") ==
-            CodeGenResult{R"(storage.pragma.integrity_check("current_date");)", {}, {}, {}});
+            CodeGenResult{R"(storage.pragma.integrity_check("\"current_date\"");)", {}, {}, {}});
     // A number still reads as the error count it did.
     REQUIRE(generateFull("PRAGMA integrity_check(1);") ==
             CodeGenResult{"storage.pragma.integrity_check(1);", {}, {}, {}});
+}
+
+// sqlite_orm's `pragma_t::integrity_check(T)` streams its argument into the pragma text raw, where
+// `table_info` and `table_xinfo` quote theirs, so the table name goes out already quoted as an SQL
+// identifier: `integrity_check("my table")` would prepare `PRAGMA integrity_check(my table)`, a
+// syntax error. SQLite unquotes the identifier back to the text the statement names, whichever way
+// the statement spelled it — sqlite3 3.51.0 answers `ok` for each of these over a database holding
+// that table — and a double quote inside the name is doubled.
+TEST_CASE("codegen: PRAGMA integrity_check passes the table name quoted") {
+    REQUIRE(generateFull("PRAGMA integrity_check('my table');") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"my table\"");)", {}, {}, {}});
+    REQUIRE(generateFull(R"(PRAGMA integrity_check("my table");)") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"my table\"");)", {}, {}, {}});
+    REQUIRE(generateFull(R"(PRAGMA integrity_check("select");)") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"select\"");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check('select');") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"select\"");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check([my table]);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"my table\"");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check(users);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"users\"");)", {}, {}, {}});
+    REQUIRE(generateFull(R"(PRAGMA integrity_check('a"b');)") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"a\"\"b\"");)", {}, {}, {}});
+    REQUIRE(generateFull(R"(PRAGMA integrity_check("a""b");)") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"a\"\"b\"");)", {}, {}, {}});
+    REQUIRE(generateFull(R"(PRAGMA integrity_check([a"b]);)") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"a\"\"b\"");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check(`c``d`);") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"c`d\"");)", {}, {}, {}});
+    REQUIRE(generateFull("PRAGMA integrity_check('it''s');") ==
+            CodeGenResult{R"(storage.pragma.integrity_check("\"it's\"");)", {}, {}, {}});
 }
 
 // SQLite reads a PRAGMA value with `sqlite3GetInt32()`, which refuses every hexadecimal value with
@@ -1481,6 +1512,35 @@ TEST_CASE("codegen: a generated integrity_check keyword argument names the table
     };
     REQUIRE(pragmaOutcomes(statements) == std::vector<std::string>{"error", "ok", "ok"});
     REQUIRE(pragmaOutcomes(statements, "on") == std::vector<std::string>{"ok", "ok", "ok"});
+}
+
+// The table name a generated `integrity_check` passes has to survive sqlite_orm streaming it into
+// the pragma text raw. A name with a space and one that is a reserved word broke that before the
+// name went out quoted — `integrity_check("my table")` threw on a database holding `my table` —
+// so each spelling runs over a database holding the table, where it answers `ok`, and over one
+// where the name is free, where it fails as `no such table` does in sqlite3 3.51.0.
+TEST_CASE("codegen: a generated integrity_check table name that needs quoting names its table") {
+    const std::vector<std::string> spaced = {
+        generateFull("PRAGMA integrity_check('my table');").code,
+        generateFull(R"(PRAGMA integrity_check("my table");)").code,
+    };
+    REQUIRE(pragmaOutcomes(spaced) == std::vector<std::string>{"error", "error"});
+    REQUIRE(pragmaOutcomes(spaced, "my table") == std::vector<std::string>{"ok", "ok"});
+
+    const std::vector<std::string> reserved = {
+        generateFull("PRAGMA integrity_check('select');").code,
+        generateFull(R"(PRAGMA integrity_check("select");)").code,
+    };
+    REQUIRE(pragmaOutcomes(reserved) == std::vector<std::string>{"error", "error"});
+    REQUIRE(pragmaOutcomes(reserved, "select") == std::vector<std::string>{"ok", "ok"});
+
+    // The extra table name is spliced into a C++ string literal, hence the escaped quote.
+    const std::vector<std::string> doubleQuoted = {
+        generateFull(R"(PRAGMA integrity_check('a"b');)").code,
+        generateFull(R"(PRAGMA integrity_check("a""b");)").code,
+    };
+    REQUIRE(pragmaOutcomes(doubleQuoted) == std::vector<std::string>{"error", "error"});
+    REQUIRE(pragmaOutcomes(doubleQuoted, R"(a\"b)") == std::vector<std::string>{"ok", "ok"});
 }
 
 // A name value used to leave codegen as `&User::full`, which names a member no struct has and

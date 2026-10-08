@@ -151,15 +151,13 @@ TEST_CASE("COVERAGE.md links the upstream report from every row that describes o
     REQUIRE(countOccurrences(readCoverage(), "https://github.com/fnc12/sqlite_orm/issues/1543") == 5);
 }
 
-// The PRAGMA row quotes what a user is told when the generated `integrity_check` call hits the
-// unquoted argument reported upstream, and the row said `near "table": syntax error` — which is
-// SQLite's answer to that pragma, not the library's to the caller. On the pinned revision the
-// pragma goes through `sqlite3_exec` and only the return code is translated, so the message is
-// gone by the time it reaches the generated code. Both literals below are read off what runs: bump
-// the pin onto a revision that carries the message through and this case asks for the row.
-TEST_CASE("COVERAGE.md quotes what the generated integrity_check call throws for a quoted name") {
+// The PRAGMA row quotes the `integrity_check` call generated for a table name that needs quoting.
+// sqlite_orm streams that argument into the pragma text raw, so the generated literal carries the
+// name already quoted; running it over a database holding the table is what says the row's `ok`
+// is true, rather than the `SQL logic error` the unquoted call threw before.
+TEST_CASE("COVERAGE.md quotes the integrity_check call generated for a name that needs quoting") {
     const std::string statement = generate(R"(PRAGMA integrity_check("my table");)");
-    REQUIRE(statement == R"(storage.pragma.integrity_check("my table");)");
-    REQUIRE(pragmaOutcomeText(statement, "my table") == "SQL logic error");
-    REQUIRE(countOccurrences(readCoverage(), R"(throws a `std::system_error` reading `SQL logic error`)") == 1);
+    REQUIRE(statement == R"(storage.pragma.integrity_check("\"my table\"");)");
+    REQUIRE(pragmaOutcomeText(statement, "my table") == "ok");
+    REQUIRE(countOccurrences(readCoverage(), R"(`storage.pragma.integrity_check("\"my table\"")`)") == 1);
 }

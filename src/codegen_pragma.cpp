@@ -68,6 +68,35 @@ namespace sqlite2orm {
                    readValue <= std::numeric_limits<std::int32_t>::max();
         }
 
+        /**
+         *  The table name of `PRAGMA integrity_check(<name>)` as the C++ string literal the generated
+         *  call passes on, or nullopt for a value that is no name. sqlite_orm's
+         *  `pragma_t::integrity_check(T)` streams its argument into the pragma text raw — where
+         *  `table_info` and `table_xinfo` run theirs through `streaming_identifier` — so a name that
+         *  needs quoting, `my table` or `select`, would reach SQLite as a syntax error. The literal
+         *  therefore carries the name already quoted as an SQL identifier, inner double quotes
+         *  doubled: SQLite unquotes it back to the very text the statement names, which its reader
+         *  then takes for a number or a table exactly as it would the original spelling.
+         */
+        std::optional<std::string> integrityCheckTableNameLiteral(const AstNode& valueNode) {
+            const bool name = dynamic_cast<const StringLiteralNode*>(&valueNode) ||
+                              dynamic_cast<const ColumnRefNode*>(&valueNode) ||
+                              dynamic_cast<const BoolLiteralNode*>(&valueNode) ||
+                              dynamic_cast<const CurrentDatetimeLiteralNode*>(&valueNode);
+            if (!name) {
+                return std::nullopt;
+            }
+            std::string quotedName = "\"";
+            for (const char character: pragmaValue(valueNode)->text) {
+                if (character == '"') {
+                    quotedName += '"';
+                }
+                quotedName += character;
+            }
+            quotedName += '"';
+            return cppStringLiteral(quotedName);
+        }
+
     }  // namespace
 
     PragmaCodeGenerator::PragmaCodeGenerator(CodeGenerator& coordinator, CodeGeneratorContext& context) :
@@ -137,7 +166,7 @@ namespace sqlite2orm {
                                      {},
                                      {}};
             }
-            if (auto lit = pragmaTableNameLiteral(*node.value)) {
+            if (auto lit = integrityCheckTableNameLiteral(*node.value)) {
                 return CodeGenResult{"storage.pragma.integrity_check(" + *lit + ");", {}, {}};
             }
             warnings.push_back(pragmaValueWarning(

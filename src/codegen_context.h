@@ -66,6 +66,12 @@ namespace sqlite2orm {
         bool nullable = false;
         /** A generated column, which SQLite computes and an INSERT never supplies a value for. */
         bool generated = false;
+        /**
+         *  How many terms of the table's PRIMARY KEY name this column: one for a key spelled on the
+         *  column, and a table-level `PRIMARY KEY(a, a)` names `a` twice — SQLite counts that a key
+         *  of two columns.
+         */
+        int primaryKeyTerms = 0;
     };
 
     struct Cpp20TableAliasDeclaration {
@@ -640,6 +646,13 @@ namespace sqlite2orm {
         std::string structNameForTable(std::string_view tableName);
 
         const SourceTableColumn* findSourceTableColumn(std::string_view tableName, std::string_view columnName) const;
+
+        /**
+         *  The terms of the PRIMARY KEY of a known source table, a column once per term naming it —
+         *  the parent key a foreign key stands for when it names no column of its parent. Empty for
+         *  a table with no key; nullopt when the table's columns are not known at all.
+         */
+        std::optional<std::vector<const SourceTableColumn*>> sourceTablePrimaryKey(std::string_view tableName) const;
 
         /**
          *  The member a column name written in a constraint of the table being generated refers to,

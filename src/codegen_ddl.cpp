@@ -1810,26 +1810,38 @@ namespace sqlite2orm {
         // text to `make_table<T>(…)`, whose columns come from the struct instead.
         std::vector<std::string> tableConstraints;
 
-        auto findPrimaryKeyColumnCpp = [this, &createTable](std::string_view refTable) -> std::string {
-            if (toLowerAscii(std::string(refTable)) == toLowerAscii(createTable.tableName)) {
-                for (const auto& column: createTable.columns) {
-                    if (column.primaryKey) {
-                        return toCppIdentifier(column.name);
-                    }
-                }
-                if (!createTable.primaryKeys.empty() && !createTable.primaryKeys[0].columns.empty()) {
-                    // The key names its column as the constraint spelled it, and the member is named
-                    // after the declaration: `REFERENCES t` back into a table whose `PRIMARY KEY(ID)`
-                    // stands over a column declared `"Id"` is the member `Id`. A name the table
-                    // declares no column of answers nothing, the same as a table with no key at all —
-                    // its `primary_key()` is left out below too.
-                    if (const auto member =
-                            this->context.constraintColumnMember(createTable.primaryKeys[0].columns[0].name)) {
-                        return *member;
-                    }
-                }
+        // A key that names no column of its parent stands for the parent's PRIMARY KEY, which sqlite3
+        // 3.51.0 enforces as `REFERENCES o(k)` would be. sqlite_orm's `references()` takes the member
+        // itself, so the key is looked up among the parent's columns — the table being generated
+        // included, which is registered above — and written as the member that column declares. A
+        // parent with no key, or with a key of more than one term, gives SQLite nothing to stand for
+        // one column: it reports `foreign key mismatch` once the key is enforced, and there is no
+        // member to write either, as there is none for a parent whose columns are not known.
+        auto implicitParentKeyMember = [this, &warnings](std::string_view keyDescription,
+                                                         std::string_view parentTable) -> std::optional<std::string> {
+            const std::string parentName = stripIdentifierQuotes(parentTable);
+            const std::string prefix =
+                std::string(keyDescription) + " references " + parentName + " without naming a column, and ";
+            const auto keyColumns = this->context.sourceTablePrimaryKey(parentTable);
+            if (!keyColumns) {
+                warnings.push_back(prefix + "the columns of " + parentName +
+                                   " are not known, so the generated table has no foreign_key()");
+                return std::nullopt;
             }
-            return {};
+            if (keyColumns->empty()) {
+                warnings.push_back(prefix + parentName +
+                                   " has no PRIMARY KEY for it to stand for (SQLite reports a foreign key "
+                                   "mismatch), so the generated table has no foreign_key()");
+                return std::nullopt;
+            }
+            if (keyColumns->size() > 1) {
+                warnings.push_back(prefix + "the PRIMARY KEY of " + parentName + " has " +
+                                   std::to_string(keyColumns->size()) +
+                                   " columns (SQLite reports a foreign key mismatch), so the generated table "
+                                   "has no foreign_key()");
+                return std::nullopt;
+            }
+            return toCppIdentifier(keyColumns->front()->sqlName);
         };
         for (const auto& column: createTable.columns) {
             if (!column.foreignKey) {
@@ -1861,11 +1873,12 @@ namespace sqlite2orm {
             std::string referencedColumnName;
             if (!foreignKey.column.empty()) {
                 referencedColumnName = this->context.sourceColumnMember(foreignKey.table, foreignKey.column);
+            } else if (const auto keyMember =
+                           implicitParentKeyMember("foreign key on column '" + stripIdentifierQuotes(column.name) + "'",
+                                                   foreignKey.table)) {
+                referencedColumnName = *keyMember;
             } else {
-                referencedColumnName = findPrimaryKeyColumnCpp(foreignKey.table);
-                if (referencedColumnName.empty()) {
-                    referencedColumnName = cppName;
-                }
+                continue;
             }
             std::string constraint = "foreign_key(&" + structName + "::" + cppName + ").references(&" +
                                      referencedStructName + "::" + referencedColumnName + ")";
@@ -1934,11 +1947,12 @@ namespace sqlite2orm {
             if (!tableForeignKey.references.column.empty()) {
                 referencedColumnName = this->context.sourceColumnMember(tableForeignKey.references.table,
                                                                         tableForeignKey.references.column);
+            } else if (const auto keyMember = implicitParentKeyMember(
+                           "table-level foreign key on column '" + stripIdentifierQuotes(tableForeignKey.column) + "'",
+                           tableForeignKey.references.table)) {
+                referencedColumnName = *keyMember;
             } else {
-                referencedColumnName = findPrimaryKeyColumnCpp(tableForeignKey.references.table);
-                if (referencedColumnName.empty()) {
-                    referencedColumnName = cppName;
-                }
+                continue;
             }
             std::string constraint = "foreign_key(&" + structName + "::" + cppName + ").references(&" +
                                      referencedStructName + "::" + referencedColumnName + ")";

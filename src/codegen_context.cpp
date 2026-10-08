@@ -89,6 +89,19 @@ namespace sqlite2orm {
         return nullptr;
     }
 
+    std::optional<std::vector<const SourceTableColumn*>>
+    CodeGeneratorContext::sourceTablePrimaryKey(std::string_view tableName) const {
+        const auto tableIterator = this->sourceTableColumnsByNormalizedName.find(normalizeSqlIdentifier(tableName));
+        if (tableIterator == this->sourceTableColumnsByNormalizedName.end()) {
+            return std::nullopt;
+        }
+        std::vector<const SourceTableColumn*> keyColumns;
+        for (const SourceTableColumn& sourceTableColumn: tableIterator->second) {
+            keyColumns.insert(keyColumns.end(), sourceTableColumn.primaryKeyTerms, &sourceTableColumn);
+        }
+        return keyColumns;
+    }
+
     std::optional<std::string> CodeGeneratorContext::constraintColumnMember(std::string_view columnName) const {
         if (!this->constraintColumnsTableIsBeingGenerated()) {
             return toCppIdentifier(columnName);

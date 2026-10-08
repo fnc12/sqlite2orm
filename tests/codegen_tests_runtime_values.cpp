@@ -1840,18 +1840,24 @@ TEST_CASE("runtime: a concatenation over a built-in call or an arithmetic operan
 // in the result column. It is stored all the same, in a trigger WHEN and in a view `--db` reads,
 // and compiling is what it has to prove: `match_t` derives from nothing at all, so neither `or_()`
 // nor `operator&&` took it before this change. The third statement is the counter-check — a
-// condition beside it carries the pair, and that MATCH is left as it was written.
+// condition beside it carries the pair, and that MATCH is left as it was written. The last two
+// are a MATCH beside a bare column, on either side (card 1867275410044093907): neither operand is
+// a condition, so the OR is the call, and only the MATCH needs the `c()`.
 TEST_CASE("runtime: an AND or an OR over a MATCH compiles") {
     const std::vector<std::string> statements{
         generate("SELECT a MATCH 'x' OR a MATCH 'y';"),
         generate("SELECT match(a, 'x') AND match(a, 'y');"),
         generate("SELECT a MATCH 'x' OR a = 1;"),
+        generate("SELECT a MATCH 'x' OR a;"),
+        generate("SELECT a OR a MATCH 'x';"),
     };
     REQUIRE(statements ==
             std::vector<std::string>{
                 "auto rows = storage.select(as_optional(or_(c(match(&User::a, \"x\")), c(match(&User::a, \"y\")))));",
                 "auto rows = storage.select(as_optional(c(match(&User::a, \"x\")) and match(&User::a, \"y\")));",
                 "auto rows = storage.select(as_optional(match(&User::a, \"x\") or c(&User::a) == 1));",
+                "auto rows = storage.select(as_optional(or_(c(match(&User::a, \"x\")), &User::a)));",
+                "auto rows = storage.select(as_optional(or_(&User::a, c(match(&User::a, \"x\")))));",
             });
     requireSelectsCompile(statements);
 }

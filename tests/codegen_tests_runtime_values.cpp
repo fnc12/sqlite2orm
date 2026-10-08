@@ -1469,6 +1469,39 @@ TEST_CASE("runtime: a predicate after the keyword of a LIKE or a GLOB returns th
             std::vector<std::string>{"0", "1", "1", "1", "1", "1", "0", "1"});
 }
 
+// The ESCAPE of a LIKE regroups a bare predicate the same way: `like("x", "y", not_in(&User::a, {1, 2}))`
+// ran as `SELECT 'x' LIKE 'y' ESCAPE "a" NOT IN (1, 2)`, that is `('x' LIKE 'y' ESCAPE "a") NOT IN
+// (1, 2)`. `'1' LIKE '11'` matches only when the ESCAPE is `1`, so it tells the predicate's 0 from
+// its 1. Expected values checked against sqlite3 3.51 over `users(a INTEGER)` holding one row, NULL
+// first, 7 second and 1 third; without the CAST the 7 row answers 1, 0, 0, 0, 1, 1 and the 1 row
+// 1, 0, 0, 1, 0, 1.
+TEST_CASE("runtime: a predicate in the ESCAPE of a LIKE returns the value SQLite computes") {
+    const std::vector<std::string> statements{
+        generate("SELECT 'x' LIKE 'y' ESCAPE (a NOT IN (1, 2));"),
+        generate("SELECT 'x' LIKE 'y' ESCAPE (a IN (1, 2));"),
+        generate("SELECT 'x' LIKE 'y' ESCAPE (a IS NULL);"),
+        generate("SELECT '1' LIKE '11' ESCAPE (a IN (1, 2));"),
+        generate("SELECT '1' LIKE '11' ESCAPE (a NOT IN (1, 2));"),
+        generate("SELECT '1' LIKE '11' ESCAPE (a NOT NULL);"),
+    };
+    REQUIRE(
+        statements ==
+        std::vector<std::string>{
+            "auto rows = storage.select(as_optional(like(\"x\", \"y\", cast<int64_t>(not_in(&User::a, {1, 2})))));",
+            "auto rows = storage.select(as_optional(like(\"x\", \"y\", cast<int64_t>(in(&User::a, {1, 2})))));",
+            "auto rows = storage.select(like(\"x\", \"y\", cast<int64_t>(is_null(&User::a))));",
+            "auto rows = storage.select(as_optional(like(\"1\", \"11\", cast<int64_t>(in(&User::a, {1, 2})))));",
+            "auto rows = storage.select(as_optional(like(\"1\", \"11\", cast<int64_t>(not_in(&User::a, {1, 2})))));",
+            "auto rows = storage.select(like(\"1\", \"11\", cast<int64_t>(is_not_null(&User::a))));",
+        });
+    REQUIRE(selectedValues(statements, "std::optional<int>", "std::nullopt") ==
+            std::vector<std::string>{"NULL", "NULL", "0", "NULL", "NULL", "0"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "7") ==
+            std::vector<std::string>{"0", "0", "0", "0", "1", "1"});
+    REQUIRE(selectedValues(statements, "std::optional<int>", "1") ==
+            std::vector<std::string>{"0", "0", "0", "1", "0", "1"});
+}
+
 // sqlite_orm spells `or` and the concatenation with the same `operator||`, and picks between them
 // by the operands, so an OR over operands that are no conditions is generated as the `or_(…)` call
 // — an `or_condition_t` either way, which sqlite_orm negates. The `conc_t` the operator spelling

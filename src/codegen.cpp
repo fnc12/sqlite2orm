@@ -241,9 +241,10 @@ namespace sqlite2orm {
             dynamic_cast<const BetweenNode*>(&astNode) || dynamic_cast<const SubqueryNode*>(&astNode) ||
             dynamic_cast<const ExistsNode*>(&astNode) || dynamic_cast<const InNode*>(&astNode) ||
             dynamic_cast<const LikeNode*>(&astNode) || dynamic_cast<const GlobNode*>(&astNode) ||
-            dynamic_cast<const MatchNode*>(&astNode) || dynamic_cast<const CastNode*>(&astNode) ||
-            dynamic_cast<const CaseNode*>(&astNode) || dynamic_cast<const BindParameterNode*>(&astNode) ||
-            dynamic_cast<const CollateNode*>(&astNode) || dynamic_cast<const FunctionCallNode*>(&astNode)) {
+            dynamic_cast<const RegexpNode*>(&astNode) || dynamic_cast<const MatchNode*>(&astNode) ||
+            dynamic_cast<const CastNode*>(&astNode) || dynamic_cast<const CaseNode*>(&astNode) ||
+            dynamic_cast<const BindParameterNode*>(&astNode) || dynamic_cast<const CollateNode*>(&astNode) ||
+            dynamic_cast<const FunctionCallNode*>(&astNode)) {
             return this->expressionCodeGenerator->generateExpression(astNode);
         }
 

@@ -639,13 +639,16 @@ namespace {
 // The corpus is the placeholder sites, each crossed with the expressions codegen has no sqlite_orm
 // form for, plus the shapes that are placeheld whole. sqlite3 3.51 prepares every input except the
 // three whose expression it refuses outright — a subquery in a CHECK, in a column DEFAULT and in an
-// index expression — which `-e` still reads, and `-e` is the path the playground runs on.
+// index expression — which `-e` still reads, and `-e` is the path the playground runs on. REGEXP
+// prepares in every one of them under the sqlite3 shell, which registers a regexp() of its own.
 TEST_CASE("codegen: no statement hands out a line holding a placeholder beside other code") {
     const std::vector<std::string> unmappedExpressions{
         "(SELECT b FROM u GROUP BY b)",
         "(SELECT b FROM u GROUP BY b HAVING count(*) > 0)",
         "1 IN (SELECT b FROM u GROUP BY b)",
         "EXISTS (SELECT b FROM u GROUP BY b)",
+        "'a' REGEXP 'x'",
+        "'a' NOT REGEXP 'x'",
     };
     const std::vector<PlaceholderCase> contexts{
         {"SELECT $ AS x", {}},
@@ -717,7 +720,7 @@ TEST_CASE("codegen: no statement hands out a line holding a placeholder beside o
         REQUIRE(linesHoldingAPlaceholderBesideCode(result.code) == std::vector<std::string>{});
         ++checked;
     }
-    REQUIRE(checked == 88);
+    REQUIRE(checked == 124);
 }
 
 namespace {

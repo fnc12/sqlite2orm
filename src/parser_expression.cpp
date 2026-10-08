@@ -240,7 +240,7 @@ namespace sqlite2orm {
         if (check(TokenType::kwNot)) {
             auto nextType = peekToken(1).type;
             if (nextType == TokenType::kwBetween || nextType == TokenType::kwIn || nextType == TokenType::kwLike ||
-                nextType == TokenType::kwGlob || nextType == TokenType::kwMatch) {
+                nextType == TokenType::kwGlob || nextType == TokenType::kwMatch || nextType == TokenType::kwRegexp) {
                 advanceToken();
                 negated = true;
             } else if (nextType == TokenType::kwNull) {
@@ -330,6 +330,14 @@ namespace sqlite2orm {
             if (!pattern)
                 return nullptr;
             return std::make_unique<GlobNode>(std::move(left), std::move(pattern), negated, location);
+        }
+
+        if (check(TokenType::kwRegexp)) {
+            advanceToken();
+            auto pattern = parseBinaryExpression(3);
+            if (!pattern)
+                return nullptr;
+            return std::make_unique<RegexpNode>(std::move(left), std::move(pattern), negated, location);
         }
 
         if (check(TokenType::kwMatch)) {

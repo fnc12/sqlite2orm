@@ -89,6 +89,7 @@ Statuses:
 - [x] `GLOB`
 - [x] `NOT LIKE`
 - [x] `NOT GLOB`
+- [ ] `REGEXP` / `NOT REGEXP` — parsed; SQLite reads it as a call of the application-defined `regexp(pattern, operand)`, which sqlite_orm has no form for, so the statement holding it is not generated: codegen warning on the REGEXP expression
 
 ### Binary operators (logical)
 - [x] `AND`

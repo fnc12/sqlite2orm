@@ -663,6 +663,30 @@ TEST_CASE("parser: NOT GLOB") {
             GlobNode(makeNode<ColumnRefNode>("name"), makeNode<StringLiteralNode>("'*foo*'"), true, {}));
 }
 
+// SQLite reads `x REGEXP y` on the level of LIKE and GLOB, as a call of the application-defined
+// regexp(y, x).
+TEST_CASE("parser: REGEXP") {
+    auto parseResult = parse("name REGEXP '^foo'");
+    REQUIRE(requireNode<RegexpNode>(parseResult) ==
+            RegexpNode(makeNode<ColumnRefNode>("name"), makeNode<StringLiteralNode>("'^foo'"), false, {}));
+}
+
+TEST_CASE("parser: NOT REGEXP, spelled in lower case") {
+    auto parseResult = parse("name not regexp '^foo'");
+    REQUIRE(requireNode<RegexpNode>(parseResult) ==
+            RegexpNode(makeNode<ColumnRefNode>("name"), makeNode<StringLiteralNode>("'^foo'"), true, {}));
+}
+
+TEST_CASE("parser: REGEXP binds on the comparison level, left to right") {
+    auto parseResult = parse("a REGEXP 'x' = 0");
+    REQUIRE(requireNode<BinaryOperatorNode>(parseResult) ==
+            BinaryOperatorNode(
+                BinaryOperator::equals,
+                makeNode<RegexpNode>(makeNode<ColumnRefNode>("a"), makeNode<StringLiteralNode>("'x'"), false),
+                makeNode<IntegerLiteralNode>("0"),
+                {}));
+}
+
 TEST_CASE("parser: MATCH") {
     auto parseResult = parse("body MATCH 'word'");
     REQUIRE(requireNode<MatchNode>(parseResult) ==

@@ -355,6 +355,25 @@ namespace sqlite2orm {
         }
     };
 
+    /**
+     *  `operand [NOT] REGEXP pattern`. SQLite reads it as a call of the application-defined
+     *  `regexp(pattern, operand)`, which sqlite_orm has no form for.
+     */
+    struct RegexpNode : AstNode {
+        AstNodePointer operand;
+        AstNodePointer pattern;
+        bool negated;
+
+        RegexpNode(AstNodePointer operand, AstNodePointer pattern, bool negated, SourceLocation location) :
+            AstNode(location), operand(std::move(operand)), pattern(std::move(pattern)), negated(negated) {}
+
+        bool operator==(const AstNode& other) const override {
+            auto* o = dynamic_cast<const RegexpNode*>(&other);
+            return o && this->negated == o->negated && astNodesEqual(this->operand, o->operand) &&
+                   astNodesEqual(this->pattern, o->pattern);
+        }
+    };
+
     struct MatchNode : AstNode {
         AstNodePointer operand;
         AstNodePointer pattern;

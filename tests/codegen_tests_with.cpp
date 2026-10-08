@@ -1225,3 +1225,97 @@ TEST_CASE("codegen: WITH cpp20_monikers - CTE column names differing only in cas
                 {"WITH: requires SQLite ≥ 3.8.3, sqlite_orm built with SQLITE_ORM_WITH_CTE, and `using namespace "
                  "sqlite_orm::literals` scope for `_ctealias`"}});
 }
+
+namespace {
+    const std::string kCteSelectPlaceholder = "/* WITH: CTE SELECT not mapped to sqlite_orm */";
+    const std::string kGroupBySubqueryWarning = "GROUP BY in subquery is not yet mapped to sqlite_orm select(...)";
+
+    CodegenWarning cteSelectNotMapped(std::string_view cteName, SourceLocation location, size_t length) {
+        return CodegenWarning{"the SELECT of CTE " + std::string(cteName) +
+                                  " is not mapped to a sqlite_orm select(...) subexpression, so the statement "
+                                  "reading it is not generated",
+                              location,
+                              length};
+    }
+}
+
+// Without storage.with() nothing declares a CTE, so a statement whose CTE body has no select(...)
+// form stands as a placeholder of its own rather than reading `C`, a struct no schema declares.
+// SQLite runs every one of these (checked on sqlite3 3.51.0).
+TEST_CASE("codegen: WITH - a CTE body with GROUP BY placeholds the statement") {
+    const auto result = generateFull("WITH c AS (SELECT count(*) FROM users GROUP BY name) SELECT * FROM c;");
+    REQUIRE(result.code == kCteSelectPlaceholder);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{kGroupBySubqueryWarning}, cteSelectNotMapped("c", SourceLocation{1, 12}, 40)});
+    REQUIRE(result.decisionPoints.empty());
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: WITH - a CTE body with HAVING and no GROUP BY placeholds the statement") {
+    const auto result = generateFull("WITH c AS (SELECT count(*) FROM users HAVING count(*) > 1) SELECT * FROM c;");
+    REQUIRE(result.code == kCteSelectPlaceholder);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{"HAVING without GROUP BY in subquery is not mapped to sqlite_orm select(...)"},
+                                        cteSelectNotMapped("c", SourceLocation{1, 12}, 46)});
+    REQUIRE(result.decisionPoints.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// The first CTE maps and offers a decision point of its own; it is dropped with the statement,
+// since none of the code it was made for is generated.
+TEST_CASE("codegen: WITH - one unmapped CTE of two placeholds the statement") {
+    const auto result = generateFull(
+        "WITH c AS (SELECT id FROM users), d AS (SELECT name FROM users GROUP BY name) SELECT * FROM c, d;");
+    REQUIRE(result.code == kCteSelectPlaceholder);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{kGroupBySubqueryWarning}, cteSelectNotMapped("d", SourceLocation{1, 41}, 36)});
+    REQUIRE(result.decisionPoints.empty());
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: WITH - an unmapped CTE body placeholds a DML statement") {
+    const auto result =
+        generateFull("WITH c AS (SELECT name FROM users GROUP BY name) INSERT INTO users (name) SELECT name FROM c;");
+    REQUIRE(result.code == kCteSelectPlaceholder);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{kGroupBySubqueryWarning}, cteSelectNotMapped("c", SourceLocation{1, 12}, 36)});
+    REQUIRE(result.decisionPoints.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// A CTE shadows a table of the same name, so dropping the WITH would read the table instead — code
+// that compiles and answers other rows.
+TEST_CASE("codegen: WITH - an unmapped CTE body shadowing a table placeholds the statement") {
+    const auto result = generateLastOfBatch("CREATE TABLE users (id INTEGER, name TEXT);\n"
+                                            "CREATE TABLE t (z INTEGER);\n"
+                                            "WITH t AS (SELECT name FROM users GROUP BY name) SELECT * FROM t;");
+    REQUIRE(result.code == kCteSelectPlaceholder);
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{{kGroupBySubqueryWarning}, cteSelectNotMapped("t", SourceLocation{3, 12}, 36)});
+    REQUIRE(result.decisionPoints.empty());
+    REQUIRE(result.errors.empty());
+}
+
+// sqlite_orm's select(...) embeds no CTE, and dropping the WITH clause would leave the SELECT
+// reading the CTE as a table, so a SELECT with a WITH of its own is not mapped. SQLite takes one as
+// the source of an INSERT and as the body of a view (checked on sqlite3 3.51.0).
+TEST_CASE("codegen: a WITH in the SELECT an INSERT reads from leaves the INSERT unmapped") {
+    const auto result = generateFull("INSERT INTO users (name) WITH c AS (SELECT name FROM users) SELECT name FROM c;");
+    REQUIRE(result.code == "/* INSERT ... SELECT: inner SELECT not mapped to sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs, so the SELECT is not mapped"},
+                {"the SELECT an INSERT reads from is not mapped to sqlite_orm codegen", SourceLocation{1, 26}, 53}});
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE("codegen: a WITH in the body of a view leaves the view ungenerated") {
+    const auto result = generateLastOfBatch("CREATE TABLE users (id INTEGER, name TEXT);\n"
+                                            "CREATE VIEW v AS WITH c AS (SELECT name FROM users) SELECT name FROM c;");
+    REQUIRE(result.code == "/* CREATE VIEW v \xe2\x80\x94 not supported for sqlite_orm */");
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                {"nested WITH in subquery: sqlite_orm select(...) cannot embed CTEs, so the SELECT is not mapped"},
+                {"CREATE VIEW v: SELECT is not supported for sqlite_orm code generation"}});
+    REQUIRE(result.errors.empty());
+}

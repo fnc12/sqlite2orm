@@ -65,6 +65,8 @@ add_library(sqlite2orm_lib
     src/codegen_context.cpp
     src/codegen_expression.cpp
     src/codegen_select.cpp
+    src/codegen_select_from.cpp
+    src/codegen_select_subexpression.cpp
     src/codegen_dml.cpp
     src/codegen_ddl.cpp
     src/codegen_with.cpp

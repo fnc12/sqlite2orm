@@ -16,7 +16,6 @@ TEST_CASE("source layout: no file under src/ grows past 1500 lines") {
     const std::vector<std::string> expected{
         "codegen_ddl.cpp",
         "codegen_expression.cpp",
-        "codegen_select.cpp",
     };
 
     std::vector<std::string> found;

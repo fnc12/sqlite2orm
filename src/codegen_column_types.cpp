@@ -26,6 +26,31 @@ namespace sqlite2orm {
         }
 
         /**
+         *  How many terms of the PRIMARY KEY of `createTable` name `column`. A rowid table keeps
+         *  every term, so `PRIMARY KEY(a, a)` is a key of two columns there, while a WITHOUT ROWID
+         *  table drops the repeats and keys on `a` alone (checked against sqlite3 3.51.0 through a
+         *  foreign key naming no column of such a parent).
+         */
+        int primaryKeyTermsOfColumn(const CreateTableNode& createTable, const ColumnDef& column) {
+            if (column.primaryKey) {
+                return 1;
+            }
+            const std::string columnName = normalizeSqlName(column.name);
+            int terms = 0;
+            for (const TablePrimaryKey& primaryKey: createTable.primaryKeys) {
+                for (const KeyColumn& keyColumn: primaryKey.columns) {
+                    if (normalizeSqlName(keyColumn.name) == columnName) {
+                        ++terms;
+                    }
+                }
+            }
+            if (createTable.withoutRowid && terms > 1) {
+                return 1;
+            }
+            return terms;
+        }
+
+        /**
          *  Whether `column` is the rowid alias of `createTable` — the column SQLite stores the
          *  rowid itself in rather than beside. Everything about it is spelling: the declared type
          *  has to be INTEGER and nothing else (an `INT PRIMARY KEY` is an ordinary column with a
@@ -147,7 +172,11 @@ namespace sqlite2orm {
             // VIRTUAL from STORED, and stays `none` for the bare `AS (...)` spelling SQLite
             // documents as the default.
             const bool generated = column.generatedExpression != nullptr;
-            columns.push_back(SourceTableColumn{stripIdentifierQuotes(column.name), cppType, nullable, generated});
+            columns.push_back(SourceTableColumn{stripIdentifierQuotes(column.name),
+                                                cppType,
+                                                nullable,
+                                                generated,
+                                                primaryKeyTermsOfColumn(createTable, column)});
         }
         return columns;
     }

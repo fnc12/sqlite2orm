@@ -1286,6 +1286,16 @@ TEST_CASE("codegen: a predicate after the keyword of a LIKE, GLOB or MATCH is ca
         REQUIRE(generate("a NOT LIKE (b IS NULL)") == "!like(&User::a, cast<int64_t>(is_null(&User::b)))");
         REQUIRE(generate("a LIKE 'x' ESCAPE (b IS NULL)") ==
                 R"(like(&User::a, "x", cast<int64_t>(is_null(&User::b))))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b NOT NULL)") ==
+                R"(like(&User::a, "x", cast<int64_t>(is_not_null(&User::b))))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b IN (1, 2))") ==
+                R"(like(&User::a, "x", cast<int64_t>(in(&User::b, {1, 2}))))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b NOT IN (1, 2))") ==
+                R"(like(&User::a, "x", cast<int64_t>(not_in(&User::b, {1, 2}))))");
+        REQUIRE(generate("a LIKE 'x' ESCAPE (b BETWEEN 1 AND 2)") ==
+                R"(like(&User::a, "x", cast<int64_t>(between(&User::b, 1, 2))))");
+        REQUIRE(generate("a NOT LIKE 'x' ESCAPE (b IN (1, 2))") ==
+                R"(!like(&User::a, "x", cast<int64_t>(in(&User::b, {1, 2}))))");
         REQUIRE(generate("a GLOB (b IS NULL)") == "glob(&User::a, cast<int64_t>(is_null(&User::b)))");
         REQUIRE(generate("a NOT GLOB (b = 1)") == "!glob(&User::a, cast<int64_t>(c(&User::b) == 1))");
         REQUIRE(generate("a MATCH (b IS NULL)") == "match(&User::a, cast<int64_t>(is_null(&User::b)))");

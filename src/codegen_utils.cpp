@@ -4478,7 +4478,11 @@ namespace sqlite2orm {
                                underlineLengthOf(stringLiteral->value)};
         }
         if (const auto* columnRef = dynamic_cast<const ColumnRefNode*>(&valueNode)) {
-            return PragmaValue{stripIdentifierQuotes(columnRef->columnName),
+            // A name in double quotes or backquotes escapes its own quote by doubling it, the way a
+            // string literal does, so `"a""b"` names `a"b`; a bracketed name has no escape at all.
+            const std::string_view name = columnRef->columnName;
+            const bool escapesItsQuote = !name.empty() && (name.front() == '"' || name.front() == '`');
+            return PragmaValue{escapesItsQuote ? sqlStringLiteralText(name) : stripIdentifierQuotes(name),
                                std::string(columnRef->columnName),
                                columnRef->location,
                                underlineLengthOf(columnRef->columnName)};

@@ -1,6 +1,7 @@
 #include "codegen_dml.h"
 #include "codegen_context.h"
 #include "codegen_utils.h"
+#include "parenthesized_condition_scope.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
@@ -340,6 +341,9 @@ namespace sqlite2orm {
         if (updateNode.schemaName) {
             warnings.push_back("schema-qualified table in UPDATE is not represented in sqlite_orm mapping");
         }
+        if (auto hintWarning = tableIndexHintWarning(updateNode.indexHint)) {
+            warnings.push_back(std::move(*hintWarning));
+        }
         if (updateNode.orConflict != ConflictClause::none) {
             warnings.push_back(
                 "UPDATE OR modifier is not represented in sqlite_orm; generated code uses update_all(...) without OR");
@@ -389,6 +393,9 @@ namespace sqlite2orm {
         std::vector<CodegenWarning> warnings;
         if (deleteNode.schemaName) {
             warnings.push_back("schema-qualified table in DELETE is not represented in sqlite_orm mapping");
+        }
+        if (auto hintWarning = tableIndexHintWarning(deleteNode.indexHint)) {
+            warnings.push_back(std::move(*hintWarning));
         }
         std::string tableStruct = this->context.structNameForTable(deleteNode.tableName);
         std::string savedStruct = this->context.structName;

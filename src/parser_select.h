@@ -27,6 +27,12 @@ namespace sqlite2orm {
         std::optional<SelectColumn> parseSelectResultColumn();
         std::vector<FromClauseItem> parseFromClause();
         FromTableClause parseFromTableItem();
+        /**
+         *  The `INDEXED BY <index>` or `NOT INDEXED` after a qualified table name, if one is
+         *  written there. Answers `false`, with the error reported, on an `INDEXED` that is not
+         *  followed by `BY` and an index name.
+         */
+        bool parseTableIndexHint(TableIndexHint& out);
         bool consumeJoinOperator(JoinKind& out);
         void parseJoinConstraint(FromClauseItem& item);
         bool isFromTableItemStart() const;

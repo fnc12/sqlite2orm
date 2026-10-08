@@ -270,10 +270,22 @@ namespace {
         std::ostringstream program;
         program << "#include <sqlite_orm/sqlite_orm.h>\n"
                    "#include <iostream>\n"
+                   "#include <optional>\n"
                    "\n"
                    "struct Users {\n"
                    "    int a = 0;\n"
                    "};\n"
+                   "\n"
+                   "template<class T>\n"
+                   "void printValue(const T& value) {\n"
+                   "    std::cout << value;\n"
+                   "}\n"
+                   "\n"
+                   // A scalar subquery that may answer no row is read back through an optional.
+                   "template<class T>\n"
+                   "void printValue(const std::optional<T>& value) {\n"
+                   "    value ? printValue(*value) : void(std::cout << \"NULL\");\n"
+                   "}\n"
                    "\n"
                    "int main() {\n"
                    "    using namespace sqlite_orm;\n"
@@ -286,7 +298,8 @@ namespace {
             program << "    {\n        " << statement
                     << "\n        const char* separator = \"\";\n"
                        "        for(const auto& row: rows) {\n"
-                       "            std::cout << separator << row;\n"
+                       "            std::cout << separator;\n"
+                       "            printValue(row);\n"
                        "            separator = \",\";\n"
                        "        }\n"
                        "        std::cout << '\\n';\n    }\n";
@@ -2461,6 +2474,34 @@ TEST_CASE("runtime: a scalar subquery result column reads the NULL back") {
             std::vector<std::string>{"NULL", "NULL", "NULL", "NULL", "NULL"});
 }
 
+// SQLite reads a scalar subquery that answers no row as NULL, and sqlite_orm types the subquery as
+// its result column — the `int` of a NOT NULL field, the `int` of a constant — so that NULL reached
+// the caller as 0. Every value below is what sqlite3 3.51 answers over `users(a INTEGER NOT NULL)`
+// holding the one row 7; the last statement is an aggregate query, which answers one row however
+// many it reads, and keeps its plain type.
+TEST_CASE("runtime: a scalar subquery over no row reads the NULL back") {
+    const std::vector<std::string> statements{
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT (SELECT a FROM user WHERE a < 0) FROM user;")
+            .code,
+        generateLastOfBatch("CREATE TABLE user(a INTEGER NOT NULL); SELECT (SELECT a FROM user WHERE a > 0) FROM user;")
+            .code,
+        generate("SELECT (SELECT 1 WHERE 0);"),
+        generate("SELECT (SELECT 1 LIMIT 0);"),
+        generateLastOfBatch(
+            "CREATE TABLE user(a INTEGER NOT NULL); SELECT (SELECT count(*) FROM user WHERE a < 0) FROM user;")
+            .code,
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(as_optional(select(&User::a, where(c(&User::a) < 0))), from<User>());",
+                "auto rows = storage.select(as_optional(select(&User::a, where(c(&User::a) > 0))), from<User>());",
+                "auto rows = storage.select(as_optional(select(1, where(0))));",
+                "auto rows = storage.select(as_optional(select(1, limit(0))));",
+                "auto rows = storage.select(select(count<User>(), where(c(&User::a) < 0)), from<User>());",
+            });
+    REQUIRE(selectedValues(statements) == std::vector<std::string>{"NULL", "7", "NULL", "NULL", "0"});
+}
+
 // sqlite_orm types `case_<R>` as R, and the inference that picks R — the type of the first
 // branch's result — never names a nullable type, so a CASE that answers NULL reached the caller as
 // 0. Both NULLs a CASE has are run here: a branch result that is one, and no branch matching with
@@ -2994,7 +3035,7 @@ TEST_CASE("runtime: a select whose subquery names its own table returns the rows
     REQUIRE(statements ==
             std::vector<std::string>{
                 "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))));",
-                "auto rows = storage.select(select(1, from<Users>(), limit(1)), from<Users>());",
+                "auto rows = storage.select(as_optional(select(1, from<Users>(), limit(1))), from<Users>());",
                 "auto rows = storage.select(1, from<Users>(), where(select(1, from<Users>(), limit(1))));",
                 "auto rows = storage.select(1, from<Users>(), order_by(select(1, from<Users>(), limit(1))));",
                 "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))), limit(2));",
@@ -3193,4 +3234,27 @@ TEST_CASE("runtime: printf with only a format is the SQL printf and answers NULL
                                                       "SELECT PRINTF(?, ?)",
                                                       "1",
                                                   });
+}
+
+// Over `users` holding 1, 2 and 3 with an index on `a`, sqlite3 3.51.0 answers
+// `SELECT a FROM users NOT INDEXED WHERE a > 1` and its INDEXED BY twin with 2,3, leaves
+// `UPDATE users INDEXED BY ua SET a = a * 10 WHERE a > 1` with 1,20,30 and then
+// `DELETE FROM users NOT INDEXED WHERE a > 1` with 1. The code generated before lost the WHERE
+// with the hint and answered 1,2,3; generated without the hint it answers what sqlite3 does.
+TEST_CASE("runtime: a statement over a table with an index hint answers the rows SQLite does") {
+    const std::vector<std::string> statements{
+        generate("SELECT a FROM users NOT INDEXED WHERE a > 1;"),
+        generate("SELECT a FROM users INDEXED BY ua WHERE a > 1;"),
+        generate("UPDATE users INDEXED BY ua SET a = a * 10 WHERE a > 1;") + " " + generate("SELECT a FROM users;"),
+        generate("DELETE FROM users NOT INDEXED WHERE a > 1;") + " " + generate("SELECT a FROM users;"),
+    };
+    REQUIRE(statements ==
+            std::vector<std::string>{
+                "auto rows = storage.select(&Users::a, where(c(&Users::a) > 1));",
+                "auto rows = storage.select(&Users::a, where(c(&Users::a) > 1));",
+                "storage.update_all(set(c(&Users::a) = c(&Users::a) * 10), where(c(&Users::a) > 1)); auto rows = "
+                "storage.select(&Users::a);",
+                "storage.remove_all<Users>(where(c(&Users::a) > 1)); auto rows = storage.select(&Users::a);",
+            });
+    REQUIRE(selectedRowValues(statements) == std::vector<std::string>{"2,3", "2,3", "1,20,30", "1"});
 }

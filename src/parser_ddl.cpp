@@ -2,6 +2,9 @@
 #include <sqlite2orm/parser.h>
 #include <sqlite2orm/utils.h>
 
+#include <string>
+#include <string_view>
+
 namespace sqlite2orm {
 
     DdlParser::DdlParser(Parser& parser, TokenStream& tokenStream) : parser(parser), tokenStream(tokenStream) {}
@@ -749,6 +752,23 @@ namespace sqlite2orm {
         }
         if (statement) {
             statement->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
+        }
+        // SQLite takes the hint on a SELECT of a trigger body, and refuses it on the table an UPDATE
+        // or a DELETE there writes, in these words on 3.51.0.
+        const TableIndexHint* writtenTableHint = nullptr;
+        if (auto* updateNode = dynamic_cast<const UpdateNode*>(statement.get())) {
+            writtenTableHint = &updateNode->indexHint;
+        } else if (auto* deleteNode = dynamic_cast<const DeleteNode*>(statement.get())) {
+            writtenTableHint = &deleteNode->indexHint;
+        }
+        if (writtenTableHint && writtenTableHint->kind != TableIndexHintKind::none) {
+            const std::string_view clause =
+                writtenTableHint->kind == TableIndexHintKind::indexedBy ? "INDEXED BY" : "NOT INDEXED";
+            this->parser.reportError(ParseError{"the " + std::string(clause) +
+                                                    " clause is not allowed on UPDATE or DELETE statements within "
+                                                    "triggers",
+                                                writtenTableHint->sourceSpan.location});
+            return nullptr;
         }
         return statement;
     }

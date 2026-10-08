@@ -49,6 +49,13 @@ add_library(sqlite2orm_lib
     src/validator.cpp
     src/codegen.cpp
     src/codegen_utils.cpp
+    src/codegen_column_types.cpp
+    src/codegen_operators.cpp
+    src/codegen_literals.cpp
+    src/codegen_value_types.cpp
+    src/codegen_result_types.cpp
+    src/codegen_pragma_values.cpp
+    src/parenthesized_condition_scope.cpp
     src/code_span_builder.cpp
     src/spanned_code.cpp
     src/codegen_forms.cpp
@@ -167,6 +174,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/parser_tests_upsert.cpp
         tests/parser_tests_trigger.cpp
         tests/parser_tests_index.cpp
+        tests/parser_tests_index_hint.cpp
         tests/parser_tests_virtual_table.cpp
         tests/parser_tests_from_derived.cpp
         tests/parser_tests_create_view.cpp
@@ -198,6 +206,7 @@ if(SQLITE2ORM_BUILD_TESTS)
         tests/readme_tests.cpp
         tests/coverage_doc_tests.cpp
         tests/source_file_text.cpp
+        tests/source_layout_tests.cpp
         tests/sqlite_orm_revision_tests.cpp
         tests/temp_build_dir.cpp
     )

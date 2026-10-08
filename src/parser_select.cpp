@@ -445,7 +445,47 @@ namespace sqlite2orm {
             item.alias = std::string(current().value);
             advanceToken();
         }
+        // SQLite reads the hint after the alias, and only after a table: `FROM t AS x INDEXED BY i`
+        // is a statement, `FROM t INDEXED BY i AS x`, `FROM (SELECT …) NOT INDEXED` and
+        // `FROM json_each(…) NOT INDEXED` are syntax errors on 3.51.0, and the token stays here
+        // for the statement to be refused on.
+        if (item.tableFunctionArgs.empty()) {
+            parseTableIndexHint(item.indexHint);
+        }
         return item;
+    }
+
+    bool SelectParser::parseTableIndexHint(TableIndexHint& out) {
+        const size_t firstTokenIndex = this->tokenStream.currentPosition();
+        if (check(TokenType::kwNot) && peekToken(1).type == TokenType::kwIndexed) {
+            advanceToken();
+            advanceToken();
+            out =
+                TableIndexHint{TableIndexHintKind::notIndexed, {}, this->tokenStream.consumedSpanFrom(firstTokenIndex)};
+            return true;
+        }
+        if (!match(TokenType::kwIndexed)) {
+            return true;
+        }
+        if (!match(TokenType::kwBy)) {
+            this->parser.reportError(ParseError{"expected BY after INDEXED", current().location});
+            return false;
+        }
+        // SQLite reads the index as `nm`: an identifier, a string, or a keyword it folds back into
+        // one. `INDEXED BY WHERE a > 1` is `near "WHERE": syntax error` on 3.51.0, and read as an
+        // index named WHERE it would leave the condition behind.
+        const TokenType nameType = current().type;
+        if (nameType != TokenType::identifier && nameType != TokenType::stringLiteral &&
+            !isKeywordUsableAsName(nameType)) {
+            this->parser.reportError(ParseError{"expected an index name after INDEXED BY", current().location});
+            return false;
+        }
+        std::string indexName(current().value);
+        advanceToken();
+        out = TableIndexHint{TableIndexHintKind::indexedBy,
+                             std::move(indexName),
+                             this->tokenStream.consumedSpanFrom(firstTokenIndex)};
+        return true;
     }
 
     std::vector<FromClauseItem> SelectParser::parseFromClause() {

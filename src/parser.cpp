@@ -44,6 +44,10 @@ namespace sqlite2orm {
         return this->selectParser->parseFromClause();
     }
 
+    bool Parser::parseTableIndexHint(TableIndexHint& out) {
+        return this->selectParser->parseTableIndexHint(out);
+    }
+
     AstNodePointer Parser::parseInsertStatement(bool replaceInto) {
         return this->dmlParser->parseInsertStatement(replaceInto);
     }

@@ -217,6 +217,7 @@ Statuses:
 - [x] table-name
 - [x] schema-name.table-name (FROM; codegen warning for schema)
 - [x] table-name AS alias / table-name alias (alias map for `qual.col` codegen)
+- [~] table-name INDEXED BY index-name / table-name NOT INDEXED — parsed after the alias, where SQLite reads it, and refused after a subquery or a table-valued function as SQLite refuses it. sqlite_orm has no form for either, so the statement is generated without the hint and warns: a hint picks the plan, never the rows, so the code answers what the SQL does, but SQLite may plan it otherwise, and for `INDEXED BY` the generated code also runs where SQLite refuses the statement (`no such index`, or `no query solution` for an index it cannot plan with). Partial for that reason
 - [x] Comma-separated table-refs (parsed as implicit `CROSS JOIN`; codegen emits join chain). SQLite reads an ON or a USING after a comma the way it reads one after JOIN, and so does the parser: `FROM users, posts ON users.id = posts.user_id` answers the rows the constraint keeps. A constrained comma is generated as `join<T>(...)` with no warning: a comma raises no reordering barrier where the `CROSS JOIN` keyword does — measured on sqlite3 3.51.0 with EXPLAIN QUERY PLAN — so the generated join is an exact translation of it
 - [!] (select-stmt) AS alias — subselect in FROM (not in sqlite_orm)
 - [!] table-function-name(args) (parsed; validator error — not in sqlite_orm codegen)
@@ -325,6 +326,7 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 - [x] UPDATE OR IGNORE (parsed; codegen omits OR + warning)
 - [x] UPDATE OR REPLACE (parsed; codegen omits OR + warning)
 - [x] UPDATE OR ROLLBACK (parsed; codegen omits OR + warning)
+- [~] UPDATE table INDEXED BY index-name / NOT INDEXED — generated without the hint, with the warning a SELECT gives; refused in a trigger body, as SQLite refuses it there
 - [!] UPDATE ... FROM ... (SQLite 3.33+ — parsed; validator error; codegen warning)
 - [!] RETURNING clause (parsed into `UpdateNode::returning`; validator error — not in sqlite_orm)
 
@@ -334,6 +336,7 @@ arguments")`), so `INSERT INTO u(b) SELECT … UNION SELECT …` is placeheld wh
 
 - [x] DELETE FROM table WHERE ...
 - [x] DELETE FROM table (no WHERE)
+- [~] DELETE FROM table INDEXED BY index-name / NOT INDEXED — generated without the hint, with the warning a SELECT gives; refused in a trigger body, as SQLite refuses it there
 - [!] RETURNING clause (parsed into `DeleteNode::returning`; validator error — not in sqlite_orm)
 
 ---

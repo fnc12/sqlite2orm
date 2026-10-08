@@ -640,6 +640,12 @@ namespace sqlite2orm {
     CodegenWarning sourceSpanWarning(std::string message, const AstNode& astNode);
     /** The same for a span kept on its own, away from the node it was parsed into. */
     CodegenWarning sourceSpanWarning(std::string message, const SourceSpan& sourceSpan);
+    /**
+     *  The warning a table's `INDEXED BY` or `NOT INDEXED` leaves behind, anchored on the clause:
+     *  sqlite_orm has no form for either, and the statement is generated without it. Nothing for a
+     *  table carrying no hint.
+     */
+    std::optional<CodegenWarning> tableIndexHintWarning(const TableIndexHint& hint);
     /** A hint anchored the way `sourceSpanWarning` anchors a warning, at the span of `astNode`. */
     CodegenComment sourceSpanComment(std::string message, const AstNode& astNode);
     /** The same for a span kept on its own — the alias of a result column, a statement's opening keywords. */
@@ -700,27 +706,6 @@ namespace sqlite2orm {
                                          CodeGeneratorContext& context,
                                          const AstNode& node,
                                          bool& compound);
-    /**
-     *  Marks `condition` as the node a `where(...)` is about to be built around while it is
-     *  generated. `where_t` is the one clause that serializes its argument inside parentheses, so a
-     *  compound subquery standing there — and only there — comes out as the SQL it was read from.
-     *  The mark is the node itself and not a flag: `where(a > (SELECT … UNION …))` generates the
-     *  same subquery one level down, where the parentheses are not written, and pointer identity is
-     *  what tells the two apart. The previous mark is restored rather than cleared, so the mark
-     *  never outlives the clause it was taken for.
-     */
-    class ParenthesizedConditionScope {
-      public:
-        ParenthesizedConditionScope(CodeGeneratorContext& context, const AstNode& condition);
-        ~ParenthesizedConditionScope();
-
-        ParenthesizedConditionScope(const ParenthesizedConditionScope&) = delete;
-        ParenthesizedConditionScope& operator=(const ParenthesizedConditionScope&) = delete;
-
-      private:
-        CodeGeneratorContext& context;
-        const AstNode* enclosing;
-    };
     /**
      *  The SQL text of the numeric literal `value` denotes, folded minus signs included and digit
      *  separators gone, the way SQLite spells it back in a diagnostic; empty for anything else.
@@ -935,7 +920,9 @@ namespace sqlite2orm {
      *  IN, a LIKE and a GLOB `bool`, a CAST the type the CAST asks for, and a built-in function
      *  call the return type that function declares. None of those can hold a NULL, so such a row
      *  is read back as 0 / "" / false. A scalar subquery is typed from the result column of the
-     *  nested `select(...)`, so it needs the widening exactly when that column does. `as_optional`
+     *  nested `select(...)`, so it needs the widening when that column does, and also when the
+     *  nested select may answer no row — SQLite reads that as NULL — over a column whose type
+     *  holds none: a constant, an operator, or a column the schema declares NOT NULL. `as_optional`
      *  leaves the SQL untouched and yields `std::optional<T>` instead. Every other expression
      *  sqlite_orm already types nullably where it has to (a column carries its field's type,
      *  `abs(...)` is a `std::unique_ptr`, `max(...)` and `coalesce(...)` carry the type of an

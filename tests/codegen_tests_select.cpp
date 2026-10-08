@@ -1042,10 +1042,10 @@ TEST_CASE("codegen: a scalar subquery that needs no widening keeps the type sqli
             "auto rows = storage.select(select(max(&Users::a)), from<Users>());");
     REQUIRE(generate("SELECT (SELECT abs(a) FROM users) FROM users;") ==
             "auto rows = storage.select(select(sqlite_orm::abs(&Users::a)), from<Users>());");
-    // The NULL SQLite answers a scalar subquery over an empty rowset with is a hole of its own:
-    // `(SELECT a FROM users)` is NULL on an empty table however the column is declared, and
-    // whether the field it is read into already holds an optional is the table's to answer, which
-    // no schema reaches this layer to. Carded separately.
+    // `(SELECT a FROM users)` is NULL on an empty table however the column is declared, but a column
+    // no schema resolves may be a field that holds an optional already, so it is left alone. The
+    // schema answers in "codegen: a scalar subquery that may answer no row is generated as
+    // as_optional".
     REQUIRE(generate("SELECT (SELECT a FROM users) FROM users;") ==
             "auto rows = storage.select(select(&Users::a), from<Users>());");
     REQUIRE(generate("SELECT a FROM users WHERE (SELECT 1 / 0);") ==
@@ -1054,6 +1054,59 @@ TEST_CASE("codegen: a scalar subquery that needs no widening keeps the type sqli
     // rejects it ("sub-select returns 2 columns - expected 1"), and `as_optional` over the
     // `columns(...)` tuple would not compile.
     REQUIRE(generate("SELECT (SELECT 1 / 0, 2);") == "auto rows = storage.select(select(columns(c(1) / 0, 2)));");
+}
+
+// SQLite reads a scalar subquery that answers no row as NULL whatever its result column is:
+// sqlite3 3.51 answers `typeof((SELECT a FROM t))`, `typeof((SELECT 1 WHERE 0))` and
+// `typeof((SELECT 1 LIMIT 0))` with null over an empty `t(a INTEGER NOT NULL)`, while sqlite_orm
+// types the subquery as its column — an `int64_t` field, a constant — and read that NULL back as 0.
+// The widening goes where the column type holds no NULL and the select may answer no row.
+// Values checked in "runtime: a scalar subquery over no row reads the NULL back".
+TEST_CASE("codegen: a scalar subquery that may answer no row is generated as as_optional") {
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT a FROM t) FROM u;")
+                .code == "auto rows = storage.select(as_optional(select(&T::a)), from<U>());");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT t.a FROM t) FROM u;")
+                .code == "auto rows = storage.select(as_optional(select(&T::a)), from<U>());");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT 'x' FROM t) FROM u;")
+                .code == "auto rows = storage.select(as_optional(select(\"x\", from<T>())), from<U>());");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT a FROM "
+                                "t WHERE a > 1) FROM u;")
+                .code == "auto rows = storage.select(as_optional(select(&T::a, where(c(&T::a) > 1))), from<U>());");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT "
+                                "count(*) FROM t LIMIT 0) FROM u;")
+                .code == "auto rows = storage.select(as_optional(select(count<T>(), limit(0))), from<U>());");
+    REQUIRE(generate("SELECT (SELECT 1 WHERE 0);") == "auto rows = storage.select(as_optional(select(1, where(0))));");
+    REQUIRE(generate("SELECT (SELECT 1 LIMIT 0);") == "auto rows = storage.select(as_optional(select(1, limit(0))));");
+    // The NULL of the inner subquery reaches the outer one as its result column, and one
+    // `as_optional` at the outermost subquery is what the caller reads it through.
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT (SELECT "
+                                "a FROM t) FROM u) FROM u;")
+                .code == "auto rows = storage.select(as_optional(select(select(&T::a), from<U>())), from<U>());");
+}
+
+// An aggregate query with no GROUP BY answers exactly one row however many it reads, and a select
+// with no FROM and no WHERE answers one row too: sqlite3 3.51 answers `(SELECT count(*) FROM t)`
+// and `(SELECT count(*) WHERE 0)` with 0 over an empty `t`. A column whose field already holds an
+// optional, and a call sqlite_orm types nullably, carry the NULL of an empty rowset on their own.
+TEST_CASE("codegen: a scalar subquery that answers a row or a nullable type is left plain") {
+    REQUIRE(
+        generateLastOfBatch(
+            "CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT count(*) FROM t) FROM u;")
+            .code == "auto rows = storage.select(select(count<T>()), from<U>());");
+    REQUIRE(generateLastOfBatch("CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT "
+                                "count(*) + 1 FROM t) FROM u;")
+                .code == "auto rows = storage.select(select(count<T>() + 1), from<U>());");
+    REQUIRE(generateLastOfBatch(
+                "CREATE TABLE t(a INTEGER NOT NULL); CREATE TABLE u(x INTEGER); SELECT (SELECT max(a) FROM t) FROM u;")
+                .code == "auto rows = storage.select(select(max(&T::a)), from<U>());");
+    REQUIRE(
+        generateLastOfBatch("CREATE TABLE t(a INTEGER); CREATE TABLE u(x INTEGER); SELECT (SELECT a FROM t) FROM u;")
+            .code == "auto rows = storage.select(select(&T::a), from<U>());");
+    REQUIRE(generate("SELECT (SELECT count(*) WHERE 0);") == "auto rows = storage.select(select(count(), where(0)));");
+    REQUIRE(generate("SELECT (SELECT 1);") == "auto rows = storage.select(select(1));");
 }
 
 // A NaN is the one value SQLite has no storage class for, so it stores one as NULL: `+`, `-` and
@@ -2956,7 +3009,7 @@ TEST_CASE("codegen: a subquery naming no recordset carries its own FROM") {
     REQUIRE(generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM orders);") ==
             "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Orders>()))));");
     REQUIRE(generate("SELECT (SELECT 1 FROM orders) FROM users;") ==
-            "auto rows = storage.select(select(1, from<Orders>()), from<Users>());");
+            "auto rows = storage.select(as_optional(select(1, from<Orders>())), from<Users>());");
     REQUIRE(generate("SELECT 1 FROM users UNION SELECT 2 FROM orders;") ==
             "auto rows = storage.select(union_(select(1, from<Users>()), select(2, from<Orders>())));");
     REQUIRE(generate("INSERT INTO orders SELECT 1 FROM users;") ==
@@ -3031,7 +3084,7 @@ TEST_CASE("codegen: a select whose subquery names its own table carries its FROM
     REQUIRE(generate("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users);") ==
             "auto rows = storage.select(1, from<Users>(), where(exists(select(1, from<Users>()))));");
     REQUIRE(generate("SELECT (SELECT 1 FROM users LIMIT 1) FROM users;") ==
-            "auto rows = storage.select(select(1, from<Users>(), limit(1)), from<Users>());");
+            "auto rows = storage.select(as_optional(select(1, from<Users>(), limit(1))), from<Users>());");
     REQUIRE(generate("SELECT 1 FROM users WHERE (SELECT 1 FROM users LIMIT 1);") ==
             "auto rows = storage.select(1, from<Users>(), where(select(1, from<Users>(), limit(1))));");
     REQUIRE(generate("SELECT 1 FROM users ORDER BY (SELECT 1 FROM users LIMIT 1);") ==
@@ -3304,4 +3357,84 @@ TEST_CASE("codegen: SELECT column alias holding a backslash and a line break") {
                            "    }\n"
                            "};\n"
                            "auto rows = storage.select(as<A_b_cAlias>(&Users::name));");
+}
+
+// `INDEXED BY` and `NOT INDEXED` pick the plan, never the rows, and sqlite_orm has no form for
+// either: the statement is generated as the one without the hint — the same code to the
+// character — and a warning underlines the clause. Before, the hint stopped the parse, and the
+// clauses after it, the WHERE among them, were missing from the code generated.
+TEST_CASE("codegen: SELECT FROM a table NOT INDEXED keeps the clauses after it") {
+    auto result = generateFull("SELECT name FROM users NOT INDEXED WHERE id > 1 ORDER BY name LIMIT 2");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(&Users::name, where(c(&Users::id) > 1), order_by(&Users::name), limit(2));");
+    REQUIRE(result.code == generate("SELECT name FROM users WHERE id > 1 ORDER BY name LIMIT 2"));
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{CodegenWarning{
+                                   "NOT INDEXED has no sqlite_orm form; the statement is generated without it and "
+                                   "answers the same rows, but SQLite may search the table with an index",
+                                   SourceLocation{1, 24},
+                                   11}});
+}
+
+TEST_CASE("codegen: SELECT FROM an aliased table INDEXED BY an index keeps the WHERE after it") {
+    auto result = generateFull("SELECT u.name FROM users AS u INDEXED BY users_id WHERE u.id > 1");
+    REQUIRE(result.code == "auto rows = storage.select(alias_column<alias_a<Users>>(&Users::name), "
+                           "where(alias_column<alias_a<Users>>(&Users::id) > 1));");
+    REQUIRE(result.code == generate("SELECT u.name FROM users AS u WHERE u.id > 1"));
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"INDEXED BY has no sqlite_orm form; the statement is generated without it and answers "
+                               "the same rows, but SQLite may plan it without index users_id, and the generated code "
+                               "runs where SQLite refuses the statement for an index the table lacks or cannot be "
+                               "planned with",
+                               SourceLocation{1, 31},
+                               19}});
+}
+
+TEST_CASE("codegen: an index hint on each side of a join warns once for each") {
+    auto result = generateFull(
+        "SELECT users.name FROM users NOT INDEXED JOIN posts INDEXED BY posts_user ON users.id = posts.user_id");
+    REQUIRE(result.code ==
+            "auto rows = storage.select(&Users::name, join<Posts>(on(c(&Users::id) == &Posts::user_id)));");
+    REQUIRE(result.code == generate("SELECT users.name FROM users JOIN posts ON users.id = posts.user_id"));
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"NOT INDEXED has no sqlite_orm form; the statement is generated without it and "
+                               "answers the same rows, but SQLite may search the table with an index",
+                               SourceLocation{1, 30},
+                               11},
+                CodegenWarning{"INDEXED BY has no sqlite_orm form; the statement is generated without it and answers "
+                               "the same rows, but SQLite may plan it without index posts_user, and the generated "
+                               "code runs where SQLite refuses the statement for an index the table lacks or cannot "
+                               "be planned with",
+                               SourceLocation{1, 53},
+                               21}});
+}
+
+TEST_CASE("codegen: an index hint in a subquery keeps the subquery's WHERE") {
+    auto result = generateFull(
+        "SELECT name FROM users WHERE id IN (SELECT user_id FROM posts INDEXED BY posts_user WHERE user_id > 1)");
+    REQUIRE(result.code == "auto rows = storage.select(&Users::name, from<Users>(), where(in(&Users::id, "
+                           "select(&Posts::user_id, where(c(&Posts::user_id) > 1)))));");
+    REQUIRE(result.code ==
+            generate("SELECT name FROM users WHERE id IN (SELECT user_id FROM posts WHERE user_id > 1)"));
+    REQUIRE(result.warnings ==
+            std::vector<CodegenWarning>{
+                CodegenWarning{"INDEXED BY has no sqlite_orm form; the statement is generated without it and answers "
+                               "the same rows, but SQLite may plan it without index posts_user, and the generated "
+                               "code runs where SQLite refuses the statement for an index the table lacks or cannot "
+                               "be planned with",
+                               SourceLocation{1, 63},
+                               21}});
+}
+
+TEST_CASE("codegen: an index hint on a trigger body SELECT keeps its WHERE") {
+    auto result = generateFull(
+        "CREATE TRIGGER tr AFTER INSERT ON users BEGIN SELECT id FROM posts NOT INDEXED WHERE user_id = NEW.id; END");
+    REQUIRE(result.code == "make_trigger(\"tr\", after().insert().on<Users>().begin(select(&Posts::id, "
+                           "where(c(&Posts::user_id) == new_(&Users::id)))));");
+    REQUIRE(result.warnings == std::vector<CodegenWarning>{CodegenWarning{
+                                   "NOT INDEXED has no sqlite_orm form; the statement is generated without it and "
+                                   "answers the same rows, but SQLite may search the table with an index",
+                                   SourceLocation{1, 68},
+                                   11}});
 }

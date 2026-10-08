@@ -1,6 +1,7 @@
 #include "codegen_select.h"
 #include "codegen_context.h"
 #include "codegen_utils.h"
+#include "parenthesized_condition_scope.h"
 #include <sqlite2orm/codegen.h>
 #include <sqlite2orm/utils.h>
 
@@ -541,6 +542,11 @@ namespace sqlite2orm {
                                                        "subselect in FROM is not supported in sqlite_orm codegen",
                                                        *fromItem.table.derivedSelect,
                                                        std::move(carried));
+            }
+        }
+        for (const auto& fromItem: selectNode.fromClause) {
+            if (auto hintWarning = tableIndexHintWarning(fromItem.table.indexHint)) {
+                selectWarnings.push_back(std::move(*hintWarning));
             }
         }
         // sqlite_orm spells a HAVING condition only as a tail of the GROUP BY clause
@@ -1304,6 +1310,11 @@ namespace sqlite2orm {
             if (fromItem.table.derivedSelect) {
                 subWarnings.push_back("subselect in FROM is not supported in sqlite_orm codegen");
                 return CodeGenResult{{}, {}, std::move(subWarnings)};
+            }
+        }
+        for (const auto& fromItem: selectNode.fromClause) {
+            if (auto hintWarning = tableIndexHintWarning(fromItem.table.indexHint)) {
+                subWarnings.push_back(std::move(*hintWarning));
             }
         }
 

@@ -51,6 +51,18 @@ namespace sqlite2orm {
             return names;
         }
 
+        /** The names of the virtual tables the batch creates, normalized. */
+        std::set<std::string> collectVirtualTableNames(const std::vector<ParseResult>& parseResults) {
+            std::set<std::string> names;
+            for (const ParseResult& parseResult: parseResults) {
+                const AstNode* root = parseResult.astNodePointer.get();
+                if (const auto* createVirtualTable = dynamic_cast<const CreateVirtualTableNode*>(root)) {
+                    names.insert(normalizeSqlIdentifier(createVirtualTable->tableName));
+                }
+            }
+            return names;
+        }
+
     }  // namespace
 
     ProcessSqlResult processSql(std::string_view sql) {
@@ -136,6 +148,7 @@ namespace sqlite2orm {
                       const CodeGenPolicy* policy,
                       const std::map<std::string, std::vector<SourceTableColumn>>& sourceTables,
                       const std::set<std::string>& schemaObjectNames,
+                      const std::set<std::string>& virtualTableNames,
                       UngeneratableNames& ungeneratable) {
             std::vector<CodeGenResult> generated(parseResults.size());
             std::map<std::string, int> batchVariableUses;
@@ -149,6 +162,7 @@ namespace sqlite2orm {
                 CodeGeneratorContext& context = codeGenerator.context();
                 context.sourceTableColumnsByNormalizedName = sourceTables;
                 context.schemaObjectNames = schemaObjectNames;
+                context.virtualTableNames = virtualTableNames;
                 context.batchVariableUses = batchVariableUses;
                 context.ungeneratableTables = ungeneratable.all;
                 context.ungeneratableViews = ungeneratable.views;
@@ -203,6 +217,7 @@ namespace sqlite2orm {
 
         const auto sourceTables = collectSourceTables(parseResults);
         const auto schemaObjectNames = collectSchemaObjectNames(parseResults);
+        const auto virtualTableNames = collectVirtualTableNames(parseResults);
         std::vector<std::vector<ValidationError>> validationErrors(parseResults.size());
         for (size_t index = 0; index < parseResults.size(); ++index) {
             if (!parseResults[index].astNodePointer) {
@@ -223,8 +238,13 @@ namespace sqlite2orm {
         std::vector<CodeGenResult> generated;
         for (;;) {
             const size_t knownBefore = ungeneratable.all.size();
-            generated =
-                generateBatch(parseResults, validationErrors, policy, sourceTables, schemaObjectNames, ungeneratable);
+            generated = generateBatch(parseResults,
+                                      validationErrors,
+                                      policy,
+                                      sourceTables,
+                                      schemaObjectNames,
+                                      virtualTableNames,
+                                      ungeneratable);
             if (ungeneratable.all.size() == knownBefore) {
                 break;
             }

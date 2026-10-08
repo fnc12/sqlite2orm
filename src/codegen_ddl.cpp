@@ -1830,9 +1830,10 @@ namespace sqlite2orm {
             }
             auto& foreignKey = *column.foreignKey;
             const auto cppName = toCppIdentifier(column.name);
-            // sqlite_orm resolves a foreign key against the table it maps for the referenced
-            // type, so a key into a table this batch cannot map would not compile at all.
-            if (this->context.isUngeneratableTable(foreignKey.table)) {
+            // sqlite_orm resolves a foreign key against the table its storage maps for the
+            // referenced type, so a key into a table this batch cannot map, or into a virtual
+            // table no storage holds, would not compile at all.
+            if (this->context.isUngeneratableForeignKeyParent(foreignKey.table)) {
                 warnings.push_back("foreign key on column '" + stripIdentifierQuotes(column.name) + "' references " +
                                    stripIdentifierQuotes(foreignKey.table) +
                                    ", which is not generated, so the generated table has no foreign_key()");
@@ -1905,7 +1906,7 @@ namespace sqlite2orm {
                 continue;
             }
             const std::string& cppName = *keyColumnMember;
-            if (this->context.isUngeneratableTable(tableForeignKey.references.table)) {
+            if (this->context.isUngeneratableForeignKeyParent(tableForeignKey.references.table)) {
                 warnings.push_back("table-level foreign key on column '" +
                                    stripIdentifierQuotes(tableForeignKey.column) + "' references " +
                                    stripIdentifierQuotes(tableForeignKey.references.table) +

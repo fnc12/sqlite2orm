@@ -2030,11 +2030,10 @@ TEST_CASE("processMultiSql: the snippet of a batch with a foreign key into a mis
                     joinGeneratedCode(results));
 }
 
-// The snippet path builds the same set from the statements of the batch: a CREATE VIEW and a
-// CREATE VIRTUAL TABLE each create a name a foreign key may point at, so neither key is left out
-// with the "does not create" warning. Pinned so that dropping either statement from the set
-// cannot pass unnoticed.
-TEST_CASE("processMultiSql: a foreign key into a view or a virtual table of the batch is kept") {
+// The snippet path builds the same set from the statements of the batch: a CREATE VIEW creates a
+// name a foreign key may point at, so the key is kept and not left out with the "does not create"
+// warning. Pinned so that dropping the statement from the set cannot pass unnoticed.
+TEST_CASE("processMultiSql: a foreign key into a view of the batch is kept") {
     const auto viewResults = processMultiSql("CREATE TABLE b (x INTEGER);\n"
                                              "CREATE VIEW v AS SELECT x FROM b;\n"
                                              "CREATE TABLE t (a INTEGER REFERENCES v(x));");
@@ -2056,23 +2055,54 @@ TEST_CASE("processMultiSql: a foreign key into a view or a virtual table of the 
                                               "    make_table(\"t\",\n"
                                               "        make_column(\"a\", &T::a),\n"
                                               "        foreign_key(&T::a).references(&V::x)));\n");
+}
 
-    const auto virtualTableResults = processMultiSql("CREATE VIRTUAL TABLE ft USING fts5(body);\n"
-                                                     "CREATE TABLE t (a INTEGER REFERENCES ft(body));");
-    REQUIRE(virtualTableResults.size() == 2);
-    REQUIRE(virtualTableResults[1].codegen.warnings.empty());
-    REQUIRE(joinGeneratedCode(virtualTableResults) == "struct Ft {\n"
-                                                      "    std::string body;\n"
-                                                      "};\n\n"
-                                                      "auto vtab = make_virtual_table<Ft>(\"ft\", "
-                                                      "using_fts5(make_column(\"body\", &Ft::body)));\n\n"
-                                                      "struct T {\n"
-                                                      "    std::optional<int64_t> a;\n"
-                                                      "};\n\n"
-                                                      "auto storage = make_storage(\"\",\n"
-                                                      "    make_table(\"t\",\n"
-                                                      "        make_column(\"a\", &T::a),\n"
-                                                      "        foreign_key(&T::a).references(&Ft::body)));\n");
+// A virtual table gets a struct and a `make_virtual_table`, but no storage of a plain schema holds
+// it, so sqlite_orm cannot resolve a foreign key into it: `references(&Ft::body)` fails to compile
+// with no matching `pick_table<mapped_type_proxy_t<Ft>>`. The key is left out with the warning
+// `--db` gives for the same schema — and not with the "does not create" one, which pins that a
+// virtual table stays among the names the batch creates. SQLite itself stores such a key in either order of the two
+// statements and only refuses it on use — `foreign key mismatch - "t" referencing "ft"` once
+// enforcement is on (checked against sqlite3 3.51.0).
+TEST_CASE("processMultiSql: a foreign key into a virtual table of the batch is left out") {
+    const auto columnKeyResults = processMultiSql("CREATE VIRTUAL TABLE ft USING fts5(body);\n"
+                                                  "CREATE TABLE t (a INTEGER REFERENCES ft(body));");
+    REQUIRE(columnKeyResults.size() == 2);
+    REQUIRE(columnKeyResults[1].codegen.warnings ==
+            std::vector<CodegenWarning>{{"foreign key on column 'a' references ft, which is not generated, so the "
+                                         "generated table has no foreign_key()"}});
+    REQUIRE(joinGeneratedCode(columnKeyResults) == "struct Ft {\n"
+                                                   "    std::string body;\n"
+                                                   "};\n\n"
+                                                   "auto vtab = make_virtual_table<Ft>(\"ft\", "
+                                                   "using_fts5(make_column(\"body\", &Ft::body)));\n\n"
+                                                   "struct T {\n"
+                                                   "    std::optional<int64_t> a;\n"
+                                                   "};\n\n"
+                                                   "auto storage = make_storage(\"\",\n"
+                                                   "    make_table(\"t\",\n"
+                                                   "        make_column(\"a\", &T::a)));\n");
+    requireCompiles(compiledPrologue + joinGeneratedCode(columnKeyResults));
+
+    const auto tableKeyResults =
+        processMultiSql("CREATE TABLE t (a INTEGER, FOREIGN KEY (a) REFERENCES \"FT\"(body));\n"
+                        "CREATE VIRTUAL TABLE ft USING fts5(body);");
+    REQUIRE(tableKeyResults.size() == 2);
+    REQUIRE(tableKeyResults[0].codegen.warnings ==
+            std::vector<CodegenWarning>{{"table-level foreign key on column 'a' references FT, which is not "
+                                         "generated, so the generated table has no foreign_key()"}});
+    REQUIRE(joinGeneratedCode(tableKeyResults) == "struct T {\n"
+                                                  "    std::optional<int64_t> a;\n"
+                                                  "};\n\n"
+                                                  "struct Ft {\n"
+                                                  "    std::string body;\n"
+                                                  "};\n\n"
+                                                  "auto vtab = make_virtual_table<Ft>(\"ft\", "
+                                                  "using_fts5(make_column(\"body\", &Ft::body)));\n\n"
+                                                  "auto storage = make_storage(\"\",\n"
+                                                  "    make_table(\"t\",\n"
+                                                  "        make_column(\"a\", &T::a)));\n");
+    requireCompiles(compiledPrologue + joinGeneratedCode(tableKeyResults));
 }
 
 // A trigger's WHEN expression lives in an `optional_container`, which default-constructs it, so

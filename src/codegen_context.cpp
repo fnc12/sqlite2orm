@@ -702,6 +702,11 @@ namespace sqlite2orm {
         return this->ungeneratableTables.find(normalizeSqlIdentifier(tableName)) != this->ungeneratableTables.end();
     }
 
+    bool CodeGeneratorContext::isUngeneratableForeignKeyParent(std::string_view tableName) const {
+        return this->isUngeneratableTable(tableName) ||
+               this->virtualTableNames.find(normalizeSqlIdentifier(tableName)) != this->virtualTableNames.end();
+    }
+
     std::string CodeGeneratorContext::structNameForTable(std::string_view tableName) {
         if (this->isUngeneratableTable(tableName)) {
             this->referencedUngeneratableTables.insert(normalizeSqlIdentifier(tableName));

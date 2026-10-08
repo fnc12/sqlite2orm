@@ -803,6 +803,56 @@ TEST_CASE("codegen: a compound SELECT as a scalar subquery leaves the statement 
             "auto rows = storage.select(&T::a, from<T>(), where(in(&T::a, union_(select(&U::b), select(&W::b)))));");
 }
 
+// The statement a compound in a value slot leaves out has to say why. IS NULL, NOTNULL, LIKE,
+// GLOB, MATCH, CAST and CASE used to keep only the code of their operands, so the compound's own
+// warning was lost under them and the one thing said was that "a construct" is not mapped.
+TEST_CASE("codegen: a compound SELECT under a predicate or a CAST or a CASE keeps its own warning") {
+    const CodegenWarning existsOverCompound{
+        "EXISTS over a compound SELECT is not mapped to sqlite_orm codegen: its "
+        "union_()/intersect()/except() form is a statement, which sqlite_orm serializes without the parentheses "
+        "EXISTS needs",
+        SourceLocation{1, 27},
+        55};
+    // The input of the card: sqlite3 3.51 answers it with every row of users, while the
+    // `exists(union_(…))` it used to generate serializes as `EXISTS SELECT … UNION SELECT …`.
+    REQUIRE(generateFull("SELECT 1 FROM users WHERE EXISTS (SELECT 1 FROM users UNION SELECT 1 FROM orders)") ==
+            CodeGenResult{{}, {}, {existsOverCompound, kStatementNotGenerated}});
+    REQUIRE(
+        generateFull("SELECT 1 FROM users WHERE NOT EXISTS (SELECT 1 FROM users UNION SELECT 1 FROM orders)") ==
+        CodeGenResult{{},
+                      {},
+                      {CodegenWarning{existsOverCompound.message, SourceLocation{1, 31}, 55}, kStatementNotGenerated}});
+
+    const std::vector<std::pair<std::string, CodegenWarning>> cases = {
+        {"SELECT CASE WHEN EXISTS (SELECT b FROM u UNION SELECT b FROM w) THEN 1 END FROM t",
+         CodegenWarning{existsOverCompound.message, SourceLocation{1, 18}, 46}},
+        {"SELECT a FROM t WHERE (SELECT b FROM u UNION SELECT b FROM w) IS NULL",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 23}, 39}},
+        {"SELECT a FROM t WHERE (SELECT b FROM u UNION SELECT b FROM w) NOTNULL",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 23}, 39}},
+        {"SELECT a FROM t WHERE a LIKE (SELECT b FROM u UNION SELECT b FROM w)",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 30}, 39}},
+        {"SELECT a FROM t WHERE a LIKE 'x' ESCAPE (SELECT b FROM u UNION SELECT b FROM w)",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 41}, 39}},
+        {"SELECT a FROM t WHERE a GLOB (SELECT b FROM u UNION SELECT b FROM w)",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 30}, 39}},
+        {"SELECT a FROM t WHERE a MATCH (SELECT b FROM u UNION SELECT b FROM w)",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 31}, 39}},
+        {"SELECT CAST((SELECT b FROM u UNION SELECT b FROM w) AS TEXT) FROM t",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 13}, 39}},
+        {"SELECT CASE (SELECT b FROM u UNION SELECT b FROM w) WHEN 1 THEN 2 END FROM t",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 13}, 39}},
+        {"SELECT CASE WHEN a THEN (SELECT b FROM u UNION SELECT b FROM w) END FROM t",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 25}, 39}},
+        {"SELECT CASE WHEN a THEN 1 ELSE (SELECT b FROM u UNION SELECT b FROM w) END FROM t",
+         CodegenWarning{kCompoundSubqueryMessage, SourceLocation{1, 32}, 39}},
+    };
+    for (const auto& [sql, warning]: cases) {
+        INFO(sql);
+        REQUIRE(generateFull(sql) == CodeGenResult{{}, {}, {warning, kStatementNotGenerated}});
+    }
+}
+
 // The other slot with a form for no subquery at all: sqlite_orm reads the columns of a CTE through
 // `extract_colref_expressions`, whose overload for a `select_t` is deleted, so a subquery standing
 // as a WHOLE column of a CTE does not build — `cte<cte_0>().as(select(select(&U::b)))`. It is that

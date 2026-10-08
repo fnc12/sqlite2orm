@@ -157,11 +157,18 @@ namespace sqlite2orm {
                 const size_t depthBeforeAttempt = this->expressionDepth;
                 if (!enterExpressionLevel())
                     return nullptr;
+                const size_t positionBeforeAttempt = this->tokenStream.currentPosition();
                 auto special = tryParseSpecialPostfix(left);
                 if (special) {
                     left = std::move(special);
                     left->sourceSpan = this->tokenStream.consumedSpanFrom(firstTokenIndex);
                     continue;
+                }
+                // A postfix that read its keyword and then found no operand is not "no postfix":
+                // going on would leave the keyword behind unread, and `a GLOB;` would come back as
+                // a bare `a`.
+                if (this->tokenStream.currentPosition() != positionBeforeAttempt) {
+                    return nullptr;
                 }
                 this->expressionDepth = depthBeforeAttempt;
             }
@@ -240,7 +247,7 @@ namespace sqlite2orm {
         if (check(TokenType::kwNot)) {
             auto nextType = peekToken(1).type;
             if (nextType == TokenType::kwBetween || nextType == TokenType::kwIn || nextType == TokenType::kwLike ||
-                nextType == TokenType::kwGlob || nextType == TokenType::kwMatch) {
+                nextType == TokenType::kwGlob || nextType == TokenType::kwMatch || nextType == TokenType::kwRegexp) {
                 advanceToken();
                 negated = true;
             } else if (nextType == TokenType::kwNull) {
@@ -330,6 +337,14 @@ namespace sqlite2orm {
             if (!pattern)
                 return nullptr;
             return std::make_unique<GlobNode>(std::move(left), std::move(pattern), negated, location);
+        }
+
+        if (check(TokenType::kwRegexp)) {
+            advanceToken();
+            auto pattern = parseBinaryExpression(3);
+            if (!pattern)
+                return nullptr;
+            return std::make_unique<RegexpNode>(std::move(left), std::move(pattern), negated, location);
         }
 
         if (check(TokenType::kwMatch)) {

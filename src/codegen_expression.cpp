@@ -219,6 +219,15 @@ namespace sqlite2orm {
             return this->generateLike(likeNode);
         } else if (auto* globNode = dynamic_cast<const GlobNode*>(&astNode)) {
             return this->generateGlob(globNode);
+        } else if (auto* regexpNode = dynamic_cast<const RegexpNode*>(&astNode)) {
+            // SQLite calls the application-defined `regexp(pattern, operand)` here, and sqlite_orm
+            // has no form for it: generating the rest of the statement without it would run a
+            // different query, so the statement is left out.
+            return unsupportedPlaceholder(this->context,
+                                          regexpNode->negated ? "NOT REGEXP" : "REGEXP",
+                                          "REGEXP is not mapped to sqlite_orm codegen: sqlite_orm has no form for "
+                                          "the application-defined regexp() function",
+                                          *regexpNode);
         } else if (auto* matchNode = dynamic_cast<const MatchNode*>(&astNode)) {
             return this->generateMatch(matchNode);
         } else if (auto* castNode = dynamic_cast<const CastNode*>(&astNode)) {

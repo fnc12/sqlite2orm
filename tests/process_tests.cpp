@@ -458,6 +458,33 @@ TEST_CASE("processMultiSql: a statement with tokens left after it generates noth
                                           "storage.remove_all<Users>(where(c(&Users::id) > 1));\n");
 }
 
+// SQLite reads `a REGEXP 'x'` as a call of the application-defined regexp(), which sqlite_orm has
+// no form for. The parser used to stop at REGEXP and generate `where(&T::a)` — a different query
+// — next to the parse error; now the statement parses and is left out with a warning underlining
+// the REGEXP, and the rest of the batch is generated.
+TEST_CASE("processMultiSql: a statement with REGEXP is left out, the rest is generated") {
+    const auto results = processMultiSql("CREATE TABLE t(a INTEGER); SELECT a FROM t WHERE a REGEXP 'x';");
+    REQUIRE(results.size() == 2);
+    REQUIRE(results[1].parseResult.errors.empty());
+    REQUIRE(results[1].validationErrors.empty());
+    REQUIRE(results[1].codegen ==
+            CodeGenResult{"",
+                          {},
+                          {CodegenWarning{"REGEXP is not mapped to sqlite_orm codegen: sqlite_orm has no form for the "
+                                          "application-defined regexp() function",
+                                          {1, 50},
+                                          12},
+                           CodegenWarning{"a construct in this statement is not mapped to sqlite_orm, so the "
+                                          "statement is not generated"}}});
+    REQUIRE(joinGeneratedCode(results) == "struct T {\n"
+                                          "    std::optional<int64_t> a;\n"
+                                          "};\n"
+                                          "\n"
+                                          "auto storage = make_storage(\"\",\n"
+                                          "    make_table(\"t\",\n"
+                                          "        make_column(\"a\", &T::a)));\n");
+}
+
 TEST_CASE("processMultiSql: CREATE TABLE org + INSERTs without column list") {
     auto makeCreateTableNode = [] {
         ColumnDef nameCol;
